@@ -109,12 +109,9 @@ export default function Accounts() {
       <div className="page-head">
         <div>
           <div className="eyebrow">ACCOUNT MANAGEMENT</div>
-          <h1 className="page-title">账号与登录态管理</h1>
+          <h1 className="page-title">账号与登录</h1>
           <div className="page-desc">
-            四平台登录状态 · 后台无头浏览器抠出二维码，在本页用手机 App 扫码 · 注销会清理本地登录态。
-            <span style={{ marginLeft: 8, color: "var(--muted)", fontSize: 12 }}>
-              本机有桌面、需要在弹出窗口里登录时，启动后端前设置 ITERWAVE_LOGIN_HEADED=1
-            </span>
+            各平台可以登录不同定位的账号；在本页用手机 App 扫码登录，退出会清除本机保存的登录信息。账号定位在「目标与策略 → 账号定位与画像」设置。
           </div>
         </div>
       </div>
@@ -133,7 +130,7 @@ export default function Accounts() {
                   <span style={{ fontSize: 28 }}>{PLATFORM_EMOJI[a.platform as Platform]}</span>
                   <div>
                     <div style={{ fontWeight: 700, fontSize: 15 }}>{a.platform_display}</div>
-                    <div style={{ fontSize: 11, color: "var(--muted)" }}>storage_state.json</div>
+                    <div style={{ fontSize: 11, color: "var(--muted)" }}>本机登录</div>
                   </div>
                 </div>
                 <span className={`tag ${st.color}`}>{st.label}</span>

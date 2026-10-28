@@ -225,16 +225,22 @@ def diagnose(cfg, conn, *, cb=None, live_llm: bool = False) -> dict:
     # 2 账号画像
     ug = cfg.ultimate_goal
     goals = conn.execute("SELECT COUNT(*) FROM goals WHERE status='active'").fetchone()[0]
-    if not ug.persona_keywords:
-        items.append(_item(2, "账号画像完整", "block", "persona_keywords 为空：无法判断选题是否符合账号定位",
-                           "assets", "persona"))
+    from .persona import effective_persona
+    no_persona = [p for p in enabled if not effective_persona(cfg, p)["persona_keywords"]]
+    if not ug.persona_keywords and (not enabled or no_persona):
+        detail = ("各平台都没有画像关键词" if len(no_persona) == len(enabled)
+                  else f"{'、'.join(no_persona)} 没有画像关键词")
+        items.append(_item(2, "账号画像完整", "block", f"{detail}：无法判断选题是否符合账号定位",
+                           "goals", "persona"))
     elif not ug.redline_keywords and not ug.forbidden_directions:
         items.append(_item(2, "账号画像完整", "warn", "未配置红线词 / 禁止方向，质量门只能做维度检查",
-                           "assets", "persona"))
+                           "goals", "persona"))
     elif not goals:
         items.append(_item(2, "账号画像完整", "warn", "画像已配置，但没有进行中的目标", "goals"))
     else:
-        items.append(_item(2, "账号画像完整", "pass", f"画像关键词 {len(ug.persona_keywords)} 个 · 目标 {goals} 个"))
+        mode_label = {"unified": "统一画像", "per_platform": "分平台画像", "hybrid": "总目标 + 分平台画像"}.get(
+            ug.goal_mode, ug.goal_mode)
+        items.append(_item(2, "账号画像完整", "pass", f"{mode_label} · 目标 {goals} 个"))
 
     # 3 登录态
     no_login = [p for p in enabled if not has_login_state(Platform(p))]

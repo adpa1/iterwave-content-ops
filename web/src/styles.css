@@ -205,3 +205,10 @@ details[open] > summary::before { content: "▾ "; }
 .toolbar .field, .toolbar select.field { width: auto; }
 .toolbar select.field { min-width: 120px; }
 .field { box-sizing: border-box; max-width: 100%; }
+.mode-card { text-align: left; border: 1px solid var(--line); background: #fff; border-radius: 10px; padding: 12px; cursor: pointer; font: inherit; color: inherit; }
+.mode-card:hover { border-color: #c3cfee; }
+.mode-card.active { border-color: var(--blue); box-shadow: 0 0 0 3px #e8edff; }
+.mode-title { font-size: 13px; font-weight: 750; margin-bottom: 4px; }
+.mode-desc { font-size: 11px; color: var(--muted); line-height: 1.6; }
+.persona-card { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: #fff; min-width: 0; }
+.plat-badge { display: inline-flex; width: 20px; height: 20px; border-radius: 6px; color: #fff; font-size: 11px; font-weight: 700; align-items: center; justify-content: center; }

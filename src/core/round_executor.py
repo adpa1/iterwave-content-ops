@@ -474,7 +474,7 @@ class RoundExecutor:
                         )
 
                     try:
-                        outcome = self.guard.check_content(title, body, tags)
+                        outcome = self.guard.check_content(title, body, tags, platform=platform.value)
                     except Exception as exc:  # noqa: BLE001 — 检查器异常不能默认通过
                         logger.exception("G2 检查器异常 platform=%s", platform.value)
                         outcome = CheckOutcome(

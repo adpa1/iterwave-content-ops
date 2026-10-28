@@ -5,7 +5,7 @@ import TopicPoolPane from "../components/TopicPoolPane";
 import CreatedContentPane from "../components/CreatedContentPane";
 import { useApp } from "../AppContext";
 import { PersonaEditor } from "../components/ConfigEditors";
-import { useUrlTab } from "../nav";
+import { navigate, useUrlTab } from "../nav";
 import {
   api, AssetItem, AssetType, Draft, HotTopicItem, KbInspect, ScoredTopic, SystemConfigView,
 } from "../api";
@@ -276,13 +276,20 @@ export default function Assets() {
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">♙</span>账号画像</div>
-                <div className="panel-sub">文案生成与终极目标检查共用这份画像，改完立即生效</div>
+                <div className="panel-sub">全局与各平台画像统一在「目标与策略 → 账号定位与画像」维护</div>
               </div>
+              <button className="btn sm" onClick={() => navigate("goals", "persona")}>去编辑 →</button>
             </div>
             {!config ? (
               <div className="note">加载配置中…</div>
             ) : (
-              <PersonaEditor view={config} onSaved={load} />
+              <div className="list">
+                <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">一句话定位</div><div className="task-desc">{config.readonly.positioning || "未填写"}</div></div></div>
+                <div className="task-row"><i className="task-prio green" /><div className="task-main"><div className="task-title">定位关键词</div>
+                  <div className="flex wrap" style={{ gap: 6, marginTop: 4 }}>{config.readonly.persona_keywords.length ? config.readonly.persona_keywords.map((k) => <span key={k} className="tag blue">{k}</span>) : <span className="tag gray">未配置</span>}</div></div></div>
+                <div className="task-row"><i className="task-prio red" /><div className="task-main"><div className="task-title">禁止方向</div>
+                  <div className="flex wrap" style={{ gap: 6, marginTop: 4 }}>{config.readonly.forbidden_directions.length ? config.readonly.forbidden_directions.map((k) => <span key={k} className="tag red">{k}</span>) : <span className="tag gray">未配置</span>}</div></div></div>
+              </div>
             )}
             <div className="note" style={{ marginTop: 12 }}>
               红线关键词 {config?.readonly.redline_keywords_count ?? "—"} 个（出现即丢弃重生成，不可关闭）

@@ -354,6 +354,7 @@ export default function HotTopics() {
               <div className="hot-meta">
                 <span>定位关联 {h.match_score != null ? `${Math.round(h.match_score)}/100` : h.dimension_match === null ? "待研判" : "—"}</span>
                 {h.dimension && <span>维度 {h.dimension}</span>}
+                {h.fit_platforms && <span>适合账号：{h.fit_platforms.length ? h.fit_platforms.map((p) => platformLabel(p)).join(" / ") : "暂无匹配平台"}</span>}
                 {h.also_on && h.also_on.length > 0 && <span>同时在榜：{h.also_on.map((o) => platformLabel(o.platform)).join(" / ")}</span>}
               </div>
               {(h.match_angle || h.match_reason || h.dimension_match === false || !h.publishable) && (

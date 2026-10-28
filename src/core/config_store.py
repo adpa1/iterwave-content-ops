@@ -277,6 +277,71 @@ def _validate(key: str, value: Any) -> Any:
             out_map[field_name] = column.strip()
         return out_map
 
+    # ===== 账号画像：模式 / 一句话定位 / 平台画像 / 平台协同 =====
+    if key == "ultimate_goal.goal_mode":
+        from .persona import GOAL_MODES
+        if value not in GOAL_MODES:
+            raise ConfigPatchError(f"goal_mode 只能是 {' / '.join(GOAL_MODES)}")
+        return value
+    if key == "ultimate_goal.positioning":
+        if not isinstance(value, str) or len(value.strip()) > 200:
+            raise ConfigPatchError("账号定位必须是不超过 200 字的文字")
+        return value.strip()
+    if len(parts) == 4 and parts[:2] == ["ultimate_goal", "platform_personas"]:
+        from .persona import PLATFORM_ROLES
+        platform, field = parts[2], parts[3]
+        if platform not in PLATFORM_KEYS:
+            raise ConfigNotAllowedError(f"未知平台：{platform}")
+        if field == "inherit_global":
+            if not isinstance(value, bool):
+                raise ConfigPatchError(f"{key} 必须是布尔值")
+            return value
+        if field in ("account_name", "positioning", "audience", "role"):
+            limit = {"account_name": 40, "positioning": 200, "audience": 200, "role": 20}[field]
+            if not isinstance(value, str) or len(value.strip()) > limit:
+                raise ConfigPatchError(f"{key} 必须是不超过 {limit} 字的文字")
+            if field == "role" and value.strip() not in PLATFORM_ROLES:
+                raise ConfigPatchError(f"平台角色只能是 {' / '.join(r for r in PLATFORM_ROLES if r)} 或留空")
+            return value.strip()
+        if field in ("persona_keywords", "forbidden_directions", "extra_redlines"):
+            cap = 50 if field == "extra_redlines" else 30
+            if not isinstance(value, list):
+                raise ConfigPatchError(f"{key} 必须是字符串数组")
+            out_l: list[str] = []
+            for item in value:
+                if not isinstance(item, str):
+                    raise ConfigPatchError(f"{key} 的每一项都必须是字符串")
+                t = item.strip()
+                if not t:
+                    continue
+                if len(t) > 20:
+                    raise ConfigPatchError(f"{key} 单项最长 20 字：{t}")
+                if t not in out_l:
+                    out_l.append(t)
+            if len(out_l) > cap:
+                raise ConfigPatchError(f"{key} 最多 {cap} 项")
+            return out_l
+        raise ConfigNotAllowedError(f"平台画像字段不允许修改：{field}")
+    if key == "ultimate_goal.platform_links":
+        from .persona import LINK_RELATIONS
+        if not isinstance(value, list) or len(value) > 12:
+            raise ConfigPatchError("平台协同关系必须是数组，最多 12 条")
+        links: list[dict] = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise ConfigPatchError("每条协同关系必须包含 source / target / relation")
+            src, tgt = item.get("source"), item.get("target")
+            rel = item.get("relation") or "traffic"
+            note = str(item.get("note") or "").strip()[:100]
+            if src not in PLATFORM_KEYS or tgt not in PLATFORM_KEYS:
+                raise ConfigPatchError("协同关系的平台必须是 xhs / douyin / kuaishou / wechat_channels")
+            if src == tgt:
+                raise ConfigPatchError("协同关系不能指向同一个平台")
+            if rel not in LINK_RELATIONS:
+                raise ConfigPatchError(f"relation 只能是 {' / '.join(LINK_RELATIONS)}")
+            links.append({"source": src, "target": tgt, "relation": rel, "note": note})
+        return links
+
     if key in STRING_RULES:
         lo, hi = STRING_RULES[key]
         if not isinstance(value, str):
@@ -329,6 +394,15 @@ def _validate(key: str, value: Any) -> Any:
     return float(value) if typ is float else int(value)
 
 
+def _jsonable(v: Any) -> Any:
+    """pydantic 模型 / 模型列表 → 普通 dict（审计与 API 返回用）。"""
+    if hasattr(v, "model_dump"):
+        return v.model_dump()
+    if isinstance(v, list):
+        return [_jsonable(x) for x in v]
+    return v
+
+
 def _get_value(cfg: Config, key: str) -> Any:
     node: Any = cfg
     for part in _split(key):
@@ -352,6 +426,18 @@ def _counterpart(key: str) -> str | None:
 
 
 def _set_value(cfg: Config, key: str, value: Any) -> None:
+    parts0 = _split(key)
+    if len(parts0) == 4 and parts0[:2] == ["ultimate_goal", "platform_personas"]:
+        from .config import PlatformPersonaConfig
+        from .persona import platform_persona
+        pp = platform_persona(cfg, parts0[2]) or PlatformPersonaConfig()
+        setattr(pp, parts0[3], value)
+        cfg.ultimate_goal.platform_personas[parts0[2]] = pp
+        return
+    if key == "ultimate_goal.platform_links":
+        from .config import PlatformLinkConfig
+        cfg.ultimate_goal.platform_links = [PlatformLinkConfig(**l) for l in value]
+        return
     other = _counterpart(key)
     if other:
         job = cfg.scheduler.jobs[_split(key)[2]]
@@ -493,6 +579,8 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             "persona_keywords": list(cfg.ultimate_goal.persona_keywords),
             "forbidden_directions": list(cfg.ultimate_goal.forbidden_directions),
             "redline_keywords_count": len(cfg.ultimate_goal.redline_keywords),
+            "positioning": cfg.ultimate_goal.positioning,
+            "goal_mode": cfg.ultimate_goal.goal_mode,
             # —— 本地知识库（Settings 页「连接本地知识库」panel）——
             "kb_path": str(cfg.topic_kb.path),
             "kb_type": cfg.topic_kb.type,
@@ -614,7 +702,7 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
     changes: list[dict[str, Any]] = []
     overrides = load_overrides()
     for key, value in normalized.items():
-        old = _get_value(cfg, key)
+        old = _jsonable(_get_value(cfg, key))
         if old == value:
             continue
         _set_value(cfg, key, value)

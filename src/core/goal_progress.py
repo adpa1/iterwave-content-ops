@@ -57,6 +57,25 @@ class GoalProgressUpdater:
 
     def update_goal(self, row) -> Optional[float]:
         """刷新单个目标。返回新的 current_value（NULL 表示本期无数据）。"""
+        get = row.get if isinstance(row, dict) else (lambda k: row[k] if k in row.keys() else None)
+        # 人工录入的目标：当前值由人填写，自动刷新不能把它覆盖成 NULL
+        if (get("data_source") or "") == "manual":
+            cur = get("current_value")
+            self._maybe_complete(row, cur, datetime.now().isoformat(timespec="seconds"))
+            return cur
+        # 涨粉类目标：优先用账号级快照（作品级读回没有新增粉丝字段）
+        if row["target_metric"] in ("followers_gained", "new_followers"):
+            snap_value = self._followers_from_snapshots(row)
+            if snap_value is not None:
+                now = datetime.now().isoformat(timespec="seconds")
+                self.conn.execute(
+                    "UPDATE goals SET current_value = ?, progress_updated_at = ? WHERE id = ?",
+                    (snap_value, now, row["id"]),
+                )
+                self.conn.commit()
+                self._maybe_complete(row, snap_value, now)
+                return snap_value
+
         column_spec = METRIC_COLUMNS.get(row["target_metric"])
         if column_spec is None:
             logger.info("目标 %s 指标 %s 暂不支持聚合", row["id"], row["target_metric"])
@@ -94,6 +113,36 @@ class GoalProgressUpdater:
             row["id"], row["target_metric"], agg, value, sample_count,
         )
 
+        self._maybe_complete(row, value, now)
+        return value
+
+    def _followers_from_snapshots(self, row) -> Optional[float]:
+        """账号快照里的粉丝总数（目标平台；全平台 = 各平台最新值之和）。
+
+        delta 口径：achievement_rate 用 (current - baseline) / target，current 取周期内最新粉丝总数，
+        baseline 是创建目标时填的起始粉丝数；total 口径直接比较总数。没有快照 → None（回落作品级聚合）。
+        """
+        try:
+            plats = [row["target_platform"]] if row["target_platform"] else [
+                r[0] for r in self.conn.execute("SELECT DISTINCT platform FROM account_snapshots").fetchall()
+            ]
+        except Exception:  # noqa: BLE001 — 旧库没有快照表
+            return None
+        total, found = 0.0, False
+        for p in plats:
+            params: list = [p]
+            sql = "SELECT followers FROM account_snapshots WHERE platform = ? AND followers IS NOT NULL"
+            if row["metric_period_end"]:
+                sql += " AND captured_at <= ?"
+                params.append(str(row["metric_period_end"])[:10] + "T23:59:59")
+            sql += " ORDER BY captured_at DESC LIMIT 1"
+            r = self.conn.execute(sql, params).fetchone()
+            if r is not None:
+                total += float(r[0])
+                found = True
+        return total if found else None
+
+    def _maybe_complete(self, row, value: Optional[float], now: str) -> None:
         # 达成 → 结束目标 + 通知（G-15：goal_completed 场景）
         rate = self.achievement_rate(
             current=value, baseline=row["baseline_value"], target=row["target_value"],
@@ -114,7 +163,6 @@ class GoalProgressUpdater:
                     f"目标达成：{row['goal_text']}（{row['target_metric']} {value:.0f} / {row['target_value']:.0f}）",
                     platform=row["target_platform"],
                 )
-        return value
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -146,22 +194,71 @@ class GoalProgressUpdater:
         )
 
     @classmethod
-    def summarize(cls, rows: list, now: Optional[datetime] = None) -> dict:
+    def summarize(cls, rows: list, now: Optional[datetime] = None, mode: str = "unified") -> dict:
         """总体目标进度汇总（Dashboard / Goals 的 goal-hero 用，前端不再自行计算）。
 
-        口径：只看 status='active' 的目标；percent = 已有达成率目标的等权平均，
-        每个目标先截断到 [0, 100] 再平均（单个目标超额不能掩盖其它目标落后）。
-        当前没有目标权重字段，所以不做加权；没有任何目标有数据 → percent = None（R21：未知 ≠ 0）。
+        mode（config.ultimate_goal.goal_mode）：
+        - unified：所有活跃目标达成率等权平均（每个先截断到 [0,100]，单个超额不能掩盖其它落后）。
+        - per_platform：各平台分别汇总（by_platform），总进度 = 各平台进度的等权平均，仅作参考。
+        - hybrid：有总目标（goal_level=north_star）且总目标自身有数据 → 用总目标达成率；
+          否则用挂在总目标下的平台子目标按 weight 加权平均；平台各自进度仍在 by_platform。
+        没有任何数据 → percent = None（R21：未知 ≠ 0）。
         """
         now = now or datetime.now()
         active = [dict(r) for r in rows if (dict(r).get("status") or "active") == "active"]
-        rates = []
-        for g in active:
+
+        def _rate(g: dict) -> Optional[float]:
             r = cls.rate_for(g)
-            if r is not None:
-                rates.append(max(0.0, min(100.0, r)))
-        starts = sorted(g["metric_period_start"] for g in active if g.get("metric_period_start"))
-        ends = sorted(g["metric_period_end"] for g in active if g.get("metric_period_end"))
+            return None if r is None else max(0.0, min(100.0, r))
+
+        def _mean(goals: list[dict], weighted: bool = False) -> tuple[Optional[float], int]:
+            num, den, n = 0.0, 0.0, 0
+            for g in goals:
+                r = _rate(g)
+                if r is None:
+                    continue
+                w = float(g.get("weight") or 1.0) if weighted else 1.0
+                num += r * w
+                den += w
+                n += 1
+            return (round(num / den, 1) if den else None), n
+
+        north = [g for g in active if (g.get("goal_level") or "platform") == "north_star"]
+        platform_goals = [g for g in active if (g.get("goal_level") or "platform") != "north_star"]
+
+        by_platform: dict[str, dict] = {}
+        for g in platform_goals:
+            key = g.get("target_platform") or "all"
+            by_platform.setdefault(key, []).append(g)  # type: ignore[arg-type]
+        by_platform_out = {}
+        for key, goals in by_platform.items():
+            pct, n = _mean(goals)  # type: ignore[arg-type]
+            by_platform_out[key] = {"percent": pct, "goals": len(goals), "counted": n}  # type: ignore[arg-type]
+
+        method = "equal_weight_mean"
+        counted_goals = 0
+        if mode == "hybrid" and north:
+            ns = north[0]
+            own = _rate(ns)
+            children = [g for g in platform_goals if g.get("parent_goal_id") == ns["id"]] or platform_goals
+            if own is not None:
+                percent, counted_goals, method = round(own, 1), 1, "north_star_own"
+            else:
+                percent, counted_goals = _mean(children, weighted=True)
+                method = "weighted_children"
+            scope_goals = [ns] + children
+        elif mode == "per_platform":
+            vals = [v["percent"] for v in by_platform_out.values() if v["percent"] is not None]
+            percent = round(sum(vals) / len(vals), 1) if vals else None
+            counted_goals = sum(v["counted"] for v in by_platform_out.values())
+            method = "per_platform_mean"
+            scope_goals = platform_goals
+        else:
+            percent, counted_goals = _mean(active)
+            scope_goals = active
+
+        starts = sorted(g["metric_period_start"] for g in scope_goals if g.get("metric_period_start"))
+        ends = sorted(g["metric_period_end"] for g in scope_goals if g.get("metric_period_end"))
         period_end = ends[-1] if ends else None
         days_left = None
         if period_end:
@@ -171,12 +268,18 @@ class GoalProgressUpdater:
             except ValueError:
                 days_left = None
         return {
-            "percent": round(sum(rates) / len(rates), 1) if rates else None,
-            "method": "equal_weight_mean",
-            "active_goals": len(active),
-            "counted_goals": len(rates),
-            "pending_goals": len(active) - len(rates),
+            "percent": percent,
+            "method": method,
+            "mode": mode,
+            "active_goals": len(scope_goals),
+            "counted_goals": counted_goals,
+            "pending_goals": max(0, len(scope_goals) - counted_goals) if method != "north_star_own" else 0,
             "period_start": starts[0] if starts else None,
             "period_end": period_end,
             "days_left": days_left,
+            "north_star": (
+                {"id": north[0]["id"], "goal_text": north[0]["goal_text"], "rate": _rate(north[0])}
+                if north else None
+            ),
+            "by_platform": by_platform_out,
         }

@@ -273,7 +273,7 @@ export default function Settings() {
                     {cfgView.audit.map((a) => (
                       <tr key={a.id}>
                         <td style={{ color: "var(--subtle)", fontSize: 11 }}>{a.id}</td>
-                        <td style={{ fontSize: 12 }}>{a.key}</td>
+                        <td style={{ fontSize: 12 }} title={a.key}>{configKeyLabel(a.key)}</td>
                         <td style={{ color: "var(--muted)" }}>{a.old_value ?? <span style={{ color: "var(--subtle)" }}>—</span>}</td>
                         <td>{a.new_value ?? <span style={{ color: "var(--subtle)" }}>—</span>}</td>
                         <td style={{ fontSize: 11, color: "var(--muted)" }}>{a.changed_at ?? "—"}</td>
@@ -502,6 +502,24 @@ export default function Settings() {
 }
 
 /** 配置值 → 输入框字符串；NULL 显示空串（不填 0，R3） */
+/** 配置键 → 中文名（变更记录用；未收录的保留原键） */
+const KEY_PART: Record<string, string> = {
+  ultimate_goal: "账号画像", persona_keywords: "定位关键词", forbidden_directions: "禁止方向", redline_keywords: "红线词库",
+  positioning: "定位", goal_mode: "目标模式", platform_personas: "平台画像", platform_links: "平台协同",
+  inherit_global: "继承全局", account_name: "账号名称", audience: "受众", role: "角色", extra_redlines: "额外红线",
+  rhythm: "节奏", daily_quotas: "每日配额", passive_replies: "被动回复", active_comments: "主动评论", follows: "关注",
+  windows: "时段", ops: "运营", draft_save: "存草稿", start_hour: "开始", end_hour: "结束",
+  circuit_breaker: "熔断", cooldown_minutes: "冷却分钟", hot_topics: "热点", filters: "门限",
+  heat_threshold: "热度门槛", heat_filter_enabled: "热度门开关", time_window_hours: "时效窗口", time_filter_enabled: "时效门开关",
+  scheduler: "定时任务", jobs: "", enabled: "启用", interval_minutes: "间隔分钟", cron: "执行时间",
+  kb_scan: "选题库扫描", daily_ops: "每日运营", hot_topics_refresh: "热点采集", autogrow: "自动闭环",
+  platforms: "平台", xhs: "小红书", douyin: "抖音", kuaishou: "快手", wechat_channels: "视频号",
+  llm: "模型", model: "模型", provider: "服务商", timeouts: "超时", scoring: "评分权重", topic_kb: "选题库",
+};
+function configKeyLabel(key: string): string {
+  return key.split(".").map((p) => KEY_PART[p] ?? p).filter(Boolean).join(" · ");
+}
+
 function _str(v: number | null | undefined): string {
   return v == null ? "" : String(v);
 }

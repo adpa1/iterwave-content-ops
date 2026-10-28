@@ -243,15 +243,26 @@ class ScoringEngine:
 
     def _score_position_match(self, topic: TopicItem) -> float:
         """账号定位匹配：persona_keywords 与 topic.title/summary 的重合度。"""
-        persona = self.cfg.ultimate_goal.persona_keywords
-        if not persona:
+        # 多平台画像：按每个启用平台的生效画像分别算重合度，取最高（选题只要适合任一平台账号即可）
+        from ..persona import effective_persona
+        try:
+            plats = self.cfg.platforms.enabled_keys()
+        except Exception:  # noqa: BLE001
+            plats = []
+        personas = [effective_persona(self.cfg, p)["persona_keywords"] for p in plats] or [
+            list(self.cfg.ultimate_goal.persona_keywords)
+        ]
+        personas = [p for p in personas if p]
+        if not personas:
             return 60.0  # 无画像默认给 60
         haystack = (topic.title + " " + topic.summary + " " + topic.dimension).lower()
-        hits = sum(1 for kw in persona if kw.lower() in haystack)
-        total = len(persona)
+        best = 0.0
+        for persona in personas:
+            hits = sum(1 for kw in persona if kw.lower() in haystack)
+            best = max(best, 100 * hits / len(persona))
         # 零命中 = 0 分（完全偏离账号定位的选题必须被显著压低，
         # 否则「新鲜但无关」的选题会靠时效+新鲜度挤掉「用过但高度相关」的选题）
-        return 100 * (hits / total) if total > 0 else 60.0
+        return best
 
     def _score_history_performance(self, topic: TopicItem, mode: str) -> float:
         """历史表现：同维度历史平均互动率（收缩估计）。"""

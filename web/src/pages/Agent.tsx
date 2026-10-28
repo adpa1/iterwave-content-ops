@@ -420,15 +420,13 @@ function SkillsPane() {
           <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 6 }}>{g.group}</div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>ID</th><th>名称</th><th>源码</th><th>状态</th><th>备注</th></tr></thead>
+              <thead><tr><th>能力</th><th>状态</th><th>说明</th></tr></thead>
               <tbody>
                 {g.rows.map((s) => (
                   <tr key={s.id}>
-                    <td style={{ fontSize: 12, fontFamily: "monospace" }}>{s.id}</td>
-                    <td>{s.name}</td>
-                    <td style={{ fontSize: 11, color: "var(--muted)", fontFamily: "monospace" }}>{s.src}</td>
-                    <td><span className={`tag ${s.status === "OK" ? "green" : "orange"}`}>{s.status}</span></td>
-                    <td style={{ fontSize: 12, color: "var(--muted)" }}>{s.note}</td>
+                    <td title={s.src}>{s.name.replace(/（R\d+）/g, "").replace("Playwright ", "")}</td>
+                    <td><span className={`tag ${s.status === "OK" ? "green" : "orange"}`}>{s.status === "OK" ? "正常" : "部分可用"}</span></td>
+                    <td style={{ fontSize: 12, color: "var(--muted)" }}>{s.note.replace(/R\d+[：:]\s*/g, "")}</td>
                   </tr>
                 ))}
               </tbody>

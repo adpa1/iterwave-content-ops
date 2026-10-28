@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import EmptyHint from "../components/EmptyHint";
-import { api, Goal, GoalSummary, SystemConfigView } from "../api";
+import { api, Goal, GoalSummary, SystemConfigView, type PersonasView } from "../api";
+import PersonaMatrix, { GOAL_MODE_META, ROLE_LABELS, RELATION_LABELS } from "../components/PersonaMatrix";
+import { useUrlTab } from "../nav";
 import GoalHero, { PERCENT_METRICS, isActiveGoal, metricLabel, formatMetricValue, currentProgressText } from "../components/GoalHero";
 import { ALL_PLATFORMS, Platform, platformMeta } from "../platforms";
 
@@ -46,7 +48,18 @@ const EMPTY_GOAL = {
   metric_period_start: todayStr(),
   metric_period_end: todayStr(30),
   data_source: "account_stats",
+  goal_level: "platform",
+  parent_goal_id: "",
+  weight: "",
+  contribution_note: "",
 };
+
+const GOAL_TABS = [
+  { k: "progress", l: "目标进度" },
+  { k: "persona", l: "账号定位与画像" },
+  { k: "list", l: "全部目标" },
+] as const;
+type GoalTab = typeof GOAL_TABS[number]["k"];
 
 export default function Goals() {
   const { showToast, withPending, status } = useApp();
@@ -61,6 +74,8 @@ export default function Goals() {
   /** 编辑中的目标（null = 未编辑）；current_value 只由采集回写，这里不提供 */
   const [editing, setEditing] = useState<Goal | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
+  const [personas, setPersonas] = useState<PersonasView | null>(null);
+  const [tab, setTab] = useUrlTab<GoalTab>(GOAL_TABS.map((t) => t.k), "progress");
 
   const load = async () => {
     try {
@@ -68,6 +83,7 @@ export default function Goals() {
       setGoals(gs);
       setSummary(sm);
       setCfgView(await api.config());
+      api.personas().then(setPersonas).catch(() => setPersonas(null));
       setError(null);
     } catch (e: any) { setError(e.message); }
   };
@@ -91,6 +107,10 @@ export default function Goals() {
           metric_period_start: newGoal.metric_period_start,
           metric_period_end: newGoal.metric_period_end,
           data_source: newGoal.data_source,
+          goal_level: newGoal.goal_level as Goal["goal_level"],
+          parent_goal_id: newGoal.goal_level === "platform" && newGoal.parent_goal_id ? newGoal.parent_goal_id : null,
+          weight: newGoal.weight === "" ? null : Number(newGoal.weight),
+          contribution_note: newGoal.contribution_note.trim() || null,
         }),
       );
       if (res !== undefined) {
@@ -146,6 +166,34 @@ export default function Goals() {
     finally { setRefreshing(false); }
   };
 
+  const mode = personas?.goal_mode ?? summary?.mode ?? "unified";
+  const northStars = goals.filter((g) => isActiveGoal(g) && g.goal_level === "north_star");
+  const goalById = Object.fromEntries(goals.map((g) => [g.id, g]));
+
+  const recordFollowers = async (p: Platform) => {
+    const raw = window.prompt(`${platformMeta(p).label} 当前粉丝总数（涨粉目标按这个值计算进度）`);
+    if (raw == null || raw.trim() === "") return;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) { showToast("请输入非负数字", "error"); return; }
+    try {
+      await api.addAccountSnapshot({ platform: p, followers: Math.round(n) });
+      showToast(`✓ 已记录 ${platformMeta(p).label} 粉丝数 ${Math.round(n)}，目标进度已刷新`, "success");
+      await load();
+    } catch (e: any) { showToast(`记录失败：${e?.message ?? e}`, "error"); }
+  };
+
+  const fillManualValue = async (g: Goal) => {
+    const raw = window.prompt(`「${g.goal_text}」当前值`, g.current_value != null ? String(g.current_value) : "");
+    if (raw == null || raw.trim() === "") return;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) { showToast("请输入数字", "error"); return; }
+    try {
+      await api.setGoalManualValue(g.id, n);
+      showToast("✓ 当前值已更新", "success");
+      await load();
+    } catch (e: any) { showToast(`更新失败：${e?.message ?? e}`, "error"); }
+  };
+
   return (
     <>
       <div className="page-head">
@@ -172,6 +220,25 @@ export default function Goals() {
         onCreateGoal={() => { setCreating(true); setTimeout(() => document.getElementById("new-goal")?.scrollIntoView({ behavior: "smooth" }), 0); }}
       />
 
+      <div className="tabs page-tabs">
+        {GOAL_TABS.map((t) => (
+          <button key={t.k} type="button" className={`tab ${tab === t.k ? "active" : ""}`} onClick={() => setTab(t.k)}>{t.l}</button>
+        ))}
+      </div>
+
+      {tab === "persona" && (
+        <div className="panel">
+          <div className="panel-head">
+            <div>
+              <div className="panel-title"><span className="icon" aria-hidden="true">◉</span>账号定位与画像</div>
+              <div className="panel-sub">不同平台登录的可以是不同定位的账号；选择目标模式后，为每个平台单独设置画像与协同关系</div>
+            </div>
+          </div>
+          <PersonaMatrix onSaved={load} />
+        </div>
+      )}
+
+      {tab === "progress" && (
       <div className="grid two">
         {/* 平台阶段目标：每个平台独立，只统计该平台自己的目标 */}
         <div className="panel">
@@ -192,8 +259,20 @@ export default function Goals() {
                       <span className={`platform-logo ${PLATFORM_CLS[p]}`} aria-hidden="true">{m.label.slice(0, 1)}</span>
                       {m.label}
                     </div>
-                    <span className="tag gray">{pGoals.length} 项</span>
+                    <span className="tag gray">
+                      {summary?.by_platform?.[p]?.percent != null ? `${Math.round(summary.by_platform[p].percent as number)}% · ` : ""}{pGoals.length} 项
+                    </span>
                   </div>
+                  {mode !== "unified" && personas?.platforms?.[p] && (
+                    <div className="tiny" style={{ marginTop: 4 }}>
+                      {personas.platforms[p].effective.account_name ? `${personas.platforms[p].effective.account_name} · ` : ""}
+                      {personas.platforms[p].effective.positioning || "沿用全局定位"}
+                      {personas.platforms[p].effective.role ? ` · ${ROLE_LABELS[personas.platforms[p].effective.role]}` : ""}
+                    </div>
+                  )}
+                  {pGoals.some((g) => g.target_metric === "followers_gained" || g.target_metric === "new_followers") && (
+                    <button type="button" className="btn sm" style={{ marginTop: 6 }} onClick={() => recordFollowers(p)}>记录当前粉丝数</button>
+                  )}
                   {pGoals.length === 0 ? (
                     <div className="tiny">未设置阶段目标</div>
                   ) : pGoals.map((g) => (
@@ -205,6 +284,11 @@ export default function Goals() {
                       <div className="progress">
                         <span style={{ width: `${Math.min(100, Math.max(0, g.achievement_rate ?? 0))}%` }} />
                       </div>
+                      {(g.contribution_note || (g.parent_goal_id && goalById[g.parent_goal_id])) && (
+                        <div className="tiny" style={{ marginTop: 4 }}>
+                          ↗ {g.contribution_note || `服务于「${goalById[g.parent_goal_id as string]?.goal_text}」`}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -218,17 +302,39 @@ export default function Goals() {
           <div className="panel-head">
             <div>
               <div className="panel-title"><span className="icon" aria-hidden="true">⚑</span>策略与约束</div>
-              <div className="panel-sub">红线 · 定位关键词 · 禁止方向；可在「系统设置 / 首次向导」在线编辑</div>
+              <div className="panel-sub">目标模式、定位、红线与平台协同；在「账号定位与画像」页签修改</div>
             </div>
+            <button className="btn sm" onClick={() => setTab("persona")}>修改 →</button>
           </div>
           {!cfgView ? (
             <div className="note">加载配置中…</div>
           ) : (
             <div className="list">
               <div className="task-row">
+                <i className="task-prio blue" aria-hidden="true" />
+                <div className="task-main">
+                  <div className="task-title">目标模式 · {GOAL_MODE_META[mode as keyof typeof GOAL_MODE_META]?.title ?? mode}</div>
+                  <div className="task-desc">
+                    {GOAL_MODE_META[mode as keyof typeof GOAL_MODE_META]?.desc}
+                    {mode === "hybrid" && (summary?.north_star ? ` · 总目标：${summary.north_star.goal_text}` : " · 还没有总目标，新建目标时选择「总目标」")}
+                  </div>
+                </div>
+              </div>
+              {mode !== "unified" && (personas?.links?.length ?? 0) > 0 && (
+                <div className="task-row">
+                  <i className="task-prio purple" aria-hidden="true" />
+                  <div className="task-main">
+                    <div className="task-title">平台协同</div>
+                    <div className="task-desc">
+                      {personas!.links.map((l) => `${platformMeta(l.source).label} ${RELATION_LABELS[l.relation]} ${platformMeta(l.target).label}`).join("；")}
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div className="task-row">
                 <i className="task-prio green" aria-hidden="true" />
                 <div className="task-main">
-                  <div className="task-title">账号定位关键词</div>
+                  <div className="task-title">{mode === "unified" ? "账号定位关键词" : "全局定位关键词"}</div>
                   <div className="flex wrap" style={{ gap: 6, marginTop: 4 }}>
                     {cfgView.readonly.persona_keywords.length === 0
                       ? <span className="tag gray">未配置</span>
@@ -258,7 +364,7 @@ export default function Goals() {
                 <i className="task-prio blue" aria-hidden="true" />
                 <div className="task-main">
                   <div className="task-title">评分模式</div>
-                  <div className="task-desc">当前 {status?.scoring_mode ?? "—"} · 由已发布样本量自动切换</div>
+                  <div className="task-desc">当前 {({ cold_start: "冷启动", sample_accumulating: "样本积累", stable: "稳定运行", stable_operation: "稳定运行" } as Record<string, string>)[status?.scoring_mode ?? ""] ?? "—"} · 由已发布样本量自动切换</div>
                 </div>
               </div>
               <div className="task-row">
@@ -274,6 +380,8 @@ export default function Goals() {
           )}
         </div>
       </div>
+
+      )}
 
       {creating && (
       <div className="panel" id="new-goal" style={{ borderColor: "var(--blue)" }}>
@@ -335,15 +443,47 @@ export default function Goals() {
             </select>
           </div>
           <div>
-            <label className="form-label">平台（空=全平台）</label>
-            <select className="field" value={newGoal.target_platform} onChange={(e) => setNewGoal({ ...newGoal, target_platform: e.target.value })}>
-              <option value="">全平台</option>
-              <option value="xhs">小红书</option>
-              <option value="douyin">抖音</option>
-              <option value="kuaishou">快手</option>
-              <option value="wechat_channels">视频号</option>
+            <label className="form-label">目标层级</label>
+            <select className="field" value={newGoal.goal_level} onChange={(e) => setNewGoal({ ...newGoal, goal_level: e.target.value })}>
+              <option value="platform">平台目标</option>
+              <option value="north_star" disabled={mode === "per_platform"}>总目标（账号矩阵北极星）</option>
             </select>
           </div>
+          {newGoal.goal_level === "platform" && (
+            <div>
+              <label className="form-label">平台（空=全平台）</label>
+              <select className="field" value={newGoal.target_platform} onChange={(e) => setNewGoal({ ...newGoal, target_platform: e.target.value })}>
+                <option value="">全平台</option>
+                <option value="xhs">小红书</option>
+                <option value="douyin">抖音</option>
+                <option value="kuaishou">快手</option>
+                <option value="wechat_channels">视频号</option>
+              </select>
+            </div>
+          )}
+          {newGoal.goal_level === "platform" && northStars.length > 0 && mode !== "per_platform" && (
+            <>
+              <div>
+                <label className="form-label">服务于哪个总目标</label>
+                <select className="field" value={newGoal.parent_goal_id} onChange={(e) => setNewGoal({ ...newGoal, parent_goal_id: e.target.value })}>
+                  <option value="">不挂靠</option>
+                  {northStars.map((g) => <option key={g.id} value={g.id}>{g.goal_text}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="form-label">汇总权重（空 = 1）</label>
+                <input className="field" type="number" min={0.1} step={0.5} value={newGoal.weight}
+                  onChange={(e) => setNewGoal({ ...newGoal, weight: e.target.value })} />
+              </div>
+            </>
+          )}
+          {newGoal.goal_level === "platform" && (
+            <div style={{ gridColumn: "span 2" }}>
+              <label className="form-label">如何促进总目标 / 其它平台（选填）</label>
+              <input className="field" placeholder="如：小红书种草，为视频号直播导流" value={newGoal.contribution_note}
+                onChange={(e) => setNewGoal({ ...newGoal, contribution_note: e.target.value })} />
+            </div>
+          )}
         </div>
         <button className="btn primary" style={{ marginTop: 12 }} onClick={handleCreate} disabled={submitting}>
           {submitting ? "提交中…" : "创建目标"}
@@ -442,6 +582,7 @@ export default function Goals() {
         </div>
       )}
 
+      {tab === "list" && (
       <div className="panel">
         <div className="panel-head">
           <div>
@@ -459,7 +600,7 @@ export default function Goals() {
             <thead>
               <tr>
                 <th>目标</th><th>平台</th><th>指标</th><th>目标值</th>
-                <th>当前值</th><th>口径</th><th>周期</th><th>达成率</th><th>状态</th><th style={{ width: 80 }}>操作</th>
+                <th>当前值</th><th>口径</th><th>周期</th><th>达成率</th><th>状态</th><th style={{ width: 140 }}>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -474,7 +615,7 @@ export default function Goals() {
                 return (
                   <tr key={g.id}>
                     <td style={{ fontWeight: 600 }}>{g.goal_text}</td>
-                    <td>{g.target_platform ? platformMeta(g.target_platform).label : "全平台"}</td>
+                    <td>{g.goal_level === "north_star" ? <span className="tag purple">总目标</span> : g.target_platform ? platformMeta(g.target_platform).label : "全平台"}</td>
                     <td style={{ fontSize: 11 }}>{METRICS.find((m) => m.value === g.target_metric)?.label ?? g.target_metric}</td>
                     <td>{g.target_value}</td>
                     <td>{g.current_value != null
@@ -496,7 +637,10 @@ export default function Goals() {
                     </td>
                     <td><span className={`tag ${g.status === "active" ? "green" : g.status === "completed" ? "blue" : "gray"}`}>{GOAL_STATUS_LABEL[g.status] ?? g.status}</span></td>
                     <td>
-                      <button className="btn sm" onClick={() => setEditing(g)}>编辑</button>
+                      <div className="flex" style={{ gap: 4 }}>
+                        <button className="btn sm" onClick={() => setEditing(g)}>编辑</button>
+                        {g.data_source === "manual" && <button className="btn sm" onClick={() => fillManualValue(g)}>填当前值</button>}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -505,6 +649,7 @@ export default function Goals() {
           </table>
         </div>
       </div>
+      )}
     </>
   );
 }
