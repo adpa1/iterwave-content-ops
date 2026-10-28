@@ -19,10 +19,10 @@ export interface PlatformMeta {
 }
 
 const META: Record<Platform, PlatformMeta> = {
-  xhs:             { label: "小红书", color: "#fe2c55", icon: "📕" },
-  douyin:          { label: "抖音",   color: "#000000", icon: "🎵" },
-  kuaishou:        { label: "快手",   color: "#ff6a00", icon: "⚡" },
-  wechat_channels: { label: "视频号", color: "#07c160", icon: "💚" },
+  xhs:             { label: "小红书", color: "#fe2c55", icon: "小" },
+  douyin:          { label: "抖音",   color: "#000000", icon: "抖" },
+  kuaishou:        { label: "快手",   color: "#ff6a00", icon: "快" },
+  wechat_channels: { label: "视频号", color: "#07c160", icon: "视" },
 };
 
 export function platformMeta(p: string | Platform): PlatformMeta {
@@ -31,3 +31,12 @@ export function platformMeta(p: string | Platform): PlatformMeta {
 
 /** 旧 Sidebar 导出兼容（避免大规模改 import） */
 export const PLATFORM_META = META;
+
+/** 平台显示名：同时识别热榜来源（toutiao / zhihu / weibo / bilibili 等） */
+const SOURCE_LABELS: Record<string, string> = {
+  toutiao: "头条", zhihu: "知乎", weibo: "微博", bilibili: "B 站", baidu: "百度", douyin: "抖音",
+  xhs: "小红书", kuaishou: "快手", wechat_channels: "视频号",
+};
+export function platformLabel(p: string): string {
+  return SOURCE_LABELS[p] ?? META[p as Platform]?.label ?? p;
+}

@@ -139,7 +139,7 @@ class PageBoundary extends Component<{ children: ReactNode }, { err: Error | nul
         <div className="panel">
           <div className="panel-head">
             <div>
-              <div className="panel-title"><span className="icon">⚠️</span>页面渲染出错</div>
+              <div className="panel-title"><span className="icon">!</span>页面渲染出错</div>
               <div className="panel-sub">
                 通常是前端与后端版本不一致（后端改了接口没重启）或某条数据异常
               </div>

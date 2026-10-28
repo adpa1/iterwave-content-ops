@@ -284,6 +284,16 @@ class AutogrowController:
             if total and active_goals == 0 and done > 0:
                 return {"can_start": False, "action": "stopped",
                         "reason": f"全部目标已达成（{done} 个），自动闭环停止；新建目标后自动恢复"}
+            # 总目标 + 分平台模式：总目标达成即停止（平台子目标是手段，不是终点）
+            if getattr(self.cfg.ultimate_goal, "goal_mode", "unified") == "hybrid":
+                ns = self.conn.execute(
+                    "SELECT SUM(CASE WHEN status='active' THEN 1 ELSE 0 END), "
+                    "SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) "
+                    "FROM goals WHERE goal_level = 'north_star'"
+                ).fetchone()
+                if ns and int(ns[1] or 0) > 0 and int(ns[0] or 0) == 0:
+                    return {"can_start": False, "action": "stopped",
+                            "reason": "总目标已达成，自动闭环停止；新建总目标后自动恢复"}
 
         recent = self.conn.execute(
             f"SELECT status FROM spiral_rounds WHERE status IN ({','.join('?' * len(TERMINAL_ALL))}) "
@@ -294,6 +304,37 @@ class AutogrowController:
             return {"can_start": False, "action": "stopped",
                     "reason": f"最近连续 {ag.max_consecutive_failures} 轮失败，自动闭环暂停；"
                               f"排查后手动跑通一轮即可恢复"}
+
+        # 用户连续多轮都没有发布：继续开轮只会往草稿箱堆内容 → 暂停并说明
+        unpublished_limit = max(2, int(ag.max_consecutive_failures))
+        recent_ended = self.conn.execute(
+            "SELECT r.id, (SELECT COUNT(*) FROM drafts d JOIN contents c ON d.content_id = c.id "
+            "              WHERE c.round_id = r.id AND d.user_confirmed_at IS NOT NULL) AS pub "
+            f"FROM spiral_rounds r WHERE r.status IN ({','.join('?' * len(TERMINAL_ALL))}) "
+            "ORDER BY r.id DESC LIMIT ?",
+            (*TERMINAL_ALL, unpublished_limit),
+        ).fetchall()
+        if len(recent_ended) >= unpublished_limit and all(int(r[1] or 0) == 0 for r in recent_ended):
+            return {"can_start": False, "action": "stopped",
+                    "reason": f"最近 {unpublished_limit} 轮的草稿都没有发布，自动闭环暂停，避免草稿箱堆积；"
+                              f"发布任意一篇或手动开一轮即可恢复"}
+
+        # 目标最多轮数（timeouts.goal_max_rounds）：防止目标定得不现实时无限循环
+        max_rounds = int(getattr(self.cfg.timeouts, "goal_max_rounds", 0) or 0)
+        if max_rounds:
+            first_active = self.conn.execute(
+                "SELECT MIN(created_at) FROM goals WHERE status = 'active'"
+            ).fetchone()[0]
+            if first_active:
+                n = self.conn.execute(
+                    "SELECT COUNT(*) FROM spiral_rounds WHERE created_at >= ? AND status != 'cancelled'",
+                    (first_active,),
+                ).fetchone()[0]
+                if n >= max_rounds:
+                    return {"can_start": False, "action": "stopped",
+                            "reason": f"当前目标周期内已跑 {n} 轮（上限 {max_rounds}），仍未达成；"
+                                      f"建议复盘目标是否合理，调整目标或上限后自动恢复"}
+
 
         plan, plan_at, plan_source = self._plan()
         cadence = (plan.get("cadence") or {}) if plan_source == "plan_settings" else {}
@@ -343,6 +384,19 @@ class AutogrowController:
         wanted = list(plan.get("enabled_platforms") or []) if plan_source == "plan_settings" else None
         platforms = self.executor._resolve_platforms(wanted) if self.executor else []
         usable = [p for p in platforms if not self.executor._platform_broken(p)]
+        # 分平台 / 总目标+分平台：某平台自己的目标都已达成、且没有进行中的目标 → 这个平台不再自动开轮
+        if getattr(self.cfg.ultimate_goal, "goal_mode", "unified") != "unified" and usable:
+            done_only = set()
+            for p in usable:
+                c = self.conn.execute(
+                    "SELECT SUM(CASE WHEN status='active' THEN 1 ELSE 0 END), "
+                    "SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) FROM goals "
+                    "WHERE target_platform = ? AND COALESCE(goal_level,'platform') = 'platform'",
+                    (p.value,),
+                ).fetchone()
+                if c and int(c[1] or 0) > 0 and int(c[0] or 0) == 0:
+                    done_only.add(p)
+            usable = [p for p in usable if p not in done_only]
         if not usable:
             return {"can_start": False, "action": "skipped", "reason": "没有可用平台（未启用或全部熔断）"}
 

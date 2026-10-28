@@ -279,6 +279,17 @@ class CreateGoalRequest(BaseModel):
     metric_period_end: str
     data_source: str
     target_platform: Optional[str] = None
+    goal_level: str = "platform"
+    parent_goal_id: Optional[str] = None
+    weight: Optional[float] = Field(None, gt=0, le=100)
+    contribution_note: Optional[str] = Field(None, max_length=200)
+
+    @field_validator("goal_level")
+    @classmethod
+    def _level_enum(cls, v: str) -> str:
+        if v not in ("north_star", "platform"):
+            raise ValueError("goal_level 只能是 north_star（总目标）或 platform（平台目标）")
+        return v
 
     @field_validator("goal_text", "target_metric", "baseline_at",
                      "metric_period_start", "metric_period_end", "data_source")
@@ -317,6 +328,17 @@ class GoalUpdateRequest(BaseModel):
     metric_period_end: Optional[str] = None
     data_source: Optional[str] = None
     status: Optional[str] = None
+    goal_level: Optional[str] = None
+    parent_goal_id: Optional[str] = None
+    weight: Optional[float] = Field(None, gt=0, le=100)
+    contribution_note: Optional[str] = Field(None, max_length=200)
+
+    @field_validator("goal_level")
+    @classmethod
+    def _level_enum(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("north_star", "platform"):
+            raise ValueError("goal_level 只能是 north_star 或 platform")
+        return v
 
     @field_validator("goal_text", "target_metric", "baseline_at",
                      "metric_period_start", "metric_period_end", "data_source")
@@ -724,7 +746,77 @@ def _register_routes(app: FastAPI) -> None:
         """总体目标进度（goal-hero）：等权平均口径由后端统一计算，前端只展示。"""
         conn = _g()["conn"]
         rows = conn.execute("SELECT * FROM goals").fetchall()
-        return GoalProgressUpdater.summarize(rows)
+        return GoalProgressUpdater.summarize(rows, mode=_g()["cfg"].ultimate_goal.goal_mode)
+
+    # --- 账号级快照（涨粉类目标的数据来源）---
+    @app.get("/api/account_snapshots")
+    def list_account_snapshots(platform: Optional[str] = Query(None), limit: int = Query(30, ge=1, le=500)):
+        conn = _g()["conn"]
+        sql = "SELECT * FROM account_snapshots"
+        params: list = []
+        if platform:
+            sql += " WHERE platform = ?"
+            params.append(platform)
+        sql += " ORDER BY captured_at DESC LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+    @app.post("/api/account_snapshots")
+    def add_account_snapshot(req: dict):
+        """手动录入某平台当前粉丝 / 获赞总数（作品级读回拿不到新增粉丝）。录入后立即刷新目标进度。"""
+        conn = _g()["conn"]
+        platform = str((req or {}).get("platform") or "")
+        if platform not in ("xhs", "douyin", "kuaishou", "wechat_channels"):
+            raise HTTPException(422, "platform 必须是 xhs / douyin / kuaishou / wechat_channels")
+
+        def _int(name: str) -> Optional[int]:
+            v = (req or {}).get(name)
+            if v is None or v == "":
+                return None
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+                raise HTTPException(422, f"{name} 必须是非负数字")
+            return int(v)
+
+        followers, likes_total = _int("followers"), _int("likes_total")
+        if followers is None and likes_total is None:
+            raise HTTPException(422, "粉丝数和获赞数至少填一个")
+        now = datetime.now().isoformat(timespec="seconds")
+        conn.execute(
+            "INSERT INTO account_snapshots (platform, followers, likes_total, captured_at, source) "
+            "VALUES (?, ?, ?, ?, 'manual')",
+            (platform, followers, likes_total, now),
+        )
+        conn.commit()
+        GoalProgressUpdater(_g()["cfg"], conn).update_all()
+        return {"platform": platform, "followers": followers, "likes_total": likes_total, "captured_at": now}
+
+    @app.post("/api/goals/{goal_id}/manual_value")
+    def set_goal_manual_value(goal_id: str, req: dict):
+        """数据来源为「人工录入」的目标：由人填写当前值（自动刷新不会覆盖）。"""
+        conn = _g()["conn"]
+        row = conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "目标不存在")
+        if (row["data_source"] or "") != "manual":
+            raise HTTPException(409, "只有数据来源为「人工录入」的目标可以手动填写当前值")
+        v = (req or {}).get("current_value")
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise HTTPException(422, "current_value 必须是数字")
+        now = datetime.now().isoformat(timespec="seconds")
+        conn.execute("UPDATE goals SET current_value = ?, progress_updated_at = ? WHERE id = ?",
+                     (float(v), now, goal_id))
+        conn.commit()
+        updater = GoalProgressUpdater(_g()["cfg"], conn)
+        updater.update_goal(conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone())
+        item = dict(conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone())
+        item["achievement_rate"] = GoalProgressUpdater.rate_for(item)
+        return item
+
+    # --- 账号画像（全局 + 平台）与目标模式 ---
+    @app.get("/api/personas")
+    def get_personas():
+        from ..core.persona import personas_view
+        return personas_view(_g()["cfg"])
 
     @app.post("/api/goals")
     def create_goal(req: CreateGoalRequest):
@@ -736,16 +828,27 @@ def _register_routes(app: FastAPI) -> None:
         conn = _g()["conn"]
         goal_id = f"goal-{uuid.uuid4().hex[:12]}"
         now = datetime.now().isoformat(timespec="seconds")
+        if req.parent_goal_id:
+            parent = conn.execute("SELECT goal_level FROM goals WHERE id = ?", (req.parent_goal_id,)).fetchone()
+            if not parent:
+                raise HTTPException(422, "所属总目标不存在")
+            if (parent["goal_level"] or "platform") != "north_star":
+                raise HTTPException(422, "只能挂到总目标下面")
+            if req.goal_level == "north_star":
+                raise HTTPException(422, "总目标不能再挂到其它总目标下")
         conn.execute(
             "INSERT INTO goals (id, goal_type, goal_text, target_metric, target_value,"
             " target_platform, metric_scope, baseline_value, baseline_at,"
-            " metric_period_start, metric_period_end, data_source, status, created_at)"
-            " VALUES (?, 'stage', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)",
+            " metric_period_start, metric_period_end, data_source, status, created_at,"
+            " goal_level, parent_goal_id, weight, contribution_note)"
+            " VALUES (?, 'stage', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)",
             (
                 goal_id, req.goal_text, req.target_metric, req.target_value,
-                req.target_platform or None, req.metric_scope, req.baseline_value,
+                (None if req.goal_level == "north_star" else (req.target_platform or None)),
+                req.metric_scope, req.baseline_value,
                 req.baseline_at, req.metric_period_start, req.metric_period_end,
                 req.data_source, now,
+                req.goal_level, req.parent_goal_id, req.weight, req.contribution_note,
             ),
         )
         conn.commit()
@@ -782,7 +885,7 @@ def _register_routes(app: FastAPI) -> None:
             item = dict(r)
             item["achievement_rate"] = GoalProgressUpdater.rate_for(item)
             result.append(item)
-        return {"updated": values, "goals": result, "summary": GoalProgressUpdater.summarize(rows)}
+        return {"updated": values, "goals": result, "summary": GoalProgressUpdater.summarize(rows, mode=_g()["cfg"].ultimate_goal.goal_mode)}
 
     # --- 轮次 ---
     @app.get("/api/rounds")
@@ -921,19 +1024,29 @@ def _register_routes(app: FastAPI) -> None:
         note_url = (req.note_url or "").strip() if req else ""
         if note_url and not note_url.startswith(("http://", "https://")):
             raise HTTPException(422, "note_url 必须是完整的 http(s) 链接")
-        ok = _g()["sm_draft"].transition(draft_id, "user_published", reason="用户确认发布")
-        if not ok:
-            raise HTTPException(400, "状态迁移失败")
-        if note_url:
-            conn.execute(
-                "UPDATE drafts SET platform_note_url = ? WHERE id = ?",
-                (note_url, draft_id),
-            )
-            conn.commit()
-        # 首篇 user_published → collecting_metrics
-        round_id = _find_round_for_draft(conn, draft_id)
-        if round_id:
-            _g()["sm_round"].on_first_publish_confirmed(round_id)
+        sched = _g().get("scheduler")
+        if sched is not None and getattr(sched, "conn", None) is not None and getattr(sched, "sm_draft", None) is not None:
+            # 统一入口：改状态 + 回写链接 + 注册发布后数据采集 + 推进轮次（与轮询识别完全一致）
+            ok = sched.on_user_published(draft_id, via="用户确认发布", note_url=note_url or None)
+            if not ok:
+                raise HTTPException(400, "状态迁移失败")
+            if note_url:
+                conn.execute("UPDATE drafts SET platform_note_url = ? WHERE id = ?", (note_url, draft_id))
+                conn.commit()
+        else:
+            ok = _g()["sm_draft"].transition(draft_id, "user_published", reason="用户确认发布")
+            if not ok:
+                raise HTTPException(400, "状态迁移失败")
+            if note_url:
+                conn.execute(
+                    "UPDATE drafts SET platform_note_url = ? WHERE id = ?",
+                    (note_url, draft_id),
+                )
+                conn.commit()
+            # 首篇 user_published → collecting_metrics
+            round_id = _find_round_for_draft(conn, draft_id)
+            if round_id:
+                _g()["sm_round"].on_first_publish_confirmed(round_id)
         # G-15 场景：发布确认留痕（用户手动确认，非系统自动发布）
         _g()["notifier"].emit(
             "publish_confirmed",
@@ -1325,7 +1438,8 @@ def _register_routes(app: FastAPI) -> None:
             tags = []
 
         try:
-            outcome = guard.check_content(row["title"], row["body"], tags)
+            plat = row["platform"] if "platform" in row.keys() else None
+            outcome = guard.check_content(row["title"], row["body"], tags, platform=plat)
         except Exception as exc:  # noqa: BLE001 — R2 红线
             logger.exception("G2 重检异常 content=%s", content_id)
             raise HTTPException(500, f"检查器异常，不能默认通过：{exc}") from exc
@@ -1709,6 +1823,13 @@ def _register_routes(app: FastAPI) -> None:
             hot_topic_service.trigger_background(cfg, trigger="manual")
         data = HotTopicCollector(cfg, conn).overview()
         data["refresh_job"] = hot_topic_service.status()
+        # 多平台画像：标出每条热点适合哪些平台的账号（不同平台可能是不同定位）
+        from ..core.persona import matching_platforms
+        if cfg.ultimate_goal.goal_mode != "unified":
+            for item in data.get("items") or []:
+                item["fit_platforms"] = matching_platforms(
+                    cfg, f"{item.get('title') or ''} {item.get('match_angle') or ''} {item.get('dimension') or ''}"
+                )
         return data
 
     @app.post("/api/hot_topics/refresh", status_code=202)

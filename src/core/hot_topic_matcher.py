@@ -59,6 +59,7 @@ class Persona:
 
 
 def load_persona(cfg, conn) -> Persona:
+    from .persona import all_persona_keywords
     """账号画像：config.ultimate_goal + 母计划维度 + 选题库高频维度。"""
     ug = cfg.ultimate_goal
     dims: list[str] = []
@@ -79,7 +80,8 @@ def load_persona(cfg, conn) -> Persona:
     seen: set[str] = set()
     dims = [d for d in dims if d and not (d in seen or seen.add(d))]
     return Persona(
-        keywords=[k for k in (ug.persona_keywords or []) if k],
+        # 多平台画像：任一启用平台的生效画像关键词都算关联（不同平台可能是不同定位的账号）
+        keywords=all_persona_keywords(cfg),
         forbidden=[k for k in (getattr(ug, "forbidden_directions", None) or []) if k],
         redlines=[k for k in (ug.redline_keywords or []) if k],
         dimensions=dims,

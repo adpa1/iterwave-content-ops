@@ -30,21 +30,29 @@ const GUARD_CLS: Record<string, string> = {
 };
 
 const PLATFORM_NAME: Record<Platform, string> = {
-  xhs: "📕 小红书", douyin: "🎵 抖音",
-  kuaishou: "⚡ 快手", wechat_channels: "💚 视频号",
+  xhs: "小红书", douyin: "抖音",
+  kuaishou: "快手", wechat_channels: "视频号",
 };
 
 const ALL_PLATFORMS: Platform[] = ["xhs", "douyin", "kuaishou", "wechat_channels"];
 
 const TABS = [
-  { key: "plan", label: "① 总计划" },
-  { key: "platforms", label: "② 平台分项计划" },
-  { key: "pipeline", label: "③ 生产线" },
-  { key: "review", label: "④ 内容编辑与审核" },
-  { key: "rounds", label: "⑤ 轮次状态" },
+  { key: "plan", label: "总计划" },
+  { key: "platforms", label: "平台分项计划" },
+  { key: "pipeline", label: "生产线" },
+  { key: "review", label: "内容编辑与审核" },
+  { key: "rounds", label: "轮次状态" },
 ] as const;
 
 type TabKey = typeof TABS[number]["key"];
+
+const ROUND_STATUS_LABEL: Record<string, string> = {
+  created: "已创建", producing: "生产中", awaiting_publish: "待发布", collecting_metrics: "采集中", analyzing: "复盘中", completed: "已完成", failed: "失败", cancelled: "已取消", paused: "已暂停",
+};
+
+const AUTHOR_LABEL: Record<string, string> = {
+  "web-ui": "手动保存", round_create: "新建轮次", round_executor: "轮次执行", autogrow: "自动闭环", agent: "Agent",
+};
 
 interface AllocRow { dim: string; count: number }
 
@@ -173,7 +181,7 @@ export default function Production() {
   const handleCreateRound = async () => {
     try {
       const res = await api.createRound({ topic_count: topicCount });
-      showToast(`✅ Round ${res.round_number} 已创建`);
+      showToast(`✓ Round ${res.round_number} 已创建`);
       setReport(null);
       await refresh();
       setCurrentRoundId(res.id);
@@ -194,11 +202,11 @@ export default function Production() {
       setReport(res);
       const isDryRun = res.steps.some((s) => s.step === "dry_run");
       if (res.final_status === "failed") {
-        showToast(`❌ 本轮执行失败：${res.errors.join("；") || "未知原因"}`, "error");
+        showToast(`✕ 本轮执行失败：${res.errors.join("；") || "未知原因"}`, "error");
       } else if (isDryRun) {
-        showToast(`✅ 已产出 ${res.contents_created} 篇内容（本次未执行存草稿）`, "success");
+        showToast(`✓ 已产出 ${res.contents_created} 篇内容（本次未执行存草稿）`, "success");
       } else {
-        showToast(`✅ 本轮完成：内容 ${res.contents_created} / 草稿 ${res.drafts_saved}`, "success");
+        showToast(`✓ 本轮完成：内容 ${res.contents_created} / 草稿 ${res.drafts_saved}`, "success");
       }
       await refresh();
       await loadRoundData(currentRoundId);
@@ -214,7 +222,7 @@ export default function Production() {
     if (!currentRoundId) return;
     try {
       await api.transitionRound(currentRoundId, target, "Web UI 触发");
-      showToast(`🔄 状态已变更为 ${target}`);
+      showToast(`↻ 状态已变更为 ${target}`);
       await refresh();
       await loadRoundData(currentRoundId);
     } catch (e: any) { showToast(`变更失败: ${e.message}`, "error"); }
@@ -223,13 +231,13 @@ export default function Production() {
   const confirmPublish = async (draftId: string) => {
     try {
       await api.confirmPublish(draftId);
-      showToast("✅ 已确认发布");
+      showToast("✓ 已确认发布");
       await refresh();
       if (currentRoundId) await loadRoundData(currentRoundId);
     } catch (e: any) { showToast(`确认失败: ${e.message}`, "error"); }
   };
 
-  /** 「❌ 不发了」：draft_pending / draft_saved → cancelled（R9：不冻结未发布草稿） */
+  /** 「✕ 不发了」：draft_pending / draft_saved → cancelled（R9：不冻结未发布草稿） */
   const cancelDraft = async (draftId: string) => {
     try {
       await api.cancelDraft(draftId);
@@ -279,11 +287,11 @@ export default function Production() {
         });
         if (res.changed) {
           showToast(
-            `✅ 母计划已更新：签名 ${res.signature.slice(0, 12)}，${res.stale_rounds.length} 个活跃轮次已标记失效`,
+            `✓ 母计划已更新，${res.stale_rounds.length} 个活跃轮次已标记失效`,
             "success",
           );
         } else {
-          showToast(`签名未变（${res.signature.slice(0, 12)}），无下游失效`, "info");
+          showToast(`计划内容没有变化`, "info");
         }
         await loadPlan();
         await refresh();
@@ -301,7 +309,7 @@ export default function Production() {
         const res = await api.updateContent(selectedContentId, {
           title: editTitle, body: editBody, tags, reason: "UI 编辑",
         });
-        showToast(res.changed ? "✅ 文案已保存（user_override 已留痕）" : "内容无变化", "success");
+        showToast(res.changed ? "✓ 文案已保存（user_override 已留痕）" : "内容无变化", "success");
         await loadRoundData(currentRoundId!);
       } catch (e: any) {
         showToast(`保存失败: ${e.message}`, "error");
@@ -322,7 +330,7 @@ export default function Production() {
       .join("\n\n");
     try {
       await navigator.clipboard.writeText(text);
-      showToast("✅ 已复制标题 + 正文 + 标签，可直接粘贴到平台", "success");
+      showToast("✓ 已复制标题 + 正文 + 标签，可直接粘贴到平台", "success");
     } catch {
       showToast("复制失败，请手动选中文本框复制", "error");
     }
@@ -335,7 +343,7 @@ export default function Production() {
         const res = await api.recheckContent(selectedContentId);
         setRecheck(res);
         showToast(
-          res.passes ? `✅ G2 重检通过（${res.result}）` : `❌ G2 重检未通过：${res.reason}`,
+          res.passes ? `✓ G2 重检通过（${res.result}）` : `✕ G2 重检未通过：${res.reason}`,
           res.passes ? "success" : "error",
         );
         await loadRoundData(currentRoundId!);
@@ -351,7 +359,7 @@ export default function Production() {
     await withPending("reject-content", async () => {
       try {
         const res = await api.rejectContent(selectedContentId, rejectReason.trim());
-        showToast(`🗑️ 已驳回，影响草稿 ${res.affected_drafts} 条`, "success");
+        showToast(`✕ 已驳回，影响草稿 ${res.affected_drafts} 条`, "success");
         setRejectReason("");
         await loadRoundData(currentRoundId!);
       } catch (e: any) {
@@ -427,7 +435,7 @@ export default function Production() {
           <div className="eyebrow">CONTENT OPERATIONS ROOM</div>
           <h1 className="page-title">内容生产</h1>
           <div className="page-desc">
-            螺旋引擎 9 态轮次状态机 + 单篇 8 态草稿流转。R1 红线：所有草稿只能存草稿，系统永不自动点发布按钮。
+            按轮次生产内容：选题 → 文案 → 质检 → 存草稿 → 你确认发布 → 复盘。所有草稿只能存草稿，系统永不自动点发布按钮。
           </div>
         </div>
         <div className="head-actions">
@@ -447,7 +455,7 @@ export default function Production() {
       {loadError && (
         <div className="panel" style={{ borderColor: "var(--red)", marginBottom: 14 }}>
           <div className="panel-sub" style={{ color: "var(--red)", display: "flex", gap: 10, alignItems: "center" }}>
-            <span>⚠️ 加载失败：{loadError}</span>
+            <span>! 加载失败：{loadError}</span>
             <button className="btn sm" onClick={() => { refresh(); loadPlan(); }}>↻ 重试</button>
           </div>
         </div>
@@ -460,11 +468,11 @@ export default function Production() {
             <div>
               <div className="panel-title"><span className="icon">⌘</span>总计划（母计划）</div>
               <div className="panel-sub">
-                修改签名覆盖字段会生成新 plan_signature，并自动标记下游轮次/草稿失效（§19 / R18）
+                修改总计划后，基于旧计划的轮次和草稿会被标记为过期
               </div>
             </div>
             <div style={{ fontFamily: "monospace", fontSize: 11, color: "var(--muted)" }}>
-              当前签名 {plan?.signature ? plan.signature.slice(0, 16) : "—"}
+              版本 {plan?.signature ? plan.signature.slice(0, 8) : "—"}
               <span className={`tag ${plan?.source === "plan_settings" ? "green" : "gray"}`} style={{ marginLeft: 8 }}>
                 {plan?.source === "plan_settings" ? "已保存" : plan?.source === "derived" ? "推导值" : "—"}
               </span>
@@ -532,7 +540,7 @@ export default function Production() {
 
               <div className="grid two" style={{ marginTop: 16 }}>
                 <div>
-                  <div className="panel-title" style={{ fontSize: 13, marginBottom: 8 }}>平台分项计划</div>
+                  <div className="panel-title" style={{ fontSize: 13, marginBottom: 8 }}>各平台篇数与发布时段</div>
                   <div className="table-wrap">
                     <table>
                       <thead><tr><th>平台</th><th style={{ width: 90 }}>每轮篇数</th><th>发布时段（自动排期）</th></tr></thead>
@@ -547,7 +555,7 @@ export default function Production() {
                                 onChange={(e) => setPlatformPlans((prev) => ({ ...prev, [pl]: { ...(prev[pl] ?? { slots: "" }), topic_count: e.target.value } }))} />
                             </td>
                             <td>
-                              <input className="field" style={{ width: "100%" }} placeholder="如 12:30 20:00"
+                              <input className="field" style={{ width: "100%", minWidth: 0, maxWidth: 180 }} placeholder="如 12:30 20:00"
                                 aria-label={`${PLATFORM_NAME[pl]} 发布时段`}
                                 value={platformPlans[pl]?.slots ?? ""}
                                 onChange={(e) => setPlatformPlans((prev) => ({ ...prev, [pl]: { ...(prev[pl] ?? { topic_count: "" }), slots: e.target.value } }))} />
@@ -601,7 +609,7 @@ export default function Production() {
                   className="btn primary" onClick={handleSavePlan}
                   disabled={isPending("save-plan") || planPlatforms.length === 0}
                 >
-                  {isPending("save-plan") ? "提交中…" : "💾 保存母计划"}
+                  {isPending("save-plan") ? "提交中…" : "✓ 保存母计划"}
                 </button>
                 <span className="note">
                   {plan.updated_at ? `上次保存 ${plan.updated_at}` : "尚未在 UI 保存过（当前为推导值）"}
@@ -610,34 +618,34 @@ export default function Production() {
 
               {plan.stale_rounds.length > 0 && (
                 <div className="note" style={{ marginTop: 12, color: "var(--orange)" }}>
-                  ⚠️ 以下活跃轮次的签名与当前母计划不一致（下游已标记为基于旧计划）：
-                  {plan.stale_rounds.map((r) => ` Round ${r.round_number}(${r.status})`).join(" · ")}
+                  ! 以下活跃轮次的签名与当前母计划不一致（下游已标记为基于旧计划）：
+                  {plan.stale_rounds.map((r) => ` Round ${r.round_number}（${ROUND_STATUS_LABEL[r.status] ?? r.status}）`).join(" · ")}
                 </div>
               )}
 
-              <div style={{ marginTop: 18 }}>
-                <div className="panel-title" style={{ fontSize: 13, marginBottom: 8 }}>签名历史（最近 10 条）</div>
+              <details style={{ marginTop: 18 }}>
+                <summary className="panel-title" style={{ fontSize: 13, marginBottom: 8, cursor: "pointer" }}>计划变更记录（最近 10 条）</summary>
                 <div className="table-wrap">
                   <table>
-                    <thead><tr><th>签名</th><th>轮次</th><th>作者</th><th>时间</th></tr></thead>
+                    <thead><tr><th>版本</th><th>适用范围</th><th>来源</th><th>时间</th></tr></thead>
                     <tbody>
                       {plan.history.length === 0 && (
                         <tr><td colSpan={4}>
-                          <EmptyHint className="" next="点上方「💾 保存母计划」，保存后签名会写入 signature_history">暂无签名记录</EmptyHint>
+                          <EmptyHint className="" next="点上方「保存母计划」后这里会记录版本">暂无签名记录</EmptyHint>
                         </td></tr>
                       )}
                       {plan.history.map((h, i) => (
                         <tr key={i}>
                           <td style={{ fontFamily: "monospace", fontSize: 11 }}>{h.plan_signature.slice(0, 16)}…</td>
-                          <td>{h.round_id ?? "母计划"}</td>
-                          <td>{h.author ?? "—"}</td>
+                          <td>{h.round_id != null ? `Round ${h.round_id}` : "母计划"}</td>
+                          <td>{AUTHOR_LABEL[(h.author ?? "").split(":")[0]] ?? h.author ?? "—"}</td>
                           <td style={{ fontSize: 11 }}>{h.created_at}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-              </div>
+              </details>
             </>
           )}
         </div>
@@ -769,12 +777,12 @@ export default function Production() {
                   </div>
                   <label style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 4 }}>
                     <input type="checkbox" checked={saveDrafts} onChange={(e) => setSaveDrafts(e.target.checked)} disabled={running || usePlan} />
-                    执行存草稿（R1：只存草稿）
+                    执行存草稿
                   </label>
                 </div>
                 <div style={{ marginTop: 10 }}>
                   <button className="btn primary" onClick={handleRun} disabled={!canRun}>
-                    {running ? "⏳ 运行中…" : "▶ 运行本轮"}
+                    {running ? "◷ 运行中…" : "▶ 运行本轮"}
                   </button>
                 </div>
 
@@ -784,7 +792,7 @@ export default function Production() {
                   </div>
                 )}
                 {!usePlan && selPlatforms.length === 0 && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>至少选择一个平台</div>}
-                {runError && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>⚠️ {runError}</div>}
+                {runError && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>! {runError}</div>}
 
                 {report && (
                   <div style={{ marginTop: 16 }}>
@@ -837,7 +845,7 @@ export default function Production() {
                     </div>
                     {report.errors.length > 0 && (
                       <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>
-                        ⚠️ {report.errors.join("；")}
+                        ! {report.errors.join("；")}
                       </div>
                     )}
                   </div>
@@ -850,7 +858,7 @@ export default function Production() {
           <div className="panel" style={{ marginBottom: 0 }}>
             <div className="panel-head">
               <div>
-                <div className="panel-title"><span className="icon">⛓</span>阶段计数</div>
+                <div className="panel-title"><span className="icon">⎇</span>阶段计数</div>
                 <div className="panel-sub">从 DB 实际落库数据回读（不是前端估算）</div>
               </div>
             </div>
@@ -902,7 +910,7 @@ export default function Production() {
                   </table>
                 </div>
                 <div className="note" style={{ marginTop: 8 }}>
-                  说明：G1 文案数 = 通过 G2 后落库的数量；被 G2 拦截并丢弃的文案不会出现在这里，只在「G2 累计拦截」计数。
+                  说明：G1 文案数 = 通过目标检查 后落库的数量；被 G2 拦截并丢弃的文案不会出现在这里，只在「G2 累计拦截」计数。
                 </div>
               </>
             )}
@@ -951,8 +959,8 @@ export default function Production() {
           <div className="panel" style={{ marginBottom: 0 }}>
             <div className="panel-head">
               <div>
-                <div className="panel-title"><span className="icon">🔍</span>编辑与重检</div>
-                <div className="panel-sub">修改文案后必须重新过 G2（R2），检查器异常不会默认通过</div>
+                <div className="panel-title"><span className="icon">⌕</span>编辑与重检</div>
+                <div className="panel-sub">修改文案后必须重新过目标检查，检查器异常不会默认通过</div>
               </div>
             </div>
 
@@ -985,7 +993,7 @@ export default function Production() {
 
                 {/* G-36：复制文案 + 下载卡片，补齐小红书本地草稿的发布闭环 */}
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
-                  <button className="btn" onClick={handleCopy}>📋 复制文案</button>
+                  <button className="btn" onClick={handleCopy}>☷ 复制文案</button>
                   {Array.from({ length: selectedContent.image_count }, (_, i) => (
                     <a
                       key={i}
@@ -1003,17 +1011,17 @@ export default function Production() {
                 </div>
                 {(selectedContent.platform === "xhs" || selectedContent.platform === "douyin") && (
                   <div className="note" style={{ marginBottom: 10, fontSize: 12 }}>
-                    🟠 {selectedContent.platform === "xhs" ? "小红书「暂存离开」" : "抖音「暂存离开」"}草稿存于发布浏览器本地（localStorage `publish_cache`），浏览器关闭即消失（G-36）。
+                    ● {selectedContent.platform === "xhs" ? "小红书「暂存离开」" : "抖音「暂存离开」"}草稿存于发布浏览器本地（localStorage `publish_cache`），浏览器关闭即消失（G-36）。
                     用「复制文案」+「下载卡片」在自己的 App 里手动发布即可。
                   </div>
                 )}
 
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
                   <button className="btn primary" onClick={handleSaveContent} disabled={isPending("save-content")}>
-                    {isPending("save-content") ? "提交中…" : "💾 保存修改"}
+                    {isPending("save-content") ? "提交中…" : "✓ 保存修改"}
                   </button>
                   <button className="btn" onClick={handleRecheck} disabled={isPending("recheck-content")}>
-                    {isPending("recheck-content") ? "重检中…" : "🔍 重新过 G2"}
+                    {isPending("recheck-content") ? "重检中…" : "⌕ 重新过目标检查"}
                   </button>
                   <button className="btn danger" style={{ marginLeft: "auto" }} onClick={handleDeleteContent}
                     disabled={isPending("delete-content") || ["user_published", "data_fetching", "published"].includes(selectedContent.draft_status ?? "")}
@@ -1046,7 +1054,7 @@ export default function Production() {
                       style={{ flex: 1 }}
                     />
                     <button className="btn" onClick={handleReject} disabled={isPending("reject-content")}>
-                      {isPending("reject-content") ? "提交中…" : "🗑️ 驳回"}
+                      {isPending("reject-content") ? "提交中…" : "✕ 驳回"}
                     </button>
                   </div>
                 </div>
@@ -1129,7 +1137,7 @@ export default function Production() {
                 </div>
 
                 <div className="note" style={{ marginTop: 12 }}>
-                  母计划签名：{roundDetail.plan_signature
+                  计划版本：{roundDetail.plan_signature
                     ? <span style={{ fontFamily: "monospace" }}>{roundDetail.plan_signature.slice(0, 16)}…</span>
                     : "—"}
                   {(roundDetail as any).guard_rejections != null && <> · G2 拦截 {(roundDetail as any).guard_rejections} 次</>}
@@ -1151,7 +1159,7 @@ export default function Production() {
                 </div>
 
                 <div style={{ marginTop: 22 }}>
-                  <div className="panel-title" style={{ fontSize: 13, marginBottom: 10 }}>📝 单篇草稿（{roundDetail.drafts?.length || 0}）</div>
+                  <div className="panel-title" style={{ fontSize: 13, marginBottom: 10 }}>✎ 单篇草稿（{roundDetail.drafts?.length || 0}）</div>
                   <div className="table-wrap">
                     <table>
                       <thead><tr><th>草稿 ID</th><th>平台</th><th>状态</th><th>操作</th></tr></thead>
@@ -1168,10 +1176,10 @@ export default function Production() {
                             <td><span className={`tag ${STATUS_CLS[d.status] || "gray"}`}>{d.status}</span></td>
                             <td>
                               {d.status === "draft_saved" && (
-                                <button className="btn sm primary" onClick={() => confirmPublish(d.id)}>✅ 我已发布</button>
+                                <button className="btn sm primary" onClick={() => confirmPublish(d.id)}>✓ 我已发布</button>
                               )}
                               {(d.status === "draft_saved" || d.status === "draft_pending") && (
-                                <button className="btn sm ghost" style={{ marginLeft: 6 }} onClick={() => cancelDraft(d.id)}>❌ 不发了</button>
+                                <button className="btn sm ghost" style={{ marginLeft: 6 }} onClick={() => cancelDraft(d.id)}>✕ 不发了</button>
                               )}
                               {d.status !== "draft_saved" && d.status !== "draft_pending" && <span style={{ color: "var(--subtle)" }}>—</span>}
                             </td>

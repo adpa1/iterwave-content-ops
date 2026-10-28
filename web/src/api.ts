@@ -14,7 +14,7 @@ export interface RecoveryInfo {
 
 export interface SystemStatus {
   enabled_platforms: Platform[];
-  /** 有登录态的平台（R20 🔴 判定依据） */
+  /** 有登录态的平台（R20 ● 判定依据） */
   logged_in_platforms: Platform[];
   /** 无登录态的平台：真实操作为阻塞状态 */
   platforms_without_login: Platform[];
@@ -43,6 +43,51 @@ export interface Goal {
   achievement_rate: number | null;
   status: string;
   created_at: string;
+  /** north_star = 总目标；platform = 平台阶段目标（旧数据为 platform） */
+  goal_level?: "north_star" | "platform" | null;
+  parent_goal_id?: string | null;
+  weight?: number | null;
+  contribution_note?: string | null;
+}
+
+export type GoalMode = "unified" | "per_platform" | "hybrid";
+
+export interface PlatformPersonaConfig {
+  inherit_global: boolean;
+  account_name: string;
+  positioning: string;
+  audience: string;
+  role: string;
+  persona_keywords: string[];
+  forbidden_directions: string[];
+  extra_redlines: string[];
+}
+
+export interface EffectivePersona {
+  platform: string | null;
+  source: "global" | "merged" | "platform";
+  positioning: string;
+  audience: string;
+  role: string;
+  account_name: string;
+  persona_keywords: string[];
+  forbidden_directions: string[];
+  redline_keywords: string[];
+}
+
+export interface PlatformLink {
+  source: Platform;
+  target: Platform;
+  relation: "traffic" | "reuse" | "cross";
+  note: string;
+}
+
+export interface PersonasView {
+  goal_mode: GoalMode;
+  global: { positioning: string; persona_keywords: string[]; forbidden_directions: string[]; redline_keywords_count: number };
+  platforms: Record<Platform, { config: PlatformPersonaConfig; effective: EffectivePersona; has_own: boolean }>;
+  links: PlatformLink[];
+  enabled_platforms: Platform[];
 }
 
 export interface SpiralRound {
@@ -218,6 +263,8 @@ export interface HotTopicItem {
   /** 跨平台同一事件（去重规则 2 合并到本条） */
   also_on?: { platform: string; title: string; url: string | null; heat: number | null; heat_unit: string | null }[];
   publishable: boolean;
+  /** 分平台画像模式下：适合哪些平台的账号 */
+  fit_platforms?: string[];
   redline_hits: string[];
 }
 
@@ -254,6 +301,9 @@ export interface GoalSummary {
   period_start: string | null;
   period_end: string | null;
   days_left: number | null;
+  mode?: GoalMode;
+  north_star?: { id: string; goal_text: string; rate: number | null } | null;
+  by_platform?: Record<string, { percent: number | null; goals: number; counted: number }>;
 }
 
 /** 四平台进度（/api/platform_progress，固定返回 4 个平台） */
@@ -377,6 +427,8 @@ export interface SystemConfigView {
     persona_keywords: string[];
     forbidden_directions: string[];
     redline_keywords_count: number;
+    positioning?: string;
+    goal_mode?: string;
     // KB 配置
     kb_path: string;
     kb_type: string;
@@ -841,6 +893,18 @@ export const api = {
   goals: () => fetchJson<Goal[]>("/api/goals"),
   /** 总体目标进度（后端统一计算等权平均，前端只展示） */
   goalsSummary: () => fetchJson<GoalSummary>("/api/goals/summary"),
+  personas: () => fetchJson<PersonasView>("/api/personas"),
+  accountSnapshots: (platform?: string) =>
+    fetchJson<{ id: number; platform: Platform; followers: number | null; likes_total: number | null; captured_at: string; source: string }[]>(
+      `/api/account_snapshots${platform ? `?platform=${platform}` : ""}`),
+  addAccountSnapshot: (data: { platform: Platform; followers?: number | null; likes_total?: number | null }) =>
+    fetchJson<{ platform: string; followers: number | null; captured_at: string }>("/api/account_snapshots", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+    }),
+  setGoalManualValue: (goalId: string, current_value: number) =>
+    fetchJson<Goal>(`/api/goals/${goalId}/manual_value`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ current_value }),
+    }),
   createGoal: (data: Partial<Goal>) =>
     fetchJson<Goal>("/api/goals", {
       method: "POST", body: JSON.stringify(data),
@@ -880,7 +944,7 @@ export const api = {
       `/api/drafts/${draftId}/publish_confirm`,
       { method: "POST", body: JSON.stringify({ note_url: noteUrl ?? null }) },
     ),
-  /** 「❌ 不发了」：draft_pending / draft_saved → cancelled */
+  /** 「✕ 不发了」：draft_pending / draft_saved → cancelled */
   cancelDraft: (draftId: string) =>
     fetchJson<{ draft_id: string; status: string }>(`/api/drafts/${draftId}/cancel`, {
       method: "POST",

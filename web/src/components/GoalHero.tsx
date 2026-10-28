@@ -12,6 +12,10 @@ import { platformMeta } from "../platforms";
 
 export const METRIC_LABELS: Record<string, string> = {
   followers_gained: "新增粉丝",
+  new_followers: "新增粉丝",
+  like_rate: "点赞率",
+  collect_rate: "收藏率",
+  published_count: "发布篇数",
   likes: "点赞数",
   collects: "收藏数",
   views: "曝光数",
@@ -71,24 +75,35 @@ export default function GoalHero({ goals, summary, personaKeywords = [], forbidd
     end: summary?.period_end ?? null,
     daysLeft: summary?.days_left ?? null,
   };
+  const mode = summary?.mode ?? "unified";
+  const north = summary?.north_star ?? null;
   const krs = [...active]
+    .filter((g) => g.goal_level !== "north_star")
     .sort((a, b) => (a.metric_period_end ?? "").localeCompare(b.metric_period_end ?? ""))
     .slice(0, 3);
 
-  const title = personaKeywords.length
-    ? `账号定位：${personaKeywords.join(" · ")}`
-    : "尚未配置账号定位关键词";
+  const title = mode === "hybrid" && north
+    ? `总目标：${north.goal_text}`
+    : mode === "per_platform"
+      ? "各平台独立目标"
+      : personaKeywords.length
+        ? `账号定位：${personaKeywords.join(" · ")}`
+        : "尚未配置账号定位关键词";
 
   return (
     <section className="goal-hero" aria-label="总体目标">
       <div style={{ position: "relative", zIndex: 1 }}>
         <div className="goal-label">
-          总体目标 · 账号北极星
+          {mode === "per_platform" ? "分平台独立 · 不汇总" : mode === "hybrid" ? "总目标 + 分平台协同" : "总体目标 · 账号北极星"}
           {overall.start && overall.end ? ` · ${fmtDate(overall.start)} – ${fmtDate(overall.end)}` : ""}
         </div>
         <div className="goal-title">{title}</div>
         <div className="goal-copy">
-          {active.length
+          {mode === "per_platform" && active.length
+            ? `${active.length} 个平台目标各自独立计算；下方进度仅为各平台进度的平均参考。`
+            : mode === "hybrid" && north
+              ? `总目标${north.rate != null ? "按自身数据计算" : "暂无自身数据，按挂靠的平台子目标加权汇总"}；各平台画像与子目标独立，平台之间可互相导流。`
+            : active.length
             ? `${active.length} 个活跃阶段目标，各平台指标独立计算、不直接相加；总进度只统计已有数据的目标。`
             : "还没有活跃的阶段目标。先为平台设定可衡量的阶段目标，总进度才有计算依据。"}
           {forbiddenDirections.length > 0 && ` 禁止方向：${forbiddenDirections.join("、")}。`}
@@ -99,7 +114,13 @@ export default function GoalHero({ goals, summary, personaKeywords = [], forbidd
           </span>
           <span style={{ fontSize: 10, color: "#b4c8e8" }}>
             {overall.percent != null
-              ? `按 ${overall.counted} 个有数据目标的达成率等权平均${overall.pending ? `，${overall.pending} 个待采集` : ""}`
+              ? summary?.method === "north_star_own"
+                ? "按总目标自身数据计算"
+                : summary?.method === "weighted_children"
+                  ? `按 ${overall.counted} 个平台子目标加权汇总${overall.pending ? `，${overall.pending} 个待采集` : ""}`
+                  : summary?.method === "per_platform_mean"
+                    ? "各平台进度的平均值，仅作参考"
+                    : `按 ${overall.counted} 个有数据目标的达成率等权平均${overall.pending ? `，${overall.pending} 个待采集` : ""}`
               : active.length ? `${overall.pending} 个目标的当前值尚未采集` : ""}
             {overall.daysLeft != null && (overall.daysLeft >= 0 ? ` · 距阶段结束 ${overall.daysLeft} 天` : " · 阶段已结束")}
           </span>
@@ -145,6 +166,13 @@ export default function GoalHero({ goals, summary, personaKeywords = [], forbidd
               </div>
             );
           })
+        )}
+        {krs.length > 0 && krs.length < 3 && onCreateGoal && (
+          <button type="button" className="goal-stat goal-stat-add" onClick={onCreateGoal}>
+            <div className="l">关键结果</div>
+            <div className="n" style={{ fontSize: 14 }}>＋ 添加阶段目标</div>
+            <div className="sub">建议每个启用平台设一个</div>
+          </button>
         )}
       </div>
     </section>

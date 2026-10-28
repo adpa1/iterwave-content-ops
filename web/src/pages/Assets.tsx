@@ -5,20 +5,21 @@ import TopicPoolPane from "../components/TopicPoolPane";
 import CreatedContentPane from "../components/CreatedContentPane";
 import { useApp } from "../AppContext";
 import { PersonaEditor } from "../components/ConfigEditors";
-import { useUrlTab } from "../nav";
+import { navigate, useUrlTab } from "../nav";
 import {
   api, AssetItem, AssetType, Draft, HotTopicItem, KbInspect, ScoredTopic, SystemConfigView,
 } from "../api";
 
-type Tab = "topics" | "created" | "sources" | "voice" | "templates" | "mapping";
+type Tab = "topics" | "scoring" | "created" | "sources" | "voice" | "templates" | "mapping";
 
 const TABS: { key: Tab; label: string }[] = [
-  { key: "topics", label: "📚 选题池" },
-  { key: "created", label: "▣ 已生产内容" },
-  { key: "sources", label: "↗ 外部参考" },
-  { key: "voice", label: "✎ 个人观点与画像" },
-  { key: "templates", label: "▧ 内容模板" },
-  { key: "mapping", label: "⚙ 字段映射检查" },
+  { key: "topics", label: "选题池" },
+  { key: "scoring", label: "选题评分" },
+  { key: "created", label: "已生产内容" },
+  { key: "sources", label: "外部参考" },
+  { key: "voice", label: "个人观点与画像" },
+  { key: "templates", label: "内容模板" },
+  { key: "mapping", label: "字段映射检查" },
 ];
 
 export default function Assets() {
@@ -84,7 +85,7 @@ export default function Assets() {
   const addAsset = async (type: AssetType, data: { title: string; body?: string; source_url?: string }) => {
     try {
       await withPending(`asset:${type}`, () => api.createAsset({ asset_type: type, ...data }));
-      showToast("✅ 资产已保存", "success");
+      showToast("✓ 资产已保存", "success");
       await load();
       return true;
     } catch (e: any) {
@@ -103,7 +104,7 @@ export default function Assets() {
           <h1 className="page-title">内容资产</h1>
           <div className="page-desc">
             选题库、已生产内容、外部参考、个人观点与画像、内容模板、字段映射统一归档。
-            数据均来自本地 SQLite / 选题库 / 配置，无演示占位数字。
+            
           </div>
         </div>
         <div className="head-actions">
@@ -114,13 +115,13 @@ export default function Assets() {
       {error && (
         <div className="panel" style={{ borderColor: "var(--red)", marginBottom: 14 }}>
           <div className="panel-sub" style={{ color: "var(--red)", display: "flex", gap: 10, alignItems: "center" }}>
-            <span>⚠️ 加载失败：{error}</span>
+            <span>! 加载失败：{error}</span>
             <button className="btn sm" onClick={load}>↻ 重试</button>
           </div>
         </div>
       )}
 
-      <div className="tabs" style={{ marginBottom: 16 }}>
+      <div className="tabs page-tabs">
         {TABS.map((t) => (
           <button key={t.key} className={`tab ${tab === t.key ? "active" : ""}`} onClick={() => setTab(t.key)}>
             {t.label}
@@ -128,14 +129,15 @@ export default function Assets() {
         ))}
       </div>
 
-      {tab === "topics" && (
+      {tab === "topics" && <TopicPoolPane />}
+
+      {tab === "scoring" && (
         <>
-          <TopicPoolPane />
-          <div className="panel" style={{ marginTop: 14 }}>
+          <div className="panel">
             <div className="panel-head">
               <div>
-                <div className="panel-title"><span className="icon">⭐</span>评分引擎实时输出</div>
-                <div className="panel-sub">当前模式：{scored?.mode ?? "—"} · 定位 / 时效 / 新鲜度 等维度加权</div>
+                <div className="panel-title"><span className="icon">★</span>选题评分排行</div>
+                <div className="panel-sub">当前评分模式：{({ cold_start: "冷启动", sample_accumulating: "样本积累", stable: "稳定运行" } as Record<string, string>)[scored?.mode ?? ""] ?? "—"} · 按定位、时效、新鲜度加权</div>
               </div>
             </div>
             <AsyncPanel
@@ -159,7 +161,7 @@ export default function Assets() {
                   <thead>
                     <tr>
                       <th>#</th><th>选题</th><th>维度</th><th>总分</th>
-                      <th>定位 / 时效 / 新鲜度</th><th>探索</th>
+                      <th>定位</th><th>时效</th><th>新鲜度</th><th>类型</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -169,12 +171,10 @@ export default function Assets() {
                         <td style={{ fontWeight: 500 }}>{t.title}</td>
                         <td><span className="tag gray">{t.dimension}</span></td>
                         <td style={{ fontWeight: 700, color: "var(--blue)", fontSize: 14 }}>{t.total_score}</td>
-                        <td style={{ fontSize: 11, color: "var(--muted)" }}>
-                          P:{_num(t.breakdown.position_match?.raw)} ·
-                          T:{_num(t.breakdown.timeliness?.raw)} ·
-                          F:{_num(t.breakdown.freshness?.raw)}
-                        </td>
-                        <td>{t.is_exploration ? <span className="tag purple">ε 探索</span> : "-"}</td>
+                        <td style={{ fontSize: 11 }}>{_num(t.breakdown.position_match?.raw)}</td>
+                        <td style={{ fontSize: 11 }}>{_num(t.breakdown.timeliness?.raw)}</td>
+                        <td style={{ fontSize: 11 }}>{_num(t.breakdown.freshness?.raw)}</td>
+                        <td>{t.is_exploration ? <span className="tag purple">探索</span> : <span className="tag gray">常规</span>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -200,7 +200,7 @@ export default function Assets() {
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">↗</span>外部参考 · 已录入 {assets.reference.length} 条</div>
-                <div className="panel-sub">R22：来源必须可溯源（原始链接 + 发现时间 + 证据状态），不存无法溯源的摘要</div>
+                <div className="panel-sub">来源必须可溯源（原始链接 + 发现时间 + 证据状态），不存无法溯源的摘要</div>
               </div>
             </div>
             <AsyncPanel
@@ -238,8 +238,8 @@ export default function Assets() {
           <div className="panel">
             <div className="panel-head">
               <div>
-                <div className="panel-title"><span className="icon">🔥</span>热点采集来源（实时）</div>
-                <div className="panel-sub">来自 /api/hot_topics；采集失败条目不计热度数字（evidence_status=failed）</div>
+                <div className="panel-title"><span className="icon">✳</span>热点采集来源（实时）</div>
+                <div className="panel-sub">采集失败的来源不显示热度数字</div>
               </div>
             </div>
             {hot.length === 0 ? (
@@ -275,17 +275,24 @@ export default function Assets() {
           <div className="panel">
             <div className="panel-head">
               <div>
-                <div className="panel-title"><span className="icon">♙</span>账号画像（可编辑 · config.ultimate_goal）</div>
-                <div className="panel-sub">文案生成与终极目标检查共用这份画像，改完立即生效（R2 检查器同步）</div>
+                <div className="panel-title"><span className="icon">♙</span>账号画像</div>
+                <div className="panel-sub">全局与各平台画像统一在「目标与策略 → 账号定位与画像」维护</div>
               </div>
+              <button className="btn sm" onClick={() => navigate("goals", "persona")}>去编辑 →</button>
             </div>
             {!config ? (
               <div className="note">加载配置中…</div>
             ) : (
-              <PersonaEditor view={config} onSaved={load} />
+              <div className="list">
+                <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">一句话定位</div><div className="task-desc">{config.readonly.positioning || "未填写"}</div></div></div>
+                <div className="task-row"><i className="task-prio green" /><div className="task-main"><div className="task-title">定位关键词</div>
+                  <div className="flex wrap" style={{ gap: 6, marginTop: 4 }}>{config.readonly.persona_keywords.length ? config.readonly.persona_keywords.map((k) => <span key={k} className="tag blue">{k}</span>) : <span className="tag gray">未配置</span>}</div></div></div>
+                <div className="task-row"><i className="task-prio red" /><div className="task-main"><div className="task-title">禁止方向</div>
+                  <div className="flex wrap" style={{ gap: 6, marginTop: 4 }}>{config.readonly.forbidden_directions.length ? config.readonly.forbidden_directions.map((k) => <span key={k} className="tag red">{k}</span>) : <span className="tag gray">未配置</span>}</div></div></div>
+              </div>
             )}
             <div className="note" style={{ marginTop: 12 }}>
-              红线关键词 {config?.readonly.redline_keywords_count ?? "—"} 个（出现即丢弃重生成，R22 硬锁不可改）
+              红线关键词 {config?.readonly.redline_keywords_count ?? "—"} 个（出现即丢弃重生成，不可关闭）
             </div>
           </div>
 
@@ -362,7 +369,7 @@ export default function Assets() {
             <div>
               <div className="panel-title"><span className="icon">⚙</span>本地选题库字段映射</div>
               <div className="panel-sub">
-                检测失败会阻断依赖该数据源的选题扫描（§16.1），不会用空表或旧快照伪装成同步成功
+                检测失败会阻断依赖该数据源的选题扫描，不会用空表或旧快照伪装成同步成功
               </div>
             </div>
             <div className="head-actions">

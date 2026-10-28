@@ -93,10 +93,31 @@ class OperationsEngine:
                         platform.value, draft_id, comment_id)
             return True
 
-        # 3. 节奏控制
+        # 3. 时段窗口 + 每日配额（被动回复同样受节奏控制，避免短时间大量回复触发风控）
+        if hasattr(self.rhythm, "is_within_window") and not self.rhythm.is_within_window(platform, "ops"):
+            self._log_op(platform, "passive_reply", "skipped",
+                         target_url=draft_id, target_author=comment_id, error_msg="不在运营时段窗口内")
+            return False
+        used = self.db.execute(
+            "SELECT COUNT(*) FROM ops_logs WHERE platform = ? AND action_type = 'passive_reply' "
+            "AND status IN ('success','pending_verify') AND executed_at >= ?",
+            (platform.value, self._today_start()),
+        ).fetchone()[0]
+        quotas = self.cfg.rhythm.daily_quotas.get(platform.value) if hasattr(self, "cfg") else None
+        if quotas is not None and hasattr(self.rhythm, "daily_quota_remaining") \
+                and self.rhythm.daily_quota_remaining(platform, "passive_reply", used) <= 0:
+            self._log_op(platform, "passive_reply", "skipped",
+                         target_url=draft_id, target_author=comment_id, error_msg="今日被动回复配额已用完")
+            return False
+
+        # 4. 节奏控制：真正等待随机间隔（之前只写日志不等待）
         wait_seconds = self.rhythm.wait_seconds(platform, "passive_reply")
         if wait_seconds > 0:
             logger.info("⏳ 节奏等待 %ds 后回复", wait_seconds)
+            import asyncio
+            import os
+            if not os.environ.get("PYTEST_CURRENT_TEST"):
+                await asyncio.sleep(min(wait_seconds, 600))
 
         # 4. 执行（G-02：适配器异常必须落 ops_logs failed + 原因，不能静默吞掉）
         try:

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { navigate, useUrlTab } from "../nav";
 import { useApp } from "../AppContext";
 import EmptyHint from "../components/EmptyHint";
 import { AdvancedEditor, KbEditor, LlmEditor, PlatformStyleEditor, PlatformToggles, TimeoutEditor } from "../components/ConfigEditors";
@@ -17,7 +18,18 @@ const SCORING_MODE_LABELS: Record<string, string> = {
   stable: "稳定运行（所有活跃维度 ≥ 5）",
 };
 
+const SETTINGS_TABS = [
+  { k: "runtime", l: "运行与配额" },
+  { k: "style", l: "平台文案风格" },
+  { k: "model", l: "知识库与模型" },
+  { k: "platform", l: "平台与账号" },
+  { k: "rhythm", l: "节奏与评分权重" },
+  { k: "system", l: "运行状态" },
+] as const;
+type SettingsTab = typeof SETTINGS_TABS[number]["k"];
+
 export default function Settings() {
+  const [tab, setTab] = useUrlTab<SettingsTab>(SETTINGS_TABS.map((t) => t.k), "runtime");
   const { showToast, withPending, isPending } = useApp();
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -114,7 +126,7 @@ export default function Settings() {
     try {
       const res = await withPending("config:save", () => api.patchConfig(updates));
       if (!res) return;
-      showToast(`✅ 已保存 ${res.changed.length} 项配置，已写入 config_changes 审计`, "success");
+      showToast(`✓ 已保存 ${res.changed.length} 项配置`, "success");
       await loadConfig();
     } catch (e: any) {
       showToast(`保存失败: ${e?.message ?? e}`, "error");
@@ -139,21 +151,27 @@ export default function Settings() {
         <div>
           <div className="eyebrow">SYSTEM SETTINGS</div>
           <h1 className="page-title">系统设置</h1>
-          <div className="page-desc">config/config.yaml 为基线；下方「运行时配置」支持白名单字段在线修改，保存后立即生效并写入 config_changes 审计。</div>
+          <div className="page-desc">所有设置保存后立即生效，并记录变更历史；按分类在下方页签中修改。</div>
         </div>
         <div className="head-actions">
           <button className="btn sm" onClick={load}>↻ 刷新</button>
         </div>
       </div>
 
+      <div className="tabs" style={{ marginBottom: 16, alignSelf: "flex-start", display: "inline-flex" }}>
+        {SETTINGS_TABS.map((t) => (
+          <button key={t.k} type="button" className={`tab ${tab === t.k ? "active" : ""}`} onClick={() => setTab(t.k)}>{t.l}</button>
+        ))}
+      </div>
+
       {/* G-13：运行时配置（白名单可写）*/}
+      {tab === "runtime" && (
       <div className="panel" style={{ marginBottom: 16 }}>
         <div className="panel-head">
           <div>
-            <div className="panel-title"><span className="icon">⚙</span>运行时配置 · 白名单可编辑</div>
+            <div className="panel-title"><span className="icon">⚙</span>运行与配额</div>
             <div className="panel-sub">
-              配额 / 运营时段 / 熔断冷却 / 热点门限在此改；画像、选题库、模型、平台开关、阶段超时在下方各自面板改。
-              全部持久化到 {cfgView?.overrides_file ?? "data/config_overrides.json"} 并写审计
+              每日配额、运营时段、熔断冷却与热点门限；保存后立即生效
             </div>
           </div>
           <div className="head-actions">
@@ -175,7 +193,7 @@ export default function Settings() {
                 <tbody>
                   {Object.entries(quotas).length === 0 && (
                     <tr><td colSpan={4}>
-                      <EmptyHint className="" next="检查 /api/config 是否返回 daily_quotas，或在 config/config.yaml 配置 rhythm.daily_quotas">暂无平台配额配置</EmptyHint>
+                      <EmptyHint className="" next="在配置文件中设置各平台每日配额后刷新">暂无平台配额配置</EmptyHint>
                     </td></tr>
                   )}
                   {Object.entries(quotas).map(([p, row]) => (
@@ -240,8 +258,8 @@ export default function Settings() {
             </div>
 
             <div className="note" style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <span className="tag red">🔒 R22 维度匹配门：强制开启</span>
-              <span className="tag red">🔒 R22 可发布性门：强制开启</span>
+              <span className="tag red">维度匹配：强制开启</span>
+              <span className="tag red">可发布性检查：强制开启</span>
               <span style={{ color: "var(--muted)" }}>
                 这两道门没有关闭入口；直接调 API 关闭会被后端拒绝（400）。
               </span>
@@ -255,7 +273,7 @@ export default function Settings() {
                     {cfgView.audit.map((a) => (
                       <tr key={a.id}>
                         <td style={{ color: "var(--subtle)", fontSize: 11 }}>{a.id}</td>
-                        <td style={{ fontSize: 12 }}>{a.key}</td>
+                        <td style={{ fontSize: 12 }} title={a.key}>{configKeyLabel(a.key)}</td>
                         <td style={{ color: "var(--muted)" }}>{a.old_value ?? <span style={{ color: "var(--subtle)" }}>—</span>}</td>
                         <td>{a.new_value ?? <span style={{ color: "var(--subtle)" }}>—</span>}</td>
                         <td style={{ fontSize: 11, color: "var(--muted)" }}>{a.changed_at ?? "—"}</td>
@@ -266,7 +284,7 @@ export default function Settings() {
               </div>
             )}
             {cfgView.audit.length === 0 && (
-              <EmptyHint next="修改上方任一配额 / 运营时段 / 门限后点「保存配置」，变更会写入 config_changes 审计">
+              <EmptyHint next="修改上方任一配额 / 运营时段 / 门限后点「保存配置」，这里会记录每次变更">
                 暂无配置变更记录
               </EmptyHint>
             )}
@@ -274,22 +292,26 @@ export default function Settings() {
         )}
       </div>
 
+      )}
+
       {/* 平台文案风格（platform_styles 表，migrations/016）*/}
+      {tab === "style" && (
       <div className="panel" style={{ marginBottom: 16 }}>
         <div className="panel-head">
           <div>
-            <div className="panel-title"><span className="icon">✎</span>平台文案风格（platform_styles 表）</div>
+            <div className="panel-title"><span className="icon">✎</span>平台文案风格</div>
             <div className="panel-sub">
-              标题风格 / 正文结构 / 语气 / 话题标签存在库里，文案生成时实时读取（LLM 提示词与模板降级共用）；
-              改完下一次生成立即生效，并写 config_changes 审计
+标题风格、正文结构、语气与话题标签；下一次生成文案时立即生效
             </div>
           </div>
         </div>
         <PlatformStyleEditor />
       </div>
+      )}
 
       {/* 本地知识库（G-13 / 原型 step 3）：可编辑 */}
-      <div className="grid two" style={{ marginTop: 14 }}>
+      {tab === "model" && (
+      <div className="grid two">
         <div className="panel">
           <div className="panel-head">
             <div>
@@ -309,7 +331,7 @@ export default function Settings() {
           <div className="panel-head">
             <div>
               <div className="panel-title"><span className="icon">⇄</span>主模型与备用</div>
-              <div className="panel-sub">模型可在线改；API Key 只写 .env（R23 不回显）</div>
+              <div className="panel-sub">模型可在线切换；API Key 保存后不再回显</div>
             </div>
           </div>
           {!cfgView ? (
@@ -319,12 +341,17 @@ export default function Settings() {
           )}
         </div>
 
+      </div>
+      )}
+
+      {tab === "platform" && (
+      <div className="grid two">
         {/* 平台账号与连接（原型 step 2）：启用开关可编辑 */}
         <div className="panel">
           <div className="panel-head">
             <div>
               <div className="panel-title"><span className="icon">◉</span>平台账号与连接</div>
-              <div className="panel-sub">enabled 开关可在线改；登录态文件 storage_state.json 另存</div>
+              <div className="panel-sub">启用或停用平台；登录在「账号与登录」页完成</div>
             </div>
           </div>
           {!cfgView ? (
@@ -338,12 +365,38 @@ export default function Settings() {
           )}
         </div>
 
-        {/* 阶段超时（R8：每个参数只管自己的阶段）— 可编辑 */}
         <div className="panel">
           <div className="panel-head">
             <div>
+              <div className="panel-title"><span className="icon">▣</span>登录状态</div>
+              <div className="panel-sub">扫码登录、过期提醒与登录记录统一在「账号与登录」页管理</div>
+            </div>
+          </div>
+          <div className="list">
+            {(["xhs", "douyin", "kuaishou", "wechat_channels"] as const).map((p) => {
+              const on = status?.logged_in_platforms?.includes(p);
+              return (
+                <div className="task-row" key={p}>
+                  <i className={`task-prio ${on ? "green" : "orange"}`} />
+                  <div className="task-main"><div className="task-title">{PLATFORM_LABELS[p]}</div></div>
+                  <span className={`tag ${on ? "green" : "gray"}`}>{on ? "已登录" : "未登录"}</span>
+                </div>
+              );
+            })}
+          </div>
+          <button type="button" className="btn sm" style={{ marginTop: 12 }} onClick={() => navigate("accounts")}>去扫码登录 →</button>
+        </div>
+      </div>
+      )}
+
+      {tab === "rhythm" && (
+      <div className="grid two">
+        {/* 阶段超时（R8：每个参数只管自己的阶段）— 可编辑 */}
+        <div className="panel" style={{ gridColumn: "1 / -1" }}>
+          <div className="panel-head">
+            <div>
               <div className="panel-title"><span className="icon">⚙</span>阶段超时与节奏参数</div>
-              <div className="panel-sub">R8：各阶段独立计时，禁止用一个总超时覆盖多阶段</div>
+              <div className="panel-sub">每个阶段独立计时，超时后进入人工处理</div>
             </div>
           </div>
           {!cfgView ? (
@@ -357,9 +410,9 @@ export default function Settings() {
         <div className="panel" style={{ gridColumn: "1 / -1" }}>
           <div className="panel-head">
             <div>
-              <div className="panel-title"><span className="icon">⚗</span>高级参数（权重 / 间隔 / 红线词库）</div>
+              <div className="panel-title"><span className="icon">⌁</span>评分权重、节奏间隔与红线词库</div>
               <div className="panel-sub">
-                这三类以前写死在代码/只读，现在可在线调；R22 门禁总开关与 Playwright 不点发布仍然硬锁
+安全底线不可关闭：维度匹配、可发布性检查，以及系统永不自动点发布
               </div>
             </div>
           </div>
@@ -370,14 +423,16 @@ export default function Settings() {
           )}
         </div>
       </div>
+      )}
 
+      {tab === "system" && (
       <div className="grid two">
         {/* 运行配置 — 动态从 /api/status 读取 */}
         <div className="panel">
           <div className="panel-head">
             <div>
               <div className="panel-title"><span className="icon">⚙</span>当前运行配置</div>
-              <div className="panel-sub">实时从 /api/status 获取</div>
+              <div className="panel-sub">实时读取</div>
             </div>
           </div>
           {err ? (
@@ -387,13 +442,13 @@ export default function Settings() {
             </div>
           ) : (
           <div className="list">
-            <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">后端 API</div><div className="task-desc">http://127.0.0.1:8000</div></div></div>
+            <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">后端服务</div><div className="task-desc">{status ? "运行中" : "连接中…"}</div></div></div>
             <div className="task-row"><i className="task-prio green" /><div className="task-main"><div className="task-title">已启用平台</div><div className="task-desc">{enabledNames}</div></div></div>
             <div className="task-row"><i className="task-prio purple" /><div className="task-main"><div className="task-title">评分模式</div><div className="task-desc">{modeLabel}</div></div></div>
-            <div className="task-row"><i className="task-prio orange" /><div className="task-main"><div className="task-title">已发布样本</div><div className="task-desc">{status ? status.published_samples : "—"} 条（选题 × 平台）</div></div></div>
+            <div className="task-row"><i className="task-prio orange" /><div className="task-main"><div className="task-title">已发布样本</div><div className="task-desc">{status ? status.published_samples : "—"} 条</div></div></div>
             <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">活跃轮次</div><div className="task-desc">{status ? status.active_rounds : "—"} 个进行中</div></div></div>
             {brokenNames && (
-              <div className="task-row"><i className="task-prio red" /><div className="task-main"><div className="task-title">🚨 熔断平台</div><div className="task-desc" style={{ color: "var(--danger)" }}>{brokenNames}</div></div></div>
+              <div className="task-row"><i className="task-prio red" /><div className="task-main"><div className="task-title">! 熔断平台</div><div className="task-desc" style={{ color: "var(--danger)" }}>{brokenNames}</div></div></div>
             )}
           </div>
           )}
@@ -403,8 +458,8 @@ export default function Settings() {
         <div className="panel">
           <div className="panel-head">
             <div>
-              <div className="panel-title"><span className="icon">♻️</span>断点恢复状态</div>
-              <div className="panel-sub">APScheduler SQLiteJobStore + 幂等覆盖</div>
+              <div className="panel-title"><span className="icon">↻</span>断点恢复状态</div>
+              <div className="panel-sub">服务重启后自动恢复中断的任务</div>
             </div>
           </div>
           {status?.recovery ? (
@@ -412,7 +467,7 @@ export default function Settings() {
             <div className="task-row"><i className="task-prio green" /><div className="task-main"><div className="task-title">中断任务</div><div className="task-desc">{status.recovery.interrupted_tasks} 个已重登</div></div></div>
             <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">补登记采集</div><div className="task-desc">{status.recovery.requeued_data_fetch.length} 篇（{status.recovery.requeued_data_fetch.join(", ") || "无"}）</div></div></div>
             <div className="task-row"><i className="task-prio orange" /><div className="task-main"><div className="task-title">卡住轮次</div><div className="task-desc">{status.recovery.stale_rounds.length > 0 ? `#${status.recovery.stale_rounds.join(", #")}` : "无"}</div></div></div>
-            <div className="task-row"><i className="task-prio red" /><div className="task-main"><div className="task-title">待核实（pending_verify）</div><div className="task-desc">{status.recovery.pending_verify} 条（主动运营崩溃场景）</div></div></div>
+            <div className="task-row"><i className="task-prio red" /><div className="task-main"><div className="task-title">待核实</div><div className="task-desc">{status.recovery.pending_verify} 条</div></div></div>
           </div>
           ) : err ? (
           <div className="note" style={{ color: "var(--red)", display: "flex", gap: 10, alignItems: "center" }}>
@@ -424,56 +479,47 @@ export default function Settings() {
           )}
         </div>
 
-        {/* 登录态管理 — 静态说明 */}
-        <div className="panel">
-          <div className="panel-head">
-            <div>
-              <div className="panel-title"><span className="icon">🔐</span>登录态管理</div>
-              <div className="panel-sub">storage_state.json（chmod 600，R23 安全）</div>
-            </div>
-          </div>
-          <div className="note" style={{ marginBottom: 12 }}>
-            登录态不在 Web UI 里扫码（浏览器跨域问题）。请在终端执行：
-          </div>
-          <pre style={{
-            background: "var(--surface-2)", padding: 14, borderRadius: 8,
-            fontSize: 12, fontFamily: "monospace", color: "var(--text)",
-            overflow: "auto", marginBottom: 14,
-          }}>
-{`# 小红书扫码登录
-source .venv/bin/activate
-python -c "
-import asyncio
-from src.core.login_manager import login_with_qr
-from src.adapters.base import Platform
-asyncio.run(login_with_qr(Platform.XHS, 'https://creator.xiaohongshu.com/publish/publish'))
-"`}
-          </pre>
-          <div className="note">登录成功后 storage_state.json 存到 data/login_states/，适配器自动恢复。</div>
-        </div>
-
         {/* 红线规则 — 静态说明 */}
         <div className="panel">
           <div className="panel-head">
             <div>
-              <div className="panel-title"><span className="icon">🚨</span>红线规则（R1-R23）</div>
-              <div className="panel-sub">所有模块必须遵守，违反 = 立即停手重写</div>
+              <div className="panel-title"><span className="icon">!</span>安全红线</div>
+              <div className="panel-sub">系统内置、不可关闭</div>
             </div>
           </div>
           <div className="list">
-            <div className="task-row"><i className="task-prio red" /><div className="task-main"><div className="task-title">R1 永不自动点发布按钮</div><div className="task-desc">Playwright 只存草稿，发布 = 用户手动确认</div></div></div>
-            <div className="task-row"><i className="task-prio red" /><div className="task-main"><div className="task-title">R3 NULL ≠ 0</div><div className="task-desc">指标字段无 DEFAULT 0；未知进度 = NULL</div></div></div>
-            <div className="task-row"><i className="task-prio red" /><div className="task-main"><div className="task-title">R6 熔断 3 步恢复</div><div className="task-desc">冷却到期 + test_login + test_lightweight</div></div></div>
-            <div className="task-row"><i className="task-prio orange" /><div className="task-main"><div className="task-title">R13 z-score 平台内部</div><div className="task-desc">不同平台 +1σ 不代表相同业务表现</div></div></div>
-            <div className="task-row"><i className="task-prio orange" /><div className="task-main"><div className="task-title">R22 4 道筛选门</div><div className="task-desc">维度匹配 + 可发布性（不可关）；热度 + 时效（可调）</div></div></div>
+            <div className="task-row"><i className="task-prio red" /><div className="task-main"><div className="task-title">永不自动发布</div><div className="task-desc">系统只保存草稿，发布必须由你确认</div></div></div>
+            <div className="task-row"><i className="task-prio red" /><div className="task-main"><div className="task-title">未知不等于 0</div><div className="task-desc">没采集到的数据显示「待采集」，不当作 0 计算</div></div></div>
+            <div className="task-row"><i className="task-prio red" /><div className="task-main"><div className="task-title">熔断后三步恢复</div><div className="task-desc">冷却到期、登录检测、轻量操作检测全部通过才恢复</div></div></div>
+            <div className="task-row"><i className="task-prio orange" /><div className="task-main"><div className="task-title">平台数据分开比较</div><div className="task-desc">各平台只和自己的历史比，不跨平台横比</div></div></div>
+            <div className="task-row"><i className="task-prio orange" /><div className="task-main"><div className="task-title">热点四道筛选</div><div className="task-desc">维度匹配与可发布性不可关；热度与时效门限可调</div></div></div>
           </div>
         </div>
       </div>
+      )}
     </>
   );
 }
 
 /** 配置值 → 输入框字符串；NULL 显示空串（不填 0，R3） */
+/** 配置键 → 中文名（变更记录用；未收录的保留原键） */
+const KEY_PART: Record<string, string> = {
+  ultimate_goal: "账号画像", persona_keywords: "定位关键词", forbidden_directions: "禁止方向", redline_keywords: "红线词库",
+  positioning: "定位", goal_mode: "目标模式", platform_personas: "平台画像", platform_links: "平台协同",
+  inherit_global: "继承全局", account_name: "账号名称", audience: "受众", role: "角色", extra_redlines: "额外红线",
+  rhythm: "节奏", daily_quotas: "每日配额", passive_replies: "被动回复", active_comments: "主动评论", follows: "关注",
+  windows: "时段", ops: "运营", draft_save: "存草稿", start_hour: "开始", end_hour: "结束",
+  circuit_breaker: "熔断", cooldown_minutes: "冷却分钟", hot_topics: "热点", filters: "门限",
+  heat_threshold: "热度门槛", heat_filter_enabled: "热度门开关", time_window_hours: "时效窗口", time_filter_enabled: "时效门开关",
+  scheduler: "定时任务", jobs: "", enabled: "启用", interval_minutes: "间隔分钟", cron: "执行时间",
+  kb_scan: "选题库扫描", daily_ops: "每日运营", hot_topics_refresh: "热点采集", autogrow: "自动闭环",
+  platforms: "平台", xhs: "小红书", douyin: "抖音", kuaishou: "快手", wechat_channels: "视频号",
+  llm: "模型", model: "模型", provider: "服务商", timeouts: "超时", scoring: "评分权重", topic_kb: "选题库",
+};
+function configKeyLabel(key: string): string {
+  return key.split(".").map((p) => KEY_PART[p] ?? p).filter(Boolean).join(" · ");
+}
+
 function _str(v: number | null | undefined): string {
   return v == null ? "" : String(v);
 }

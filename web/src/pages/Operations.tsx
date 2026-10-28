@@ -12,8 +12,8 @@ import {
 } from "../api";
 
 const PLATFORM_NAME: Record<Platform, string> = {
-  xhs: "📕 小红书", douyin: "🎵 抖音",
-  kuaishou: "⚡ 快手", wechat_channels: "💚 视频号",
+  xhs: "小红书", douyin: "抖音",
+  kuaishou: "快手", wechat_channels: "视频号",
 };
 
 const ACTION_LABEL: Record<string, string> = {
@@ -26,6 +26,11 @@ const STATUS_LABEL: Record<string, string> = {
   pending_verify: "待核实",
 };
 
+const DRAFT_STATUS_LABEL: Record<string, string> = {
+  draft_pending: "待存草稿", draft_saved: "已存草稿", draft_failed: "存草稿失败", published: "已发布",
+  collecting: "数据采集中", collected: "已采集", expired: "已过期", cancelled: "已取消", failed: "失败",
+};
+
 const STATUS_CLS: Record<string, string> = {
   success: "good", failed: "bad", skipped: "warn", circuit_broken: "bad",
   pending: "", running: "info", interrupted: "warn", pending_verify: "purple",
@@ -35,22 +40,28 @@ const LEVEL_CLS: Record<string, string> = {
   info: "", warning: "orange", error: "red", critical: "red",
 };
 
-type OpsTab = "kpi" | "logs" | "publish" | "breaker" | "tasks" | "scheduler" | "rhythm" | "notifications";
+type OpsPane = "kpi" | "logs" | "publish" | "breaker" | "tasks" | "scheduler" | "rhythm" | "notifications";
+type OpsGroup = "kpi" | "publish" | "guard" | "jobs" | "inbox";
+type OpsTab = OpsGroup | OpsPane;
 
-const TABS: { key: OpsTab; label: string; icon: string }[] = [
-  { key: "kpi", label: "运营总控", icon: "▦" },
-  { key: "logs", label: "评论与运行日志", icon: "≋" },
-  { key: "publish", label: "发布确认与轮询", icon: "◷" },
-  { key: "breaker", label: "平台熔断器", icon: "🚨" },
-  { key: "tasks", label: "任务追踪", icon: "⌁" },
-  { key: "scheduler", label: "定时任务", icon: "⏰" },
-  { key: "rhythm", label: "节奏调度", icon: "♪" },
-  { key: "notifications", label: "通知中心", icon: "🔔" },
+/** 8 个子面板合并为 5 个页签；旧链接（?tab=scheduler 等）自动落到所属页签 */
+const TABS: { key: OpsGroup; label: string; panes: OpsPane[] }[] = [
+  { key: "kpi", label: "运营总控", panes: ["kpi"] },
+  { key: "publish", label: "发布确认", panes: ["publish"] },
+  { key: "guard", label: "熔断与节奏", panes: ["breaker", "rhythm"] },
+  { key: "jobs", label: "任务与定时", panes: ["tasks", "scheduler"] },
+  { key: "inbox", label: "日志与通知", panes: ["logs", "notifications"] },
 ];
+const ALL_OPS_TABS: OpsTab[] = [...TABS.map((t) => t.key), "logs", "breaker", "tasks", "scheduler", "rhythm", "notifications"];
+function groupOf(t: OpsTab): OpsGroup {
+  return (TABS.find((g) => g.key === t || g.panes.includes(t as OpsPane)) ?? TABS[0]).key;
+}
 
 export default function Operations() {
   const { showToast, withPending } = useApp();
-  const [tab, setTab] = useUrlTab<OpsTab>(TABS.map((t) => t.key), "kpi");
+  const [rawTab, setTab] = useUrlTab<OpsTab>(ALL_OPS_TABS, "kpi");
+  const tab = groupOf(rawTab);
+  const show = (p: OpsPane) => (TABS.find((g) => g.key === tab)?.panes ?? []).includes(p);
 
   // 各子页数据源
   const [kpi, setKpi] = useState<OpsKpiResponse | null>(null);
@@ -74,15 +85,15 @@ export default function Operations() {
     setLoading(true);
     try {
       const results = await Promise.allSettled([
-        tab === "kpi" || tab === "logs" ? api.opsKpi(kpiDays) : Promise.resolve(null),
-        tab === "logs" ? api.opsLogs(undefined, undefined, undefined, 50) : Promise.resolve(null),
-        tab === "tasks" ? api.taskRuns(undefined, undefined, 50) : Promise.resolve(null),
-        tab === "notifications" ? api.notifications(undefined, 30) : Promise.resolve(null),
-        tab === "notifications" ? api.notifyRules() : Promise.resolve(null),
-        tab === "scheduler" ? api.schedulerJobs() : Promise.resolve(null),
-        tab === "rhythm" ? api.rhythm() : Promise.resolve(null),
-        tab === "breaker" ? api.circuitBreaker() : Promise.resolve(null),
-        tab === "kpi" ? api.opsPause() : Promise.resolve(null),
+        show("kpi") || show("logs") ? api.opsKpi(kpiDays) : Promise.resolve(null),
+        show("logs") ? api.opsLogs(undefined, undefined, undefined, 50) : Promise.resolve(null),
+        show("tasks") ? api.taskRuns(undefined, undefined, 50) : Promise.resolve(null),
+        show("notifications") ? api.notifications(undefined, 30) : Promise.resolve(null),
+        show("notifications") ? api.notifyRules() : Promise.resolve(null),
+        show("scheduler") ? api.schedulerJobs() : Promise.resolve(null),
+        show("rhythm") ? api.rhythm() : Promise.resolve(null),
+        show("breaker") ? api.circuitBreaker() : Promise.resolve(null),
+        show("kpi") ? api.opsPause() : Promise.resolve(null),
       ]);
       const unpack = (r: PromiseSettledResult<any>) => r.status === "fulfilled" ? r.value : null;
       setKpi(unpack(results[0]));
@@ -116,7 +127,7 @@ export default function Operations() {
     try {
       const r = await api.setOpsPause(!paused);
       setPaused(r.paused);
-      showToast(r.paused ? "⏸️ 已暂停全部运营动作（存草稿/采集不受影响）" : "▶️ 已恢复运营", "success");
+      showToast(r.paused ? "‖ 已暂停全部运营动作（存草稿/采集不受影响）" : "▶ 已恢复运营", "success");
     } catch (e: any) { showToast(e.message, "error"); }
   };
 
@@ -140,7 +151,7 @@ export default function Operations() {
           <div className="eyebrow">OPERATIONS CONSOLE</div>
           <h1 className="page-title">运营控制台</h1>
           <div className="page-desc">
-            9 个子面板覆盖运营全链路：KPI 总览、评论日志、发布确认、熔断器、任务追踪、定时任务、节奏调度、通知中心。
+            监控运营动作、发布确认、熔断与节奏、定时任务和通知；系统只存草稿，发布永远由你确认。
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
@@ -150,10 +161,10 @@ export default function Operations() {
             onClick={togglePause}
             title="仅暂停评论/关注等运营动作；存草稿与数据采集不受影响"
           >
-            {paused ? "▶ 恢复运营" : "⏸ 暂停运营"}
+            {paused ? "▶ 恢复运营" : "‖ 暂停运营"}
           </button>
           <button className="btn" onClick={testNotify} disabled={notifBusy}>
-            {notifBusy ? "自检中…" : "🔔 测试通知"}
+            {notifBusy ? "自检中…" : "♧ 测试通知"}
           </button>
           <button className="btn" onClick={refresh} disabled={loading}>
             {loading ? "加载中…" : "↻ 刷新"}
@@ -165,63 +176,63 @@ export default function Operations() {
       {loadError && (
         <div className="panel" style={{ borderColor: "var(--red)", marginBottom: 14 }}>
           <div className="panel-sub" style={{ color: "var(--red)", display: "flex", gap: 10, alignItems: "center" }}>
-            <span>⚠️ 接口异常：{loadError}</span>
+            <span>! 接口异常：{loadError}</span>
             <button className="btn sm" onClick={refresh}>↻ 重试</button>
           </div>
         </div>
       )}
 
       {/* 子 tab bar */}
-      <div className="compact-tabbar">
+      <div className="tabs page-tabs">
         {TABS.map((t) => (
           <button
             key={t.key}
-            className={`compact-tab-button ${tab === t.key ? "active" : ""}`}
+            className={`tab ${tab === t.key ? "active" : ""}`}
             onClick={() => setTab(t.key)}
           >
-            <span style={{ marginRight: 4 }}>{t.icon}</span>{t.label}
+            {t.label}
           </button>
         ))}
       </div>
 
       {/* === 1. 运营总控（KPI）=== */}
-      {tab === "kpi" && <KpiPane kpi={kpi} days={kpiDays} onDaysChange={setKpiDays} />}
+      {show("kpi") && <KpiPane kpi={kpi} days={kpiDays} onDaysChange={setKpiDays} />}
 
       {/* === 2. 评论日志 === */}
-      {tab === "logs" && <LogsPane logs={logs} />}
+      {show("logs") && <LogsPane logs={logs} />}
 
       {/* === 3. 发布确认 === */}
-      {tab === "publish" && <PublishPane />}
+      {show("publish") && <PublishPane />}
 
       {/* === 4. 熔断器 === */}
-      {tab === "breaker" && (
+      {show("breaker") && (
         <BreakerPane cb={cb} onRecover={async (p) => {
           // G-11：同一平台的恢复/重置在请求中不可重复触发
           try {
             const r = await withPending(`cb:recover:${p}`, () => api.recoverCb(p));
-            if (r) showToast(r.passed ? "✅ 恢复通过" : `❌ ${r.reason}`, r.passed ? "success" : "error");
+            if (r) showToast(r.passed ? "✓ 恢复通过" : `✕ ${r.reason}`, r.passed ? "success" : "error");
           } catch (e: any) { showToast(e.message, "error"); }
           await refresh();
         }} onReset={async (p) => {
           try {
             await withPending(`cb:reset:${p}`, () => api.resetCb(p));
-            showToast(`🔧 已重置 ${p}`);
+            showToast(`⚙ 已重置 ${p}`);
           } catch (e: any) { showToast(e.message, "error"); }
           await refresh();
         }} />
       )}
 
       {/* === 5. 任务追踪 === */}
-      {tab === "tasks" && <TasksPane tasks={tasks} onResolved={refresh} />}
+      {show("tasks") && <TasksPane tasks={tasks} onResolved={refresh} />}
 
       {/* === 6. 定时任务 === */}
-      {tab === "scheduler" && <SchedulerPane jobs={jobs} onTriggered={refresh} />}
+      {show("scheduler") && <SchedulerPane jobs={jobs} onTriggered={refresh} />}
 
       {/* === 7. 节奏调度 === */}
-      {tab === "rhythm" && <RhythmPane rhythm={rhythm} onSaved={refresh} />}
+      {show("rhythm") && <RhythmPane rhythm={rhythm} onSaved={refresh} />}
 
       {/* === 8. 通知中心 === */}
-      {tab === "notifications" && <NotificationsPane items={notifs} rules={notifRules} onChanged={refresh} />}
+      {show("notifications") && <NotificationsPane items={notifs} rules={notifRules} onChanged={refresh} />}
     </>
   );
 }
@@ -264,7 +275,7 @@ function KpiPane({
       </div>
       {/* 顶部 KPI 卡 */}
       <div className="grid four" style={{ marginBottom: 16 }}>
-        <KpiCard label={`${rangeLabel}运营动作`} value={todayTotalOps} hint={`ops_logs ${rangeLabel}执行量`} />
+        <KpiCard label={`${rangeLabel}运营动作`} value={todayTotalOps} hint={`${rangeLabel}已执行的运营动作`} />
         <KpiCard label="草稿总数" value={draftTotal} hint="含各状态" />
         <KpiCard label="活跃熔断" value={kpi.circuit_breaker_active.length} hint="冷却中未恢复" color={kpi.circuit_breaker_active.length > 0 ? "var(--red)" : undefined} />
         <KpiCard label="启用平台" value={kpi.platform_stats ? Object.keys(kpi.platform_stats).length : 0} hint="" />
@@ -286,7 +297,7 @@ function KpiPane({
               <div key={p} className="platform-goal">
                 <div className="platform-goal-head">
                   <div className="platform-name">{PLATFORM_NAME[p]}</div>
-                  {s.circuit_broken ? <span className="tag red">🚨 熔断</span> : <span className="tag green">正常</span>}
+                  {s.circuit_broken ? <span className="tag red">! 熔断</span> : <span className="tag green">正常</span>}
                 </div>
                 <div className="goal-main">
                   <b>{s.rounds}</b><span>活跃轮次</span>
@@ -339,7 +350,7 @@ function KpiPane({
               <div key={status} className="task-row">
                 <i className={`task-prio ${status === "published" ? "green" : status === "failed" || status === "expired" ? "red" : "blue"}`} />
                 <div className="task-main">
-                  <div className="task-title">{status}</div>
+                  <div className="task-title">{DRAFT_STATUS_LABEL[status] ?? status}</div>
                 </div>
                 <div style={{ fontSize: 18, fontWeight: 700 }}>{n}</div>
               </div>
@@ -371,7 +382,7 @@ function LogsPane({ logs }: { logs: OpsLogItem[] }) {
     <div className="panel">
       <div className="panel-head">
         <div>
-          <div className="panel-title"><span className="icon">≋</span>运营日志（ops_logs）</div>
+          <div className="panel-title"><span className="icon">≋</span>运营日志</div>
           <div className="panel-sub">最近 {logs.length} 条 — 被动回复 / 主动评论 / 关注</div>
         </div>
       </div>
@@ -436,7 +447,7 @@ function PublishPane() {
       if (res) {
         // 行内即时更新，无需等整表刷新
         setDrafts((prev) => prev.map((d) => (d.id === id ? { ...d, status: res.status } : d)));
-        showToast("✅ 已标记 user_published", "success");
+        showToast("✓ 已标记 user_published", "success");
         await fetchDrafts();
       }
     } catch (e: any) {
@@ -452,16 +463,16 @@ function PublishPane() {
       <div className="panel-head">
         <div>
           <div className="panel-title"><span className="icon">◷</span>发布确认双通道</div>
-          <div className="panel-sub">手动点「✅ 我已发布」或等 30min 只读轮询自动发现（R1：永不点发布）</div>
+          <div className="panel-sub">手动点「✓ 我已发布」或等系统每 30 分钟自动检测</div>
           <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
             <DemoBadge level="accelerated" text="真实轮询周期 30min（原型曾用 2s 演示）" />
-            <DemoBadge level="blocked" text="R1 红线：系统永不点击发布按钮，只能由你手动发布" />
+            <DemoBadge level="blocked" text="系统永不点击发布按钮，只能由你手动发布" />
           </div>
         </div>
       </div>
       {error && (
         <div className="note" style={{ color: "var(--red)", marginBottom: 10, display: "flex", gap: 8, alignItems: "center" }}>
-          <span>⚠️ {error}</span>
+          <span>! {error}</span>
           <button className="btn sm" onClick={fetchDrafts}>重试</button>
         </div>
       )}
@@ -492,7 +503,7 @@ function PublishPane() {
                       disabled={pending !== null}
                       onClick={() => confirm(d.id)}
                     >
-                      {pending === d.id ? "提交中…" : "✅ 我已发布"}
+                      {pending === d.id ? "提交中…" : "✓ 我已发布"}
                     </button>
                   </>
                 )}
@@ -523,7 +534,7 @@ function BreakerPane({
             <div key={p} className="panel" style={{ borderColor: broken ? "#ffd2d9" : undefined }}>
               <div className="platform-goal-head" style={{ marginBottom: 6 }}>
                 <div className="platform-name">{PLATFORM_NAME[p]}</div>
-                <span className={`tag ${broken ? "red" : "green"}`}>{broken ? "🚨 熔断中" : "✅ 正常"}</span>
+                <span className={`tag ${broken ? "red" : "green"}`}>{broken ? "! 熔断中" : "✓ 正常"}</span>
               </div>
               {evt && (
                 <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.7 }}>
@@ -624,8 +635,8 @@ function TasksPane({ tasks, onResolved }: {
                 <td>
                   {t.status === "pending_verify" ? (
                     <>
-                      <button className="btn sm" disabled={busyId === t.id} onClick={() => resolve(t.id, "sent")}>✔ 已发出</button>
-                      <button className="btn sm ghost" style={{ marginLeft: 6 }} disabled={busyId === t.id} onClick={() => resolve(t.id, "not_sent")}>✖ 未发出</button>
+                      <button className="btn sm" disabled={busyId === t.id} onClick={() => resolve(t.id, "sent")}>✓ 已发出</button>
+                      <button className="btn sm ghost" style={{ marginLeft: 6 }} disabled={busyId === t.id} onClick={() => resolve(t.id, "not_sent")}>✕ 未发出</button>
                     </>
                   ) : (
                     <span style={{ color: "var(--subtle)" }}>—</span>
@@ -718,7 +729,7 @@ function SchedulerPane({ jobs, onTriggered }: {
       </div>
       <div className="panel">
         <div className="panel-head">
-          <div className="panel-title"><span className="icon">⏰</span>定时任务（{jobs.jobs.length}）</div>
+          <div className="panel-title"><span className="icon">◷</span>定时任务（{jobs.jobs.length}）</div>
           <div className="panel-sub">开关与频率全部来自配置，修改后写入覆盖文件并立即重排，无需重启</div>
         </div>
         {msg && (
@@ -726,7 +737,7 @@ function SchedulerPane({ jobs, onTriggered }: {
         )}
         <div className="list">
           {jobs.jobs.length === 0 && (
-            <EmptyHint next="检查后端 APScheduler 是否已启动（/api/scheduler/jobs）">没有定时任务</EmptyHint>
+            <EmptyHint next="确认后端服务已启动后刷新">没有定时任务</EmptyHint>
           )}
           {jobs.jobs.map((j) => (
             <div key={j.id} className="task-row" style={{ flexWrap: "wrap" }}>
@@ -854,7 +865,7 @@ function RhythmPane({ rhythm, onSaved }: { rhythm: RhythmConfig | null; onSaved?
     setBusy(true);
     try {
       await api.patchConfig(updates);
-      showToast(`✅ 已保存 ${Object.keys(updates).length} 项节奏配置`, "success");
+      showToast(`✓ 已保存 ${Object.keys(updates).length} 项节奏配置`, "success");
       onSaved?.();
     } catch (e: any) {
       showToast(`保存失败: ${e?.message ?? e}`, "error");
@@ -895,7 +906,7 @@ function RhythmPane({ rhythm, onSaved }: { rhythm: RhythmConfig | null; onSaved?
       <div className="panel" style={{ gridColumn: "1 / -1" }}>
         <div className="panel-head">
           <div className="panel-title"><span className="icon">≋</span>全局运营时段</div>
-          <div className="panel-sub">所有平台共用；本地时区（R5）</div>
+          <div className="panel-sub">所有平台共用；本地时区</div>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
           <div>
@@ -918,7 +929,7 @@ function RhythmPane({ rhythm, onSaved }: { rhythm: RhythmConfig | null; onSaved?
         </div>
         {!rhythm.ops_window && (
           <div className="note" style={{ marginTop: 8, color: "var(--orange)" }}>
-            ⚠ 当前未配置 ops 时段窗口，节奏控制器按全天放行；建议设置 8 → 23。
+            ! 当前未配置 ops 时段窗口，节奏控制器按全天放行；建议设置 8 → 23。
           </div>
         )}
       </div>
@@ -956,7 +967,7 @@ function NotificationsPane({ items, rules, onChanged }: {
     setBusy(true);
     try {
       await api.createNotifyRule({ scenario, channel, level, enabled: true });
-      showToast("✅ 通知规则已新增", "success");
+      showToast("✓ 通知规则已新增", "success");
       onChanged?.();
     } catch (e: any) {
       showToast(`新增失败: ${e?.message ?? e}`, "error");
@@ -995,7 +1006,7 @@ function NotificationsPane({ items, rules, onChanged }: {
         <div className="panel">
           <div className="panel-head">
             <div>
-              <div className="panel-title"><span className="icon">📡</span>通知通道</div>
+              <div className="panel-title"><span className="icon">⌁</span>通知通道</div>
               <div className="panel-sub">
                 通道级总开关：关闭后该通道任何事件都不发（规则表也无法绕过）
               </div>
@@ -1042,7 +1053,7 @@ function NotificationsPane({ items, rules, onChanged }: {
             <tbody>
               {rules.length === 0 && (
                 <tr><td colSpan={5}>
-                  <EmptyHint className="" next="不配置 = 全部事件按 config.yaml 默认发送；需要精细控制时再新增">暂无自定义规则</EmptyHint>
+                  <EmptyHint className="" next="不配置时全部事件按默认规则发送；需要精细控制时再新增">暂无自定义规则</EmptyHint>
                 </td></tr>
               )}
               {rules.map((r) => (
@@ -1068,7 +1079,7 @@ function NotificationsPane({ items, rules, onChanged }: {
 
       <div className="panel">
         <div className="panel-head">
-          <div className="panel-title"><span className="icon">🔔</span>消息通知历史</div>
+          <div className="panel-title"><span className="icon">♧</span>消息通知历史</div>
           <div className="panel-sub">7 场景 × 4 级 × macOS/企微/飞书</div>
         </div>
         <div className="table-wrap">

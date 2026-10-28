@@ -68,7 +68,7 @@ export default function TopicPoolPane() {
   const add = () => withPending("topic:add", async () => {
     try {
       const r = await api.createTopic(form);
-      showToast(r.created ? "✅ 已加入选题池" : r.restored ? "已恢复该选题" : "选题池已有相同选题", "success");
+      showToast(r.created ? "✓ 已加入选题池" : r.restored ? "已恢复该选题" : "选题池已有相同选题", "success");
       setForm({ title: "", dimension: "", summary: "", link: "" });
       setAdding(false);
       await load();
@@ -82,7 +82,7 @@ export default function TopicPoolPane() {
     <div className="panel">
       <div className="panel-head">
         <div>
-          <div className="panel-title"><span className="icon">📚</span>选题池</div>
+          <div className="panel-title"><span className="icon">☷</span>选题池</div>
           <div className="panel-sub">
             {rep ? `本地库 ${rep.kb_count} · 热点/手动 ${rep.extra_count} · 已删除 ${rep.excluded_count}` : "加载中…"}
             {rep?.kb_error && <span style={{ color: "var(--red)" }}> · 本地库读取失败：{rep.kb_error}</span>}

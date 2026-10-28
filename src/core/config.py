@@ -132,10 +132,43 @@ class ScoringConfig(BaseModel):
         return self
 
 
+class PlatformPersonaConfig(BaseModel):
+    """单平台账号画像（不同平台登录的可能是不同账号、不同定位）。
+
+    inherit_global=True：在全局画像基础上追加本平台关键词 / 禁区；
+    inherit_global=False：本平台完全使用自己的画像（红线词库始终叠加全局，安全底线不可绕过）。
+    """
+    inherit_global: bool = True
+    account_name: str = ""
+    positioning: str = ""
+    audience: str = ""
+    # 本平台在矩阵里的角色：traffic 引流 / conversion 转化 / brand 品牌 / community 社群 / test 试验
+    role: str = ""
+    persona_keywords: list[str] = Field(default_factory=list)
+    forbidden_directions: list[str] = Field(default_factory=list)
+    extra_redlines: list[str] = Field(default_factory=list)
+
+
+class PlatformLinkConfig(BaseModel):
+    """平台之间的协同关系（一个平台为另一个平台导流 / 复用素材 / 互推）。"""
+    source: str
+    target: str
+    relation: str = "traffic"   # traffic 导流 / reuse 素材复用 / cross 互推
+    note: str = ""
+
+
 class UltimateGoalConfig(BaseModel):
     persona_keywords: list[str] = Field(default_factory=list)
     redline_keywords: list[str] = Field(default_factory=list)
     forbidden_directions: list[str] = Field(default_factory=list)
+    # 一句话账号定位（全局）
+    positioning: str = ""
+    # unified：全平台共用一个画像与一个总目标
+    # per_platform：每个平台独立画像、独立目标，互不汇总
+    # hybrid：一个总目标 + 各平台画像/子目标，平台之间可配置协同关系
+    goal_mode: str = "unified"
+    platform_personas: dict[str, PlatformPersonaConfig] = Field(default_factory=dict)
+    platform_links: list[PlatformLinkConfig] = Field(default_factory=list)
 
 
 class TimeoutsConfig(BaseModel):

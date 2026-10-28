@@ -174,11 +174,25 @@ def _generate_via_llm(
         f"不得出现违法违规内容；不得脱离「{dimension}」方向；"
         f"不得编造事实、产品、公司、数据、奖项或用户评价。"
     )
-    # 账号画像：让文案自带定位关键词，避免产出与账号人设无关的内容
-    goal = getattr(cfg, "ultimate_goal", None)
-    if goal is not None:
-        kws = [str(k).strip() for k in (getattr(goal, "persona_keywords", None) or []) if str(k).strip()]
-        forb = [str(k).strip() for k in (getattr(goal, "forbidden_directions", None) or []) if str(k).strip()]
+    # 账号画像：按平台生效画像（不同平台可能是不同账号、不同定位）
+    if getattr(cfg, "ultimate_goal", None) is not None:
+        from .persona import effective_persona
+        ep = effective_persona(cfg, getattr(platform, "value", str(platform)))
+        kws = [k for k in ep["persona_keywords"] if k]
+        forb = [k for k in ep["forbidden_directions"] if k]
+        if ep.get("positioning"):
+            user_prompt += f"\n本平台账号定位：{ep['positioning']}"
+        if ep.get("audience"):
+            user_prompt += f"\n目标受众：{ep['audience']}"
+        role_hint = {
+            "traffic": "本平台承担引流职责：内容要有钩子，引导关注主页或其它平台。",
+            "conversion": "本平台承担转化职责：内容要给出明确的下一步行动。",
+            "brand": "本平台承担品牌职责：保持专业一致的人设与调性。",
+            "community": "本平台承担社群职责：多引导评论互动。",
+            "test": "本平台用于试验新方向：可以尝试新的切入角度。",
+        }.get(ep.get("role") or "")
+        if role_hint:
+            user_prompt += f"\n{role_hint}"
         if kws:
             user_prompt += (
                 f"\n账号定位关键词：{'、'.join(kws[:8])}；"

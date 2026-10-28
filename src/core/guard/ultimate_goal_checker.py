@@ -74,9 +74,23 @@ class UltimateGoalChecker:
 
     def __init__(self, cfg):
         self.cfg = cfg
-        self.persona_keywords = cfg.ultimate_goal.persona_keywords
-        self.redline_keywords = cfg.ultimate_goal.redline_keywords
-        self.forbidden_directions = cfg.ultimate_goal.forbidden_directions
+
+    # 画像每次实时读取（在线改配置后立即生效），并按平台解析生效画像
+    def _persona(self, platform: Optional[str]) -> dict:
+        from ..persona import effective_persona
+        return effective_persona(self.cfg, platform)
+
+    @property
+    def persona_keywords(self) -> list[str]:
+        return list(self.cfg.ultimate_goal.persona_keywords)
+
+    @property
+    def redline_keywords(self) -> list[str]:
+        return list(self.cfg.ultimate_goal.redline_keywords)
+
+    @property
+    def forbidden_directions(self) -> list[str]:
+        return list(self.cfg.ultimate_goal.forbidden_directions)
 
     # ------------------------------------------------------------------
     # check_content — 文案方向性检查（G2 质量门入口）
@@ -84,6 +98,7 @@ class UltimateGoalChecker:
 
     def check_content(
         self, title: str, body: str, tags: Optional[list[str]] = None,
+        platform: Optional[str] = None,
     ) -> CheckOutcome:
         """检查单篇文案内容。
 
@@ -91,9 +106,12 @@ class UltimateGoalChecker:
         R2：任何 FAIL → 丢弃重生成；WARN → 修改后重检；ERROR → 不能默认通过。
         """
         text = f"{title} {body} {' '.join(tags or [])}"
+        persona = self._persona(platform)
+        persona_keywords = persona["persona_keywords"]
+        forbidden_directions = persona["forbidden_directions"]
 
-        # 1. 红线命中（最优先级）
-        redline_hits = self._find_keywords(text, self.redline_keywords)
+        # 1. 红线命中（最优先级；全局红线 ∪ 平台额外红线）
+        redline_hits = self._find_keywords(text, persona["redline_keywords"])
         if redline_hits:
             logger.warning("🚨 终极目标红线命中: %s", redline_hits)
             return CheckOutcome(
@@ -103,8 +121,8 @@ class UltimateGoalChecker:
             )
 
         # 2. 画像匹配（原则检查）
-        persona_matches = self._find_keywords(text, self.persona_keywords)
-        if self.persona_keywords and not persona_matches:
+        persona_matches = self._find_keywords(text, persona_keywords)
+        if persona_keywords and not persona_matches:
             logger.info("⚠️ 文案与账号画像关键词不匹配，需修改后重检")
             return CheckOutcome(
                 result=CheckResult.WARN,
@@ -113,7 +131,7 @@ class UltimateGoalChecker:
             )
 
         # 3. 禁止方向（模糊匹配）
-        for direction in self.forbidden_directions:
+        for direction in forbidden_directions:
             if any(kw in text for kw in direction.split()):
                 logger.warning("🚫 文案属于禁止方向: %s", direction)
                 return CheckOutcome(
@@ -147,9 +165,9 @@ class UltimateGoalChecker:
     # check_comment — 评论合规检查
     # ------------------------------------------------------------------
 
-    def check_comment(self, content: str) -> CheckOutcome:
+    def check_comment(self, content: str, platform: Optional[str] = None) -> CheckOutcome:
         """运营动作（评论）前的合规检查。"""
-        redline_hits = self._find_keywords(content, self.redline_keywords)
+        redline_hits = self._find_keywords(content, self._persona(platform)["redline_keywords"])
         if redline_hits:
             return CheckOutcome(
                 result=CheckResult.FAIL,

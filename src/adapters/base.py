@@ -207,10 +207,18 @@ class MetricsSnapshot:
 
     @property
     def interaction_rate(self) -> Optional[float]:
-        """(likes + collects + comments) / views，shares 不计入（§14.2）。"""
+        """(likes + collects + comments) / views，shares 不计入（§14.2）。
+
+        抖音 / 快手作品读回没有「收藏」字段：这两个平台按 (likes + comments) / views 计算，
+        各平台只在自己内部比较（R13），口径差异不影响平台内归一化。
+        """
         if not self.views or self.views <= 0:
             return None
-        if None in (self.likes, self.collects, self.comments):
+        if None in (self.likes, self.comments):
+            return None
+        if self.collects is None:
+            if getattr(self.platform, "value", self.platform) in ("douyin", "kuaishou"):
+                return (self.likes + self.comments) / self.views
             return None
         return (self.likes + self.collects + self.comments) / self.views
 

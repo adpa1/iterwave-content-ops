@@ -82,7 +82,7 @@ export function PersonaEditor({ view, onSaved }: {
     try {
       const res = await withPending("cfg:persona", () => api.patchConfig(updates));
       if (!res) return;
-      showToast(`✅ 已保存 ${res.changed.length} 项画像配置`, "success");
+      showToast(`✓ 已保存 ${res.changed.length} 项画像配置`, "success");
       onSaved?.();
     } catch (e: any) {
       showToast(`保存失败: ${e?.message ?? e}`, "error");
@@ -101,9 +101,9 @@ export function PersonaEditor({ view, onSaved }: {
       </Field>
       <div style={{ fontSize: 12, color: "var(--muted)" }}>
         红线敏感词库 已内置 <span className="tag blue">{view.readonly.redline_keywords_count} 条</span>
-        <span style={{ marginLeft: 8, color: "var(--subtle)" }}>（R22 硬锁，不可关闭）</span>
+        <span style={{ marginLeft: 8, color: "var(--subtle)" }}></span>
       </div>
-      <SaveBar onSave={save} busy={busy} hint="保存后 R2 终极目标检查器立即按新画像拦截" />
+      <SaveBar onSave={save} busy={busy} hint="保存后 终极目标检查器立即按新画像拦截" />
     </div>
   );
 }
@@ -154,7 +154,7 @@ export function KbEditor({ view, onSaved }: {
     try {
       const res = await withPending("cfg:kb", () => api.patchConfig(updates));
       if (!res) return;
-      showToast(`✅ 选题库配置已保存 ${res.changed.length} 项，下一轮选题立即生效`, "success");
+      showToast(`✓ 选题库配置已保存 ${res.changed.length} 项，下一轮选题立即生效`, "success");
       onSaved?.();
     } catch (e: any) {
       showToast(`保存失败: ${e?.message ?? e}`, "error");
@@ -166,10 +166,10 @@ export function KbEditor({ view, onSaved }: {
     try {
       const r = await api.kbInspect();
       setInspectMsg(r.ok
-        ? `✅ ${r.stats?.total ?? 0} 条选题，${r.stats?.unique_dimensions ?? 0} 个维度（${r.file_type}${r.table ? ` · 表 ${r.table}` : ""}）`
-        : `❌ ${r.error || "检查失败"}`);
+        ? `✓ ${r.stats?.total ?? 0} 条选题，${r.stats?.unique_dimensions ?? 0} 个维度（${r.file_type}${r.table ? ` · 表 ${r.table}` : ""}）`
+        : `✕ ${r.error || "检查失败"}`);
     } catch (e: any) {
-      setInspectMsg(`❌ 检查失败: ${e?.message ?? e}`);
+      setInspectMsg(`✕ 检查失败: ${e?.message ?? e}`);
     }
   };
 
@@ -186,7 +186,7 @@ export function KbEditor({ view, onSaved }: {
         <input style={{ ...inputStyle, fontFamily: "monospace" }} value={path}
           onChange={(e) => setPath(e.target.value)} placeholder="data/topics.db" />
       </Field>
-      <Field label="数据表名（SQLite 专用）">
+      <Field label="数据表名（数据库专用）">
         <input style={{ ...inputStyle, width: 240, fontFamily: "monospace" }} value={table}
           onChange={(e) => setTable(e.target.value)} placeholder="topics" />
       </Field>
@@ -200,7 +200,7 @@ export function KbEditor({ view, onSaved }: {
       </div>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 4 }}>
         <SaveBar onSave={save} busy={busy} hint="路径改动会在下一次选题读取时生效，无需重启后端" />
-        <button className="btn sm" onClick={inspect}>🔍 诊断选题库</button>
+        <button className="btn sm" onClick={inspect}>⌕ 诊断选题库</button>
       </div>
       {inspectMsg && <div className="note">{inspectMsg}</div>}
     </div>
@@ -272,7 +272,7 @@ export function LlmEditor({ view, onSaved }: {
     try {
       const res = await withPending("cfg:llm", () => api.patchConfig(updates));
       if (!res) return;
-      showToast(`✅ 已保存 ${res.changed.length} 项模型配置`, "success");
+      showToast(`✓ 已保存 ${res.changed.length} 项模型配置`, "success");
       onSaved?.();
     } catch (e: any) {
       showToast(`保存失败: ${e?.message ?? e}`, "error");
@@ -284,7 +284,7 @@ export function LlmEditor({ view, onSaved }: {
       const r = await withPending("cfg:llm_key", () => api.saveLlmKey(value));
       if (!r) return;
       setApiKey("");
-      showToast(value ? "✅ API Key 已写入 config/.env（chmod 600）" : "✅ 已清除 API Key", "success");
+      showToast(value ? "✓ API Key 已写入 config/.env（chmod 600）" : "✓ 已清除 API Key", "success");
       onSaved?.();
     } catch (e: any) {
       showToast(`保存 Key 失败: ${e?.message ?? e}`, "error");
@@ -361,7 +361,7 @@ export function LlmEditor({ view, onSaved }: {
           </div>
         </Field>
         <div style={{ fontSize: 11, color: "var(--subtle)", marginTop: 8 }}>
-          R23：Key 只落 config/.env（chmod 600），不进日志、不进数据库、不返回前端。
+          Key 只保存在本机配置文件中，不写日志、不回显到页面。
         </div>
       </div>
     </div>
@@ -408,7 +408,7 @@ export function PlatformToggles({ view, onSaved, loggedIn }: {
     try {
       const res = await withPending("cfg:platforms", () => api.patchConfig(updates));
       if (!res) return;
-      showToast(`✅ 已更新 ${res.changed.length} 项平台配置`, "success");
+      showToast(`✓ 已更新 ${res.changed.length} 项平台配置`, "success");
       onSaved?.();
     } catch (e: any) {
       showToast(`保存失败: ${e?.message ?? e}`, "error");
@@ -575,7 +575,7 @@ export function AdvancedEditor({ view, onSaved }: {
     try {
       const res = await withPending("cfg:advanced", () => api.patchConfig(updates));
       if (!res) return;
-      showToast(`✅ 已保存 ${res.changed.length} 项高级参数`, "success");
+      showToast(`✓ 已保存 ${res.changed.length} 项高级参数`, "success");
       onSaved?.();
     } catch (e: any) {
       showToast(`保存失败: ${e?.message ?? e}`, "error");
@@ -586,7 +586,7 @@ export function AdvancedEditor({ view, onSaved }: {
     <div style={{ display: "grid", gap: 16 }}>
       <div>
         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
-          三模式评分权重（R11 · 每个模式合计必须 = 100%）
+          三模式评分权重
         </div>
         <div className="grid three" style={{ gap: 10 }}>
           {SCORING_MODES.map((m) => {
@@ -662,10 +662,10 @@ export function AdvancedEditor({ view, onSaved }: {
       </Field>
 
       <div className="note" style={{ fontSize: 11 }}>
-        🔒 R22 两条门禁开关（维度匹配 / 可发布性）在代码层硬锁，任何配置都无法关闭；这里改的是词库与阈值，不是开关。
+        ▣ 两条安全门（维度匹配 / 可发布性）在代码层硬锁，任何配置都无法关闭；这里改的是词库与阈值，不是开关。
       </div>
 
-      <SaveBar onSave={save} busy={busy} hint="保存后立即生效并写入 config_changes 审计" />
+      <SaveBar onSave={save} busy={busy} hint="保存后立即生效并" />
     </div>
   );
 }
@@ -706,7 +706,7 @@ export function TimeoutEditor({ view, onSaved }: {
     try {
       const res = await withPending("cfg:timeouts", () => api.patchConfig(updates));
       if (!res) return;
-      showToast(`✅ 已保存 ${res.changed.length} 项超时配置`, "success");
+      showToast(`✓ 已保存 ${res.changed.length} 项超时配置`, "success");
       onSaved?.();
     } catch (e: any) {
       showToast(`保存失败: ${e?.message ?? e}`, "error");
@@ -730,7 +730,7 @@ export function TimeoutEditor({ view, onSaved }: {
         ))}
       </div>
       <SaveBar onSave={save} busy={busy}
-        hint="R8：producing 超时必须小于待发布超时；各阶段独立计时，不互相覆盖" />
+        hint="producing 超时必须小于待发布超时；各阶段独立计时，不互相覆盖" />
     </>
   );
 }
@@ -765,7 +765,7 @@ export function NotifyChannelsEditor({ view, onSaved }: {
     try {
       const res = await withPending("cfg:notify_channels", () => api.patchConfig(updates));
       if (!res) return;
-      showToast(`✅ 已更新 ${res.changed.length} 个通知通道`, "success");
+      showToast(`✓ 已更新 ${res.changed.length} 个通知通道`, "success");
       onSaved?.();
     } catch (e: any) {
       showToast(`保存失败: ${e?.message ?? e}`, "error");
@@ -801,7 +801,7 @@ export function NotifyChannelsEditor({ view, onSaved }: {
         </table>
       </div>
       <SaveBar onSave={save} busy={busy}
-        hint="启用只是允许发送；Webhook URL 仍只存 config/.env（R23，绝不回传页面）" />
+        hint="启用只是允许发送；Webhook 地址只保存在本机配置文件中" />
     </>
   );
 }
@@ -865,7 +865,7 @@ export function PlatformStyleEditor() {
     try {
       const res = await withPending(pendingKey, () => api.updatePlatformStyle(platform, updates));
       if (!res) return;
-      showToast(`✅ ${PLATFORM_LABELS[platform] ?? platform} 已保存 ${res.changed} 项，写入 config_changes 审计`, "success");
+      showToast(`✓ ${PLATFORM_LABELS[platform] ?? platform} 已保存 ${res.changed} 项`, "success");
       await load();
     } catch (e: any) {
       showToast(`保存失败: ${e?.message ?? e}`, "error");
@@ -884,7 +884,7 @@ export function PlatformStyleEditor() {
   if (styles.length === 0) {
     return (
       <div className="note">
-        暂无平台风格记录。确认数据库已执行迁移 <code>016_platform_styles.sql</code>。
+        暂无平台风格记录，请重启后端完成数据库升级。
       </div>
     );
   }

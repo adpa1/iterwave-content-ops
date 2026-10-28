@@ -57,6 +57,8 @@ class SchedulerEngine:
                 "default": SQLAlchemyJobStore(url=f"sqlite:///{db_path}"),
             },
             timezone=None,  # APScheduler 接受 None 表示本地时区（R5）
+            # 应用关着时到点的任务：6 小时内重启仍补跑（默认 1 秒会把一次性数据采集直接丢掉）
+            job_defaults={"misfire_grace_time": 6 * 3600, "coalesce": True},
         )
         # 每平台一把 asyncio.Lock（R13.3）
         from ...adapters.base import Platform
@@ -164,6 +166,76 @@ class SchedulerEngine:
     # 外部接口：动态注册 data_fetch
     # ------------------------------------------------------------------
 
+    def on_user_published(
+        self, draft_id: str, via: str, note_url: Optional[str] = None,
+        confirmed_at: Optional[datetime] = None,
+    ) -> bool:
+        """用户已在平台发布（手动确认 / 只读轮询识别）的统一入口：
+
+        1. 草稿 draft_saved → user_published（幂等）
+        2. 回写平台笔记链接（被动评论轮询靠它定位笔记）
+        3. 注册发布后 metrics_initial_delay_hours 的一次性数据采集
+        4. 首篇确认 → 轮次 awaiting_publish → collecting_metrics
+        手动确认和轮询识别都只调它，保证两条路径行为一致。
+        """
+        from datetime import timedelta
+
+        if self.conn is None or self.sm_draft is None:
+            return False
+        now = confirmed_at or datetime.now()
+        ok = self.sm_draft.transition(
+            draft_id, "user_published", reason=via,
+            extra_updates={"user_confirmed_at": now.isoformat()},
+        )
+        if not ok:
+            return False
+        if note_url:
+            self.conn.execute(
+                "UPDATE drafts SET platform_note_url = COALESCE(platform_note_url, ?) WHERE id = ?",
+                (note_url, draft_id),
+            )
+            self.conn.commit()
+        delay = self.cfg.timeouts.metrics_initial_delay_hours
+        self.schedule_data_fetch(draft_id, now + timedelta(hours=delay))
+        row = self.conn.execute(
+            "SELECT c.round_id FROM drafts d JOIN contents c ON d.content_id = c.id WHERE d.id = ?",
+            (draft_id,),
+        ).fetchone()
+        if self.sm_round is not None and row and row["round_id"] is not None:
+            try:
+                self.sm_round.on_first_publish_confirmed(row["round_id"])
+            except Exception:  # noqa: BLE001 — 推进失败不影响发布确认本身
+                logger.exception("[APS] 推进轮次失败 draft=%s round=%s", draft_id, row["round_id"])
+        return True
+
+    def backfill_data_fetch(self) -> int:
+        """补登记丢失的数据采集：已确认发布、到了采集时间、却既没有采集任务也没有采集结果的草稿。
+
+        覆盖：应用离线错过任务、旧版本手动确认没注册任务等情况。返回补登记篇数。
+        """
+        from datetime import timedelta
+
+        if self.conn is None:
+            return 0
+        delay = self.cfg.timeouts.metrics_initial_delay_hours
+        cutoff = (datetime.now() - timedelta(hours=delay)).isoformat()
+        rows = self.conn.execute(
+            "SELECT d.id FROM drafts d WHERE d.status IN ('user_published', 'data_fetching') "
+            "AND d.user_confirmed_at IS NOT NULL AND d.user_confirmed_at <= ? "
+            "AND NOT EXISTS (SELECT 1 FROM metrics m WHERE m.draft_id = d.id)",
+            (cutoff,),
+        ).fetchall()
+        n = 0
+        for r in rows:
+            pending = [j for j in self.scheduler.get_jobs() if j.id.startswith(f"data_fetch_{r['id']}_")]
+            if pending:
+                continue
+            self.schedule_data_fetch(r["id"], datetime.now() + timedelta(seconds=5))
+            n += 1
+        if n:
+            logger.warning("[APS] 补登记数据采集 %d 篇（任务丢失或旧版本未注册）", n)
+        return n
+
     def schedule_data_fetch(
         self, draft_id: str, run_at: datetime, attempt: int = 1,
     ) -> None:
@@ -211,10 +283,15 @@ class SchedulerEngine:
             return
 
         rows = self.conn.execute(
-            "SELECT d.id, d.platform, d.draft_id, d.round_id, c.title "
+            "SELECT d.id, d.platform, d.draft_id, d.saved_at, c.round_id AS round_id, c.title "
             "FROM drafts d JOIN contents c ON d.content_id = c.id "
             "WHERE d.status = 'draft_saved'"
         ).fetchall()
+        # 每次轮询顺带补登记丢失的数据采集任务
+        try:
+            self.backfill_data_fetch()
+        except Exception:  # noqa: BLE001
+            logger.exception("[APS] 补登记数据采集失败")
         if not rows:
             return
 
@@ -236,24 +313,14 @@ class SchedulerEngine:
             if snap.fetch_status.value not in ("success", "partial"):
                 continue  # 平台侧没看到 → 用户还没发
 
-            now = datetime.now()
-            if self.sm_draft and self.sm_draft.transition(
-                row["id"], "user_published",
-                reason="30min 只读轮询确认平台侧已发布",
-                extra_updates={"user_confirmed_at": now.isoformat()},
+            if row["platform"] == "wechat_channels":
+                # 视频号读回拿不到作品标题，按标题匹配会误判；只接受手动确认
+                continue
+            work_url = getattr(snap, "work_url", None) or None
+            if self.on_user_published(
+                row["id"], via="30min 只读轮询确认平台侧已发布", note_url=work_url,
             ):
                 confirmed += 1
-                self.schedule_data_fetch(row["id"], now + timedelta(hours=delay_hours))
-                # D2 修复：轮询确认发布须与手动确认（main.py:721）对等，
-                # 推进轮次状态机 → collecting_metrics，否则轮次永远卡 awaiting_publish
-                if self.sm_round is not None and row["round_id"] is not None:
-                    try:
-                        self.sm_round.on_first_publish_confirmed(row["round_id"])
-                    except Exception:  # noqa: BLE001 — 单篇失败不影响轮询批次
-                        logger.exception(
-                            "[APS] publish_polling 推进轮次状态机失败 draft=%s round=%s",
-                            row["id"], row["round_id"],
-                        )
                 if getattr(self, "notifier", None):
                     self.notifier.emit(
                         "publish_confirmed",
@@ -372,6 +439,12 @@ class SchedulerEngine:
                 )
             else:
                 logger.error("[APS] data_fetch 重试耗尽（%d 次）：draft=%s", attempt, draft_id)
+                # 不再停在「采集中」拖满 72h：转失败，轮次可以按其余草稿正常收口
+                if self.sm_draft:
+                    self.sm_draft.transition(
+                        draft_id, "failed", reason=f"数据采集重试 {attempt} 次仍未成功",
+                        extra_updates={"error_msg": (snap.error_msg or "数据采集失败")[:500]},
+                    )
                 if getattr(self, "notifier", None):
                     self.notifier.emit(
                         "data_fetch_failed",
@@ -525,7 +598,9 @@ class SchedulerEngine:
                 return self._record_task_run(
                     platform, target, "skipped", "终极目标检查器未注入，拒绝发送评论",
                 )
-            outcome = self.guard.check_comment(content or "")
+            outcome = self.guard.check_comment(
+                content or "", platform=getattr(platform, "value", platform),
+            )
             if not outcome.passes:
                 return self._record_task_run(
                     platform, target, "skipped",
@@ -791,7 +866,7 @@ class SchedulerEngine:
         cleaned_ops = cur.rowcount
 
         # 4. ai_calls（默认 180 天）
-        cutoff_ai = (datetime.now() - timedelta(days=cfg.ai_calls_days)).isoformat(timespec="seconds")
+        cutoff_ai = (datetime.now() - timedelta(days=cfg.ai_calls_detail_days)).isoformat(timespec="seconds")
         cur = self.conn.execute(
             "DELETE FROM ai_calls WHERE called_at < ?", (cutoff_ai,)
         )
@@ -947,10 +1022,25 @@ class SchedulerEngine:
 
         # 1) collecting_metrics：所有 user_published / data_fetching 都已落定 → analyzing
         rows = self.conn.execute(
-            "SELECT id FROM spiral_rounds WHERE status = 'collecting_metrics'"
+            "SELECT id, collecting_metrics_started_at FROM spiral_rounds WHERE status = 'collecting_metrics'"
         ).fetchall()
+        grace_h = getattr(self.cfg.timeouts, "publish_confirm_grace_hours", 48) or 0
         for row in rows:
             round_id = row["id"]
+            # 还有草稿等用户发布：首篇发布后给 publish_confirm_grace_hours 的窗口，
+            # 避免第一篇有数据就收口、后面发布的篇目进不了复盘
+            waiting = self.conn.execute(
+                "SELECT COUNT(*) FROM drafts d JOIN contents c ON d.content_id = c.id "
+                "WHERE c.round_id = ? AND d.status = 'draft_saved'",
+                (round_id,),
+            ).fetchone()[0]
+            if waiting and grace_h and row["collecting_metrics_started_at"]:
+                try:
+                    started = datetime.fromisoformat(str(row["collecting_metrics_started_at"])[:19])
+                    if (datetime.now() - started).total_seconds() < grace_h * 3600:
+                        continue
+                except ValueError:
+                    pass
             unresolved = self.conn.execute(
                 "SELECT COUNT(*) FROM drafts d JOIN contents c ON d.content_id = c.id "
                 "WHERE c.round_id = ? AND d.status IN ('user_published','data_fetching')",
