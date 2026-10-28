@@ -155,7 +155,8 @@ export default function HotTopics() {
           <div className="eyebrow">HOT TOPIC RADAR</div>
           <h1 className="page-title">热点雷达</h1>
           <div className="page-desc">
-            数据源 60s.viki.moe 公益 API，后台每 {hot?.refresh_interval_minutes ?? 30} 分钟采集入库并与账号标签匹配，打开页面不再实时抓取。
+            数据源 60s.viki.moe 公益 API，后台定时采集（{hot?.refresh_enabled === false ? "已关闭" : hot?.refresh_schedule ?? "按配置"}）入库并与账号标签匹配，打开页面不再实时抓取。
+            同一平台同一标题只更新不新增，跨平台同一事件合并展示，热点保留 {hot?.storage?.retention_days ?? "-"} 天。
             4 道筛选门：🔥热度 / ⏰时效 / 🎯维度匹配（不可关）/ ✅可发布性（不可关）。
           </div>
         </div>
@@ -181,6 +182,9 @@ export default function HotTopics() {
             标签匹配 · 关联 {hot.match.matched} · 无关 {hot.match.rejected} · 待研判 {hot.match.pending}
             {hot.match.method === "keyword" ? "（未配置 LLM，仅关键词匹配）" : ""}
           </span>
+        )}
+        {hot?.storage && (
+          <span className="tag gray">库内 {hot.storage.rows} / 上限 {hot.storage.max_rows} 条</span>
         )}
         {hot?.refreshed_at && (
           <span className="tag gray" style={{ marginLeft: "auto" }}>
@@ -333,6 +337,11 @@ export default function HotTopics() {
                   </span>
                 )}
               </div>
+              {h.also_on && h.also_on.length > 0 && (
+                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>
+                  同时在榜：{h.also_on.map((o) => o.platform).join(" / ")}
+                </div>
+              )}
               {h.match_angle && (
                 <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>切入角度：{h.match_angle}</div>
               )}

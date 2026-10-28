@@ -237,11 +237,107 @@ class NotificationsConfig(BaseModel):
     events: list[NotificationEventConfig] = Field(default_factory=list)
 
 
+class HotTopicDedupConfig(BaseModel):
+    """热点去重规则（采集入库时执行）。"""
+    # 规则 1：同一平台标题归一化（去空白 / 标点 / emoji、全角转半角、英文小写）后相同 → 同一条，只更新热度与 last_seen_at
+    # 规则 2：跨平台标题归一化后相同，或字符二元组相似度 ≥ 阈值 → 标记 duplicate_of 主条目（热度最高者），雷达只展示一张卡
+    cross_platform_similarity: float = Field(0.8, ge=0.5, le=1.0)
+    # 规则 3：只在这个时间窗内找跨平台重复（避免把一个月前的同名旧闻并进来）
+    cross_platform_window_hours: int = Field(48, ge=1, le=720)
+
+
 class HotTopicsConfig(BaseModel):
     enabled: bool = True
-    refresh_interval_minutes: int = 30
+    # 已废弃：采集频率改由 scheduler.jobs.hot_topics_refresh 配置（写了也不再生效，启动时告警）
+    refresh_interval_minutes: Optional[int] = None
     sources: list[dict] = Field(default_factory=list)
     filters: dict[str, object] = Field(default_factory=dict)
+    # 保留：last_seen_at 早于 N 天的热点删除；max_rows 为总量硬上限（超出按 last_seen_at 从旧到新删）
+    retention_days: int = Field(7, ge=1, le=365)
+    max_rows: int = Field(5000, ge=100, le=1_000_000)
+    dedup: HotTopicDedupConfig = Field(default_factory=HotTopicDedupConfig)
+
+
+# =====================================================================
+# 定时任务（APScheduler）—— 每个任务的开关与触发方式全部来自配置，代码里不写死
+# =====================================================================
+
+# 任务 id → 说明（未在 config.yaml 中出现的任务使用 DEFAULT_JOB_SCHEDULES 的默认值）
+JOB_DESCRIPTIONS: dict[str, str] = {
+    "publish_polling": "发布轮询（确认用户已在平台发布）",
+    "daily_ops": "每日运营（主动评论 / 关注）",
+    "comment_polling": "评论轮询（被动回复）",
+    "cb_recovery": "熔断恢复检查",
+    "kb_scan": "选题库增量扫描",
+    "data_retention_cleanup": "过期数据清理",
+    "round_timeout_sweeper": "轮次阶段超时扫描",
+    "round_review": "轮次复盘收口",
+    "hot_topics_refresh": "热点采集 + 标签匹配",
+}
+
+
+class JobScheduleConfig(BaseModel):
+    """单个定时任务：interval_minutes 与 cron 二选一。cron 为 5 段 crontab（本地时区，R5）。"""
+    enabled: bool = True
+    interval_minutes: Optional[int] = Field(None, ge=1, le=10080)
+    cron: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _one_trigger(self) -> "JobScheduleConfig":
+        if (self.interval_minutes is None) == (self.cron is None):
+            raise ValueError("interval_minutes 与 cron 必须且只能配置一个")
+        if self.cron is not None:
+            validate_cron(self.cron)
+        return self
+
+    def describe(self) -> str:
+        if self.cron:
+            return f"cron {self.cron}"
+        return f"每 {self.interval_minutes} 分钟"
+
+
+def validate_cron(expr: str) -> str:
+    """校验 5 段 crontab；非法直接抛 ValueError（不做静默兜底）。"""
+    from apscheduler.triggers.cron import CronTrigger
+
+    expr = (expr or "").strip()
+    if len(expr.split()) != 5:
+        raise ValueError(f"cron 必须是 5 段 crontab（分 时 日 月 周），收到：{expr!r}")
+    try:
+        CronTrigger.from_crontab(expr)
+    except ValueError as e:
+        raise ValueError(f"cron 表达式不合法：{expr!r}（{e}）") from e
+    return expr
+
+
+DEFAULT_JOB_SCHEDULES: dict[str, dict] = {
+    "publish_polling": {"interval_minutes": 30},
+    "daily_ops": {"cron": "0 8 * * *"},
+    "comment_polling": {"interval_minutes": 30},
+    "cb_recovery": {"interval_minutes": 5},
+    "kb_scan": {"cron": "0 6 * * *"},
+    "data_retention_cleanup": {"cron": "10 6 * * *"},
+    "round_timeout_sweeper": {"interval_minutes": 60},
+    "round_review": {"interval_minutes": 10},
+    "hot_topics_refresh": {"interval_minutes": 120},
+}
+
+
+class SchedulerConfig(BaseModel):
+    jobs: dict[str, JobScheduleConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _fill_defaults(self) -> "SchedulerConfig":
+        unknown = set(self.jobs) - set(DEFAULT_JOB_SCHEDULES)
+        if unknown:
+            raise ValueError(f"未知定时任务：{sorted(unknown)}，可选 {sorted(DEFAULT_JOB_SCHEDULES)}")
+        for job_id, default in DEFAULT_JOB_SCHEDULES.items():
+            if job_id not in self.jobs:
+                self.jobs[job_id] = JobScheduleConfig(**default)
+        return self
+
+    def job(self, job_id: str) -> JobScheduleConfig:
+        return self.jobs[job_id]
 
 
 class DataRetentionConfig(BaseModel):
@@ -286,6 +382,7 @@ class Config(BaseModel):
     hot_topics: HotTopicsConfig = Field(default_factory=HotTopicsConfig)
     data_retention: DataRetentionConfig = Field(default_factory=DataRetentionConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
 
     def resolve_path(self, relative: str) -> Path:
         """把 config 中的相对路径解析为相对于项目根的绝对路径。"""

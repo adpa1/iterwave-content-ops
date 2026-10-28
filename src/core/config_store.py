@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from src.core.config import Config
+from src.core.config import DEFAULT_JOB_SCHEDULES, JOB_DESCRIPTIONS, Config, validate_cron
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,9 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "rhythm.windows.ops.start_hour": (int, 0, 23),
     "rhythm.windows.ops.end_hour": (int, 0, 23),
     "circuit_breaker.cooldown_minutes": (int, 1, 1440),
-    "hot_topics.refresh_interval_minutes": (int, 5, 1440),
+    "hot_topics.retention_days": (int, 1, 365),
+    "hot_topics.max_rows": (int, 100, 1_000_000),
+    "hot_topics.dedup.cross_platform_window_hours": (int, 1, 720),
     "hot_topics.filters.heat_threshold": (int, 0, 10_000_000),
     "hot_topics.filters.heat_filter_enabled": (bool, None, None),
     "hot_topics.filters.time_window_hours": (int, 1, 720),
@@ -81,6 +83,36 @@ def _validate(key: str, value: Any) -> Any:
             raise ConfigPatchError(f"{key} 必须在 0-10000 之间")
         return value
 
+    # scheduler.jobs.<job_id>.enabled | interval_minutes | cron
+    if len(parts) == 4 and parts[:2] == ["scheduler", "jobs"]:
+        job_id, field = parts[2], parts[3]
+        if job_id not in DEFAULT_JOB_SCHEDULES:
+            raise ConfigNotAllowedError(f"未知定时任务：{job_id}")
+        if field == "enabled":
+            if not isinstance(value, bool):
+                raise ConfigPatchError(f"{key} 必须是布尔值")
+            return value
+        if field == "interval_minutes":
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ConfigPatchError(f"{key} 必须是整数（分钟）")
+            lo = 5 if job_id == "hot_topics_refresh" else 1
+            if not lo <= value <= 10080:
+                raise ConfigPatchError(f"{key} 必须在 {lo}-10080 分钟之间")
+            return value
+        if field == "cron":
+            if not isinstance(value, str):
+                raise ConfigPatchError(f"{key} 必须是 5 段 crontab 字符串")
+            try:
+                return validate_cron(value)
+            except ValueError as e:
+                raise ConfigPatchError(str(e)) from e
+        raise ConfigNotAllowedError(f"定时任务字段只允许 enabled / interval_minutes / cron，收到 {field}")
+
+    if key == "hot_topics.dedup.cross_platform_similarity":
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0.5 <= value <= 1.0:
+            raise ConfigPatchError(f"{key} 必须是 0.5-1.0 之间的数字")
+        return float(value)
+
     rule = SCALAR_RULES.get(key)
     if rule is None:
         raise ConfigNotAllowedError(f"字段不在可修改白名单内：{key}")
@@ -110,7 +142,24 @@ def _get_value(cfg: Config, key: str) -> Any:
     return node
 
 
+def _counterpart(key: str) -> str | None:
+    """interval_minutes 与 cron 互斥：设置其一时要清掉另一个。"""
+    parts = _split(key)
+    if len(parts) == 4 and parts[:2] == ["scheduler", "jobs"]:
+        other = {"interval_minutes": "cron", "cron": "interval_minutes"}.get(parts[3])
+        if other:
+            return ".".join(parts[:3] + [other])
+    return None
+
+
 def _set_value(cfg: Config, key: str, value: Any) -> None:
+    other = _counterpart(key)
+    if other:
+        job = cfg.scheduler.jobs[_split(key)[2]]
+        # 直接改字段（绕过 pydantic 赋值校验的中间态），两者始终只保留一个
+        object.__setattr__(job, _split(other)[3], None)
+        object.__setattr__(job, _split(key)[3], value)
+        return
     parts = _split(key)
     node: Any = cfg
     for part in parts[:-1]:
@@ -161,6 +210,31 @@ def apply_overrides(cfg: Config, overrides: dict[str, Any]) -> list[str]:
     return applied
 
 
+def scheduler_jobs_view(cfg: Config) -> dict[str, dict[str, Any]]:
+    return {
+        job_id: {
+            "description": JOB_DESCRIPTIONS.get(job_id, job_id),
+            "enabled": j.enabled,
+            "interval_minutes": j.interval_minutes,
+            "cron": j.cron,
+            "schedule": j.describe(),
+        }
+        for job_id, j in cfg.scheduler.jobs.items()
+    }
+
+
+def changed_job_ids(keys) -> set[str]:
+    """从修改过的配置键里找出需要重排的定时任务。"""
+    out: set[str] = set()
+    for k in keys:
+        parts = _split(k)
+        if len(parts) == 4 and parts[:2] == ["scheduler", "jobs"]:
+            out.add(parts[2])
+        if k == "hot_topics.enabled":
+            out.add("hot_topics_refresh")
+    return out
+
+
 def current_config_view(cfg: Config, conn) -> dict[str, Any]:
     """Settings 页展示 + 编辑所需的白名单字段当前值。"""
     enabled = cfg.platforms.enabled_keys()
@@ -181,6 +255,13 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
                 if cfg.rhythm.windows.get("ops") else None,
             },
             "cooldown_minutes": cfg.circuit_breaker.cooldown_minutes,
+            "scheduler_jobs": scheduler_jobs_view(cfg),
+            "hot_topics_storage": {
+                "retention_days": cfg.hot_topics.retention_days,
+                "max_rows": cfg.hot_topics.max_rows,
+                "cross_platform_similarity": cfg.hot_topics.dedup.cross_platform_similarity,
+                "cross_platform_window_hours": cfg.hot_topics.dedup.cross_platform_window_hours,
+            },
             "hot_topics": {
                 "heat_threshold": cfg.hot_topics.filters.get("heat_threshold"),
                 "heat_filter_enabled": cfg.hot_topics.filters.get(
@@ -271,6 +352,9 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
             continue
         _set_value(cfg, key, value)
         overrides[key] = value
+        other = _counterpart(key)
+        if other:
+            overrides.pop(other, None)
         conn.execute(
             "INSERT INTO config_changes (key, old_value, new_value, changed_at) "
             "VALUES (?, ?, ?, ?)",

@@ -4,11 +4,11 @@
 约束（R22）：
 - 每条热点必须携带 source / discovered_at / raw_url / evidence_status
 - 采集失败 → evidence_status='failed'，heat_score 保持 NULL（绝不填假数字）
-- 缓存 30 分钟（config.hot_topics.refresh_interval_minutes）
+- 采集频率：config scheduler.jobs.hot_topics_refresh；去重与保留：hot_topic_dedup
 - 4 道门：热度/时效可配可关；维度匹配与可发布性是安全底线（强制开启）
 
 采集改为异步（hot_topic_service）：
-- 定时任务 hot_topics_refresh 按 refresh_interval_minutes 采集 → 落库 → 标签匹配（hot_topic_matcher）
+- 定时任务 hot_topics_refresh 按配置频率采集 → 落库 → 标签匹配（hot_topic_matcher）
 - GET /api/hot_topics 只读库（overview()），不再在请求里同步抓取
 - POST /api/hot_topics/refresh 手动触发一次后台采集，立即返回
 
@@ -50,8 +50,9 @@ _MULTIPLIERS = {"万": 10_000, "亿": 100_000_000}
 
 
 def _topic_id(platform: str, title: str) -> str:
-    raw = f"{platform}|{title}".encode("utf-8")
-    return f"hot-{hashlib.sha1(raw).hexdigest()[:16]}"
+    """去重规则 1：同平台 + 归一化标题 → 同一 id（见 hot_topic_dedup）。"""
+    from .hot_topic_dedup import topic_id
+    return topic_id(platform, title)
 
 
 def _parse_heat(value, desc: Optional[str]) -> Optional[float]:
@@ -122,7 +123,14 @@ class HotTopicCollector:
             "cached": True,
             "refreshed_at": last,
             "stale": not self._is_fresh(),
-            "refresh_interval_minutes": self.hcfg.refresh_interval_minutes,
+            "refresh_interval_minutes": self.cfg.scheduler.job("hot_topics_refresh").interval_minutes,
+            "refresh_schedule": self.cfg.scheduler.job("hot_topics_refresh").describe(),
+            "refresh_enabled": self.cfg.scheduler.job("hot_topics_refresh").enabled,
+            "storage": {
+                "rows": self.conn.execute("SELECT COUNT(*) FROM hot_topics").fetchone()[0],
+                "retention_days": self.hcfg.retention_days,
+                "max_rows": self.hcfg.max_rows,
+            },
             "sources": sources,
             "items": items,
             "match": self._match_summary(items),
@@ -177,7 +185,25 @@ class HotTopicCollector:
             report[platform] = "collected"
             logger.info("🔥 热点采集成功 %s：%d 条", platform, len(result))
 
+        self.apply_dedup_and_retention(report)
         return report
+
+    def apply_dedup_and_retention(self, report: Optional[dict] = None) -> dict:
+        """去重规则 2（跨平台合并）+ 规则 3（保留清理）。采集后调用，也可单独调用。"""
+        from .hot_topic_dedup import backfill, mark_cross_platform, prune
+        d = self.hcfg.dedup
+        stats = {
+            "merged_legacy": backfill(self.conn),
+            "cross_platform_duplicates": mark_cross_platform(
+                self.conn, threshold=d.cross_platform_similarity,
+                window_hours=d.cross_platform_window_hours),
+            "pruned": prune(self.conn, retention_days=self.hcfg.retention_days,
+                            max_rows=self.hcfg.max_rows),
+            "rows": self.conn.execute("SELECT COUNT(*) FROM hot_topics").fetchone()[0],
+        }
+        if report is not None:
+            report["_storage"] = stats
+        return stats
 
     # ------------------------------------------------------------------
     # 抓取
@@ -225,21 +251,29 @@ class HotTopicCollector:
     # ------------------------------------------------------------------
 
     def _upsert(self, platform: str, rows: list[dict]) -> None:
+        """去重规则 1：同一 id 只更新（热度 / 链接 / last_seen_at / seen_count），discovered_at 保持首次发现时间。"""
+        from .hot_topic_dedup import backfill, normalize_title
+        backfill(self.conn)   # 旧数据先补归一化字段并合并，保证新 id 不与旧行重复
         now = datetime.now().isoformat(timespec="seconds")
         source = f"{self.source_name}/{platform}"
+        seen_in_batch: set[str] = set()
         for r in rows:
+            if r["id"] in seen_in_batch:
+                continue        # 同一批次里归一化后重复的标题只算一次
+            seen_in_batch.add(r["id"])
             self.conn.execute(
-                "INSERT INTO hot_topics (id, source, raw_url, discovered_at, evidence_status, "
-                "title, heat_score, heat_unit, time_sensitive, dimension) "
-                "VALUES (?, ?, ?, ?, 'collected', ?, ?, ?, ?, NULL) "
+                "INSERT INTO hot_topics (id, source, raw_url, discovered_at, last_seen_at, evidence_status, "
+                "title, heat_score, heat_unit, time_sensitive, dimension, platform, title_norm, seen_count) "
+                "VALUES (?, ?, ?, ?, ?, 'collected', ?, ?, ?, ?, NULL, ?, ?, 1) "
                 "ON CONFLICT(id) DO UPDATE SET "
                 "source=excluded.source, raw_url=excluded.raw_url, "
-                "discovered_at=excluded.discovered_at, evidence_status='collected', "
-                "heat_score=excluded.heat_score, heat_unit=excluded.heat_unit, "
-                "time_sensitive=excluded.time_sensitive",
+                "last_seen_at=excluded.last_seen_at, evidence_status='collected', "
+                "title=excluded.title, heat_score=excluded.heat_score, heat_unit=excluded.heat_unit, "
+                "time_sensitive=excluded.time_sensitive, seen_count=hot_topics.seen_count + 1",
                 (
-                    r["id"], source, r["raw_url"], now, r["title"],
+                    r["id"], source, r["raw_url"], now, now, r["title"],
                     r["heat_score"], r["heat_unit"], r["time_sensitive"],
+                    platform, normalize_title(r["title"]),
                 ),
             )
         # 该平台之前的失败占位行清理掉
@@ -254,14 +288,15 @@ class HotTopicCollector:
         source = f"{self.source_name}/{platform}"
         try:
             self.conn.execute(
-                "INSERT INTO hot_topics (id, source, raw_url, discovered_at, evidence_status, "
+                "INSERT INTO hot_topics (id, source, raw_url, discovered_at, last_seen_at, evidence_status, "
                 "title, heat_score, heat_unit, time_sensitive, dimension) "
-                "VALUES (?, ?, NULL, ?, 'failed', ?, NULL, NULL, NULL, NULL) "
+                "VALUES (?, ?, NULL, ?, ?, 'failed', ?, NULL, NULL, NULL, NULL) "
                 "ON CONFLICT(id) DO UPDATE SET "
-                "discovered_at=excluded.discovered_at, evidence_status='failed', "
+                "discovered_at=excluded.discovered_at, last_seen_at=excluded.last_seen_at, evidence_status='failed', "
                 "heat_score=NULL, raw_url=NULL",
                 (
                     f"hot-failed-{platform}", source,
+                    datetime.now().isoformat(timespec="seconds"),
                     datetime.now().isoformat(timespec="seconds"),
                     f"{platform} 热点采集失败：{reason[:100]}",
                 ),
@@ -282,11 +317,16 @@ class HotTopicCollector:
             dt = datetime.fromisoformat(last)
         except ValueError:
             return False
-        return (datetime.now() - dt) < timedelta(minutes=self.hcfg.refresh_interval_minutes)
+        return (datetime.now() - dt) < timedelta(minutes=self.refresh_interval_minutes())
+
+    def refresh_interval_minutes(self) -> Optional[int]:
+        """采集频率来自 scheduler.jobs.hot_topics_refresh；cron 触发时按 24h 判断是否过期。"""
+        job = self.cfg.scheduler.job("hot_topics_refresh")
+        return job.interval_minutes or 24 * 60
 
     def _last_collected_at(self) -> Optional[str]:
         row = self.conn.execute(
-            "SELECT MAX(discovered_at) AS ts FROM hot_topics WHERE evidence_status != 'demo'"
+            "SELECT MAX(COALESCE(last_seen_at, discovered_at)) AS ts FROM hot_topics WHERE evidence_status != 'demo'"
         ).fetchone()
         return row["ts"] if row and row["ts"] else None
 
@@ -307,11 +347,13 @@ class HotTopicCollector:
         current_version = matcher.version
         # 每个数据源只展示最近一批（_upsert 同批写同一个 discovered_at），旧批次的过期热点不再出现
         latest_batch: dict[str, str] = {}
+        also_on: dict[str, list[dict]] = {}
         for row in rows:
             if row["evidence_status"] == "collected":
                 src = row["source"] or ""
-                if (row["discovered_at"] or "") > latest_batch.get(src, ""):
-                    latest_batch[src] = row["discovered_at"] or ""
+                seen = row["last_seen_at"] or row["discovered_at"] or ""
+                if seen > latest_batch.get(src, ""):
+                    latest_batch[src] = seen
 
         items: list[dict] = []
         sources: dict[str, dict] = {}
@@ -341,7 +383,15 @@ class HotTopicCollector:
                 continue
             if platform in failed:
                 continue  # 该平台最近一次采集失败 → 不展示旧条目
-            if row["evidence_status"] == "collected" and (row["discovered_at"] or "") < latest_batch.get(source, ""):
+            if row["evidence_status"] == "collected" and \
+                    (row["last_seen_at"] or row["discovered_at"] or "") < latest_batch.get(source, ""):
+                continue
+            if row["duplicate_of"]:
+                # 去重规则 2：跨平台重复只挂到主条目上展示，不单独出卡
+                also_on.setdefault(row["duplicate_of"], []).append({
+                    "platform": platform, "title": row["title"], "url": row["raw_url"],
+                    "heat": row["heat_score"], "heat_unit": row["heat_unit"],
+                })
                 continue
 
             sources.setdefault(platform, {
@@ -371,6 +421,8 @@ class HotTopicCollector:
                 "title": title,
                 "source": source,
                 "discovered_at": row["discovered_at"],
+                "last_seen_at": row["last_seen_at"],
+                "seen_count": row["seen_count"],
                 "url": row["raw_url"],
                 "heat": heat,
                 "heat_unit": row["heat_unit"],
@@ -389,4 +441,6 @@ class HotTopicCollector:
                 "redline_hits": hit_redline,
             })
 
+        for it in items:
+            it["also_on"] = also_on.get(it["id"], [])
         return items, list(sources.values()) + list(failed.values())

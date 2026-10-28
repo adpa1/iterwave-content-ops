@@ -207,6 +207,11 @@ export interface HotTopicItem {
   match_angle?: string | null;
   match_reason?: string | null;
   match_method?: "keyword" | "llm" | null;
+  last_seen_at?: string | null;
+  /** 被采集到的次数（去重后同一条只更新、不新增） */
+  seen_count?: number;
+  /** 跨平台同一事件（去重规则 2 合并到本条） */
+  also_on?: { platform: string; title: string; url: string | null; heat: number | null; heat_unit: string | null }[];
   publishable: boolean;
   redline_hits: string[];
 }
@@ -296,7 +301,10 @@ export interface HotTopicsResponse {
   /** 后台采集任务状态（GET 只读库，采集由定时任务 / POST refresh 完成） */
   refresh_job?: HotRefreshJob;
   match?: { threshold: number; matched: number; rejected: number; pending: number; method: string | null };
-  refresh_interval_minutes?: number;
+  refresh_interval_minutes?: number | null;
+  refresh_schedule?: string;
+  refresh_enabled?: boolean;
+  storage?: { rows: number; retention_days: number; max_rows: number };
   sources: HotSourceStatus[];
   items: HotTopicItem[];
   filters?: Record<string, unknown>;
@@ -609,9 +617,18 @@ export interface NotificationItem {
 
 export interface SchedulerJob {
   id: string;
+  /** 任务说明（来自后端配置） */
   name: string;
+  enabled: boolean;
+  /** interval_minutes 与 cron 二选一 */
+  interval_minutes: number | null;
+  cron: string | null;
+  /** 人类可读的排期（「每 120 分钟」/「cron 0 8 * * *」） */
+  schedule: string;
   next_run_time: string | null;
-  trigger: string;
+  trigger: string | null;
+  /** false = 动态注册的一次性任务（data_fetch_*），不可配置 */
+  configurable: boolean;
 }
 
 export interface RhythmConfig {
