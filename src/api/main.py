@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import logging
 import threading
@@ -49,8 +50,10 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
+from starlette.requests import Request
+from starlette.responses import Response
 
-from src.core.config import load_config, get_config
+from src.core.config import load_config, get_config, DEFAULT_ENV_PATH
 from src.core.db import Database
 from src.core.state_machine import RoundStateMachine, DraftStateMachine
 from src.core.scoring.topic_eval import ScoringEngine, TopicItem
@@ -218,26 +221,39 @@ def _build_app() -> FastAPI:
         if assets_dir.is_dir():
             app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
-        # SPA fallback —— 任何非 API 的 GET 都回 index.html
-        _API_PREFIXES = (
-            "api/", "health", "docs", "openapi.json", "redoc", "favicon.ico",
+        # SPA fallback —— middleware 方式，不拦截 API 路径的尾部斜杠 307 重定向
+        # 之前用 catch-all GET /{full_path:path} 会抢先匹配 /api/* 带尾部斜杠的请求，
+        # 阻止 FastAPI 正常的 307 重定向行为 → 前端调用返回 404
+        _SPA_PROTECTED_PREFIXES = (
+            "/api/", "/health", "/docs", "/openapi.json", "/redoc", "/favicon",
         )
 
-        @app.get("/{full_path:path}")
-        async def spa_fallback(full_path: str):
-            if full_path.startswith(_API_PREFIXES) or full_path == "":
-                # 空路径 / API 路径都不该走到这里（API 路由已先匹配）
-                if full_path == "":
-                    return FileResponse(str(dist_dir / "index.html"))
-                raise HTTPException(status_code=404)
-            # 根目录静态文件（favicon.svg / robots.txt 等）优先返回真实文件，
-            # 否则会被 SPA 兜底成 index.html（浏览器图标加载失败）
-            candidate = (dist_dir / full_path).resolve()
-            if candidate.is_file() and dist_dir.resolve() in candidate.parents:
-                return FileResponse(str(candidate))
+        @app.middleware("http")
+        async def spa_fallback_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
+            response = await call_next(request)
+            # 只对 GET/HEAD + 404 做 SPA 兜底，其余原样返回
+            if request.method not in ("GET", "HEAD") or response.status_code != 404:
+                return response
+            path = request.url.path
+            # API/文档等保留路径不兜底（返回 FastAPI 原始 404 JSON）
+            if path.startswith(_SPA_PROTECTED_PREFIXES):
+                return response
+            # 根路径 / 直接回 index.html
+            if path == "/":
+                return FileResponse(str(dist_dir / "index.html"))
+            # 根目录静态文件（favicon.svg / robots.txt 等）优先返回真实文件
+            safe_path = path.lstrip("/")
+            if safe_path:
+                candidate = (dist_dir / safe_path).resolve()
+                try:
+                    if candidate.is_file() and dist_dir.resolve() in candidate.parents:
+                        return FileResponse(str(candidate))
+                except (ValueError, OSError):
+                    pass
+            # SPA 路由（/dashboard, /plans 等）兜底回 index.html
             return FileResponse(str(dist_dir / "index.html"))
 
-        logger.info("📦 前端静态文件已挂载: %s", dist_dir)
+        logger.info("📦 前端静态文件已挂载 (middleware SPA fallback): %s", dist_dir)
     else:
         logger.warning("⚠️  web/dist 不存在，前端未挂载（请先 `cd web && npm run build`）")
 
@@ -285,6 +301,58 @@ class CreateGoalRequest(BaseModel):
         return v
 
 
+class GoalUpdateRequest(BaseModel):
+    """编辑阶段目标：只允许改口径字段与状态；current_value 由采集回写（R21）。"""
+
+    goal_text: Optional[str] = None
+    target_metric: Optional[str] = None
+    target_value: Optional[float] = None
+    target_platform: Optional[str] = None
+    metric_scope: Optional[str] = None
+    baseline_value: Optional[float] = None
+    baseline_at: Optional[str] = None
+    metric_period_start: Optional[str] = None
+    metric_period_end: Optional[str] = None
+    data_source: Optional[str] = None
+    status: Optional[str] = None
+
+    @field_validator("goal_text", "target_metric", "baseline_at",
+                     "metric_period_start", "metric_period_end", "data_source")
+    @classmethod
+    def _not_blank(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not str(v).strip():
+            raise ValueError("R21 口径字段不能为空（不修改就不要传该字段）")
+        return v
+
+    @field_validator("metric_scope")
+    @classmethod
+    def _scope_enum(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("delta", "total"):
+            raise ValueError("metric_scope 只能是 delta 或 total")
+        return v
+
+    @field_validator("target_value")
+    @classmethod
+    def _target_positive(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and v <= 0:
+            raise ValueError("target_value 必须大于 0")
+        return v
+
+    @field_validator("status")
+    @classmethod
+    def _status_enum(cls, v: Optional[str]) -> Optional[str]:
+        allowed = ("active", "completed", "failed", "cancelled", "paused")
+        if v is not None and v not in allowed:
+            raise ValueError(f"status 只能是 {' / '.join(allowed)}")
+        return v
+
+
+class LlmKeyRequest(BaseModel):
+    """R23：Key 只写 .env（chmod 600），永不回传、不落库、不写日志。空串 = 删除。"""
+
+    api_key: str = Field(default="")
+
+
 class CreateRoundRequest(BaseModel):
     goal_id: Optional[str] = None
     topic_count: int = 5
@@ -297,6 +365,28 @@ class NotifyRuleRequest(BaseModel):
     condition: Optional[str] = None
     notes: Optional[str] = None
     platforms: Optional[list[str]] = None
+
+    @field_validator("scenario")
+    @classmethod
+    def _scenario_ok(cls, v: str) -> str:
+        text = v.strip()
+        if not text or len(text) > 64:
+            raise ValueError("scenario 必须是 1-64 字的场景标识")
+        return text
+
+    @field_validator("channel")
+    @classmethod
+    def _channel_enum(cls, v: str) -> str:
+        if v not in ("macos", "wecom", "feishu", "console"):
+            raise ValueError("channel 只能是 macos / wecom / feishu / console")
+        return v
+
+    @field_validator("level")
+    @classmethod
+    def _level_enum(cls, v: str) -> str:
+        if v not in ("info", "warning", "error", "critical"):
+            raise ValueError("level 只能是 info / warning / error / critical")
+        return v
 
 
 class TransitionRequest(BaseModel):
@@ -621,19 +711,47 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/goals")
     def create_goal(req: CreateGoalRequest):
+        """创建阶段目标（R21：6 个口径字段齐备才落库）。
+
+        注意：这里是 goals 表，不是 spiral_rounds。创建目标 ≠ 启动轮次，
+        轮次统一走 POST /api/rounds。
+        """
         conn = _g()["conn"]
-        key = "goal:" + hashlib.sha256(req.model_dump_json().encode()).hexdigest()
+        goal_id = f"goal-{uuid.uuid4().hex[:12]}"
+        now = datetime.now().isoformat(timespec="seconds")
+        conn.execute(
+            "INSERT INTO goals (id, goal_type, goal_text, target_metric, target_value,"
+            " target_platform, metric_scope, baseline_value, baseline_at,"
+            " metric_period_start, metric_period_end, data_source, status, created_at)"
+            " VALUES (?, 'stage', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)",
+            (
+                goal_id, req.goal_text, req.target_metric, req.target_value,
+                req.target_platform or None, req.metric_scope, req.baseline_value,
+                req.baseline_at, req.metric_period_start, req.metric_period_end,
+                req.data_source, now,
+            ),
+        )
+        conn.commit()
+        item = dict(conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone())
+        item["achievement_rate"] = GoalProgressUpdater.rate_for(item)
+        return item
 
-        def _produce() -> dict:  # G-11：10s 内相同请求只落一条
-            from ..core.autogrow import create_round_record
-            return create_round_record(
-                _g()["cfg"], conn, _g()["plan_version_manager"],
-                goal_id=req.goal_id, topic_count=req.topic_count,
-                platforms=getattr(req, "platforms", None), trigger_source="manual",
-            )
-
-        result, deduped = _dedupe_once(key, _produce)
-        return {**result, "deduped": deduped}
+    @app.patch("/api/goals/{goal_id}")
+    def update_goal(goal_id: str, req: "GoalUpdateRequest"):
+        """编辑阶段目标口径 / 暂停或完成目标（current_value 只由采集回写）。"""
+        conn = _g()["conn"]
+        row = conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "目标不存在")
+        fields = req.model_dump(exclude_unset=True)
+        if not fields:
+            raise HTTPException(422, "没有需要更新的字段")
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        conn.execute(f"UPDATE goals SET {sets} WHERE id = ?", (*fields.values(), goal_id))
+        conn.commit()
+        item = dict(conn.execute("SELECT * FROM goals WHERE id = ?", (goal_id,)).fetchone())
+        item["achievement_rate"] = GoalProgressUpdater.rate_for(item)
+        return item
 
     @app.post("/api/goals/progress/refresh")
     def refresh_goal_progress():
@@ -1877,7 +1995,11 @@ def _register_routes(app: FastAPI) -> None:
                 for p in enabled
             },
             "posting_windows": posting_windows,
-            "min_interval_seconds": getattr(cfg.rhythm, "min_interval_seconds", 30),
+            "ops_window": (
+                {"start_hour": ops_win.start_hour, "end_hour": ops_win.end_hour}
+                if ops_win else None
+            ),
+            "intervals": cfg.rhythm.intervals.model_dump(),
         }
 
     # --- 系统配置（G-13：白名单可写 + config_changes 审计）---
@@ -1911,6 +2033,37 @@ def _register_routes(app: FastAPI) -> None:
                     rescheduled.append({"job_id": job_id, "error": str(e)})
         result["rescheduled"] = rescheduled
         return {**result, "config": current_config_view(g2["cfg"], g2["conn"])["editable"]}
+
+    @app.post("/api/config/llm_key")
+    def save_llm_api_key(req: LlmKeyRequest):
+        """把 API Key 写入 config/.env（chmod 600），立即生效；永不回传明文。"""
+        cfg = _g()["cfg"]
+        key_name = cfg.llm.api_key_env
+        value = req.api_key.strip()
+        lines: list[str] = []
+        if DEFAULT_ENV_PATH.exists():
+            lines = DEFAULT_ENV_PATH.read_text(encoding="utf-8").splitlines()
+        out: list[str] = []
+        replaced = False
+        for line in lines:
+            if line.strip().startswith(f"{key_name}="):
+                if value:
+                    out.append(f"{key_name}={value}")
+                    replaced = True
+                continue  # 空值 = 删除该行
+            out.append(line)
+        if value and not replaced:
+            out.append(f"{key_name}={value}")
+        DEFAULT_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        DEFAULT_ENV_PATH.write_text("\n".join(out) + "\n", encoding="utf-8")
+        DEFAULT_ENV_PATH.chmod(0o600)
+        if value:
+            os.environ[key_name] = value
+        else:
+            os.environ.pop(key_name, None)
+        # R23：只回报状态，绝不回报 Key 本身
+        return {"ok": True, "has_key": bool(os.environ.get(key_name)),
+                "env_file": str(DEFAULT_ENV_PATH)}
 
     # --- 内容资产（G-13：外部参考 / 个人观点 / 内容模板）---
     @app.get("/api/assets")
@@ -2146,11 +2299,26 @@ def _register_routes(app: FastAPI) -> None:
             conn.execute("SELECT 1 FROM notify_rules LIMIT 1")
         except sqlite3.OperationalError:
             conn.executescript(_NOTIFY_RULES_SCHEMA); conn.commit()
+        now = datetime.now().isoformat(timespec="seconds")  # R5：本地时区
+        # 同场景同通道只保留一条（唯一索引兜底；老库没有索引时这里先做 upsert）
+        existing = conn.execute(
+            "SELECT id FROM notify_rules WHERE scenario=? AND channel=?",
+            (req.scenario, req.channel),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE notify_rules SET level=?, enabled=?, condition=?, notes=?,
+                          updated_at=? WHERE id=?""",
+                (req.level, 1 if req.enabled else 0, req.condition, req.notes,
+                 now, existing[0]),
+            )
+            conn.commit()
+            return {"id": existing[0], "message": "同场景同通道规则已存在，已更新"}
         cur = conn.execute(
             """INSERT INTO notify_rules (scenario, channel, level, enabled, condition, notes, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (req.scenario, req.channel, req.level, 1 if req.enabled else 0,
-             req.condition, req.notes),
+             req.condition, req.notes, now),
         )
         conn.commit()
         return {"id": cur.lastrowid, "message": "创建成功"}
@@ -2160,10 +2328,11 @@ def _register_routes(app: FastAPI) -> None:
         conn = _g()["conn"]
         conn.execute(
             """UPDATE notify_rules SET scenario=?, channel=?, level=?, enabled=?,
-                      condition=?, notes=?, updated_at=datetime('now')
+                      condition=?, notes=?, updated_at=?
                WHERE id=?""",
             (req.scenario, req.channel, req.level, 1 if req.enabled else 0,
-             req.condition, req.notes, rule_id),
+             req.condition, req.notes,
+             datetime.now().isoformat(timespec="seconds"), rule_id),
         )
         conn.commit()
         return {"id": rule_id, "message": "更新成功"}
@@ -2287,14 +2456,17 @@ _NOTIFY_RULES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS notify_rules (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     scenario   TEXT NOT NULL,            -- 触发场景（circuit_broken / round_completed / ...）
-    channel    TEXT NOT NULL,            -- 渠道（macos / wecom / feishu / console）
-    level      TEXT NOT NULL,            -- 提醒等级（info / warning / critical）
-    enabled    INTEGER NOT NULL DEFAULT 1,
+    channel    TEXT NOT NULL CHECK (channel IN ('macos', 'wecom', 'feishu', 'console')),
+    level      TEXT NOT NULL DEFAULT 'warning'
+               CHECK (level IN ('info', 'warning', 'error', 'critical')),
+    enabled    INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     condition  TEXT,                     -- 条件表达式（SQL fragment / JSON filter）
     notes      TEXT,
     created_at DATETIME,
     updated_at DATETIME
 );
+CREATE UNIQUE INDEX IF NOT EXISTS ux_notify_rules_scenario_channel
+    ON notify_rules (scenario, channel);
 """
 
 

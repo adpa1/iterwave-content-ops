@@ -4,6 +4,7 @@ import EmptyHint from "../components/EmptyHint";
 import TopicPoolPane from "../components/TopicPoolPane";
 import CreatedContentPane from "../components/CreatedContentPane";
 import { useApp } from "../AppContext";
+import { PersonaEditor } from "../components/ConfigEditors";
 import { useUrlTab } from "../nav";
 import {
   api, AssetItem, AssetType, Draft, HotTopicItem, KbInspect, ScoredTopic, SystemConfigView,
@@ -274,43 +275,17 @@ export default function Assets() {
           <div className="panel">
             <div className="panel-head">
               <div>
-                <div className="panel-title"><span className="icon">♙</span>账号画像（只读 · config.ultimate_goal）</div>
-                <div className="panel-sub">文案生成与终极目标检查共用这份画像，改这里请编辑 config/config.yaml</div>
+                <div className="panel-title"><span className="icon">♙</span>账号画像（可编辑 · config.ultimate_goal）</div>
+                <div className="panel-sub">文案生成与终极目标检查共用这份画像，改完立即生效（R2 检查器同步）</div>
               </div>
             </div>
-            <div className="list">
-              <div className="task-row">
-                <i className="task-prio green" />
-                <div className="task-main">
-                  <div className="task-title">定位关键词</div>
-                  <div className="task-desc">
-                    {(config?.readonly.persona_keywords ?? []).map((k) => (
-                      <span key={k} className="tag teal" style={{ marginRight: 6 }}>{k}</span>
-                    ))}
-                    {(config?.readonly.persona_keywords ?? []).length === 0 && <span style={{ color: "var(--subtle)" }}>未配置</span>}
-                  </div>
-                </div>
-              </div>
-              <div className="task-row">
-                <i className="task-prio orange" />
-                <div className="task-main">
-                  <div className="task-title">禁止方向</div>
-                  <div className="task-desc">
-                    {(config?.readonly.forbidden_directions ?? []).join(" · ") || <span style={{ color: "var(--subtle)" }}>未配置</span>}
-                  </div>
-                </div>
-              </div>
-              <div className="task-row">
-                <i className="task-prio red" />
-                <div className="task-main">
-                  <div className="task-title">红线关键词</div>
-                  <div className="task-desc">
-                    {config?.readonly.redline_keywords_count == null
-                      ? <span style={{ color: "var(--subtle)" }}>—</span>
-                      : `${config.readonly.redline_keywords_count} 个（出现即丢弃重生成）`}
-                  </div>
-                </div>
-              </div>
+            {!config ? (
+              <div className="note">加载配置中…</div>
+            ) : (
+              <PersonaEditor view={config} onSaved={load} />
+            )}
+            <div className="note" style={{ marginTop: 12 }}>
+              红线关键词 {config?.readonly.redline_keywords_count ?? "—"} 个（出现即丢弃重生成，R22 硬锁不可改）
             </div>
           </div>
 

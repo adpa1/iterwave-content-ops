@@ -311,8 +311,9 @@ class AutogrowController:
             if ag.max_rounds_per_day == 0:
                 return {"can_start": False, "action": "skipped", "reason": "每日自动轮上限为 0（已暂停）"}
             today = self.conn.execute(
+                # R5：created_at 已是本地时间，不能再套 'localtime'（会二次换算跨日）
                 "SELECT COUNT(*) FROM spiral_rounds WHERE trigger_source='auto' "
-                "AND date(created_at, 'localtime') = date('now', 'localtime')"
+                "AND date(created_at) = date('now', 'localtime')"
             ).fetchone()[0]
             if today >= ag.max_rounds_per_day:
                 return {"can_start": False, "action": "skipped",

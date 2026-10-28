@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import EmptyHint from "../components/EmptyHint";
+import { AdvancedEditor, KbEditor, LlmEditor, PlatformToggles, TimeoutEditor } from "../components/ConfigEditors";
 import { api, type SystemStatus, type SystemConfigView } from "../api";
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -151,7 +152,8 @@ export default function Settings() {
           <div>
             <div className="panel-title"><span className="icon">⚙</span>运行时配置 · 白名单可编辑</div>
             <div className="panel-sub">
-              只允许改配额 / 运营时段 / 熔断冷却 / 热点热度与时效门限；持久化到 {cfgView?.overrides_file ?? "data/config_overrides.json"}
+              配额 / 运营时段 / 熔断冷却 / 热点门限在此改；画像、选题库、模型、平台开关、阶段超时在下方各自面板改。
+              全部持久化到 {cfgView?.overrides_file ?? "data/config_overrides.json"} 并写审计
             </div>
           </div>
           <div className="head-actions">
@@ -272,104 +274,86 @@ export default function Settings() {
         )}
       </div>
 
-      {/* 本地知识库（G-13 / 原型 step 3） */}
+      {/* 本地知识库（G-13 / 原型 step 3）：可编辑 */}
       <div className="grid two" style={{ marginTop: 14 }}>
         <div className="panel">
           <div className="panel-head">
             <div>
               <div className="panel-title"><span className="icon">▣</span>连接本地知识库</div>
-              <div className="panel-sub">数据源 + 字段映射 + 同步扫描策略</div>
-            </div>
-            <div className="head-actions">
-              <button className="btn sm" onClick={async () => {
-                try {
-                  const r = await api.kbInspect();
-                  showToast(r.ok ? `✅ ${r.stats?.total ?? 0} 条选题，${r.stats?.unique_dimensions ?? 0} 个维度` : `❌ ${r.error || "检查失败"}`, r.ok ? "success" : "error");
-                } catch (e: any) { showToast(`检查失败: ${e?.message ?? e}`, "error"); }
-              }}>🔍 诊断选题库</button>
+              <div className="panel-sub">数据源 + 字段映射 + 同步扫描策略（可在线改，无需重启）</div>
             </div>
           </div>
           {!cfgView ? (
             <div className="note">加载中…</div>
           ) : (
-          <div className="list">
-            <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">路径</div><div className="task-desc" style={{ fontFamily: "monospace", fontSize: 11 }}>{cfgView.readonly.kb_path}</div></div></div>
-            <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">数据源类型</div><div className="task-desc">{cfgView.readonly.kb_type} · 表 {cfgView.readonly.kb_table}</div></div></div>
-            <div className="task-row"><i className="task-prio purple" /><div className="task-main"><div className="task-title">字段映射</div><div className="task-desc" style={{ fontFamily: "monospace", fontSize: 11 }}>{Object.entries(cfgView.readonly.kb_field_mapping).length > 0 ? JSON.stringify(cfgView.readonly.kb_field_mapping) : "(默认自动)"}</div></div></div>
-            <div className="task-row"><i className="task-prio green" /><div className="task-main"><div className="task-title">扫描策略</div><div className="task-desc">APScheduler kb_scan · 每天 06:00（config.scan_cron）</div></div></div>
-          </div>
+            <KbEditor view={cfgView} onSaved={loadConfig} />
           )}
         </div>
 
-        {/* 主模型与备用（原型 step 4） */}
+        {/* 主模型与备用（原型 step 4）：可编辑；Key 只写 .env */}
         <div className="panel">
           <div className="panel-head">
             <div>
               <div className="panel-title"><span className="icon">⇄</span>主模型与备用</div>
-              <div className="panel-sub">不暴露 API Key（R23）；密钥只存 .env</div>
+              <div className="panel-sub">模型可在线改；API Key 只写 .env（R23 不回显）</div>
             </div>
           </div>
           {!cfgView ? (
             <div className="note">加载中…</div>
           ) : (
-          <div className="list">
-            <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">Provider</div><div className="task-desc">{cfgView.readonly.llm_provider}</div></div></div>
-            <div className="task-row"><i className="task-prio green" /><div className="task-main"><div className="task-title">主模型</div><div className="task-desc">{cfgView.readonly.llm_model}</div></div></div>
-            <div className="task-row"><i className="task-prio orange" /><div className="task-main"><div className="task-title">备用模型</div><div className="task-desc">{cfgView.readonly.llm_fallback_model || "未配置"}</div></div></div>
-            <div className="task-row">
-              <i className={`task-prio ${cfgView.readonly.llm_has_api_key ? "green" : "red"}`} />
-              <div className="task-main">
-                <div className="task-title">API Key 状态</div>
-                <div className="task-desc">{cfgView.readonly.llm_has_api_key ? "✓ 已从 .env 读取（不明文回传）" : "✗ 未找到，Skills 无法执行真实调用"}</div>
-              </div>
-            </div>
-          </div>
+            <LlmEditor view={cfgView} onSaved={loadConfig} />
           )}
         </div>
 
-        {/* 平台账号与连接（原型 step 2） */}
+        {/* 平台账号与连接（原型 step 2）：启用开关可编辑 */}
         <div className="panel">
           <div className="panel-head">
             <div>
               <div className="panel-title"><span className="icon">◉</span>平台账号与连接</div>
-              <div className="panel-sub">enabled 开关 + account_key（登录态文件 storage_state.json 另存）</div>
+              <div className="panel-sub">enabled 开关可在线改；登录态文件 storage_state.json 另存</div>
             </div>
           </div>
           {!cfgView ? (
             <div className="note">加载中…</div>
           ) : (
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>平台</th><th>启用</th><th>account_key</th><th>base_url</th></tr></thead>
-              <tbody>
-                {Object.entries(cfgView.readonly.platforms).map(([k, v]) => (
-                  <tr key={k}>
-                    <td>{PLATFORM_LABELS[k] ?? k}</td>
-                    <td><span className={`tag ${v.enabled ? "green" : "gray"}`}>{v.enabled ? "✓" : "✗"}</span></td>
-                    <td style={{ fontFamily: "monospace", fontSize: 11 }}>{v.account_key || "(未配置)"}</td>
-                    <td style={{ fontFamily: "monospace", fontSize: 11, color: "var(--muted)" }}>{v.base_url}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+            <PlatformToggles
+              view={cfgView}
+              onSaved={() => { loadConfig(); load(); }}
+              loggedIn={status?.logged_in_platforms}
+            />
           )}
         </div>
 
-        {/* 平台默认规则（原型「平台默认规则」panel） */}
+        {/* 阶段超时（R8：每个参数只管自己的阶段）— 可编辑 */}
         <div className="panel">
           <div className="panel-head">
             <div>
-              <div className="panel-title"><span className="icon">⚙</span>平台默认规则</div>
-              <div className="panel-sub">当前配置快照（不支持在线改，改 config/config.yaml 生效）</div>
+              <div className="panel-title"><span className="icon">⚙</span>阶段超时与节奏参数</div>
+              <div className="panel-sub">R8：各阶段独立计时，禁止用一个总超时覆盖多阶段</div>
             </div>
           </div>
-          <div className="list">
-            <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">R6 熔断冷却</div><div className="task-desc">{cfgView?.editable.cooldown_minutes ?? "—"} 分钟 · 3 步恢复验证</div></div></div>
-            <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">运营时段</div><div className="task-desc">{cfgView?.editable.ops_window.start_hour ?? "—"} → {cfgView?.editable.ops_window.end_hour ?? "—"}（本地时区）</div></div></div>
-            <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">发布确认超时</div><div className="task-desc">72h 主 + 48h grace；producing 48h 独立（R8）</div></div></div>
-            <div className="task-row"><i className="task-prio purple" /><div className="task-main"><div className="task-title">三模式权重</div><div className="task-desc">冷启动 / 样本积累 / 稳定运行（R11）</div></div></div>
+          {!cfgView ? (
+            <div className="note">加载中…</div>
+          ) : (
+            <TimeoutEditor view={cfgView} onSaved={loadConfig} />
+          )}
+        </div>
+
+        {/* 高级参数：评分权重 / 半衰期 / 节奏间隔 / 红线词库（安全底线仍硬锁） */}
+        <div className="panel" style={{ gridColumn: "1 / -1" }}>
+          <div className="panel-head">
+            <div>
+              <div className="panel-title"><span className="icon">⚗</span>高级参数（权重 / 间隔 / 红线词库）</div>
+              <div className="panel-sub">
+                这三类以前写死在代码/只读，现在可在线调；R22 门禁总开关与 Playwright 不点发布仍然硬锁
+              </div>
+            </div>
           </div>
+          {!cfgView ? (
+            <div className="note">加载中…</div>
+          ) : (
+            <AdvancedEditor view={cfgView} onSaved={loadConfig} />
+          )}
         </div>
       </div>
 

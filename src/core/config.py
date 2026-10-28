@@ -381,6 +381,7 @@ class LlmConfig(BaseModel):
     # 两处必须保持一致，否则混用通道会导致 404 / 计费异常。
     base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     model: str = "doubao-seed-1-6-250615"
+    fallback_model: str = ""                  # 主模型失败时的兜底模型；空串 = 不启用
     api_key_env: str = "ARK_API_KEY"          # R23：只从 .env 读，不落库不落日志
     temperature: float = 0.7
     timeout_seconds: int = 60

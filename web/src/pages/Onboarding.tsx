@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, Platform, SystemConfigView, SystemStatus, Goal, DiagnoseResult } from "../api";
 import { navigate } from "../nav";
+import { PersonaEditor, KbEditor, LlmEditor, PlatformToggles } from "../components/ConfigEditors";
+import { useApp } from "../AppContext";
 
 const STEPS = [
   { key: "persona",  label: "① 账号画像",     hint: "终极目标 / 红线 / 定位关键词" },
@@ -14,24 +16,54 @@ const STEPS = [
 
 type StepKey = typeof STEPS[number]["key"];
 
-const PLATFORM_ICONS: Record<Platform, string> = {
-  xhs: "📕", douyin: "🎵", kuaishou: "⚡", wechat_channels: "💚",
-};
 const PLATFORM_NAMES: Record<Platform, string> = {
   xhs: "小红书", douyin: "抖音", kuaishou: "快手", wechat_channels: "视频号",
 };
 
+const GOAL_METRICS = [
+  { value: "followers_gained", label: "新增粉丝" },
+  { value: "likes", label: "点赞数" },
+  { value: "collects", label: "收藏数" },
+  { value: "views", label: "曝光数" },
+  { value: "comments", label: "评论数" },
+  { value: "shares", label: "分享数" },
+  { value: "interaction_rate", label: "互动率" },
+];
+
+const GOAL_DATA_SOURCES = [
+  { value: "account_stats", label: "account_stats 平台读回" },
+  { value: "platform_api", label: "平台 API" },
+  { value: "manual", label: "人工录入" },
+];
+
+function todayStr(offsetDays = 0): string {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
+  return d.toISOString().slice(0, 10);
+}
+
 export default function Onboarding() {
+  const { showToast } = useApp();
   const [stepIdx, setStepIdx] = useState(0);
   const [cfg, setCfg] = useState<SystemConfigView | null>(null);
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-
-  // 向导表单（本地状态，不直接写后端）
-  const [persona, setPersona] = useState({ keywords: "", forbidden: "", redlines: "" });
-  const [enabledPlatforms, setEnabledPlatforms] = useState<Set<Platform>>(new Set());
+  // ⑥ 阶段目标：向导内直接创建（POST /api/goals → goals 表）
+  const [goalForm, setGoalForm] = useState({
+    goal_text: "",
+    target_platform: "",
+    target_metric: "followers_gained",
+    target_value: "500",
+    metric_scope: "delta",
+    baseline_value: "0",
+    baseline_at: todayStr(),
+    metric_period_start: todayStr(),
+    metric_period_end: todayStr(30),
+    data_source: "account_stats",
+  });
+  const [goalBusy, setGoalBusy] = useState(false);
 
   const step: StepKey = STEPS[stepIdx].key;
   const [diag, setDiag] = useState<DiagnoseResult | null>(null);
@@ -43,28 +75,54 @@ export default function Onboarding() {
   };
   useEffect(() => { if (step === "check" && !diag) runDiag(); }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /** 配置 / 状态 / 目标统一重载（各步编辑器保存后调用） */
+  const reload = async () => {
+    try {
+      const [c, s, g] = await Promise.all([api.config(), api.status(), api.goals()]);
+      setCfg(c);
+      setStatus(s);
+      setGoals(g);
+      setErr(null);
+    } catch (e: any) {
+      setErr(e.message);
+    }
+  };
+
   useEffect(() => {
     (async () => {
       setLoading(true);
-      try {
-        const [c, s, g] = await Promise.all([api.config(), api.status(), api.goals()]);
-        setCfg(c);
-        setStatus(s);
-        setGoals(g);
-        // 回填 persona
-        setPersona({
-          keywords: c.readonly.persona_keywords.join(", "),
-          forbidden: c.readonly.forbidden_directions.join(", "),
-          redlines: `${c.readonly.redline_keywords_count} 条已内置`,
-        });
-        setEnabledPlatforms(new Set(s.enabled_platforms));
-      } catch (e: any) {
-        setErr(e.message);
-      } finally {
-        setLoading(false);
-      }
+      await reload();
+      setLoading(false);
     })();
   }, []);
+
+  const createGoal = async () => {
+    if (!goalForm.goal_text.trim()) { showToast("请填写目标描述", "error"); return; }
+    const targetValue = Number(goalForm.target_value);
+    if (!(targetValue > 0)) { showToast("目标值必须大于 0", "error"); return; }
+    setGoalBusy(true);
+    try {
+      await api.createGoal({
+        goal_text: goalForm.goal_text.trim(),
+        target_metric: goalForm.target_metric,
+        target_value: targetValue,
+        target_platform: (goalForm.target_platform || null) as Platform | null,
+        metric_scope: goalForm.metric_scope,
+        baseline_value: Number(goalForm.baseline_value) || 0,
+        baseline_at: goalForm.baseline_at,
+        metric_period_start: goalForm.metric_period_start,
+        metric_period_end: goalForm.metric_period_end,
+        data_source: goalForm.data_source,
+      });
+      showToast("✅ 阶段目标已创建并写入 goals 表", "success");
+      await reload();
+      setGoalForm((f) => ({ ...f, goal_text: "" }));
+    } catch (e: any) {
+      showToast(`创建失败: ${e?.message ?? e}`, "error");
+    } finally {
+      setGoalBusy(false);
+    }
+  };
 
   if (loading) return <div className="note">加载配置中…</div>;
   if (err) return <div className="note" style={{ color: "var(--red)" }}>加载失败：{err}</div>;
@@ -88,8 +146,7 @@ export default function Onboarding() {
           <div className="eyebrow">FIRST-TIME SETUP</div>
           <h1 className="page-title">首次配置向导</h1>
           <div className="page-desc">
-            7 步完成 IterWave 初始化。配置散落在「系统设置」，这里提供向导式入口。
-            <span style={{ marginLeft: 8, color: "var(--orange)" }}>⚠ 向导只做引导和预检；实际写配置走「系统设置」</span>
+            7 步完成 IterWave 初始化。每一步都能直接编辑并保存，保存后立即生效（写 config_changes 审计）。
           </div>
         </div>
       </div>
@@ -129,18 +186,7 @@ export default function Onboarding() {
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
               账号定位关键词 + 禁区。这些决定了 R2 终极目标检查器拦截什么内容。
             </p>
-            <div style={{ display: "grid", gap: 14 }}>
-              <FormRow label="定位关键词（逗号分隔）" value={persona.keywords} onChange={(v) => setPersona({ ...persona, keywords: v })} placeholder="如：AI 教育, 家长启蒙, 中小学, 工具效率" />
-              <FormRow label="禁区方向（逗号分隔）" value={persona.forbidden} onChange={(v) => setPersona({ ...persona, forbidden: v })} placeholder="如：成人内容, 纯娱乐无教育价值" />
-              <div>
-                <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>红线敏感词库</div>
-                <div className="tag blue">已内置 {cfg.readonly.redline_keywords_count} 条</div>
-                <span style={{ fontSize: 11, color: "var(--subtle)", marginLeft: 8 }}>（R22 硬锁，不可关闭）</span>
-              </div>
-            </div>
-            <div className="note" style={{ marginTop: 14 }}>
-              💡 修改方式：到 <strong>系统设置</strong> → <strong>运行时配额</strong> 编辑 persona 字段
-            </div>
+            <PersonaEditor view={cfg} onSaved={reload} />
           </div>
         )}
 
@@ -150,33 +196,15 @@ export default function Onboarding() {
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
               至少启用 1 个平台才能跑通首轮。建议先 1 平台验证，再扩。
             </p>
-            <div className="grid two">
-              {(Object.keys(PLATFORM_ICONS) as Platform[]).map((p) => {
-                const realEnabled = status.enabled_platforms.includes(p);
-                const loggedIn = status.logged_in_platforms.includes(p);
-                const broken = status.circuit_broken_platforms.includes(p);
-                return (
-                  <div key={p} style={{
-                    padding: 14, borderRadius: 10, border: `1px solid ${realEnabled ? "var(--blue)" : "var(--border)"}`,
-                    background: realEnabled ? "rgba(66,99,235,0.06)" : "var(--card)",
-                  }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <div style={{ fontSize: 16, fontWeight: 700 }}>{PLATFORM_ICONS[p]} {PLATFORM_NAMES[p]}</div>
-                      <div>
-                        {realEnabled ? <span className="tag green">✅ 已启用</span> : <span className="tag gray">未启用</span>}
-                      </div>
-                    </div>
-                    <div style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      <span className={`tag ${loggedIn ? "green" : "orange"}`}>{loggedIn ? "🔑 已登录" : "🔒 无登录态"}</span>
-                      {broken && <span className="tag red">🚨 已熔断</span>}
-                      {cfg.readonly.platforms[p]?.account_key && <span className="tag blue">account_key: {cfg.readonly.platforms[p].account_key}</span>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="note" style={{ marginTop: 14 }}>
-              💡 启用 / 登录态切换到 <strong>系统设置</strong> → <strong>平台连接</strong>
+            <PlatformToggles view={cfg} onSaved={reload} loggedIn={status.logged_in_platforms} />
+            {status.circuit_broken_platforms.length > 0 && (
+              <div className="note" style={{ marginTop: 12, color: "var(--orange)" }}>
+                🚨 已熔断：{status.circuit_broken_platforms.map((p) => PLATFORM_NAMES[p]).join("、")}
+                （需在「运营控制台」走 3 步恢复验证）
+              </div>
+            )}
+            <div className="note" style={{ marginTop: 12 }}>
+              🔑 启用 ≠ 可发布：还需要扫码登录，入口在「账号连接」页。
             </div>
           </div>
         )}
@@ -187,15 +215,7 @@ export default function Onboarding() {
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
               选题来源：本地 SQLite / CSV / JSONL。必须有 title + dimension 两个核心字段。
             </p>
-            <div className="grid two">
-              <InfoRow label="KB 类型" value={cfg.readonly.kb_type || "—"} />
-              <InfoRow label="文件路径" value={cfg.readonly.kb_path || "—"} mono />
-              <InfoRow label="数据表" value={cfg.readonly.kb_table || "—"} />
-              <InfoRow label="字段映射" value={Object.entries(cfg.readonly.kb_field_mapping).length ? Object.entries(cfg.readonly.kb_field_mapping).map(([k, v]) => `${k}→${v}`).join(", ") : "—"} mono />
-            </div>
-            <div className="note" style={{ marginTop: 14 }}>
-              ⚠ KB 路径在 config.yaml 定义，修改后需要重启后端。字段映射诊断到 <strong>内容资产</strong> → <strong>选题库</strong> 页面查看。
-            </div>
+            <KbEditor view={cfg} onSaved={reload} />
           </div>
         )}
 
@@ -203,17 +223,12 @@ export default function Onboarding() {
           <div>
             <div className="panel-title" style={{ marginBottom: 16 }}>④ 模型配置</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              Provider + Model + API Key（存 <code>.env</code>，不进前端明文，R23）。
+              Provider + Model + API Key（Key 存 <code>.env</code>，不进前端明文，R23）。
             </p>
-            <div className="grid two">
-              <InfoRow label="Provider" value={cfg.readonly.llm_provider || "—"} />
-              <InfoRow label="主模型" value={cfg.readonly.llm_model || "—"} />
-              <InfoRow label="兜底模型" value={cfg.readonly.llm_fallback_model || "—"} />
-              <InfoRow label="API Key" value={cfg.readonly.llm_has_api_key ? "✅ 已配置（不明文回传）" : "❌ 未配置"} />
-            </div>
+            <LlmEditor view={cfg} onSaved={reload} />
             {!cfg.readonly.llm_has_api_key && (
               <div className="note" style={{ marginTop: 12, color: "var(--orange)" }}>
-                ⚠ API Key 未配置 → 选题评分 + 文案生成 + 终极目标检查 全部不可用。请在 <code>config/.env</code> 写入后重启。
+                ⚠ API Key 未配置 → 选题评分 + 文案生成 + 终极目标检查 全部不可用。
               </div>
             )}
           </div>
@@ -248,8 +263,68 @@ export default function Onboarding() {
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
               R21 口径：每个目标必须同时定义 6 个字段（指标 + 目标值 + 口径 + 基线 + 周期 + 来源）。
             </p>
+
+            <div style={{ display: "grid", gap: 12, padding: 14, border: "1px solid var(--border)", borderRadius: 10, marginBottom: 16 }}>
+              <FormRow label="目标描述 *" value={goalForm.goal_text}
+                onChange={(v) => setGoalForm({ ...goalForm, goal_text: v })}
+                placeholder="如：小红书 30 天新增 500 粉" />
+              <div className="grid three">
+                <div>
+                  <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>平台</div>
+                  <select className="field" style={{ width: "100%" }} value={goalForm.target_platform}
+                    onChange={(e) => setGoalForm({ ...goalForm, target_platform: e.target.value })}>
+                    <option value="">全平台</option>
+                    {(Object.keys(PLATFORM_NAMES) as Platform[]).map((p) => (
+                      <option key={p} value={p}>{PLATFORM_NAMES[p]}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>指标</div>
+                  <select className="field" style={{ width: "100%" }} value={goalForm.target_metric}
+                    onChange={(e) => setGoalForm({ ...goalForm, target_metric: e.target.value })}>
+                    {GOAL_METRICS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>目标值 *</div>
+                  <input className="field" type="number" style={{ width: "100%" }} value={goalForm.target_value}
+                    onChange={(e) => setGoalForm({ ...goalForm, target_value: e.target.value })} />
+                </div>
+              </div>
+              <div className="grid three">
+                <div>
+                  <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>口径</div>
+                  <select className="field" style={{ width: "100%" }} value={goalForm.metric_scope}
+                    onChange={(e) => setGoalForm({ ...goalForm, metric_scope: e.target.value })}>
+                    <option value="delta">增量（本阶段新增）</option>
+                    <option value="total">总量（达到总数）</option>
+                  </select>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>基线值</div>
+                  <input className="field" type="number" style={{ width: "100%" }} value={goalForm.baseline_value}
+                    onChange={(e) => setGoalForm({ ...goalForm, baseline_value: e.target.value })} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>数据来源</div>
+                  <select className="field" style={{ width: "100%" }} value={goalForm.data_source}
+                    onChange={(e) => setGoalForm({ ...goalForm, data_source: e.target.value })}>
+                    {GOAL_DATA_SOURCES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="grid three">
+                <FormRow label="基线时间" value={goalForm.baseline_at} onChange={(v) => setGoalForm({ ...goalForm, baseline_at: v })} />
+                <FormRow label="周期开始" value={goalForm.metric_period_start} onChange={(v) => setGoalForm({ ...goalForm, metric_period_start: v })} />
+                <FormRow label="周期结束" value={goalForm.metric_period_end} onChange={(v) => setGoalForm({ ...goalForm, metric_period_end: v })} />
+              </div>
+              <button className="btn primary sm" style={{ justifySelf: "start" }} disabled={goalBusy}
+                onClick={createGoal}>{goalBusy ? "创建中…" : "＋ 创建阶段目标"}</button>
+            </div>
+
             {goals.length === 0 ? (
-              <div className="note">还没有阶段目标 → <button type="button" className="link-btn" onClick={() => navigate("goals")}>到「目标与策略」创建</button></div>
+              <div className="note">还没有阶段目标，用上方表单创建第一条。</div>
             ) : (
               <div className="table-wrap">
                 <table>
@@ -359,15 +434,6 @@ function FormRow({ label, value, onChange, placeholder }: {
           border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)", fontSize: 13,
         }}
       />
-    </div>
-  );
-}
-
-function InfoRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div style={{ padding: 12, background: "var(--card)", borderRadius: 8, border: "1px solid var(--border)" }}>
-      <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 13, fontFamily: mono ? "monospace" : undefined, color: "var(--text)" }}>{value}</div>
     </div>
   );
 }

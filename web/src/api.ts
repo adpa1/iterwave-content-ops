@@ -370,7 +370,7 @@ export interface SystemConfigView {
   };
   /** R22 两道硬锁：只读，后端拒绝关闭 */
   locked: { dimension_match_required: boolean; publishability_required: boolean };
-  /** 账号画像 + KB + LLM + 平台连接（全只读，来自 config.yaml 解析结果） */
+  /** 账号画像 + KB + LLM + 平台连接：展示值；可编辑项走 PATCH /api/config 白名单 */
   readonly: {
     persona_keywords: string[];
     forbidden_directions: string[];
@@ -384,9 +384,35 @@ export interface SystemConfigView {
     llm_provider: string;
     llm_model: string;
     llm_fallback_model: string;
+    llm_base_url: string;
+    llm_temperature: number;
+    llm_timeout_seconds: number;
+    llm_enabled: boolean;
     llm_has_api_key: boolean;
     // 平台连接
     platforms: Record<string, { enabled: boolean; account_key: string; base_url: string }>;
+    /** R8：各阶段独立超时（小时），可在线改 */
+    timeouts: Record<string, number | string>;
+    /** R11 三模式权重 + R12 半衰期（可在线调，每个模式合计必须 100） */
+    scoring: {
+      cold_start: Record<string, number>;
+      sample_accumulating: Record<string, number>;
+      stable_operation: Record<string, number>;
+      timeliness_half_life_days: Record<string, number>;
+      active_dimension_min_uses: number;
+      active_dimension_window_days: number;
+      shrinkage_m: number;
+    };
+    /** 节奏随机间隔（秒）：基准 ± jitter */
+    rhythm_intervals: Record<string, number>;
+    /** R22 红线词库（词库可增删，门禁开关仍硬锁） */
+    redline_keywords: string[];
+    /** 通知通道（webhook URL 只在 .env，这里只回是否已配置） */
+    notification_channels: Record<string, {
+      enabled: boolean;
+      webhook_url_env: string | null;
+      has_webhook_url: boolean;
+    }>;
   };
   overrides_file: string;
   overrides: Record<string, unknown>;
@@ -753,11 +779,27 @@ export interface SchedulerJob {
   configurable: boolean;
 }
 
+/** 通知规则（notify_rules 表）：有规则的场景按规则限定通道/级别，无规则走 config 默认 */
+export interface NotifyRule {
+  id: number;
+  scenario: string;
+  channel: string;
+  level: string;
+  enabled: number | boolean;
+  condition?: string | null;
+  notes?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 export interface RhythmConfig {
   enabled_platforms: Platform[];
   quotas: Record<Platform, { passive_replies: number; active_comments: number; follows: number }>;
   posting_windows: Record<Platform, string[]>;
-  min_interval_seconds: number;
+  /** 运营时段窗口（所有平台共用，可在页面直接改） */
+  ops_window: { start_hour: number; end_hour: number } | null;
+  /** 随机操作间隔（基准 ± jitter，秒） */
+  intervals: Record<string, number>;
 }
 
 // ===== fetch wrapper =====
@@ -782,8 +824,12 @@ export const api = {
   /** 总体目标进度（后端统一计算等权平均，前端只展示） */
   goalsSummary: () => fetchJson<GoalSummary>("/api/goals/summary"),
   createGoal: (data: Partial<Goal>) =>
-    fetchJson<{ id: string; message: string }>("/api/goals", {
+    fetchJson<Goal>("/api/goals", {
       method: "POST", body: JSON.stringify(data),
+    }),
+  updateGoal: (goalId: string, data: Partial<Goal>) =>
+    fetchJson<Goal>(`/api/goals/${goalId}`, {
+      method: "PATCH", body: JSON.stringify(data),
     }),
   refreshGoalProgress: () =>
     fetchJson<{ updated: Record<string, number | null>; goals: Goal[]; summary: GoalSummary }>(
@@ -886,6 +932,22 @@ export const api = {
     fetchJson<{ changed: { key: string; old: unknown; new: unknown }[]; noop: boolean; config: SystemConfigView["editable"] }>(
       "/api/config", { method: "PATCH", body: JSON.stringify({ updates }) },
     ),
+  /** R23：Key 只写 config/.env（chmod 600）；返回值只有状态，无明文 */
+  saveLlmKey: (apiKey: string) =>
+    fetchJson<{ ok: boolean; has_key: boolean; env_file: string }>("/api/config/llm_key", {
+      method: "POST", body: JSON.stringify({ api_key: apiKey }),
+    }),
+  notifyRules: () => fetchJson<NotifyRule[]>("/api/notify_rules"),
+  createNotifyRule: (data: Partial<NotifyRule>) =>
+    fetchJson<{ id: number; message: string }>("/api/notify_rules", {
+      method: "POST", body: JSON.stringify(data),
+    }),
+  updateNotifyRule: (id: number, data: Partial<NotifyRule>) =>
+    fetchJson<{ id: number; message: string }>(`/api/notify_rules/${id}`, {
+      method: "PATCH", body: JSON.stringify(data),
+    }),
+  deleteNotifyRule: (id: number) =>
+    fetchJson<{ message: string }>(`/api/notify_rules/${id}`, { method: "DELETE" }),
   // === 运营控制台 ===
   /** days = 展示窗口（1=今日，7/30/90）；与 R12 评分 90 天口径独立 */
   opsKpi: (days = 1) => fetchJson<OpsKpiResponse>(`/api/ops_kpi?days=${days}`),

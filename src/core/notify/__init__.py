@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sqlite3
 import subprocess
 from datetime import datetime, timedelta
 from typing import Optional
@@ -73,6 +74,20 @@ class Notifier:
         # config 里声明的事件配置（enabled / level）
         self.event_cfg = {e.name: e for e in ncfg.events}
 
+    def _rule_override(self, event: str) -> Optional[list[tuple[str, str, int]]]:
+        """notify_rules 表覆盖（页面可编辑）。
+
+        返回 [(channel, level, enabled)]；表不存在或没有该事件的规则 → None（走 config 默认）。
+        """
+        try:
+            rows = self.conn.execute(
+                "SELECT channel, level, enabled FROM notify_rules WHERE scenario = ?",
+                (event,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return None
+        return rows or None
+
     # ------------------------------------------------------------------
     # 对外入口
     # ------------------------------------------------------------------
@@ -107,6 +122,18 @@ class Notifier:
             logger.warning("非法通知级别 %s，回退默认 %s", final_level, default_level)
             final_level = default_level
 
+        # notify_rules 表覆盖（页面可编辑）：有规则 → 按规则限定通道 / 级别
+        rules = self._rule_override(event)
+        allowed_channels: Optional[set[str]] = None
+        if rules is not None:
+            active = [r for r in rules if r[2] and r[0] in ("macos", "wecom", "feishu")]
+            if not active:
+                logger.debug("notify_rules 全通道禁用，跳过: %s", event)
+                return False
+            allowed_channels = {r[0] for r in active}
+            if level is None and active[0][1] in LEVELS:
+                final_level = active[0][1]
+
         # R23：正文统一脱敏
         body = _redact(message or "")
         head = _redact(title or default_title)  # R23：标题同样脱敏（手机号/微信号等）
@@ -122,6 +149,8 @@ class Notifier:
         # 多通道投递
         sent_channels: list[str] = []
         for channel in ("macos", "wecom", "feishu"):
+            if allowed_channels is not None and channel not in allowed_channels:
+                continue
             ccfg = self.channels.get(channel)
             if ccfg is None or not ccfg.enabled:
                 continue

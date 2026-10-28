@@ -57,6 +57,9 @@ export default function Goals() {
   const [submitting, setSubmitting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 编辑中的目标（null = 未编辑）；current_value 只由采集回写，这里不提供 */
+  const [editing, setEditing] = useState<Goal | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const load = async () => {
     try {
@@ -96,6 +99,36 @@ export default function Goals() {
       }
     } catch (e: any) { showToast(`创建失败: ${e.message}`, "error"); }
     finally { setSubmitting(false); }
+  };
+
+  const handleUpdate = async () => {
+    if (!editing) return;
+    const targetValue = Number(editing.target_value);
+    if (!(targetValue > 0)) { showToast("目标值必须大于 0", "error"); return; }
+    setSavingEdit(true);
+    try {
+      const res = await withPending("goal:update", () =>
+        api.updateGoal(editing.id, {
+          goal_text: editing.goal_text,
+          target_metric: editing.target_metric,
+          target_value: targetValue,
+          target_platform: (editing.target_platform || null) as any,
+          metric_scope: editing.metric_scope,
+          baseline_value: editing.baseline_value == null ? null : Number(editing.baseline_value),
+          baseline_at: editing.baseline_at,
+          metric_period_start: editing.metric_period_start,
+          metric_period_end: editing.metric_period_end,
+          data_source: editing.data_source,
+          status: editing.status,
+        }),
+      );
+      if (res !== undefined) {
+        showToast("✅ 目标已更新");
+        setEditing(null);
+        await load();
+      }
+    } catch (e: any) { showToast(`保存失败: ${e.message}`, "error"); }
+    finally { setSavingEdit(false); }
   };
 
   const handleRefreshProgress = async () => {
@@ -183,7 +216,7 @@ export default function Goals() {
           <div className="panel-head">
             <div>
               <div className="panel-title"><span className="icon" aria-hidden="true">⚑</span>策略与约束</div>
-              <div className="panel-sub">R2 / R22 红线 · 定位关键词 · 禁止方向，来自 config.yaml</div>
+              <div className="panel-sub">R2 / R22 红线 · 定位关键词 · 禁止方向；可在「系统设置 / 首次向导」在线编辑</div>
             </div>
           </div>
           {!cfgView ? (
@@ -313,6 +346,97 @@ export default function Goals() {
         </button>
       </div>
 
+      {editing && (
+        <div className="panel" style={{ borderColor: "var(--blue)" }}>
+          <div className="panel-head">
+            <div>
+              <div className="panel-title"><span className="icon">✎</span>编辑目标 · {editing.goal_text}</div>
+              <div className="panel-sub">可改口径 / 基线 / 周期 / 状态；当前值只由数据采集回写，不能手填</div>
+            </div>
+            <div className="head-actions">
+              <button className="btn sm" onClick={() => setEditing(null)}>取消</button>
+            </div>
+          </div>
+          <div className="grid four" style={{ gap: 10 }}>
+            <div>
+              <label className="form-label">目标描述 *</label>
+              <input className="field" value={editing.goal_text}
+                onChange={(e) => setEditing({ ...editing, goal_text: e.target.value })} />
+            </div>
+            <div>
+              <label className="form-label">指标 *</label>
+              <select className="field" value={editing.target_metric}
+                onChange={(e) => setEditing({ ...editing, target_metric: e.target.value })}>
+                {METRICS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="form-label">目标值 *</label>
+              <input className="field" type="number" min={1} value={editing.target_value}
+                onChange={(e) => setEditing({ ...editing, target_value: Number(e.target.value) })} />
+            </div>
+            <div>
+              <label className="form-label">口径 *</label>
+              <select className="field" value={editing.metric_scope}
+                onChange={(e) => setEditing({ ...editing, metric_scope: e.target.value })}>
+                <option value="delta">增量（本阶段新增）</option>
+                <option value="total">总量（累计达到）</option>
+              </select>
+            </div>
+            <div>
+              <label className="form-label">基线值</label>
+              <input className="field" type="number" value={editing.baseline_value ?? ""}
+                onChange={(e) => setEditing({ ...editing, baseline_value: e.target.value === "" ? null : Number(e.target.value) })} />
+            </div>
+            <div>
+              <label className="form-label">基线时间 *</label>
+              <input className="field" type="date" value={editing.baseline_at ?? ""}
+                onChange={(e) => setEditing({ ...editing, baseline_at: e.target.value })} />
+            </div>
+            <div>
+              <label className="form-label">周期开始 *</label>
+              <input className="field" type="date" value={editing.metric_period_start ?? ""}
+                onChange={(e) => setEditing({ ...editing, metric_period_start: e.target.value })} />
+            </div>
+            <div>
+              <label className="form-label">周期结束 *</label>
+              <input className="field" type="date" value={editing.metric_period_end ?? ""}
+                onChange={(e) => setEditing({ ...editing, metric_period_end: e.target.value })} />
+            </div>
+            <div>
+              <label className="form-label">数据来源 *</label>
+              <select className="field" value={editing.data_source ?? ""}
+                onChange={(e) => setEditing({ ...editing, data_source: e.target.value })}>
+                {DATA_SOURCES.map((d) => <option key={d.value} value={d.value}>{d.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="form-label">平台（空=全平台）</label>
+              <select className="field" value={editing.target_platform ?? ""}
+                onChange={(e) => setEditing({ ...editing, target_platform: (e.target.value || null) as any })}>
+                <option value="">全平台</option>
+                <option value="xhs">小红书</option>
+                <option value="douyin">抖音</option>
+                <option value="kuaishou">快手</option>
+                <option value="wechat_channels">视频号</option>
+              </select>
+            </div>
+            <div>
+              <label className="form-label">状态</label>
+              <select className="field" value={editing.status}
+                onChange={(e) => setEditing({ ...editing, status: e.target.value })}>
+                {Object.entries(GOAL_STATUS_LABEL).filter(([k]) => k !== "expired").map(([k, v]) => (
+                  <option key={k} value={k}>{v}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <button className="btn primary" style={{ marginTop: 12 }} onClick={handleUpdate} disabled={savingEdit}>
+            {savingEdit ? "保存中…" : "保存修改"}
+          </button>
+        </div>
+      )}
+
       <div className="panel">
         <div className="panel-head">
           <div>
@@ -330,12 +454,12 @@ export default function Goals() {
             <thead>
               <tr>
                 <th>目标</th><th>平台</th><th>指标</th><th>目标值</th>
-                <th>当前值</th><th>口径</th><th>周期</th><th>达成率</th><th>状态</th>
+                <th>当前值</th><th>口径</th><th>周期</th><th>达成率</th><th>状态</th><th style={{ width: 80 }}>操作</th>
               </tr>
             </thead>
             <tbody>
               {goals.length === 0 && (
-                <tr><td colSpan={9}>
+                <tr><td colSpan={10}>
                   <EmptyHint className="" next="用上方「新建阶段目标」表单创建第一个阶段目标">暂无目标</EmptyHint>
                 </td></tr>
               )}
@@ -366,6 +490,9 @@ export default function Goals() {
                       ) : <span style={{ color: "var(--subtle)", fontSize: 11 }}>数据待采集</span>}
                     </td>
                     <td><span className={`tag ${g.status === "active" ? "green" : g.status === "completed" ? "blue" : "gray"}`}>{GOAL_STATUS_LABEL[g.status] ?? g.status}</span></td>
+                    <td>
+                      <button className="btn sm" onClick={() => setEditing(g)}>编辑</button>
+                    </td>
                   </tr>
                 );
               })}

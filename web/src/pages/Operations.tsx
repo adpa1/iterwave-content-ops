@@ -4,10 +4,11 @@ import { useUrlTab } from "../nav";
 import DemoBadge from "../components/DemoBadge";
 import EmptyHint from "../components/EmptyHint";
 import AutogrowPanel from "../components/AutogrowPanel";
+import { NotifyChannelsEditor } from "../components/ConfigEditors";
 import {
   api, Platform, CircuitBreakerEvent, Draft,
   OpsKpiResponse, OpsLogItem, TaskRunItem, NotificationItem,
-  SchedulerJob, RhythmConfig,
+  SchedulerJob, RhythmConfig, NotifyRule, SystemConfigView,
 } from "../api";
 
 const PLATFORM_NAME: Record<Platform, string> = {
@@ -56,6 +57,7 @@ export default function Operations() {
   const [logs, setLogs] = useState<OpsLogItem[]>([]);
   const [tasks, setTasks] = useState<TaskRunItem[]>([]);
   const [notifs, setNotifs] = useState<NotificationItem[]>([]);
+  const [notifRules, setNotifRules] = useState<NotifyRule[]>([]);
   const [jobs, setJobs] = useState<{ jobs: SchedulerJob[]; running: boolean } | null>(null);
   const [rhythm, setRhythm] = useState<RhythmConfig | null>(null);
   const [cb, setCb] = useState<{ events: CircuitBreakerEvent[]; broken_platforms: Platform[] } | null>(null);
@@ -76,6 +78,7 @@ export default function Operations() {
         tab === "logs" ? api.opsLogs(undefined, undefined, undefined, 50) : Promise.resolve(null),
         tab === "tasks" ? api.taskRuns(undefined, undefined, 50) : Promise.resolve(null),
         tab === "notifications" ? api.notifications(undefined, 30) : Promise.resolve(null),
+        tab === "notifications" ? api.notifyRules() : Promise.resolve(null),
         tab === "scheduler" ? api.schedulerJobs() : Promise.resolve(null),
         tab === "rhythm" ? api.rhythm() : Promise.resolve(null),
         tab === "breaker" ? api.circuitBreaker() : Promise.resolve(null),
@@ -87,10 +90,11 @@ export default function Operations() {
       setLogs(logsRes?.items ?? []);
       setTasks(unpack(results[2]) ?? []);
       setNotifs(unpack(results[3]) ?? []);
-      setJobs(unpack(results[4]));
-      setRhythm(unpack(results[5]));
-      setCb(unpack(results[6]));
-      const pauseRes = unpack(results[7]);
+      setNotifRules(unpack(results[4]) ?? []);
+      setJobs(unpack(results[5]));
+      setRhythm(unpack(results[6]));
+      setCb(unpack(results[7]));
+      const pauseRes = unpack(results[8]);
       if (pauseRes) setPaused(Boolean(pauseRes.paused));
       // G-12：失败不能只进 console —— 收拢成可见错误 + 重试按钮
       const rejected = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
@@ -214,10 +218,10 @@ export default function Operations() {
       {tab === "scheduler" && <SchedulerPane jobs={jobs} onTriggered={refresh} />}
 
       {/* === 7. 节奏调度 === */}
-      {tab === "rhythm" && <RhythmPane rhythm={rhythm} />}
+      {tab === "rhythm" && <RhythmPane rhythm={rhythm} onSaved={refresh} />}
 
       {/* === 8. 通知中心 === */}
-      {tab === "notifications" && <NotificationsPane items={notifs} />}
+      {tab === "notifications" && <NotificationsPane items={notifs} rules={notifRules} onChanged={refresh} />}
     </>
   );
 }
@@ -782,83 +786,303 @@ function SchedulerPane({ jobs, onTriggered }: {
   );
 }
 
-function RhythmPane({ rhythm }: { rhythm: RhythmConfig | null }) {
+function RhythmPane({ rhythm, onSaved }: { rhythm: RhythmConfig | null; onSaved?: () => void }) {
+  const { showToast } = useApp();
+  const [quotas, setQuotas] = useState<Record<string, Record<string, string>>>({});
+  const [opsStart, setOpsStart] = useState("");
+  const [opsEnd, setOpsEnd] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!rhythm) return;
+    const next: Record<string, Record<string, string>> = {};
+    for (const p of rhythm.enabled_platforms) {
+      const q = rhythm.quotas[p];
+      next[p] = {
+        passive_replies: String(q?.passive_replies ?? ""),
+        active_comments: String(q?.active_comments ?? ""),
+        follows: String(q?.follows ?? ""),
+      };
+    }
+    setQuotas(next);
+    setOpsStart(rhythm.ops_window ? String(rhythm.ops_window.start_hour) : "");
+    setOpsEnd(rhythm.ops_window ? String(rhythm.ops_window.end_hour) : "");
+  }, [rhythm]);
+
   if (!rhythm) return <div className="note">加载中…</div>;
+
+  const save = async () => {
+    const updates: Record<string, unknown> = {};
+    for (const p of rhythm.enabled_platforms) {
+      for (const field of ["passive_replies", "active_comments", "follows"] as const) {
+        const raw = quotas[p]?.[field] ?? "";
+        const n = Number(raw);
+        if (raw === "" || !Number.isInteger(n) || n < 0) {
+          showToast(`${PLATFORM_NAME[p]} 的 ${field} 必须是非负整数`, "error");
+          return;
+        }
+        if (n !== rhythm.quotas[p]?.[field]) updates[`rhythm.daily_quotas.${p}.${field}`] = n;
+      }
+    }
+    const start = Number(opsStart);
+    const end = Number(opsEnd);
+    if (opsStart !== "" && (!Number.isInteger(start) || start < 0 || start > 23)) {
+      showToast("运营时段开始小时必须是 0-23", "error"); return;
+    }
+    if (opsEnd !== "" && (!Number.isInteger(end) || end < 0 || end > 23)) {
+      showToast("运营时段结束小时必须是 0-23", "error"); return;
+    }
+    if (start >= end) { showToast("开始小时必须小于结束小时", "error"); return; }
+    if (rhythm.ops_window && start !== rhythm.ops_window.start_hour) {
+      updates["rhythm.windows.ops.start_hour"] = start;
+    }
+    if (rhythm.ops_window && end !== rhythm.ops_window.end_hour) {
+      updates["rhythm.windows.ops.end_hour"] = end;
+    }
+    if (Object.keys(updates).length === 0) { showToast("节奏配置没有改动", "info"); return; }
+    setBusy(true);
+    try {
+      await api.patchConfig(updates);
+      showToast(`✅ 已保存 ${Object.keys(updates).length} 项节奏配置`, "success");
+      onSaved?.();
+    } catch (e: any) {
+      showToast(`保存失败: ${e?.message ?? e}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="grid two">
       {rhythm.enabled_platforms.map((p) => (
         <div key={p} className="panel">
           <div className="panel-head">
             <div className="panel-title"><span className="icon">♪</span>{PLATFORM_NAME[p]} · 节奏配置</div>
+            <div className="head-actions"><span className="tag gray">平台独立配额</span></div>
           </div>
-          <div className="list">
-            <div className="task-row">
-              <i className="task-prio blue" />
-              <div className="task-main">
-                <div className="task-title">每日配额</div>
-                <div className="task-desc">
-                  被动回复 {rhythm.quotas[p].passive_replies} 条 · 主动评论 {rhythm.quotas[p].active_comments} 条 · 关注 {rhythm.quotas[p].follows} 条
-                </div>
+          <div className="grid three" style={{ gap: 8 }}>
+            {([
+              ["passive_replies", "被动回复/日"],
+              ["active_comments", "主动评论/日"],
+              ["follows", "关注/日"],
+            ] as const).map(([field, label]) => (
+              <div key={field}>
+                <label className="form-label">{label}</label>
+                <input className="field" type="number" min={0} style={{ width: "100%" }}
+                  value={quotas[p]?.[field] ?? ""}
+                  onChange={(e) => setQuotas((prev) => ({
+                    ...prev, [p]: { ...prev[p], [field]: e.target.value },
+                  }))} />
               </div>
-            </div>
-            <div className="task-row">
-              <i className="task-prio green" />
-              <div className="task-main">
-                <div className="task-title">发布时段窗口</div>
-                <div className="task-desc">{rhythm.posting_windows[p]?.join(" / ") ?? "-"}</div>
-              </div>
-            </div>
+            ))}
+          </div>
+          <div className="note" style={{ marginTop: 8, fontSize: 11 }}>
+            发布时段：{rhythm.posting_windows[p]?.join(" / ") ?? "-"}（跟随下方全局运营时段）
           </div>
         </div>
       ))}
       <div className="panel" style={{ gridColumn: "1 / -1" }}>
         <div className="panel-head">
-          <div className="panel-title"><span className="icon">≋</span>全局参数</div>
+          <div className="panel-title"><span className="icon">≋</span>全局运营时段</div>
+          <div className="panel-sub">所有平台共用；本地时区（R5）</div>
         </div>
-        <div className="note">
-          最小操作间隔 <strong>{rhythm.min_interval_seconds}</strong> 秒（防止风控） · 所有平台独立配额互不影响
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div>
+            <label className="form-label">开始（0-23）</label>
+            <input className="field" type="number" min={0} max={23} style={{ width: 80 }}
+              value={opsStart} onChange={(e) => setOpsStart(e.target.value)} />
+          </div>
+          <div>
+            <label className="form-label">结束（0-23）</label>
+            <input className="field" type="number" min={0} max={23} style={{ width: 80 }}
+              value={opsEnd} onChange={(e) => setOpsEnd(e.target.value)} />
+          </div>
+          <button className="btn primary sm" onClick={save} disabled={busy}>
+            {busy ? "保存中…" : "保存节奏配置"}
+          </button>
+          <span className="metric-foot">
+            随机间隔 {rhythm.intervals?.passive_reply_base_seconds ?? "—"}s ± {rhythm.intervals?.passive_reply_jitter_seconds ?? "—"}s
+            （可在「系统设置 → 高级参数」调整）
+          </span>
         </div>
+        {!rhythm.ops_window && (
+          <div className="note" style={{ marginTop: 8, color: "var(--orange)" }}>
+            ⚠ 当前未配置 ops 时段窗口，节奏控制器按全天放行；建议设置 8 → 23。
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function NotificationsPane({ items }: { items: NotificationItem[] }) {
+function NotificationsPane({ items, rules, onChanged }: {
+  items: NotificationItem[];
+  rules: NotifyRule[];
+  onChanged?: () => void;
+}) {
+  const { showToast } = useApp();
   const TYPE_LABEL: Record<string, string> = {
     draft_saved: "草稿已存", draft_failed: "存草稿失败",
     circuit_broken: "熔断触发", login_expired: "登录过期",
     goal_completed: "目标达成", data_fetch_failed: "数据采集失败",
     round_completed: "轮次完成", circuit_recovered: "熔断恢复",
     publish_confirmed: "发布确认", quota_exhausted: "配额耗尽",
+    round_timeout: "轮次阶段超时",
   };
+  const CHANNELS = ["macos", "wecom", "feishu"];
+  const LEVELS = ["info", "warning", "error", "critical"];
+  const [scenario, setScenario] = useState("circuit_broken");
+  const [channel, setChannel] = useState("macos");
+  const [level, setLevel] = useState("warning");
+  const [busy, setBusy] = useState(false);
+  const [cfgView, setCfgView] = useState<SystemConfigView | null>(null);
+
+  useEffect(() => {
+    api.config().then(setCfgView).catch(() => setCfgView(null));
+  }, []);
+
+  const addRule = async () => {
+    setBusy(true);
+    try {
+      await api.createNotifyRule({ scenario, channel, level, enabled: true });
+      showToast("✅ 通知规则已新增", "success");
+      onChanged?.();
+    } catch (e: any) {
+      showToast(`新增失败: ${e?.message ?? e}`, "error");
+    } finally { setBusy(false); }
+  };
+
+  const toggleRule = async (r: NotifyRule) => {
+    try {
+      await api.updateNotifyRule(r.id, {
+        scenario: r.scenario, channel: r.channel, level: r.level, enabled: !r.enabled,
+      });
+      onChanged?.();
+    } catch (e: any) { showToast(`更新失败: ${e?.message ?? e}`, "error"); }
+  };
+
+  const changeLevel = async (r: NotifyRule, next: string) => {
+    try {
+      await api.updateNotifyRule(r.id, {
+        scenario: r.scenario, channel: r.channel, level: next, enabled: !!r.enabled,
+      });
+      onChanged?.();
+    } catch (e: any) { showToast(`更新失败: ${e?.message ?? e}`, "error"); }
+  };
+
+  const removeRule = async (r: NotifyRule) => {
+    try {
+      await api.deleteNotifyRule(r.id);
+      showToast("已删除规则", "success");
+      onChanged?.();
+    } catch (e: any) { showToast(`删除失败: ${e?.message ?? e}`, "error"); }
+  };
+
   return (
-    <div className="panel">
-      <div className="panel-head">
-        <div className="panel-title"><span className="icon">🔔</span>消息通知历史</div>
-        <div className="panel-sub">7 场景 × 4 级 × macOS/企微/飞书</div>
+    <>
+      {cfgView && (
+        <div className="panel">
+          <div className="panel-head">
+            <div>
+              <div className="panel-title"><span className="icon">📡</span>通知通道</div>
+              <div className="panel-sub">
+                通道级总开关：关闭后该通道任何事件都不发（规则表也无法绕过）
+              </div>
+            </div>
+          </div>
+          <NotifyChannelsEditor
+            view={cfgView}
+            onSaved={() => api.config().then(setCfgView).catch(() => {})} />
+        </div>
+      )}
+      <div className="panel">
+        <div className="panel-head">
+          <div>
+            <div className="panel-title"><span className="icon">⚙</span>通知规则（notify_rules 表）</div>
+            <div className="panel-sub">
+              某场景一旦有规则，就只按规则限定的通道/级别发送；没有规则 → 走 config 默认
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 12 }}>
+          <div>
+            <label className="form-label">场景</label>
+            <select className="field" value={scenario} onChange={(e) => setScenario(e.target.value)}>
+              {Object.entries(TYPE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="form-label">通道</label>
+            <select className="field" value={channel} onChange={(e) => setChannel(e.target.value)}>
+              {CHANNELS.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="form-label">级别</label>
+            <select className="field" value={level} onChange={(e) => setLevel(e.target.value)}>
+              {LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
+            </select>
+          </div>
+          <button className="btn primary sm" onClick={addRule} disabled={busy}>＋ 新增规则</button>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>场景</th><th>通道</th><th>级别</th><th>启用</th><th style={{ width: 70 }}>操作</th></tr></thead>
+            <tbody>
+              {rules.length === 0 && (
+                <tr><td colSpan={5}>
+                  <EmptyHint className="" next="不配置 = 全部事件按 config.yaml 默认发送；需要精细控制时再新增">暂无自定义规则</EmptyHint>
+                </td></tr>
+              )}
+              {rules.map((r) => (
+                <tr key={r.id}>
+                  <td>{TYPE_LABEL[r.scenario] ?? r.scenario}</td>
+                  <td style={{ fontFamily: "monospace", fontSize: 11 }}>{r.channel}</td>
+                  <td>
+                    <select className="field" style={{ width: 110 }} value={r.level}
+                      onChange={(e) => changeLevel(r, e.target.value)}>
+                      {LEVELS.map((l) => <option key={l} value={l}>{l}</option>)}
+                    </select>
+                  </td>
+                  <td>
+                    <input type="checkbox" checked={!!r.enabled} onChange={() => toggleRule(r)} />
+                  </td>
+                  <td><button className="btn sm" onClick={() => removeRule(r)}>删除</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
-      <div className="table-wrap">
-        <table>
-          <thead><tr><th>时间</th><th>级别</th><th>类型</th><th>平台</th><th>标题</th><th>渠道</th></tr></thead>
-          <tbody>
-            {items.length === 0 && (
-              <tr><td colSpan={6}>
-                <EmptyHint className="" next="等待 30min 发布轮询或运行一轮生产，通知会记录在这里">暂无通知</EmptyHint>
-              </td></tr>
-            )}
-            {items.map((n) => (
-              <tr key={n.id}>
-                <td style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>{new Date(n.sent_at).toLocaleString("zh-CN")}</td>
-                <td><span className={`tag ${LEVEL_CLS[n.level] ?? ""}`}>{n.level.toUpperCase()}</span></td>
-                <td>{TYPE_LABEL[n.type] ?? n.type}</td>
-                <td>{n.platform ? PLATFORM_NAME[n.platform] : "-"}</td>
-                <td style={{ fontSize: 12, maxWidth: 280 }}>{n.title}</td>
-                <td style={{ fontSize: 11 }}>{n.channel ?? "-"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+
+      <div className="panel">
+        <div className="panel-head">
+          <div className="panel-title"><span className="icon">🔔</span>消息通知历史</div>
+          <div className="panel-sub">7 场景 × 4 级 × macOS/企微/飞书</div>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>时间</th><th>级别</th><th>类型</th><th>平台</th><th>标题</th><th>渠道</th></tr></thead>
+            <tbody>
+              {items.length === 0 && (
+                <tr><td colSpan={6}>
+                  <EmptyHint className="" next="等待 30min 发布轮询或运行一轮生产，通知会记录在这里">暂无通知</EmptyHint>
+                </td></tr>
+              )}
+              {items.map((n) => (
+                <tr key={n.id}>
+                  <td style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>{new Date(n.sent_at).toLocaleString("zh-CN")}</td>
+                  <td><span className={`tag ${LEVEL_CLS[n.level] ?? ""}`}>{n.level.toUpperCase()}</span></td>
+                  <td>{TYPE_LABEL[n.type] ?? n.type}</td>
+                  <td>{n.platform ? PLATFORM_NAME[n.platform] : "-"}</td>
+                  <td style={{ fontSize: 12, maxWidth: 280 }}>{n.title}</td>
+                  <td style={{ fontSize: 11 }}>{n.channel ?? "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
-    </div>
+    </>
   );
 }

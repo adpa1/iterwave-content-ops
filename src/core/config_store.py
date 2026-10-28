@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,35 @@ HARD_LOCKED_KEYS = {
 
 QUOTA_FIELDS = ("passive_replies", "active_comments", "follows")
 PLATFORM_KEYS = ("xhs", "douyin", "kuaishou", "wechat_channels")
+KB_TYPES = ("auto", "sqlite", "csv", "jsonl")
+KB_MAPPING_FIELDS = ("source", "title", "summary", "link", "date", "dimension")
+# 三模式评分权重（R11）：改动后每个模式权重和必须仍 = 100
+SCORING_MODES = ("cold_start", "sample_accumulating", "stable_operation")
+SCORING_WEIGHT_FIELDS = (
+    "position_match", "history_performance", "timeliness", "gap_weight", "freshness",
+)
+RHYTHM_INTERVAL_FIELDS = (
+    "passive_reply_base_seconds", "passive_reply_jitter_seconds",
+    "active_comment_base_seconds", "active_comment_jitter_seconds",
+    "follow_base_seconds", "follow_jitter_seconds",
+)
+
+# 字符串白名单：路径 → (最小长度, 最大长度)
+STRING_RULES: dict[str, tuple[int, int]] = {
+    "topic_kb.path": (1, 512),
+    "topic_kb.table_name": (1, 64),
+    "llm.provider": (1, 32),
+    "llm.model": (1, 128),
+    "llm.fallback_model": (0, 128),
+}
+
+# 字符串列表白名单（账号画像 / 红线词库）：路径 → 最大条数
+LIST_RULES: dict[str, int] = {
+    "ultimate_goal.persona_keywords": 30,
+    "ultimate_goal.forbidden_directions": 30,
+    # R22：红线词库本身可增删（门禁开关仍硬锁），单条最长 20 字
+    "ultimate_goal.redline_keywords": 200,
+}
 
 # 简单标量白名单：路径 → (类型, 最小值, 最大值)
 SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
@@ -59,6 +89,33 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "autogrow.max_consecutive_failures": (int, 1, 20),
     "autogrow.feedback_max_bias": (int, 0, 50),
     "autogrow.feedback_lookback_rounds": (int, 1, 20),
+    "llm.enabled": (bool, None, None),
+    # 通知通道开关（页面只在运营中心提供开关；也可从这里改）
+    "notifications.channels.macos.enabled": (bool, None, None),
+    "notifications.channels.wecom.enabled": (bool, None, None),
+    "notifications.channels.feishu.enabled": (bool, None, None),
+    # R8：每个超时只作用于自己的阶段，改一个不影响另一个
+    "timeouts.round_timeout_hours": (int, 1, 720),
+    "timeouts.awaiting_publish_timeout_hours": (int, 1, 1440),
+    "timeouts.publish_confirm_timeout_hours": (int, 1, 1440),
+    "timeouts.publish_confirm_grace_hours": (int, 0, 720),
+    "timeouts.collecting_metrics_timeout_hours": (int, 1, 720),
+    "timeouts.metrics_initial_delay_hours": (int, 0, 720),
+    "timeouts.goal_max_rounds": (int, 1, 500),
+    "timeouts.round_min_interval_hours": (int, 0, 168),
+    # 存草稿时段窗口（本地时区，R5）
+    "rhythm.windows.draft_save.start_hour": (int, 0, 23),
+    "rhythm.windows.draft_save.end_hour": (int, 0, 23),
+    # 热点采集总开关
+    "hot_topics.enabled": (bool, None, None),
+    # LLM 调用参数（base_url 走单独 URL 校验）
+    "llm.temperature": (float, 0.0, 2.0),
+    "llm.timeout_seconds": (int, 5, 300),
+    # R23 数据保留期限（天）
+    "data_retention.raw_response_days": (int, 7, 3650),
+    "data_retention.screenshot_days": (int, 1, 3650),
+    "data_retention.ops_logs_days": (int, 7, 3650),
+    "data_retention.ai_calls_detail_days": (int, 7, 3650),
 }
 
 
@@ -123,6 +180,138 @@ def _validate(key: str, value: Any) -> Any:
             raise ConfigPatchError(f"{key} 必须是 0.5-1.0 之间的数字")
         return float(value)
 
+    # —— 三模式权重 / 时效半衰期（R11/R12，可在线调，但每个模式仍须合计 100）——
+    if len(parts) == 3 and parts[0] == "scoring" and parts[1] in SCORING_MODES \
+            and parts[2] in SCORING_WEIGHT_FIELDS:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ConfigPatchError(f"{key} 必须是整数（0-100）")
+        if not 0 <= value <= 100:
+            raise ConfigPatchError(f"{key} 必须在 0-100 之间")
+        return value
+
+    if len(parts) == 4 and parts[:2] == ["scoring", "timeliness_half_life_days"] \
+            and parts[2] in ("news", "evergreen"):
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 3650:
+            raise ConfigPatchError(f"{key} 必须是 1-3650 的整数（天）")
+        return value
+
+    # R12：口径参数（活跃维度判定 / 90 天窗口 / 收缩估计 m）
+    if key in ("scoring.active_dimension_min_uses", "scoring.active_dimension_window_days",
+               "scoring.shrinkage_m"):
+        lo, hi = {
+            "scoring.active_dimension_min_uses": (1, 10),
+            "scoring.active_dimension_window_days": (7, 365),
+            "scoring.shrinkage_m": (1, 50),
+        }[key]
+        if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+            raise ConfigPatchError(f"{key} 必须是 {lo}-{hi} 的整数")
+        return value
+
+    # —— 节奏随机间隔（秒）——
+    if len(parts) == 3 and parts[:2] == ["rhythm", "intervals"] \
+            and parts[2] in RHYTHM_INTERVAL_FIELDS:
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 3600:
+            raise ConfigPatchError(f"{key} 必须是 0-3600 的整数（秒）")
+        return value
+
+    # —— 平台 base_url（一般不用改，环境/代理变化时可调）——
+    if len(parts) == 3 and parts[0] == "platforms" and parts[2] == "base_url":
+        if parts[1] not in PLATFORM_KEYS:
+            raise ConfigNotAllowedError(f"未知平台：{parts[1]}")
+        if not isinstance(value, str) or not value.strip().startswith(("http://", "https://")):
+            raise ConfigPatchError(f"{key} 必须是 http(s) URL")
+        if len(value) > 256:
+            raise ConfigPatchError(f"{key} 最长 256 字符")
+        return value.strip()
+
+    # —— LLM base_url（按量付费 / plan 通道切换时可调）——
+    if key == "llm.base_url":
+        if not isinstance(value, str) or not value.strip().startswith(("http://", "https://")):
+            raise ConfigPatchError(f"{key} 必须是 http(s) URL")
+        if len(value) > 256:
+            raise ConfigPatchError(f"{key} 最长 256 字符")
+        return value.rstrip("/")
+
+    # —— 平台登录态 key（换号/多账号时改，决定 login_state 文件读哪个）——
+    if len(parts) == 3 and parts[0] == "platforms" and parts[2] == "account_key":
+        if parts[1] not in PLATFORM_KEYS:
+            raise ConfigNotAllowedError(f"未知平台：{parts[1]}")
+        if not isinstance(value, str):
+            raise ConfigPatchError(f"{key} 必须是字符串")
+        v = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_\-]{1,64}", v):
+            raise ConfigPatchError(f"{key} 只能是字母/数字/下划线/连字符，1-64 字符")
+        return v
+
+    # —— 企微/飞书 webhook 环境变量名（URL 本身仍只存 .env，R23）——
+    if (
+        len(parts) == 4
+        and parts[:2] == ["notifications", "channels"]
+        and parts[3] == "webhook_url_env"
+    ):
+        if parts[2] not in ("wecom", "feishu"):
+            raise ConfigPatchError(f"{key} 只支持 wecom / feishu")
+        if not isinstance(value, str):
+            raise ConfigPatchError(f"{key} 必须是环境变量名")
+        v = value.strip()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", v):
+            raise ConfigPatchError(f"{key} 必须是合法环境变量名（大写字母/数字/下划线，1-64）")
+        return v
+
+    if key == "topic_kb.type":
+        if not isinstance(value, str) or value not in KB_TYPES:
+            raise ConfigPatchError(f"{key} 只能是 {' / '.join(KB_TYPES)}")
+        return value
+
+    if key == "topic_kb.field_mapping":
+        if not isinstance(value, dict):
+            raise ConfigPatchError(f"{key} 必须是 {{通用字段: 原始列名}} 的对象")
+        out_map: dict[str, str] = {}
+        for field_name, column in value.items():
+            if field_name not in KB_MAPPING_FIELDS:
+                raise ConfigPatchError(
+                    f"{key} 的通用字段只能是 {' / '.join(KB_MAPPING_FIELDS)}，收到 {field_name}"
+                )
+            if not isinstance(column, str) or not column.strip():
+                raise ConfigPatchError(f"{key}.{field_name} 必须是非空字符串")
+            out_map[field_name] = column.strip()
+        return out_map
+
+    if key in STRING_RULES:
+        lo, hi = STRING_RULES[key]
+        if not isinstance(value, str):
+            raise ConfigPatchError(f"{key} 必须是字符串")
+        text = value.strip()
+        if not lo <= len(text) <= hi:
+            raise ConfigPatchError(f"{key} 长度必须在 {lo}-{hi} 之间")
+        return text
+
+    if key in LIST_RULES:
+        if not isinstance(value, list):
+            raise ConfigPatchError(f"{key} 必须是字符串数组")
+        out: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise ConfigPatchError(f"{key} 的每一项都必须是字符串")
+            text = item.strip()
+            if not text:
+                continue
+            if len(text) > 20:
+                raise ConfigPatchError(f"{key} 单项最长 20 字：{text}")
+            if text not in out:
+                out.append(text)
+        if len(out) > LIST_RULES[key]:
+            raise ConfigPatchError(f"{key} 最多 {LIST_RULES[key]} 项")
+        return out
+
+    # platforms.<platform>.enabled
+    if len(parts) == 3 and parts[0] == "platforms" and parts[2] == "enabled":
+        if parts[1] not in PLATFORM_KEYS:
+            raise ConfigNotAllowedError(f"未知平台：{parts[1]}")
+        if not isinstance(value, bool):
+            raise ConfigPatchError(f"{key} 必须是布尔值")
+        return value
+
     rule = SCALAR_RULES.get(key)
     if rule is None:
         raise ConfigNotAllowedError(f"字段不在可修改白名单内：{key}")
@@ -137,7 +326,7 @@ def _validate(key: str, value: Any) -> Any:
         raise ConfigPatchError(f"{key} 不能小于 {lo}")
     if hi is not None and value > hi:
         raise ConfigPatchError(f"{key} 不能大于 {hi}")
-    return int(value)
+    return float(value) if typ is float else int(value)
 
 
 def _get_value(cfg: Config, key: str) -> Any:
@@ -303,6 +492,10 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             "llm_provider": cfg.llm.provider,
             "llm_model": cfg.llm.model,
             "llm_fallback_model": getattr(cfg.llm, "fallback_model", None),
+            "llm_base_url": cfg.llm.base_url,
+            "llm_temperature": cfg.llm.temperature,
+            "llm_timeout_seconds": cfg.llm.timeout_seconds,
+            "llm_enabled": cfg.llm.enabled,
             "llm_has_api_key": bool(__import__("os").environ.get(cfg.llm.api_key_env)),
             # —— 平台连接状态（只读，登录态文件 + enabled 开关）——
             "platforms": {
@@ -313,6 +506,25 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
                 }
                 for k, v in cfg.platforms.model_dump().items()
                 if k in ("xhs", "douyin", "kuaishou", "wechat_channels")
+            },
+            # —— 阶段超时（R8 独立计时，可在「系统设置」在线改）——
+            "timeouts": cfg.timeouts.model_dump(),
+            # —— 评分权重 / 时效半衰期（R11/R12，可在线调，合计必须 100）——
+            "scoring": cfg.scoring.model_dump(),
+            # —— 节奏随机间隔（秒）——
+            "rhythm_intervals": cfg.rhythm.intervals.model_dump(),
+            # —— 红线词库（R22 词库可增删；两道门禁开关仍硬锁）——
+            "redline_keywords": list(cfg.ultimate_goal.redline_keywords),
+            # —— 通知通道（页面可开关；webhook URL 只从 .env 读，R23 不回传）——
+            "notification_channels": {
+                name: {
+                    "enabled": bool(ch.enabled),
+                    "webhook_url_env": ch.webhook_url_env,
+                    "has_webhook_url": bool(
+                        ch.webhook_url_env and __import__("os").environ.get(ch.webhook_url_env)
+                    ),
+                }
+                for name, ch in cfg.notifications.channels.items()
             },
         },
         "overrides_file": str(OVERRIDES_FILE),
@@ -340,20 +552,52 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
         normalized[key] = _validate(key, value)
 
     # 时段窗口 start < end（R5 本地时区语义，不能跨越成空窗口）
-    if (
-        "rhythm.windows.ops.start_hour" in normalized
-        or "rhythm.windows.ops.end_hour" in normalized
-    ):
-        start = normalized.get(
-            "rhythm.windows.ops.start_hour",
-            _get_value(cfg, "rhythm.windows.ops.start_hour"),
+    for win in ("ops", "draft_save"):
+        if (
+            f"rhythm.windows.{win}.start_hour" in normalized
+            or f"rhythm.windows.{win}.end_hour" in normalized
+        ):
+            start = normalized.get(
+                f"rhythm.windows.{win}.start_hour",
+                _get_value(cfg, f"rhythm.windows.{win}.start_hour"),
+            )
+            end = normalized.get(
+                f"rhythm.windows.{win}.end_hour",
+                _get_value(cfg, f"rhythm.windows.{win}.end_hour"),
+            )
+            if start is not None and end is not None and start >= end:
+                label = "运营时段" if win == "ops" else "存草稿时段"
+                raise ConfigPatchError(f"{label} start_hour 必须小于 end_hour")
+
+    # 平台启用开关：至少保留 1 个，否则整条生产链无法工作
+    prospective = {
+        p: bool(normalized.get(f"platforms.{p}.enabled", _get_value(cfg, f"platforms.{p}.enabled")))
+        for p in PLATFORM_KEYS
+    }
+    if not any(prospective.values()):
+        raise ConfigPatchError("至少必须启用 1 个平台")
+
+    # R8：producing 超时必须小于 awaiting_publish 超时，两者独立计时但不能倒挂
+    round_h = normalized.get(
+        "timeouts.round_timeout_hours", _get_value(cfg, "timeouts.round_timeout_hours")
+    )
+    await_h = normalized.get(
+        "timeouts.awaiting_publish_timeout_hours",
+        _get_value(cfg, "timeouts.awaiting_publish_timeout_hours"),
+    )
+    if round_h is not None and await_h is not None and round_h >= await_h:
+        raise ConfigPatchError("round_timeout_hours（producing）必须小于 awaiting_publish_timeout_hours")
+
+    # R11：改权重不能破坏「每个模式合计 100%」
+    for mode in SCORING_MODES:
+        total = sum(
+            int(normalized.get(f"scoring.{mode}.{field}", _get_value(cfg, f"scoring.{mode}.{field}")) or 0)
+            for field in SCORING_WEIGHT_FIELDS
         )
-        end = normalized.get(
-            "rhythm.windows.ops.end_hour",
-            _get_value(cfg, "rhythm.windows.ops.end_hour"),
-        )
-        if start is not None and end is not None and start >= end:
-            raise ConfigPatchError("运营时段 start_hour 必须小于 end_hour")
+        if total != 100:
+            raise ConfigPatchError(
+                f"{mode} 权重合计必须 = 100%，按本次修改后为 {total}%（请同时调整其它维度）"
+            )
 
     changes: list[dict[str, Any]] = []
     overrides = load_overrides()
