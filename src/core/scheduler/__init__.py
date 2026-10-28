@@ -16,6 +16,9 @@ APScheduler 调度器 — 8 类定时任务（§7）。
 5. kb_scan                — 选题库增量扫描（每天 6:00）
 6. data_retention_cleanup — 数据保留清理（R23，每天 6:00）
 7. round_timeout_sweeper  — 轮次阶段超时判定（R8，每小时）
+8. round_review           — 复盘收口（每 10min）
+9. hot_topics_refresh     — 热点采集 + 标签匹配（默认每 120min）
+10. autogrow_next_round   — 自动闭环：条件满足时开下一轮（默认每 60min 检查）
 """
 
 from __future__ import annotations
@@ -76,6 +79,8 @@ class SchedulerEngine:
         self.goal_progress = None
         # G-03：主动评论内容必须过终极目标检查（R2），缺省为 None → 拒绝发送
         self.guard = None
+        # 自动闭环控制器（lifespan 注入；None → autogrow_next_round 跳过）
+        self.autogrow = None
 
     def wire(self, *, conn, adapters, sm_draft=None, sm_round=None,
              circuit_breaker=None, notifier=None, ops=None,
@@ -986,6 +991,13 @@ class SchedulerEngine:
                     f"缺口建议 {len(gaps)} 条、策略调整 {suggestions} 条",
                 )
 
+    async def _job_autogrow_next_round(self) -> None:
+        """自动闭环：满足条件时开下一轮并生成草稿（发布仍需用户确认）。"""
+        if self.autogrow is None:
+            logger.warning("[APS] autogrow_next_round 跳过：依赖未注入")
+            return
+        await self.autogrow.tick()
+
     async def _job_cb_recovery(self) -> None:
         """熔断恢复 3 步验证（冷却到期 + test_login + test_lightweight_action，R6）。"""
         from ...adapters.base import Platform
@@ -1079,6 +1091,11 @@ async def _run_round_review() -> None:
         await _ACTIVE_ENGINE._job_round_review()
 
 
+async def _run_autogrow_next_round() -> None:
+    if _ACTIVE_ENGINE is not None:
+        await _ACTIVE_ENGINE._job_autogrow_next_round()
+
+
 # 任务 id → 可 pickle 的模块级执行函数（SQLAlchemyJobStore 要求）
 JOB_RUNNERS = {
     "publish_polling": _run_publish_polling,
@@ -1090,4 +1107,5 @@ JOB_RUNNERS = {
     "round_timeout_sweeper": _run_round_timeout_sweeper,
     "round_review": _run_round_review,
     "hot_topics_refresh": _run_hot_topics_refresh,
+    "autogrow_next_round": _run_autogrow_next_round,
 }

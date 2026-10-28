@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, Platform, SystemConfigView, SystemStatus, Goal } from "../api";
+import { api, Platform, SystemConfigView, SystemStatus, Goal, DiagnoseResult } from "../api";
+import { navigate } from "../nav";
 
 const STEPS = [
   { key: "persona",  label: "① 账号画像",     hint: "终极目标 / 红线 / 定位关键词" },
@@ -33,6 +34,14 @@ export default function Onboarding() {
   const [enabledPlatforms, setEnabledPlatforms] = useState<Set<Platform>>(new Set());
 
   const step: StepKey = STEPS[stepIdx].key;
+  const [diag, setDiag] = useState<DiagnoseResult | null>(null);
+  const [diagBusy, setDiagBusy] = useState(false);
+  const runDiag = async () => {
+    setDiagBusy(true);
+    try { setDiag(await api.diagnose(false)); } catch { /* 诊断失败时仍显示本地预检 */ }
+    finally { setDiagBusy(false); }
+  };
+  useEffect(() => { if (step === "check" && !diag) runDiag(); }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     (async () => {
@@ -240,7 +249,7 @@ export default function Onboarding() {
               R21 口径：每个目标必须同时定义 6 个字段（指标 + 目标值 + 口径 + 基线 + 周期 + 来源）。
             </p>
             {goals.length === 0 ? (
-              <div className="note">还没有阶段目标 → 到 <strong>目标与策略</strong> 创建</div>
+              <div className="note">还没有阶段目标 → <button type="button" className="link-btn" onClick={() => navigate("goals")}>到「目标与策略」创建</button></div>
             ) : (
               <div className="table-wrap">
                 <table>
@@ -271,6 +280,28 @@ export default function Onboarding() {
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
               以下全绿才能开始真实生产。点「启动首轮」→ 创建 spiral_round → RunRound 执行选题评分 + G → G1 → G2 终极目标检查 → H 图片卡片 → I 存草稿。
             </p>
+            {diag && (
+              <div className="table-wrap" style={{ marginBottom: 14 }}>
+                <table>
+                  <thead><tr><th style={{ width: 36 }}>#</th><th>8 点诊断</th><th style={{ width: 50 }}>结果</th><th>说明</th><th style={{ width: 86 }}></th></tr></thead>
+                  <tbody>
+                    {diag.items.map((it) => (
+                      <tr key={it.no}>
+                        <td>{it.no}</td><td>{it.name}</td>
+                        <td>{it.status === "pass" ? "✅" : it.status === "warn" ? "🟡" : "🔴"}</td>
+                        <td style={{ fontSize: 12 }}>{it.message}</td>
+                        <td>{it.fix_page && it.status !== "pass" && (
+                          <button className="btn sm" onClick={() => navigate(it.fix_page!, it.fix_tab ?? undefined)}>去修复</button>
+                        )}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <button className="btn sm" onClick={runDiag} disabled={diagBusy} style={{ marginBottom: 12 }}>
+              {diagBusy ? "诊断中…" : "↻ 重新诊断"}
+            </button>
             <div className="list">
               <CheckRow ok={checks.persona_ok}    label="账号画像"       detail={cfg.readonly.persona_keywords.join(", ")} />
               <CheckRow ok={checks.platforms_ok}   label="启用平台"       detail={`${status.enabled_platforms.length} 个 (${status.enabled_platforms.map((p) => PLATFORM_NAMES[p]).join(", ")})`} />
@@ -283,16 +314,10 @@ export default function Onboarding() {
             <div style={{ marginTop: 20, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <button
                 className="btn primary"
-                disabled={!allOk}
-                onClick={() => {
-                  // 跳转到 Production 页，那里有「创建首轮」按钮
-                  const url = new URL(window.location.href);
-                  url.searchParams.set("page", "production");
-                  window.history.replaceState({}, "", url.toString());
-                  window.dispatchEvent(new PopStateEvent("popstate"));
-                }}
+                disabled={diag ? diag.overall === "block" : !allOk}
+                onClick={() => navigate("production", "pipeline")}
               >🚀 全部就绪 → 跳转到生产页启动首轮</button>
-              {!allOk && <span style={{ color: "var(--orange)", fontSize: 12 }}>⚠ 还有项未通过，先完成配置</span>}
+              {(diag ? diag.overall === "block" : !allOk) && <span style={{ color: "var(--orange)", fontSize: 12 }}>⚠ 还有项未通过，先完成配置</span>}
             </div>
           </div>
         )}

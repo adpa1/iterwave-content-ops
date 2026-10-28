@@ -49,6 +49,16 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "hot_topics.filters.heat_filter_enabled": (bool, None, None),
     "hot_topics.filters.time_window_hours": (int, 1, 720),
     "hot_topics.filters.time_filter_enabled": (bool, None, None),
+    # 自动闭环（自生长）
+    "autogrow.enabled": (bool, None, None),
+    "autogrow.apply_feedback": (bool, None, None),
+    "autogrow.stop_when_goals_achieved": (bool, None, None),
+    "autogrow.topic_count": (int, 1, 50),
+    "autogrow.cooldown_hours": (int, 0, 720),
+    "autogrow.max_rounds_per_day": (int, 0, 24),
+    "autogrow.max_consecutive_failures": (int, 1, 20),
+    "autogrow.feedback_max_bias": (int, 0, 50),
+    "autogrow.feedback_lookback_rounds": (int, 1, 20),
 }
 
 
@@ -256,6 +266,7 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             },
             "cooldown_minutes": cfg.circuit_breaker.cooldown_minutes,
             "scheduler_jobs": scheduler_jobs_view(cfg),
+            "autogrow": cfg.autogrow.model_dump(),
             "hot_topics_storage": {
                 "retention_days": cfg.hot_topics.retention_days,
                 "max_rows": cfg.hot_topics.max_rows,

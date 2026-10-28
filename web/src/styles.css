@@ -162,3 +162,18 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 4
 .content textarea:not(.field):focus-visible {
   border-color: #91a8ff; outline: none; box-shadow: 0 0 0 3px #edf1ff;
 }
+
+/* 文本内跳转链接（EmptyHint / 诊断修复入口） */
+.link-btn {
+  background: none; border: 0; padding: 0; margin: 0;
+  color: var(--blue); cursor: pointer; font: inherit; text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.link-btn:hover { color: var(--teal); }
+.link-btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 3px; }
+
+/* 键值对（详情展开） */
+.kv-grid { display: grid; grid-template-columns: 84px 1fr; gap: 4px 12px; font-size: 12px; }
+.kv-grid > span:nth-child(odd) { color: var(--muted); }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

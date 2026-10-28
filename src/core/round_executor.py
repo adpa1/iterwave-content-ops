@@ -30,7 +30,9 @@ from datetime import datetime
 from typing import Optional
 
 from .config import PROJECT_ROOT
-from .kb_reader import KbReader
+from .kb_reader import KbReader  # noqa: F401 — 兼容旧引用
+from .topic_pool import load_pool
+from .orchestration import Orchestration, step_status_from_report
 from .content_pipeline import generate_copy_content, make_card, _llm_available
 from .plan_version import PlanVersionManager
 from .guard.ultimate_goal_checker import CheckOutcome, CheckResult
@@ -78,11 +80,16 @@ class RoundExecutor:
     async def run(
         self,
         round_id: int,
-        topic_count: int = 5,
+        topic_count: Optional[int] = None,
         platform_values: Optional[list[str]] = None,
-        save_drafts: bool = True,
+        save_drafts: Optional[bool] = None,
+        feedback=None,
     ) -> dict:
-        """执行一轮。返回结构化执行报告（不抛业务异常，失败写进 report）。"""
+        """执行一轮。返回结构化执行报告（不抛业务异常，失败写进 report）。
+
+        feedback：上一轮复盘结论（StrategyFeedback）。不传且 autogrow.apply_feedback 开启时
+        自动从最近复盘构建 —— 手动轮与自动轮都吃复盘结论，闭环不依赖谁来开轮。
+        """
         round_row = self.conn.execute(
             "SELECT status, goal_id, round_number FROM spiral_rounds WHERE id = ?",
             (round_id,),
@@ -94,6 +101,20 @@ class RoundExecutor:
                 f"轮次 {round_id} 当前状态为 {round_row['status']}，只有 created 状态可执行"
             )
 
+        # 母计划 v2：未显式传参时按母计划执行（选题数 / 平台 / 维度配额 / 平台分项篇数）
+        self._pvm = PlanVersionManager(self.cfg, self.conn)
+        self._plan, self._plan_sig, _at, self._plan_source = self._pvm.load_plan()
+        if topic_count is None:
+            topic_count = int(self._plan.get("topic_count_per_platform") or 5)
+        if platform_values is None and self._plan_source == "plan_settings":
+            platform_values = list(self._plan.get("enabled_platforms") or []) or None
+        # Agent 编排：存草稿 / 出图 / 自动排期按编排开关运行
+        self._orch = Orchestration.load(self.conn)
+        if save_drafts is None:
+            save_drafts = self._orch.on("save_draft")
+        else:
+            save_drafts = bool(save_drafts) and self._orch.on("save_draft")
+
         platforms = self._resolve_platforms(platform_values)
         if not platforms:
             raise ValueError("没有可用平台：请检查 config.platforms 的 enabled 与请求参数")
@@ -104,6 +125,8 @@ class RoundExecutor:
             "started_at": datetime.now().isoformat(),
             "platforms": [p.value for p in platforms],
             "topic_count_requested": topic_count,
+            "plan_source": self._plan_source,
+            "orchestration": [s["id"] for s in self._orch.steps if s["enabled"]],
             "steps": [],
             "contents_created": 0,
             "drafts_created": 0,
@@ -119,6 +142,7 @@ class RoundExecutor:
             raise ValueError(f"轮次 {round_id} 无法进入 producing")
 
         task_run_id = self._start_task_run(round_id)
+        self._feedback = self._resolve_feedback(round_id, feedback, report)
 
         try:
             # ① + ② 选题读取与评分（G 节点）
@@ -141,6 +165,9 @@ class RoundExecutor:
             # ⑦ 存草稿
             if save_drafts:
                 await self._save_all_drafts(content_rows, round_id, report)
+                # ⑧ 自动排期（编排开启 + 母计划配置了平台发布时段）
+                if self._orch.on("auto_schedule"):
+                    self._auto_schedule(round_id, report)
 
             # 收尾状态
             self._finalize_round(round_id, report, save_drafts)
@@ -157,6 +184,15 @@ class RoundExecutor:
             self._finish_task_run(task_run_id, "success")
 
         report["finished_at"] = datetime.now().isoformat()
+        report["step_status"] = step_status_from_report(report, self._orch)
+        try:
+            self.conn.execute(
+                "UPDATE spiral_rounds SET run_report = ? WHERE id = ?",
+                (json.dumps(report, ensure_ascii=False, default=str), round_id),
+            )
+            self.conn.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("run_report 写入失败 round=%s", round_id)
         logger.info(
             "🏁 轮次 %s 执行完成: 内容 %d / 草稿 %d（成功 %d 失败 %d）状态=%s",
             round_id, report["contents_created"], report["drafts_created"],
@@ -208,17 +244,22 @@ class RoundExecutor:
                 dim = s.topic.dimension or "未分类"
                 allocation[dim] = allocation.get(dim, 0) + 1
             pvm = PlanVersionManager(self.cfg, self.conn)
-            plan = pvm.build_plan(
-                topic_count_per_platform=topic_count,
-                platforms=[p.value for p in platforms],
-                dimension_allocation=allocation,
-            )
+            if getattr(self, "_plan_source", None) == "plan_settings":
+                # 按母计划执行：轮次继承母计划签名（R18 下游与母计划一致，改计划才失效）
+                plan = self._plan
+            else:
+                plan = pvm.build_plan(
+                    topic_count_per_platform=topic_count,
+                    platforms=[p.value for p in platforms],
+                    dimension_allocation=allocation,
+                )
             signature = pvm.record(round_id, plan, author="round_executor")
             report["plan_signature"] = signature
             report["steps"].append({
                 "step": "plan_signature",
                 "signature": signature[:12],
                 "dimension_allocation": allocation,
+                "planned_allocation": (getattr(self, "_plan", {}) or {}).get("dimension_allocation", {}),
             })
         except Exception:  # noqa: BLE001 — 签名失败不应阻断产出
             logger.exception("母计划签名记录失败 round=%s", round_id)
@@ -228,22 +269,130 @@ class RoundExecutor:
     # ① ② 选题
     # ------------------------------------------------------------------
 
-    def _select_topics(self, topic_count: int, report: dict) -> list:
+    def _resolve_feedback(self, round_id: int, feedback, report: dict):
+        """复盘结论 → 本轮。失败只留痕不阻断（没有反馈 = 退回纯评分，不是错误）。"""
+        ag = getattr(self.cfg, "autogrow", None)
+        if feedback is None and ag is not None and ag.apply_feedback:
+            try:
+                from .autogrow import build_feedback
+                feedback = build_feedback(self.cfg, self.conn, self.guard)
+            except Exception:  # noqa: BLE001
+                logger.exception("复盘结论构建失败 round=%s（本轮按纯评分执行）", round_id)
+                report["errors"].append("复盘结论构建失败，本轮未吃进上一轮建议")
+                feedback = None
+        if feedback is None:
+            return None
         try:
-            items, kb_report = KbReader(self.cfg).read()
-        except FileNotFoundError as exc:
-            report["errors"].append(f"选题库读取失败: {exc}")
-            return []
+            self.conn.execute(
+                "UPDATE spiral_rounds SET applied_feedback = COALESCE(applied_feedback, ?) WHERE id = ?",
+                (feedback.to_json(), round_id),
+            )
+            self.conn.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("applied_feedback 写入失败 round=%s", round_id)
+        report["steps"].append({
+            "step": "apply_feedback",
+            "source_round_ids": feedback.source_round_ids,
+            "dimension_bias": feedback.dimension_bias,
+            "copy_hint_count": sum(len(v) for v in feedback.copy_hints.values()),
+            "dropped_hints": len(feedback.dropped_hints),
+        })
+        return feedback
+
+    def _hints_for(self, platform) -> Optional[list[str]]:
+        fb = getattr(self, "_feedback", None)
+        return fb.hints_for(platform.value) if fb is not None else None
+
+    def _apply_dimension_quota(self, ranked: list, topic_count: int, report: dict) -> list:
+        """母计划维度配额：每个维度先按评分取满配额（库里不够就有多少取多少并留痕），
+        剩余名额按总分补齐。最终按总分排序，保证平台分项篇数取的是高分选题。"""
+        alloc = {d: int(n) for d, n in ((getattr(self, "_plan", {}) or {}).get("dimension_allocation") or {}).items()
+                 if int(n) > 0}
+        if not alloc:
+            return ranked[:topic_count]
+        picked: list = []
+        shortfall = {}
+        for dim, n in alloc.items():
+            cands = [s for s in ranked if s.topic.dimension == dim and s not in picked]
+            take = cands[: n]
+            if len(take) < n:
+                shortfall[dim] = n - len(take)
+            picked.extend(take)
+        picked = sorted(picked, key=lambda s: s.total_score, reverse=True)[:topic_count]
+        for s in ranked:
+            if len(picked) >= topic_count:
+                break
+            if s not in picked:
+                picked.append(s)
+        picked.sort(key=lambda s: s.total_score, reverse=True)
+        report["steps"].append({"step": "dimension_quota", "allocation": alloc, "shortfall": shortfall})
+        if shortfall:
+            report["errors"].append(
+                "选题池维度不足，已按评分补齐：" + "、".join(f"{d} 缺 {n}" for d, n in shortfall.items())
+            )
+        return picked
+
+    def _platform_quota(self, platform: Platform, default: int) -> int:
+        plan = getattr(self, "_plan", None)
+        if not plan or getattr(self, "_plan_source", None) != "plan_settings":
+            return default
+        return min(default, PlanVersionManager.platform_topic_count(plan, platform.value))
+
+    def _auto_schedule(self, round_id: int, report: dict) -> None:
+        """按母计划平台发布时段把本轮 draft_saved 草稿排进日历：从明天起，每个时段一篇，
+        跳过已被占用的时段（同平台同一时间不排两篇）。只写 scheduled_publish_at，不发布（R1）。"""
+        from datetime import timedelta
+        per = (getattr(self, "_plan", {}) or {}).get("per_platform") or {}
+        scheduled = 0
+        for platform_key, conf in per.items():
+            slots = conf.get("publish_slots") or []
+            if not slots:
+                continue
+            drafts = self.conn.execute(
+                "SELECT d.id FROM drafts d JOIN contents c ON d.content_id = c.id "
+                "WHERE c.round_id = ? AND d.platform = ? AND d.status = 'draft_saved' "
+                "AND d.scheduled_publish_at IS NULL ORDER BY d.id",
+                (round_id, platform_key),
+            ).fetchall()
+            taken = {r[0] for r in self.conn.execute(
+                "SELECT scheduled_publish_at FROM drafts WHERE platform = ? AND scheduled_publish_at IS NOT NULL",
+                (platform_key,),
+            )}
+            day = datetime.now().date() + timedelta(days=1)
+            queue = [r[0] for r in drafts]
+            guard = 0
+            while queue and guard < 366:
+                for slot in slots:
+                    if not queue:
+                        break
+                    at = f"{day.isoformat()} {slot}:00" if len(slot) == 5 else f"{day.isoformat()} {slot}"
+                    if at in taken:
+                        continue
+                    self.conn.execute("UPDATE drafts SET scheduled_publish_at = ? WHERE id = ?", (at, queue.pop(0)))
+                    taken.add(at)
+                    scheduled += 1
+                day += timedelta(days=1)
+                guard += 1
+        self.conn.commit()
+        report["steps"].append({"step": "auto_schedule", "scheduled": scheduled})
+
+    def _select_topics(self, topic_count: int, report: dict) -> list:
+        items, kb_report = load_pool(self.cfg, self.conn)
+        if kb_report.get("kb_error"):
+            report["errors"].append(f"选题库读取失败: {kb_report['kb_error']}")
         report["steps"].append({
             "step": "kb_read",
             "count": len(items),
             "file_type": kb_report.get("file_type"),
+            "kb_count": kb_report.get("kb_count"),
+            "extra_count": kb_report.get("extra_count"),
+            "excluded_count": kb_report.get("excluded_count"),
         })
         if not items:
             return []
 
         scored = sorted(
-            self.scoring.score_topics(items),
+            self.scoring.score_topics(items, feedback=getattr(self, "_feedback", None)),
             key=lambda s: s.total_score,
             reverse=True,
         )
@@ -256,7 +405,7 @@ class RoundExecutor:
                 continue
             seen_ids.add(s.topic.id)
             unique.append(s)
-        scored = unique[:topic_count]
+        scored = self._apply_dimension_quota(unique, topic_count, report)
 
         report["steps"].append({
             "step": "score",
@@ -267,6 +416,7 @@ class RoundExecutor:
                     "title": s.topic.title,
                     "dimension": s.topic.dimension,
                     "score": round(s.total_score, 2),
+                    "feedback_bias": s.score_breakdown.get("strategy_feedback", {}).get("score", 0),
                     "is_exploration": s.is_exploration,
                 }
                 for s in scored
@@ -286,12 +436,17 @@ class RoundExecutor:
         topic_ids: list[str] = []
         variant_summary: list[dict] = []
 
-        for st in scored:
+        orch = getattr(self, "_orch", None)
+        make_cards = orch.on("image_card") if orch else True
+        card_first = bool(orch and orch.card_before_gate and make_cards)
+        for rank, st in enumerate(scored):
             topic = st.topic
             topic_ids.append(topic.id)
             self._upsert_topic_index(topic)
 
             for platform in platforms:
+                if rank >= self._platform_quota(platform, len(scored)):
+                    continue  # 平台分项计划：本平台只做前 N 个选题
                 if self._platform_broken(platform):
                     report["errors"].append(
                         f"{platform.display_name} {_SKIP_REASON_CIRCUIT}"
@@ -301,6 +456,7 @@ class RoundExecutor:
                 # ③ 文案生成 + ④ G2 终极目标检查（R2：FAIL 丢弃重生成，最多 2 次；
                 #    ERROR 不能默认通过）
                 accepted = None
+                image_path = None
                 reject_reason: Optional[str] = None
                 for attempt in range(MAX_GUARD_RETRIES + 1):
                     # LLM 为阻塞调用，放到线程池避免卡住事件循环
@@ -309,7 +465,13 @@ class RoundExecutor:
                         topic.title, topic.summary, topic.dimension, platform, self.cfg,
                         self.conn, topic.id, round_id,
                         reject_reason,
+                        self._hints_for(platform),
                     )
+                    if card_first:
+                        # 编排把出图排在质量门之前：每个候选版本都先出图再质检
+                        image_path = await asyncio.to_thread(
+                            make_card, title, topic.dimension, output_dir, platform,
+                        )
 
                     try:
                         outcome = self.guard.check_content(title, body, tags)
@@ -364,10 +526,13 @@ class RoundExecutor:
 
                 title, body, tags, outcome = accepted
 
-                # ⑤ 图片卡片
-                image_path = await asyncio.to_thread(
-                    make_card, title, topic.dimension, output_dir, platform,
-                )
+                # ⑤ 图片卡片（编排可关闭；可调到质量门之前——此时被拦重写的版本也会出图）
+                if not card_first:
+                    image_path = None
+                    if make_cards:
+                        image_path = await asyncio.to_thread(
+                            make_card, title, topic.dimension, output_dir, platform,
+                        )
 
                 # ⑥ 写 contents
                 content_id = f"content-{uuid.uuid4().hex[:12]}"
@@ -378,7 +543,7 @@ class RoundExecutor:
                     (
                         content_id, round_id, topic.id, platform.value, title, body,
                         json.dumps(tags, ensure_ascii=False),
-                        json.dumps([str(image_path)], ensure_ascii=False),
+                        json.dumps([str(image_path)] if image_path else [], ensure_ascii=False),
                         len(body), "knowledge", outcome.result.value, outcome.reason,
                     ),
                 )
@@ -399,7 +564,7 @@ class RoundExecutor:
                     "title": title,
                     "body": body,
                     "tags": tags,
-                    "image_path": str(image_path),
+                    "image_path": str(image_path) if image_path else None,
                 })
                 report["contents_created"] += 1
                 report["drafts_created"] += 1
@@ -468,7 +633,7 @@ class RoundExecutor:
                 platform=platform,
                 title=row["title"],
                 body=row["body"],
-                image_paths=[row["image_path"]],
+                image_paths=[row["image_path"]] if row["image_path"] else [],
                 tags=row["tags"],
             )
             try:

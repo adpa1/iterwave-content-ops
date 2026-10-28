@@ -285,3 +285,18 @@ scheduler:
     round_timeout_sweeper:  { enabled: true, interval_minutes: 60 }   # 轮次阶段超时
     round_review:           { enabled: true, interval_minutes: 10 }   # 轮次复盘收口
     hot_topics_refresh:     { enabled: true, interval_minutes: 120 }  # 热点采集 + 标签匹配
+    autogrow_next_round:    { enabled: true, interval_minutes: 60 }   # 自动闭环检查（满足条件才开轮）
+
+# ===== 自动闭环（自生长）=====
+# 复盘结论 → 下一轮选题加减分 + 文案要点；满足条件时自动开下一轮并生成草稿。
+# 发布仍需你在平台确认；目标达成 / 连续失败 / 每日上限 / 冷却期 / 全平台熔断任一命中都不开轮。
+autogrow:
+  enabled: true
+  apply_feedback: true
+  topic_count: 5
+  cooldown_hours: 24
+  max_rounds_per_day: 1
+  max_consecutive_failures: 2
+  stop_when_goals_achieved: true
+  feedback_max_bias: 15
+  feedback_lookback_rounds: 3

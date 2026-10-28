@@ -273,6 +273,7 @@ JOB_DESCRIPTIONS: dict[str, str] = {
     "round_timeout_sweeper": "轮次阶段超时扫描",
     "round_review": "轮次复盘收口",
     "hot_topics_refresh": "热点采集 + 标签匹配",
+    "autogrow_next_round": "自动闭环：满足条件时自动开下一轮并生成草稿",
 }
 
 
@@ -320,6 +321,7 @@ DEFAULT_JOB_SCHEDULES: dict[str, dict] = {
     "round_timeout_sweeper": {"interval_minutes": 60},
     "round_review": {"interval_minutes": 10},
     "hot_topics_refresh": {"interval_minutes": 120},
+    "autogrow_next_round": {"interval_minutes": 60},
 }
 
 
@@ -338,6 +340,23 @@ class SchedulerConfig(BaseModel):
 
     def job(self, job_id: str) -> JobScheduleConfig:
         return self.jobs[job_id]
+
+
+class AutogrowConfig(BaseModel):
+    """自动闭环（自生长）：复盘结论 → 下一轮选题/文案，并按条件自动开下一轮。
+
+    安全边界：自动开轮只生成草稿，发布仍需用户在平台确认（R9 人工闸门不变）；
+    目标达成、连续失败、每日上限、冷却期、全平台熔断任一命中都不开轮。
+    """
+    enabled: bool = True                     # 总开关：关掉后不自动开轮（复盘结论仍可喂给评分）
+    apply_feedback: bool = True              # 复盘结论是否进入选题评分与文案提示词
+    topic_count: int = Field(5, ge=1, le=50)  # 自动轮每平台选题数
+    cooldown_hours: int = Field(24, ge=0, le=720)   # 上一轮收口后至少间隔多久再开
+    max_rounds_per_day: int = Field(1, ge=0, le=24)  # 每天最多自动开几轮（0 = 暂停）
+    max_consecutive_failures: int = Field(2, ge=1, le=20)  # 连续失败 N 轮后自动暂停
+    stop_when_goals_achieved: bool = True    # 所有目标达成 → 停止自动开轮
+    feedback_max_bias: float = Field(15.0, ge=0, le=50)  # 单维度评分加/减分上限（总分 0-100 制）
+    feedback_lookback_rounds: int = Field(3, ge=1, le=20)  # 取最近 N 轮复盘结论
 
 
 class DataRetentionConfig(BaseModel):
@@ -383,6 +402,7 @@ class Config(BaseModel):
     data_retention: DataRetentionConfig = Field(default_factory=DataRetentionConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    autogrow: AutogrowConfig = Field(default_factory=AutogrowConfig)
 
     def resolve_path(self, relative: str) -> Path:
         """把 config 中的相对路径解析为相对于项目根的绝对路径。"""

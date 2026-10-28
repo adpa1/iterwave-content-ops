@@ -93,8 +93,12 @@ class ScoringEngine:
     # 入口：对一批 TopicItem 打分并排序
     # ------------------------------------------------------------------
 
-    def score_topics(self, topics: list[TopicItem]) -> list[ScoredTopic]:
-        """对选题列表打分、排序，含 ε-greedy 探索。"""
+    def score_topics(self, topics: list[TopicItem], feedback=None) -> list[ScoredTopic]:
+        """对选题列表打分、排序，含 ε-greedy 探索。
+
+        feedback：上一轮复盘结论（autogrow.StrategyFeedback）。按维度在总分上加/减分
+        （已在构建时限幅），并写进 score_breakdown.strategy_feedback 便于追溯。
+        """
         mode = self._determine_mode()
         weights = self._get_weights(mode)
         logger.info("评分模式 = %s（权重和 = %d）", mode, sum(weights.values()))
@@ -102,6 +106,14 @@ class ScoringEngine:
         scored: list[ScoredTopic] = []
         for topic in topics:
             s = self._score_one(topic, weights, mode)
+            if feedback is not None:
+                bias = feedback.bias_for(topic.dimension)
+                if bias:
+                    s.total_score = round(s.total_score + bias, 2)
+                    s.score_breakdown["strategy_feedback"] = {
+                        "raw": bias, "weight": 1, "score": round(bias, 2),
+                        "reasons": list(feedback.bias_reasons.get(topic.dimension, []))[:3],
+                    }
             scored.append(s)
 
         # 排序
