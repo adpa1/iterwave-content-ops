@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Sidebar, { NAV_ITEMS } from "./Sidebar";
 import { AppProvider, useApp } from "./AppContext";
+import { Platform } from "./platforms";
 import Dashboard from "./pages/Dashboard";
 import HotTopics from "./pages/HotTopics";
 import Goals from "./pages/Goals";
@@ -61,42 +62,54 @@ function Router() {
   const currentNav = NAV_ITEMS.find((n) => n.page === page);
 
   return (
-    <div className="app">
-      <Sidebar
-        current={page}
-        onChange={setPage}
-        brokenPlatforms={status?.circuit_broken_platforms || []}
+    <div className="app-shell">
+      <Topbar
+        section={currentNav?.section ?? ""}
+        label={currentNav?.label ?? ""}
+        scoringMode={status?.scoring_mode}
       />
-      <main className="content">
-        <div style={{ marginBottom: 18, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ fontSize: 11, color: "var(--muted)" }}>
-            {currentNav?.section} <span style={{ margin: "0 6px" }}>·</span>{" "}
-            <strong style={{ color: "var(--text)" }}>{currentNav?.label}</strong>
-            {status?.scoring_mode && <span style={{ marginLeft: 14, color: "var(--subtle)" }}>
-              · 评分模式 <strong style={{ color: "var(--teal)" }}>{status.scoring_mode}</strong>
-            </span>}
-          </div>
-          {status && (
-            <div className="flex wrap" style={{ gap: 6 }}>
-              {status.enabled_platforms.map((p) => (
-                <span key={p} className="tag blue" style={{ padding: "3px 9px", fontSize: 11 }}>
-                  {p === "xhs" ? "📕 小红书" : p === "douyin" ? "🎵 抖音" : p === "wechat_channels" ? "💚 视频号" : "⚡ 快手"}
-                </span>
-              ))}
-              {status.circuit_broken_platforms.length > 0 && (
-                <span className="tag red">🚨 {status.circuit_broken_platforms.length} 平台熔断</span>
-              )}
-            </div>
-          )}
-        </div>
-        {render()}
-      </main>
+      <div className="app">
+        <Sidebar
+          current={page}
+          onChange={setPage}
+          brokenPlatforms={status?.circuit_broken_platforms || []}
+          loggedIn={status?.logged_in_platforms || []}
+          enabled={status?.enabled_platforms || []}
+          noLogin={status?.platforms_without_login || []}
+        />
+        <main className="content">
+          {render()}
+        </main>
+      </div>
     </div>
   );
 }
 
-// useState 在函数组件中必须显式 import
-// (见文件顶部 import { useEffect, useState } from "react")
+// ===== 全局顶部栏 =====
+function Topbar({ section, label, scoringMode }: { section: string; label: string; scoringMode?: string }) {
+  const { status } = useApp();
+  return (
+    <header className="topbar">
+      <div className="topbar-left">
+        <span style={{ fontWeight: 700, color: "var(--text)" }}>IterWave</span>
+        <span className="sep">/</span>
+        <span>{section}</span>
+        <span className="sep">/</span>
+        <strong>{label}</strong>
+        {scoringMode && <span style={{ marginLeft: 8, color: "var(--teal)", fontSize: 11 }}>· {scoringMode}</span>}
+      </div>
+      <div className="topbar-search">
+        <input placeholder="搜索内容 / 选题 / 任务（演示）" />
+      </div>
+      <div className="topbar-right">
+        {status?.circuit_broken_platforms.length ? (
+          <span className="tag red" title="熔断平台">🚨 熔断 {status.circuit_broken_platforms.length}</span>
+        ) : null}
+        <span className="user-chip"><span className="dot" />本地工作区</span>
+      </div>
+    </header>
+  );
+}
 
 export default function App() {
   return (

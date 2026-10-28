@@ -41,8 +41,8 @@
 /* 显式给根元素上底色：避免页面底部 / 回弹区域露出浏览器默认白色画布 */
 html { scrollbar-gutter: stable; background: var(--bg); }
 
-/* 禁止整页横向溢出（宽表格等），消除底部横向滚动条与异常白边 */
-body { overflow-x: clip; }
+/* 允许页面正常横向滚动（宽表格等内容应由 .table-wrap 局部滚动） */
+body { overflow-x: visible; }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -396,10 +396,108 @@ input, select, textarea { font-family: inherit; font-size: 13px; }
   box-shadow: 0 1px 4px rgba(38, 54, 80, 0.06);
 }
 
-/* ===== 响应式 ===== */
-@media (max-width: 1250px) {
-  .sidebar { width: 200px; flex-basis: 200px; }
-  .content { padding: 20px; }
+/* ===== 全局顶部栏 ===== */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 28px; height: 52px;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 50;
+  gap: 16px;
+}
+.topbar-left { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); min-width: 0; }
+.topbar-left .sep { color: var(--subtle); margin: 0 2px; }
+.topbar-left strong { color: var(--text); font-weight: 600; }
+.topbar-search {
+  flex: 1; max-width: 360px;
+  position: relative;
+}
+.topbar-search input {
+  width: 100%; padding: 7px 12px 7px 30px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface-2); font-size: 12.5px;
+  outline: none; transition: border-color 0.15s;
+}
+.topbar-search input:focus { border-color: var(--blue); background: #fff; }
+.topbar-search::before {
+  content: "⌕"; position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+  color: var(--subtle); font-size: 14px;
+}
+.topbar-right { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+.topbar-right .user-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 20px;
+  background: var(--surface-2); font-weight: 500;
+}
+.topbar-right .user-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+
+/* 应用外壳：顶栏 + 侧栏 + 主区 */
+.app-shell { display: flex; flex-direction: column; min-height: 100vh; }
+.app-shell .app { flex: 1; min-height: 0; }
+
+/* 侧栏底部平台状态常驻条 */
+.sidebar-platforms {
+  padding: 12px 18px; border-top: 1px solid #2c3e58;
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.sidebar-platforms .plat-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 7px; border-radius: 5px;
+  font-size: 10.5px; font-weight: 600;
+  cursor: pointer;
+}
+.sidebar-platforms .plat-chip.ok { background: #1d4636; color: #53d3ad; }
+.sidebar-platforms .plat-chip.broken { background: #4a1d2a; color: #ff6b82; }
+.sidebar-platforms .plat-chip.nologin { background: #3d3016; color: #ffc66b; }
+.sidebar-platforms .plat-chip .dot { width: 5px; height: 5px; border-radius: 50%; }
+
+/* ===== 响应式 — 四断点 ===== */
+
+/* 1440px 及以上：宽屏，完整侧栏 + 宽内容区 */
+@media (min-width: 1440px) {
+  .content { max-width: 1500px; }
+}
+
+/* 1280px：中等屏，缩小留白，双列布局仍可行 */
+@media (max-width: 1280px) {
+  .sidebar { width: 210px; flex-basis: 210px; }
+  .content { padding: 22px 24px; }
   .grid.kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grid.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .topbar { padding: 0 20px; }
+}
+
+/* 1024px：窄屏，多列布局折叠 */
+@media (max-width: 1024px) {
+  .sidebar { width: 180px; flex-basis: 180px; }
+  .sidebar .nav-item { padding: 8px 14px; font-size: 12.5px; }
+  .content { padding: 18px; }
+  .grid.two { grid-template-columns: 1fr; }
+  .grid.three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .page-head { flex-wrap: wrap; gap: 12px; }
+  .page-head .head-actions { width: 100%; justify-content: flex-end; }
+  .topbar-search { max-width: 200px; }
+  .topbar-right { gap: 6px; }
+}
+
+/* 768px 及以下：移动端/小屏 */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 60px; flex-basis: 60px;
+    padding-top: 14px;
+  }
+  .sidebar .nav-item { justify-content: center; padding: 10px 0; font-size: 0; }
+  .sidebar .nav-item .icon { font-size: 16px; }
+  .sidebar-brand > div:first-child > div:last-child { display: none; } /* 隐藏品牌文字 */
+  .sidebar-bottom > div:first-child { display: none; } /* 隐藏版本号 */
+  .sidebar-platforms { display: none; }
+  .sidebar .nav-label { display: none; }
+  .sidebar-brand { padding: 0 12px 14px; }
+
+  .content { padding: 14px; }
+  .grid.kpis, .grid.four, .grid.three { grid-template-columns: 1fr; }
+  .page-title { font-size: 20px; }
+  .topbar { padding: 0 12px; height: 44px; }
+  .topbar-search { display: none; }
+  .topbar-right .user-chip { font-size: 11px; padding: 4px 8px; }
+  .page-head-actions { flex-wrap: wrap; }
 }

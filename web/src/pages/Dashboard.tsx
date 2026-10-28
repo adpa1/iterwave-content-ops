@@ -103,17 +103,17 @@ export default function Dashboard() {
         {/* 三项数字 */}
         <div style={{ display: "flex", gap: 24, marginTop: 16, flexWrap: "wrap" }}>
           <HeroItem label="总体目标增量" current={totalGoalCurrent} target={totalGoalTarget} />
-          <HeroItem label="进行中轮次" value={producingNow} hint="producing + awaiting_publish" />
-          <HeroItem label="已复盘轮次" value={publishedRecent} hint="completed + partial" />
-          <HeroItem label="可用热点" value={totalHotTopics} hint="来自 60s.viki.moe 公益 API" />
+          <HeroItem label="进行中轮次" value={producingNow} hint="生产中 + 待发布" />
+          <HeroItem label="已复盘轮次" value={publishedRecent} hint="已完成 + 部分完成" />
+          <HeroItem label="可用热点" value={totalHotTopics} hint="来自热点雷达的选题素材" />
         </div>
       </div>
 
       {/* ===== 4 个 KPI 卡 ===== */}
       <div className="kpi-row" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 16 }}>
         <KpiCard label="活跃目标" value={activeGoals.length} hint={`${activeGoals.filter(g => g.achievement_rate != null).length} 项有进度数据`} tone="blue" />
-        <KpiCard label="进行中轮次" value={producingNow} hint="producing / awaiting_publish" />
-        <KpiCard label="已复盘完成" value={publishedRecent} hint="completed + partial_completed" tone="green" />
+        <KpiCard label="进行中轮次" value={producingNow} hint="生产中 / 待发布" />
+        <KpiCard label="已复盘完成" value={publishedRecent} hint="已完成 + 部分完成" tone="green" />
         <KpiCard label="可用热点" value={totalHotTopics} hint="扫描后入库的选题素材" />
       </div>
 

@@ -1,5 +1,5 @@
 import React from "react";
-import { Platform } from "./api";
+import { Platform, platformMeta } from "./platforms";
 
 export interface NavItem {
   page: string;
@@ -9,43 +9,33 @@ export interface NavItem {
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  // 原型侧边栏 5 分组
-  { page: "dashboard",  label: "工作台概览", icon: "◉", section: "主界面" },
-  { page: "hot",        label: "热点雷达", icon: "✳", section: "主界面" },
-  { page: "goals",      label: "目标与策略", icon: "◎", section: "主界面" },
+  { page: "dashboard",  label: "运营总览", icon: "◉", section: "指挥与发现" },
+  { page: "hot",        label: "热点雷达", icon: "✳", section: "指挥与发现" },
+  { page: "goals",      label: "目标与策略", icon: "◎", section: "指挥与发现" },
+  { page: "assets",     label: "内容资产", icon: "☷", section: "指挥与发现" },
 
-  { page: "production", label: "内容生产", icon: "⎇", section: "运营流程" },
-  { page: "operations", label: "运营控制台", icon: "⌁", section: "运营流程" },
-  { page: "calendar",   label: "内容日历", icon: "◷", section: "运营流程" },
+  { page: "production", label: "内容生产", icon: "⎇", section: "内容作战" },
+  { page: "calendar",   label: "内容日历", icon: "◷", section: "内容作战" },
 
-  { page: "analytics",  label: "数据分析", icon: "▦", section: "洞察" },
-  { page: "gaps",       label: "缺口分析", icon: "△", section: "洞察" },
+  { page: "operations", label: "运营控制台", icon: "⌁", section: "运营与复盘" },
+  { page: "analytics",  label: "数据复盘", icon: "▦", section: "运营与复盘" },
+  { page: "gaps",       label: "缺口与实验", icon: "△", section: "运营与复盘" },
 
-  { page: "agent",      label: "Agent 编排", icon: "⎇", section: "系统" },
-  { page: "onboarding", label: "首次配置向导", icon: "✧", section: "系统" },
-  { page: "settings",   label: "系统设置", icon: "⚙", section: "系统" },
-
-  { page: "assets",     label: "内容资产", icon: "☷", section: "资产" },
+  { page: "agent",      label: "工作流诊断", icon: "⎇", section: "Agent 与设置" },
+  { page: "settings",   label: "账号与设置", icon: "⚙", section: "Agent 与设置" },
+  { page: "onboarding", label: "首启配置向导", icon: "✧", section: "Agent 与设置" },
 ];
-
-const PLATFORM_META: Record<Platform, { label: string; color: string; icon: string }> = {
-  xhs: { label: "小红书", color: "#fe2c55", icon: "📕" },
-  douyin: { label: "抖音", color: "#000000", icon: "🎵" },
-  kuaishou: { label: "快手", color: "#ff6a00", icon: "⚡" },
-  wechat_channels: { label: "视频号", color: "#07c160", icon: "💚" },
-};
-
-export function platformMeta(p: Platform) {
-  return PLATFORM_META[p] || { label: p, color: "#666", icon: "●" };
-}
 
 interface Props {
   current: string;
   onChange: (page: string) => void;
   brokenPlatforms: Platform[];
+  loggedIn: Platform[];
+  enabled: Platform[];
+  noLogin: Platform[];
 }
 
-export default function Sidebar({ current, onChange, brokenPlatforms }: Props) {
+export default function Sidebar({ current, onChange, brokenPlatforms, loggedIn, enabled, noLogin }: Props) {
   const sections: Record<string, NavItem[]> = {};
   NAV_ITEMS.forEach((item) => {
     (sections[item.section] = sections[item.section] || []).push(item);
@@ -53,7 +43,6 @@ export default function Sidebar({ current, onChange, brokenPlatforms }: Props) {
 
   return (
     <aside className="sidebar">
-      {/* Brand block — 原型样式 */}
       <div className="sidebar-brand">
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "2px 6px 18px" }}>
           <div style={{
@@ -65,23 +54,11 @@ export default function Sidebar({ current, onChange, brokenPlatforms }: Props) {
           }}>I</div>
           <div>
             <div style={{ fontWeight: 750, letterSpacing: ".2px", fontSize: 15, color: "#fff" }}>IterWave</div>
-            <div style={{ fontSize: 10, color: "#8fa4bf", marginTop: 1 }}>四平台图文半自动运营</div>
+            <div style={{ fontSize: 10, color: "#8fa4bf", marginTop: 1 }}>AI 图文内容运营</div>
           </div>
-        </div>
-        <div style={{
-          background: "#20314a", border: "1px solid #314763",
-          borderRadius: 9, padding: "10px", margin: "0 5px 14px",
-          display: "flex", alignItems: "center", gap: 8,
-        }}>
-          <div style={{
-            width: 8, height: 8, borderRadius: "50%", background: "#53d3ad",
-            boxShadow: "0 0 0 4px #284b58",
-          }} />
-          <div style={{ fontSize: 12, color: "#fff", fontWeight: 600 }}>本地运行 · 后端 http://127.0.0.1:8000</div>
         </div>
       </div>
 
-      {/* Nav sections */}
       {Object.entries(sections).map(([section, items]) => (
         <div key={section} className="nav-section">
           <div className="nav-label">{section}</div>
@@ -103,10 +80,36 @@ export default function Sidebar({ current, onChange, brokenPlatforms }: Props) {
         </div>
       ))}
 
-      <div className="sidebar-bottom">
-        <div>⚡ v0.1.0 · MVP 原型</div>
-        <div style={{ marginTop: 4, opacity: 0.55 }}>启动前必读：AGENTS.md 红线规则</div>
-      </div>
+      {/* 四平台连接状态常驻 */}
+      <SidebarPlatformStatus
+        enabled={enabled}
+        loggedIn={loggedIn}
+        broken={brokenPlatforms}
+        noLogin={noLogin}
+      />
     </aside>
+  );
+}
+
+function SidebarPlatformStatus({ enabled, loggedIn, broken, noLogin }: {
+  enabled: Platform[]; loggedIn: Platform[]; broken: Platform[]; noLogin: Platform[];
+}) {
+  if (!enabled.length) return null;
+  return (
+    <div className="sidebar-platforms" title="四平台连接状态">
+      {enabled.map((p) => {
+        const m = platformMeta(p);
+        const isBroken = broken.includes(p);
+        const isNoLogin = noLogin.includes(p) || !loggedIn.includes(p);
+        const cls = isBroken ? "broken" : isNoLogin ? "nologin" : "ok";
+        const label = isBroken ? "熔断" : isNoLogin ? "无登录" : "正常";
+        return (
+          <span key={p} className={`plat-chip ${cls}`} title={`${m.label}：${label}`}>
+            <span className="dot" />
+            {m.label}
+          </span>
+        );
+      })}
+    </div>
   );
 }
