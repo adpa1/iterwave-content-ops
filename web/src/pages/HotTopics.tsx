@@ -30,7 +30,7 @@ export default function HotTopics() {
         title: h.title,
         source: h.source,
         url: h.url ?? "",
-        dimension: h.dimension_hits?.[0],
+        dimension: h.dimension ?? h.dimension_hits?.[0],
       });
       showToast(r.imported ? "✅ 已转入选题库" : r.message ?? "选题库已存在", r.imported ? "success" : "info");
     } catch (e: any) {
@@ -40,19 +40,45 @@ export default function HotTopics() {
     }
   }
 
-  async function loadHot(force = false) {
-    if (force) setRefreshing(true);
-    else setLoading(true);
+  async function loadHot() {
+    setLoading(true);
     setError(null);
     try {
-      setHot(await api.hotTopics(force));
+      const data = await api.hotTopics();
+      setHot(data);
+      setRefreshing(!!data.refresh_job?.running);
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
+    }
+  }
+
+  /** 手动刷新：只触发后台采集，页面轮询库内数据，直到后台任务结束 */
+  async function triggerRefresh() {
+    setRefreshing(true);
+    try {
+      await api.refreshHotTopics();
+    } catch (e: any) {
+      showToast(`触发采集失败: ${e?.message ?? e}`, "error");
       setRefreshing(false);
     }
   }
+
+  useEffect(() => {
+    if (!refreshing) return;
+    const t = setInterval(async () => {
+      try {
+        const data = await api.hotTopics();
+        setHot(data);
+        if (!data.refresh_job?.running) {
+          setRefreshing(false);
+          if (data.refresh_job?.error) showToast(`采集失败: ${data.refresh_job.error}`, "error");
+        }
+      } catch { /* 下次轮询重试 */ }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [refreshing]);
 
   useEffect(() => {
     loadHot();
@@ -104,9 +130,9 @@ export default function HotTopics() {
     try {
       const res = await withPending("hot:gates", () => api.patchConfig(updates));
       if (!res) return;
-      showToast(`✅ 已保存 ${res.changed.length} 项门限，重新采集后生效`, "success");
+      showToast(`✅ 已保存 ${res.changed.length} 项门限，已按新门限重新筛选`, "success");
       await loadConfig();
-      await loadHot(true);
+      await loadHot();
     } catch (e: any) {
       showToast(`保存失败: ${e?.message ?? e}`, "error");
     }
@@ -129,16 +155,16 @@ export default function HotTopics() {
           <div className="eyebrow">HOT TOPIC RADAR</div>
           <h1 className="page-title">热点雷达</h1>
           <div className="page-desc">
-            数据源 60s.viki.moe 公益 API，缓存 {hot?.refresh_interval_minutes ?? 30} 分钟。
+            数据源 60s.viki.moe 公益 API，后台每 {hot?.refresh_interval_minutes ?? 30} 分钟采集入库并与账号标签匹配，打开页面不再实时抓取。
             4 道筛选门：🔥热度 / ⏰时效 / 🎯维度匹配（不可关）/ ✅可发布性（不可关）。
           </div>
         </div>
         <div className="head-actions">
           <DemoBadge level="no_request" text="公益 API 可能限流；采集失败时不显示热度数字" />
           <span className="tag teal">数据源 · 60s.viki.moe</span>
-          {hot?.cached && <span className="tag gray">缓存命中</span>}
-          <button className="btn sm" onClick={() => loadHot(true)} disabled={refreshing}>
-            {refreshing ? "采集中..." : "↻ 刷新"}
+          {hot?.stale && !refreshing && <span className="tag orange">数据已过刷新间隔</span>}
+          <button className="btn sm" onClick={triggerRefresh} disabled={refreshing}>
+            {refreshing ? "后台采集中…" : "↻ 立即采集"}
           </button>
         </div>
       </div>
@@ -150,6 +176,12 @@ export default function HotTopics() {
             {s.platform} · {s.status === "failed" ? "采集失败" : s.status === "demo" ? "演示数据" : "真实采集"}
           </span>
         ))}
+        {hot?.match && (
+          <span className="tag blue">
+            标签匹配 · 关联 {hot.match.matched} · 无关 {hot.match.rejected} · 待研判 {hot.match.pending}
+            {hot.match.method === "keyword" ? "（未配置 LLM，仅关键词匹配）" : ""}
+          </span>
+        )}
         {hot?.refreshed_at && (
           <span className="tag gray" style={{ marginLeft: "auto" }}>
             最近更新 {hot.refreshed_at.replace("T", " ")}
@@ -237,7 +269,7 @@ export default function HotTopics() {
 
       <div className="tabs" style={{ marginBottom: 16 }}>
         {[
-          { k: "all", l: `全部相关 (${items.length})` },
+          { k: "all", l: `全部 (${items.length})` },
           { k: "urgent", l: "窗口短" },
           { k: "unknown", l: "时效未知" },
         ].map((t) => (
@@ -260,7 +292,7 @@ export default function HotTopics() {
           ) : items.length === 0 ? (
             <EmptyHint next="点右上角「↻ 刷新」立即采集热点">暂无通过筛选门的热点</EmptyHint>
           ) : (
-            <EmptyHint next="切回「全部相关」查看已采集热点，或点右上角「↻ 刷新」重新采集">该筛选下暂无热点</EmptyHint>
+            <EmptyHint next="切回「全部」查看已采集热点，或点右上角「↻ 立即采集」">该筛选下暂无热点</EmptyHint>
           )}
         </div>
       ) : (
@@ -281,17 +313,29 @@ export default function HotTopics() {
                 {h.time_sensitive === null && <span className="tag gray">时效未知</span>}
               </div>
               <div className="flex wrap" style={{ marginTop: 10, gap: 6 }}>
-                {h.dimension_match ? (
-                  <span className="tag blue">🎯 命中定位：{h.dimension_hits.join("/")}</span>
+                {h.dimension_match === true ? (
+                  <span className="tag blue" title={h.match_reason ?? undefined}>
+                    关联 {h.match_score != null ? Math.round(h.match_score) : ""}
+                    {h.dimension ? ` · ${h.dimension}` : h.dimension_hits.length ? ` · ${h.dimension_hits.join("/")}` : ""}
+                  </span>
+                ) : h.dimension_match === false ? (
+                  <span className="tag gray" title={h.match_reason ?? undefined}>
+                    与定位无关{h.match_score != null ? ` · ${Math.round(h.match_score)}` : ""}
+                  </span>
                 ) : (
-                  <span className="tag gray">🎯 维度待判定</span>
+                  <span className="tag gray">待研判</span>
                 )}
                 {h.publishable ? (
                   <span className="tag green">✅ 可发布</span>
                 ) : (
-                  <span className="tag red">⛔ 含红线：{h.redline_hits.join("/")}</span>
+                  <span className="tag red">
+                    {h.redline_hits.length ? `含红线：${h.redline_hits.join("/")}` : "落入禁止方向"}
+                  </span>
                 )}
               </div>
+              {h.match_angle && (
+                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>切入角度：{h.match_angle}</div>
+              )}
               <div className="flex wrap" style={{ marginTop: 10, gap: 6 }}>
                 {h.url ? (
                   <a className="btn sm" href={h.url} target="_blank" rel="noreferrer">查看原文</a>

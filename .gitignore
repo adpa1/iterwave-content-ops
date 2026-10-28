@@ -17,10 +17,17 @@ data/*.db
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
-data/_login/        # 登录态 cookie（敏感）
-data/_login_qr/     # 登录二维码临时图
-data/_profiles/     # Playwright 浏览器 profile（含登录态）
-outputs/            # 运行时输出目录
+# 注意：.gitignore 不支持行尾注释，注释必须单独成行，否则整行规则失效
+# 登录态 cookie / 状态文件 / 短信验证码（敏感）
+data/_login/
+# 登录二维码临时图
+data/_login_qr/
+# Playwright 浏览器 profile（含登录态）
+data/_profiles/
+# 导出的 storage_state（含 cookie，敏感）
+data/login_states/
+# 运行时输出目录
+outputs/
 backups/
 
 # ===== 登录态文件（R23）=====
@@ -70,5 +77,7 @@ PROJECT_MEMORY.md
 功能缺口清单.md
 对比报告*.md
 *审查报告*.md
-*.html  # 本地 HTML 原型
-verify_*.py  # 内部验证脚本
+# 本地 HTML 原型
+*.html
+# 内部验证脚本
+verify_*.py

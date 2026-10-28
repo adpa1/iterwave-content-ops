@@ -26,7 +26,8 @@ POST /api/circuit_breaker/recover  触发 3 步恢复
 POST /api/circuit_breaker/reset     手动重置
 GET  /api/gaps            缺口分析
 GET  /api/topics/score    选题评分（可传 topic_ids 范围）
-GET  /api/hot_topics      热点雷达
+GET  /api/hot_topics      热点雷达（只读库）
+POST /api/hot_topics/refresh  触发后台采集 + 标签匹配
 """
 
 from __future__ import annotations
@@ -178,6 +179,11 @@ def _build_app() -> FastAPI:
                 invalidation["current_signature"][:12],
             )
         _g_ctx["plan_version_manager"] = pvm
+
+        # 热点：库里没有新鲜数据时启动后补跑一次后台采集（不阻塞启动）
+        from ..core import hot_topic_service
+        if cfg.hot_topics.enabled is not False and hot_topic_service.is_stale(cfg, conn):
+            hot_topic_service.trigger_background(cfg, trigger="startup")
 
         logger.info("✅ FastAPI 应用启动完成，%d 个模块已加载", len(_g_ctx))
 
@@ -1304,13 +1310,29 @@ def _register_routes(app: FastAPI) -> None:
     # --- 热点雷达（R22：采集失败不显示数字）---
     @app.get("/api/hot_topics")
     def hot_topics(refresh: bool = Query(False)):
+        """热点雷达：只读库（采集 + 标签匹配由后台定时任务完成）。
+
+        refresh=true 兼容旧前端：触发一次后台刷新后立即返回当前库内数据，不阻塞请求。
+        """
+        from ..core import hot_topic_service
+
         conn = _g()["conn"]
-        collector = HotTopicCollector(_g()["cfg"], conn)
-        try:
-            return collector.overview(force=refresh)
-        except Exception as exc:  # noqa: BLE001 — 采集异常不能 500 打穿前端
-            logger.exception("热点雷达采集异常")
-            raise HTTPException(502, f"热点采集异常: {exc}") from exc
+        cfg = _g()["cfg"]
+        if refresh:
+            hot_topic_service.trigger_background(cfg, trigger="manual")
+        data = HotTopicCollector(cfg, conn).overview()
+        data["refresh_job"] = hot_topic_service.status()
+        return data
+
+    @app.post("/api/hot_topics/refresh", status_code=202)
+    def hot_topics_refresh():
+        """手动触发后台采集 + 标签匹配，立即返回任务状态（前端轮询 GET /api/hot_topics 的 refresh_job）。"""
+        from ..core import hot_topic_service
+
+        cfg = _g()["cfg"]
+        if cfg.hot_topics.enabled is False:
+            raise HTTPException(409, "热点采集已在配置中关闭（hot_topics.enabled=false）")
+        return hot_topic_service.trigger_background(cfg, trigger="manual")
 
     @app.post("/api/hot_topics/import")
     def import_hot_topic(req: dict):
@@ -1909,7 +1931,11 @@ def _register_routes(app: FastAPI) -> None:
         get_all_accounts as _get_all_accounts,
         cancel_login as _cancel_login,
         clear_login as _clear_login,
+        submit_sms_code as _submit_sms_code,
     )
+
+    class SmsCodeRequest(BaseModel):
+        code: str
 
     def _valid_platform(platform: str) -> str:
         """校验平台代号；非法 raise HTTPException。"""
@@ -1942,9 +1968,18 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/accounts/{platform}/logout")
     def logout_platform(platform: str):
-        """注销：清 storage_state.json（下次发布前需重新扫码）。"""
+        """注销：清持久化 profile + storage_state + 登录标记（下次需重新扫码）。"""
         p = _valid_platform(platform)
         return _clear_login(p)
+
+    @app.post("/api/accounts/{platform}/sms")
+    def submit_platform_sms(platform: str, req: SmsCodeRequest):
+        """回填短信验证码（登录进入 sms_required 时由前端提交，runner 读走后继续登录）。"""
+        p = _valid_platform(platform)
+        try:
+            return _submit_sms_code(p, req.code)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
 
     @app.post("/api/accounts/{platform}/cancel_login")
     def cancel_platform_login(platform: str):

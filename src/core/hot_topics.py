@@ -7,11 +7,16 @@
 - 缓存 30 分钟（config.hot_topics.refresh_interval_minutes）
 - 4 道门：热度/时效可配可关；维度匹配与可发布性是安全底线（强制开启）
 
+采集改为异步（hot_topic_service）：
+- 定时任务 hot_topics_refresh 按 refresh_interval_minutes 采集 → 落库 → 标签匹配（hot_topic_matcher）
+- GET /api/hot_topics 只读库（overview()），不再在请求里同步抓取
+- POST /api/hot_topics/refresh 手动触发一次后台采集，立即返回
+
 用法：
     from src.core.hot_topics import HotTopicCollector
     collector = HotTopicCollector(cfg, conn)
-    data = collector.overview()            # 用缓存
-    data = collector.overview(force=True)  # 强制刷新
+    data = collector.overview()   # 只读库
+    collector.refresh()           # 采集落库（由后台任务调用）
 """
 
 from __future__ import annotations
@@ -99,7 +104,7 @@ class HotTopicCollector:
     # ------------------------------------------------------------------
 
     def overview(self, force: bool = False) -> dict:
-        """返回热点雷达数据（默认命中 30min 缓存）。"""
+        """返回热点雷达数据（只读库）。force 参数保留兼容，后台刷新由调用方触发。"""
         if self.hcfg.enabled is False:
             return {
                 "enabled": False,
@@ -110,19 +115,17 @@ class HotTopicCollector:
                 "message": "热点采集已在配置中关闭（hot_topics.enabled=false）",
             }
 
-        refreshed = False
-        if force or not self._is_fresh():
-            self.refresh()
-            refreshed = True
-
         items, sources = self._load()
+        last = self._last_collected_at()
         return {
             "enabled": True,
-            "cached": not refreshed,
-            "refreshed_at": self._last_collected_at(),
+            "cached": True,
+            "refreshed_at": last,
+            "stale": not self._is_fresh(),
             "refresh_interval_minutes": self.hcfg.refresh_interval_minutes,
             "sources": sources,
             "items": items,
+            "match": self._match_summary(items),
             "filters": {
                 "heat_threshold": self.hcfg.filters.get("heat_threshold"),
                 "heat_filter_enabled": self.hcfg.filters.get("heat_filter_enabled", True),
@@ -131,6 +134,16 @@ class HotTopicCollector:
                 "dimension_match_required": True,   # R22 强制
                 "publishability_required": True,    # R22 强制
             },
+        }
+
+    def _match_summary(self, items: list[dict]) -> dict:
+        from .hot_topic_matcher import MATCH_THRESHOLD
+        return {
+            "threshold": MATCH_THRESHOLD,
+            "matched": sum(1 for i in items if i["dimension_match"] is True),
+            "rejected": sum(1 for i in items if i["dimension_match"] is False),
+            "pending": sum(1 for i in items if i["dimension_match"] is None),
+            "method": next((i["match_method"] for i in items if i.get("match_method")), None),
         }
 
     def refresh(self) -> dict:
@@ -289,7 +302,16 @@ class HotTopicCollector:
         time_on = filters.get("time_filter_enabled", True)
 
         redlines = [k for k in self.cfg.ultimate_goal.redline_keywords if k]
-        personas = [k for k in self.cfg.ultimate_goal.persona_keywords if k]
+        from .hot_topic_matcher import HotTopicMatcher, dimension_match_of, keyword_judgement
+        matcher = HotTopicMatcher(self.cfg, self.conn, use_default_llm=True)
+        current_version = matcher.version
+        # 每个数据源只展示最近一批（_upsert 同批写同一个 discovered_at），旧批次的过期热点不再出现
+        latest_batch: dict[str, str] = {}
+        for row in rows:
+            if row["evidence_status"] == "collected":
+                src = row["source"] or ""
+                if (row["discovered_at"] or "") > latest_batch.get(src, ""):
+                    latest_batch[src] = row["discovered_at"] or ""
 
         items: list[dict] = []
         sources: dict[str, dict] = {}
@@ -319,6 +341,8 @@ class HotTopicCollector:
                 continue
             if platform in failed:
                 continue  # 该平台最近一次采集失败 → 不展示旧条目
+            if row["evidence_status"] == "collected" and (row["discovered_at"] or "") < latest_batch.get(source, ""):
+                continue
 
             sources.setdefault(platform, {
                 "platform": platform,
@@ -338,7 +362,9 @@ class HotTopicCollector:
 
             title = row["title"] or ""
             hit_redline = [k for k in redlines if k in title]
-            hit_persona = [k for k in personas if k in title]
+            kj = keyword_judgement(matcher.persona, title)
+            dimension_match = dimension_match_of(row, current_version)
+            fresh = row["match_version"] == current_version
 
             items.append({
                 "id": row["id"],
@@ -350,12 +376,16 @@ class HotTopicCollector:
                 "heat_unit": row["heat_unit"],
                 "time_sensitive": row["time_sensitive"],
                 "evidence_status": row["evidence_status"],
-                "dimension": row["dimension"],
-                # 🎯 维度匹配（强制门）：关键词命中情况，供前端/选题环节判断
-                "dimension_match": (True if hit_persona else None),
-                "dimension_hits": hit_persona,
-                # ✅ 可发布性（强制门）：命中红线 → 不可用
-                "publishable": not hit_redline,
+                "dimension": (row["match_dimension"] if fresh else None) or row["dimension"],
+                # 🎯 维度匹配（强制门）：True 关联 / False 已研判无关或落入禁止方向 / None 待研判
+                "dimension_match": dimension_match,
+                "dimension_hits": kj["keyword_hits"],
+                "match_score": row["match_score"] if fresh else None,
+                "match_angle": row["match_angle"] if fresh else None,
+                "match_reason": row["match_reason"] if fresh else None,
+                "match_method": row["match_method"] if fresh else None,
+                # ✅ 可发布性（强制门）：命中红线 / 落入禁止方向 → 不可用
+                "publishable": not hit_redline and not (fresh and row["forbidden_hit"]),
                 "redline_hits": hit_redline,
             })
 

@@ -13,6 +13,9 @@ dependencies = [
     "playwright>=1.42",
     "Pillow>=10.0",
     "numpy>=1.26",
+    # vendor/easel 登录脚本依赖：login_qr 用 cv2 定位二维码，login_transport 用 requests（与 Easel pyproject 一致）
+    "opencv-python-headless>=4.8,<5",
+    "requests>=2.32,<3",
     "fastapi>=0.110",
     "uvicorn>=0.27",
     "sse-starlette>=2.0",
