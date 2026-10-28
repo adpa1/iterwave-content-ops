@@ -286,11 +286,11 @@ export default function HotTopics() {
       ) : filtered.length === 0 ? (
         <div className="panel">
           {hot?.enabled === false ? (
-            <EmptyHint next="到「系统设置」确认热点采集已开启，再点右上角「↻ 刷新」">
+            <EmptyHint next="到「系统设置」确认热点采集已开启，再点右上角「↻ 立即采集」">
               {hot.message || "热点采集已关闭"}
             </EmptyHint>
           ) : items.length === 0 ? (
-            <EmptyHint next="点右上角「↻ 刷新」立即采集热点">暂无通过筛选门的热点</EmptyHint>
+            <EmptyHint next="点右上角「↻ 立即采集」立即采集热点">暂无通过筛选门的热点</EmptyHint>
           ) : (
             <EmptyHint next="切回「全部」查看已采集热点，或点右上角「↻ 立即采集」">该筛选下暂无热点</EmptyHint>
           )}
