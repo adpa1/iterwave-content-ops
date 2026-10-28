@@ -1,397 +1,343 @@
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import AsyncPanel from "../components/AsyncPanel";
 import EmptyHint from "../components/EmptyHint";
-import { api, SpiralRound, Goal, HotTopicItem, InsightItem, PlatformProgress, ActionItem } from "../api";
-import { platformMeta, Platform } from "../platforms";
+import GoalHero, { isActiveGoal, metricLabel, currentProgressText } from "../components/GoalHero";
+import {
+  api, SpiralRound, Goal, GoalSummary, HotTopicItem, InsightItem, PlatformProgress, ActionItem, SystemConfigView,
+} from "../api";
+import { platformMeta, Platform, ALL_PLATFORMS } from "../platforms";
 
 /**
- * Dashboard v2 — 动线按审查报告 P0-02/03/04 重构：
- *  1. 取消假总目标%（不同指标不能直接相加）→ 改成按指标分组的进度摘要
- *  2. KPI 四卡：互不重复、导向真实动作（去之前"进行中轮次/复盘/热点"三次重复）
- *  3. "本周期已发布"真实时间窗（用 created_at >= 近 7 天过滤）
- *  4. AgentPipelineStatus 用 status.circuit_broken_platforms 替换 window.__broken_platforms
- *  5. 四平台进度用 platform_progress API 真实分组
- *
- * 动线：先告诉用户该做什么 → 再展示进度与机会
- *    [唯一主操作 + 次操作 + 最近更新时间 + 阻塞告警]
- *    [待我确认] [运行中轮次] [阻塞事项] [本周期已发布]   ← 4 不重复 KPI
- *    [待我处理（主区，按阻塞/截止/影响排序）]  [当前轮次四平台进度]
- *    [热点机会]  [复盘洞察与待决策]
- *    [阶段目标（按指标分组）]  [最近轮次]
+ * 运营总览 —— 版式对齐 v10 demo（goal-hero → KPI → 决策/热点 → 四平台 lane → Agent 编排/目标）。
+ * 所有数字都来自后端接口：
+ *   /api/status /api/rounds /api/goals /api/hot_topics /api/insights
+ *   /api/platform_progress /api/action_items /api/config
+ * 任何接口没有数据时显示空态或「待采集」，不填演示数。
  */
+
+const PLATFORM_CLS: Record<Platform, string> = {
+  xhs: "xhs", douyin: "douyin", kuaishou: "kuaishou", wechat_channels: "channels",
+};
+
+/** 单篇草稿在后端的状态流转顺序（lane 阶段条按此渲染） */
+const DRAFT_STAGES: { key: string; label: string }[] = [
+  { key: "draft_pending", label: "待存草稿" },
+  { key: "draft_saved", label: "已存草稿" },
+  { key: "user_published", label: "已发布" },
+  { key: "data_fetching", label: "数据采集" },
+  { key: "published", label: "已采集" },
+];
+
+const ROUND_STATUS_LABEL: Record<string, string> = {
+  created: "已创建", producing: "生产中", awaiting_publish: "待发布",
+  collecting_metrics: "采集中", analyzing: "复盘中",
+  completed: "已完成", partial_completed: "部分完成", failed: "失败", cancelled: "已取消",
+};
+
 export default function Dashboard() {
   const { status } = useApp();
   const [rounds, setRounds] = useState<SpiralRound[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
-  const [hottopics, setHottopics] = useState<HotTopicItem[]>([]);
+  const [summary, setSummary] = useState<GoalSummary | null>(null);
+  const [hot, setHot] = useState<HotTopicItem[]>([]);
   const [insights, setInsights] = useState<InsightItem[]>([]);
-  const [progress, setProgress] = useState<Record<Platform, PlatformProgress>>({} as any);
+  const [progress, setProgress] = useState<Partial<Record<Platform, PlatformProgress>>>({});
   const [actions, setActions] = useState<ActionItem[]>([]);
+  const [cfg, setCfg] = useState<SystemConfigView | null>(null);
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
     setError(null);
-    try {
-      const results = await Promise.allSettled([
-        api.rounds(),
-        api.goals(),
-        api.hotTopics().catch(() => ({ items: [] })),
-        api.insights().catch(() => ({ items: [] })),
-        api.platformProgress().catch(() => ({})),
-        api.actionItems().catch(() => ({ items: [] })),
-      ]);
-      if (results[0].status === "fulfilled") setRounds(results[0].value as SpiralRound[]);
-      if (results[1].status === "fulfilled") setGoals(results[1].value as Goal[]);
-      if (results[2].status === "fulfilled") {
-        const v = results[2].value as any;
-        setHottopics(Array.isArray(v) ? v : (v?.items ?? []));
-      }
-      if (results[3].status === "fulfilled") {
-        const v = results[3].value as any;
-        setInsights(Array.isArray(v) ? v : (v?.items ?? []));
-      }
-      if (results[4].status === "fulfilled") setProgress(results[4].value as any);
-      if (results[5].status === "fulfilled") {
-        const v = results[5].value as any;
-        setActions(Array.isArray(v) ? v : (v?.items ?? []));
-      }
-      if (results.some(r => r.status === "rejected")) setError("部分数据加载失败");
-    } catch (e: any) { setError(e.message); }
-    finally { setLoading(false); }
+    const r = await Promise.allSettled([
+      api.rounds(),
+      api.goals(),
+      api.hotTopics(),
+      api.insights(),
+      api.platformProgress(),
+      api.actionItems(),
+      api.config(),
+      api.goalsSummary(),
+    ]);
+    if (r[0].status === "fulfilled") setRounds(r[0].value);
+    if (r[1].status === "fulfilled") setGoals(r[1].value);
+    if (r[2].status === "fulfilled") setHot(r[2].value.items ?? []);
+    if (r[3].status === "fulfilled") setInsights(r[3].value.items ?? []);
+    if (r[4].status === "fulfilled") setProgress(r[4].value ?? {});
+    if (r[5].status === "fulfilled") setActions(r[5].value.items ?? []);
+    if (r[6].status === "fulfilled") setCfg(r[6].value);
+    if (r[7].status === "fulfilled") setSummary(r[7].value);
+    const failed = r.filter((x) => x.status === "rejected").length;
+    if (failed === r.length) setError("后端接口不可用，请确认 API 服务已启动");
+    else if (failed) setError(null);
+    setLoadedAt(new Date());
+    setLoading(false);
   };
 
   useEffect(() => { load(); }, []);
 
-  // ===== 真实派生数据 =====
-  const enabledPlatforms = (status?.enabled_platforms as Platform[]) ?? ["xhs", "douyin", "kuaishou", "wechat_channels"];
-  const brokenPlatforms: Platform[] = (status as any)?.circuit_broken_platforms ?? [];
-  const hasBlockingIssue = brokenPlatforms.length > 0 || actions.length > 0;
+  const go = (page: string) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("page", page);
+    window.history.pushState({}, "", url.toString());
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  };
 
-  // KPI 1: 运行中轮次（producing + awaiting_publish，实时快照，不按时间窗）
-  const runningNow = rounds.filter(r => ["producing", "awaiting_publish", "created"].includes(r.status)).length;
+  // ===== 派生（全部来自接口） =====
+  const enabled = (status?.enabled_platforms ?? []) as Platform[];
+  const loggedIn = (status?.logged_in_platforms ?? []) as Platform[];
+  const broken = (status?.circuit_broken_platforms ?? []) as Platform[];
 
-  // KPI 3: 阻塞事项（直接用 action_items 真实数据，当前后端聚合 4 类：目标超期/轮次超 72h 未确认/熔断冷却到期未 resolved/熔断中）
-  const blockingCount = actions.length;
-
-  // KPI 4: 本周期已发布（用 rounds.created_at 过滤最近 7 天；如果有 drafts.user_published_at 更好，但 rounds 没有）
-  //    审查报告 P0-04 要求："最近 7 天"必须真按时间筛；否则改名
-  const SEVEN_DAYS_MS = 7 * 24 * 3600 * 1000;
-  const now = Date.now();
-  const thisWeekPublished = rounds.filter(r => {
-    const d = new Date(r.created_at).getTime();
-    const completed = r.status === "completed" || r.status === "partial_completed";
-    return completed && (now - d) <= SEVEN_DAYS_MS;
-  }).length;
-
-  // KPI 2: 待我确认的草稿（轮次状态 awaiting_publish 内所有 drafts 都算待确认）
-  const awaitingPublishRounds = rounds.filter(r => r.status === "awaiting_publish");
-  // 用 action_items 里的 "awaiting_publish_timeout" 类项 + rounds.awaiting_publish 估算
-  // 因为后端没直接返回 draft 数，这里用 rounds.awaiting_publish × 平均平台数估算（诚实标注）
-  const awaitingConfirmCount = awaitingPublishRounds.length;  // 真实有多少轮在等用户确认发布
-
-  // 阶段目标按 target_metric 分组（审查报告 P0-02：不同指标不能相加 → 按指标分组展示）
-  const activeGoals = goals.filter((g: any) => g.status === "active" || !g.status);
-  const goalsByMetric = activeGoals.reduce<Record<string, Goal[]>>((acc, g) => {
-    const key = (g as any).target_metric ?? "未知";
-    (acc[key] ||= []).push(g);
-    return acc;
-  }, {});
+  const awaitingRounds = rounds.filter((r) => r.status === "awaiting_publish");
+  const runningRounds = rounds.filter((r) => ["created", "producing", "awaiting_publish"].includes(r.status));
+  // 「机会」= 已通过维度匹配（账号定位）且可发布；dimension_match 为 null 表示尚未研判，不能算进机会
+  const publishableHot = hot.filter((h) => h.publishable && h.dimension_match === true);
+  const unjudgedHot = hot.filter((h) => h.dimension_match == null);
+  const shortWindowHot = publishableHot.filter((h) => (h.time_sensitive ?? 0) > 0);
+  const weekAgo = Date.now() - 7 * 86400000;
+  const insightsThisWeek = insights.filter((i) => new Date(i.analyzed_at).getTime() >= weekAgo);
+  const insightsWithSamples = insightsThisWeek.filter((i) => (i.sample_count ?? 0) > 0);
+  const highActions = actions.filter((a) => a.priority === "high");
+  const totalDrafts = Object.values(progress).reduce((s, p) => s + (p?.total_drafts ?? 0), 0);
+  const latestRound = rounds[0];
 
   return (
-    <AsyncPanel loading={loading} error={error} onRetry={load} loadingText="加载工作台...">
-      {/* ========== 页面头：唯一主操作 + 次操作 + 阻塞告警 ========== */}
+    <AsyncPanel loading={loading} error={error} onRetry={load} loadingText="加载运营总览…">
       <div className="page-head">
         <div>
-          <div className="eyebrow">CONTROL CENTER · 运营总览</div>
+          <div className="eyebrow">Command Center</div>
           <h1 className="page-title">运营总览</h1>
-          <div className="page-desc" style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
-            <span>最近更新：{new Date().toLocaleTimeString("zh-CN")}</span>
-            <span>启用平台：{enabledPlatforms.map(p => platformMeta(p).icon).join(" ")}</span>
-            {hasBlockingIssue && (
-              <span style={{ color: "#f85149", fontWeight: 600 }}>
-                🔴 有 {brokenPlatforms.length + blockingCount} 项阻塞需要处理
-              </span>
-            )}
-            {!hasBlockingIssue && (
-              <span style={{ color: "#12b76a" }}>✅ 当前无阻塞</span>
-            )}
+          <div className="page-desc">
+            一个总体目标、各平台独立执行；Agent 负责发现机会、编排任务、汇总进展，关键决策由你确认。
+            {loadedAt && <span className="tiny" style={{ marginLeft: 8 }}>数据更新于 {loadedAt.toLocaleTimeString("zh-CN")}</span>}
           </div>
         </div>
-        <div className="page-head-actions" style={{ display: "flex", gap: 8 }}>
-          <button className="btn ghost" onClick={load}>↻ 刷新</button>
-          <a className="btn" href="?page=hot">🔥 扫描热点</a>
-          <a className="btn primary" href="?page=production">🚀 开始新一轮</a>
+        <div className="head-actions">
+          <button type="button" className="btn" onClick={load}>↻ 刷新</button>
+          <button type="button" className="btn" onClick={() => go("agent")}>查看 Agent 运行</button>
+          <button type="button" className="btn primary" onClick={() => go("hot")}>✳ 扫描热点</button>
         </div>
       </div>
 
-      {/* ========== 四个不重复、导向真实动作的 KPI ========== */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 16 }}>
-        <KpiCard
-          icon="🔐"
-          label="待我确认发布"
-          value={awaitingConfirmCount}
-          hint="轮次内有草稿等待你点'✅ 我已发布'"
-          tone={awaitingConfirmCount > 0 ? "orange" : "gray"}
-          href="?page=operations"
+      <GoalHero
+        goals={goals}
+        summary={summary}
+        personaKeywords={cfg?.readonly.persona_keywords}
+        forbiddenDirections={cfg?.readonly.forbidden_directions}
+        onCreateGoal={() => go("goals")}
+      />
+
+      {/* ===== KPI ===== */}
+      <div className="grid kpis" style={{ marginBottom: 15 }}>
+        <Metric
+          label="待你处理"
+          icon="✋"
+          value={actions.length + awaitingRounds.length}
+          unit="项"
+          foot={[
+            highActions.length ? <span key="h" style={{ color: "var(--red)", fontWeight: 700 }}>{highActions.length} 项高优先级</span> : <span key="h">无高优先级</span>,
+            <span key="a">{awaitingRounds.length} 轮待确认发布</span>,
+          ]}
         />
-        <KpiCard
-          icon="⚙️"
-          label="运行中轮次"
-          value={runningNow}
-          hint="生产中 / 待发布"
-          tone={runningNow > 0 ? "blue" : "gray"}
-          href="?page=production"
+        <Metric
+          label="进行中的轮次"
+          icon="⎇"
+          value={runningRounds.length}
+          unit="轮"
+          foot={[<span key="d">{totalDrafts} 篇草稿</span>, <span key="p">{enabled.length} 个平台启用</span>]}
         />
-        <KpiCard
-          icon={blockingCount > 0 ? "⚠️" : "✅"}
-          label="阻塞事项"
-          value={blockingCount}
-          hint={blockingCount > 0 ? "需要你处理的告警/超期/熔断" : "当前无阻塞"}
-          tone={blockingCount > 0 ? "red" : "green"}
-          href="?page=operations"
+        <Metric
+          label="热点机会池"
+          icon="✳"
+          iconTone="orange"
+          value={publishableHot.length}
+          unit="条匹配定位"
+          foot={[
+            shortWindowHot.length ? <span key="s" style={{ color: "var(--orange)", fontWeight: 700 }}>{shortWindowHot.length} 条时效敏感</span> : <span key="s">无时效敏感</span>,
+            <span key="t">{unjudgedHot.length} 条待研判 · 共 {hot.length} 条</span>,
+          ]}
         />
-        <KpiCard
-          icon="📊"
-          label="本周期已发布"
-          value={thisWeekPublished}
-          hint="最近 7 天内完成/部分完成的轮次"
-          tone="green"
-          href="?page=analytics"
+        <Metric
+          label="本周复盘"
+          icon="↗"
+          iconTone="teal"
+          value={insightsThisWeek.length}
+          unit="个平台"
+          foot={[<span key="w">{insightsWithSamples.length} 个有有效样本</span>, <span key="p">已发布样本 {status?.published_samples ?? 0}</span>]}
         />
       </div>
 
-      {/* ========== 主工作区：左·待我处理  右·当前轮次四平台进度 ========== */}
+      {/* ===== 决策 + 热点 ===== */}
       <div className="grid two">
-        {/* 左：待我处理（action_items 真实数据，按优先级排序） */}
         <div className="panel">
           <div className="panel-head">
             <div>
-              <div className="panel-title">📋 待我处理</div>
-              <div className="panel-sub">按阻塞 / 截止时间 / 影响程度排序 · 真实 action_items</div>
+              <div className="panel-title"><span className="icon" aria-hidden="true">✓</span>需要你决策的事项</div>
+              <div className="panel-sub">来自 /api/action_items 与待发布轮次，按优先级排序</div>
             </div>
-            <a href="?page=operations" className="btn ghost">处理 →</a>
+            <button type="button" className="btn sm" onClick={() => go("operations")}>全部处理 →</button>
           </div>
-          {actions.length === 0 ? (
-            <EmptyHint next="当前没有需要你处理的事项">一切正常 🎉</EmptyHint>
+          {actions.length === 0 && awaitingRounds.length === 0 ? (
+            <EmptyHint next="Agent 产出待确认内容或出现告警时会出现在这里">暂无需要你决策的事项</EmptyHint>
           ) : (
             <div className="list">
-              {actions.slice(0, 8).map((it: any, i) => (
-                <div key={i} className="task-row">
-                  <i className={`task-prio ${severityToTone(it.severity)}`} />
+              {[...actions].sort(byPriority).slice(0, 6).map((it) => (
+                <div key={it.id} className="task-row">
+                  <i className={`task-prio ${priorityTone(it.priority)}`} aria-hidden="true" />
                   <div className="task-main">
-                    <div className="task-title">{actionItemTitle(it)}</div>
-                    <div className="task-desc" style={{ fontSize: 11 }}>
-                      {it.platform ? `${platformMeta(it.platform as Platform).label} · ` : ""}
-                      {it.reason ?? "—"}
-                      {it.due_at && ` · 截止 ${it.due_at.slice(0, 10)}`}
-                    </div>
+                    <div className="task-title">{it.title}</div>
+                    {it.detail && <div className="task-desc">{it.detail}</div>}
                   </div>
-                  <a href={`?page=operations`} className="btn ghost" style={{ fontSize: 11 }}>去处理 →</a>
+                  <div className="task-actions">
+                    <button type="button" className="btn sm" onClick={() => go(actionTarget(it))}>处理</button>
+                  </div>
+                </div>
+              ))}
+              {awaitingRounds.slice(0, Math.max(0, 6 - actions.length)).map((r) => (
+                <div key={`r${r.id}`} className="task-row">
+                  <i className="task-prio" aria-hidden="true" />
+                  <div className="task-main">
+                    <div className="task-title">Round {r.round_number} 草稿待确认发布</div>
+                    <div className="task-desc">创建于 {new Date(r.created_at).toLocaleString("zh-CN")}</div>
+                  </div>
+                  <div className="task-actions">
+                    <button type="button" className="btn primary sm" onClick={() => go("production")}>审核</button>
+                  </div>
                 </div>
               ))}
             </div>
           )}
         </div>
 
-        {/* 右：当前轮次四平台进度（platform_progress API 真实分组） */}
         <div className="panel">
           <div className="panel-head">
             <div>
-              <div className="panel-title">🗺️ 四平台进度</div>
-              <div className="panel-sub">平台真实 draft 分组 · 熔断实时状态</div>
+              <div className="panel-title">
+                <span className="icon" style={{ background: "var(--orange-weak)", color: "var(--orange)" }} aria-hidden="true">✳</span>
+                热点机会 · 与目标的关联
+              </div>
+              <div className="panel-sub">只列与账号定位匹配、且通过可发布性检查的热点</div>
             </div>
-            <a href="?page=production" className="btn ghost">详情 →</a>
+            <button type="button" className="btn sm" onClick={() => go("hot")}>热点雷达 →</button>
           </div>
-          <div style={{ display: "grid", gap: 10 }}>
-            {enabledPlatforms.map((p) => {
-              const m = platformMeta(p);
-              const pr: any = (progress as any)[p] ?? { total_drafts: 0, status_breakdown: {}, circuit_broken: false };
-              const total = pr.total_drafts ?? 0;
-              const cb = brokenPlatforms.includes(p) || pr.circuit_broken;
-              const breakdown = pr.status_breakdown ?? {};
-              return (
-                <div key={p} style={{
-                  padding: 10, borderRadius: 8,
-                  border: `1px solid ${cb ? "rgba(248,81,73,0.4)" : "var(--border)"}`,
-                  background: cb ? "rgba(248,81,73,0.05)" : "var(--panel-alt)",
-                  display: "flex", alignItems: "center", gap: 10,
-                }}>
-                  <span style={{ fontSize: 22 }}>{m.icon}</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
-                      <span>{m.label}</span>
-                      <span style={{ fontSize: 12 }}>
-                        {cb ? <span style={{ color: "#f85149" }}>🔴 熔断</span>
-                            : total > 0 ? <span style={{ color: "#12b76a" }}>🟢 {total} 个草稿</span>
-                            : <span style={{ color: "var(--muted)" }}>—</span>}
-                      </span>
+          {publishableHot.length === 0 ? (
+            <EmptyHint next={unjudgedHot.length ? "到「热点雷达」对已采集热点做维度研判" : "到「热点雷达」刷新采集"}>
+              {hot.length
+                ? `已采集 ${hot.length} 条，${unjudgedHot.length ? `${unjudgedHot.length} 条尚未研判，` : ""}暂无与账号定位匹配的热点`
+                : "暂无热点数据"}
+            </EmptyHint>
+          ) : (
+            <div className="list">
+              {publishableHot.slice(0, 5).map((h) => (
+                <div key={h.id} className="task-row">
+                  <i className={`task-prio ${(h.time_sensitive ?? 0) > 0 ? "red" : "blue"}`} aria-hidden="true" />
+                  <div className="task-main">
+                    <div className="task-title">{h.title}</div>
+                    <div className="task-desc">
+                      <span className="source-chip">{h.source}</span>
+                      {h.dimension ? ` 维度 ${h.dimension}` : ""}
+                      {h.heat != null ? ` · 热度 ${h.heat.toLocaleString("zh-CN")}${h.heat_unit ?? ""}` : ""}
+                      {(h.time_sensitive ?? 0) > 0 ? " · 时效敏感" : ""}
                     </div>
-                    {total > 0 && (
-                      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
-                        {Object.entries(breakdown).map(([k, v]) => `${statusLabelShort(k)}: ${v}`).join(" · ") || "—"}
+                  </div>
+                  <div className="task-actions">
+                    <button type="button" className="btn sm" onClick={() => go("hot")}>评估</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ===== 四平台 lane ===== */}
+      <div className="panel">
+        <div className="panel-head">
+          <div>
+            <div className="panel-title"><span className="icon" aria-hidden="true">▦</span>四个平台独立进度</div>
+            <div className="panel-sub">共用总体目标，但草稿进度、登录状态、阶段目标和复盘结论各自独立</div>
+          </div>
+          <button type="button" className="btn sm" onClick={() => go("production")}>进入内容生产 →</button>
+        </div>
+        <div className="platform-lanes">
+          {ALL_PLATFORMS.map((p) => (
+            <PlatformLane
+              key={p}
+              platform={p}
+              enabled={progress[p]?.enabled ?? enabled.includes(p)}
+              loggedIn={loggedIn.includes(p)}
+              broken={broken.includes(p) || !!progress[p]?.circuit_broken}
+              progress={progress[p]}
+              goal={goals.filter(isActiveGoal).find((g) => g.target_platform === p)}
+              insight={insights.find((i) => i.platform === p)}
+              onOpen={(page) => go(page)}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* ===== Agent 编排 + 目标 ===== */}
+      <div className="grid two">
+        <div className="panel">
+          <div className="panel-head">
+            <div>
+              <div className="panel-title"><span className="icon" aria-hidden="true">⎇</span>Agent 当前编排</div>
+              <div className="panel-sub">
+                {latestRound
+                  ? `最近一轮：Round ${latestRound.round_number} · ${ROUND_STATUS_LABEL[latestRound.status] ?? latestRound.status}`
+                  : "还没有运行过螺旋轮次"}
+              </div>
+            </div>
+            <button type="button" className="btn sm" onClick={() => go("agent")}>执行详情 →</button>
+          </div>
+          <AgentFlow
+            round={latestRound}
+            hotCount={hot.length}
+            publishableHot={publishableHot.length}
+            unjudgedHot={unjudgedHot.length}
+            drafts={totalDrafts}
+            awaiting={awaitingRounds.length}
+            insights={insightsWithSamples.length}
+          />
+          <div className="note blue" style={{ marginTop: 12 }}>
+            人工决策门：热点切入角度、内容定稿、发布确认、策略调整。系统只保存草稿，不会自动点发布。
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-head">
+            <div>
+              <div className="panel-title"><span className="icon" aria-hidden="true">◎</span>平台阶段目标</div>
+              <div className="panel-sub">各平台指标独立计算 · 未采集显示「待采集」而不是 0</div>
+            </div>
+            <button type="button" className="btn sm" onClick={() => go("goals")}>管理目标 →</button>
+          </div>
+          {goals.filter(isActiveGoal).length === 0 ? (
+            <EmptyHint next="到「目标与策略」创建第一个阶段目标">暂无活跃目标</EmptyHint>
+          ) : (
+            <div className="list">
+              {goals.filter(isActiveGoal).slice(0, 6).map((g) => (
+                <div key={g.id} className="task-row">
+                  <i className={`task-prio ${g.achievement_rate == null ? "" : g.achievement_rate >= 100 ? "green" : "blue"}`} aria-hidden="true" />
+                  <div className="task-main">
+                    <div className="task-title">{g.goal_text}</div>
+                    <div className="task-desc">
+                      {g.target_platform ? platformMeta(g.target_platform).label : "全平台"} · {metricLabel(g.target_metric)} · 当前 {currentProgressText(g)}
+                    </div>
+                    {g.achievement_rate != null && (
+                      <div className="progress" style={{ marginTop: 6 }}>
+                        <span style={{ width: `${Math.min(100, Math.max(0, g.achievement_rate))}%` }} />
                       </div>
                     )}
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* ========== 次级区：热点机会 + 复盘洞察 ========== */}
-      <div className="grid two" style={{ marginTop: 16 }}>
-        {/* 热点机会（审查报告 P1-07：改按钮文案从"转选题"→"查看"，只跳转不承诺动作） */}
-        <div className="panel">
-          <div className="panel-head">
-            <div>
-              <div className="panel-title">🔥 热点机会</div>
-              <div className="panel-sub">来自 60s.viki.moe · R22 证据链接可追溯</div>
-            </div>
-            <a href="?page=hot" className="btn ghost">全部 →</a>
-          </div>
-          {hottopics.length === 0 ? (
-            <EmptyHint next="到「热点雷达」扫描热点">暂无热点</EmptyHint>
-          ) : (
-            <div className="list">
-              {hottopics.slice(0, 5).map((h, i) => {
-                const ht = h as any;
-                return (
-                  <div key={i} className="task-row">
-                    <i className="task-prio blue" />
-                    <div className="task-main">
-                      <div className="task-title" style={{ maxWidth: 420 }}>{ht.title ?? ht.name ?? JSON.stringify(h).slice(0, 40)}</div>
-                      <div className="task-desc">
-                        <span className="tag gray" style={{ fontSize: 10 }}>{ht.source ?? "—"}</span>
-                        {ht.hotness != null && <span style={{ marginLeft: 8 }}>🔥 {ht.hotness}</span>}
-                        {ht.evidence_status && ht.evidence_status !== "collected" && (
-                          <span className="tag gray" style={{ marginLeft: 6, fontSize: 9 }}>{ht.evidence_status}</span>
-                        )}
-                      </div>
-                    </div>
-                    <a href={`?page=hot`} className="btn ghost" style={{ fontSize: 11 }}>→ 查看</a>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* 复盘洞察与待决策（改"采纳"→"查看"，避免承诺未实现动作） */}
-        <div className="panel">
-          <div className="panel-head">
-            <div>
-              <div className="panel-title">💡 复盘洞察 · 待你决策</div>
-              <div className="panel-sub">AI 自动策略调整建议 · 需人工采纳到母计划</div>
-            </div>
-            <a href="?page=analytics" className="btn ghost">全部 →</a>
-          </div>
-          {insights.length === 0 ? (
-            <EmptyHint next="到「数据复盘」跑一轮分析">暂无复盘洞察</EmptyHint>
-          ) : (
-            <div className="list">
-              {insights.slice(0, 4).map((it: any, i: number) => (
-                <div key={i} className="task-row">
-                  <i className="task-prio orange" />
-                  <div className="task-main">
-                    <div className="task-title">{it.type ?? "建议"}：{it.description ?? JSON.stringify(it).slice(0, 60)}</div>
-                  </div>
-                  <a href={`?page=analytics`} className="btn ghost" style={{ fontSize: 11 }}>→ 查看</a>
+                  <span className={`tag ${g.achievement_rate == null ? "gray" : "blue"}`}>
+                    {g.achievement_rate == null ? "待采集" : `${Math.round(g.achievement_rate)}%`}
+                  </span>
                 </div>
               ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ========== 底部：阶段目标（按指标分组，不显示假总%） + 最近轮次 ========== */}
-      <div className="grid two" style={{ marginTop: 16 }}>
-        {/* 阶段目标：按 target_metric 分组（审查报告 P0-02 整改：不同指标不能加在一起） */}
-        <div className="panel">
-          <div className="panel-head">
-            <div>
-              <div className="panel-title">🎯 阶段目标（按指标分组）</div>
-              <div className="panel-sub">不同指标不可直接相加 · R21 口径：未知 ≠ 0</div>
-            </div>
-            <a href="?page=goals" className="btn ghost">管理 →</a>
-          </div>
-          {activeGoals.length === 0 ? (
-            <EmptyHint next="到「目标与策略」创建第一个阶段目标">暂无活跃目标</EmptyHint>
-          ) : (
-            <div style={{ display: "grid", gap: 12 }}>
-              {Object.entries(goalsByMetric).map(([metric, gs]) => (
-                <div key={metric} style={{ padding: 10, borderRadius: 8, border: "1px solid var(--border)", background: "var(--panel-alt)" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)" }}>
-                      📏 {metric} · {gs.length} 项目标
-                    </div>
-                    <div style={{ fontSize: 10, color: "var(--muted)" }}>按指标独立计算，不合并</div>
-                  </div>
-                  <div className="list" style={{ padding: 0 }}>
-                    {gs.map((g: any) => {
-                      const plat = (g.target_platform as Platform) ?? null;
-                      const m = plat ? platformMeta(plat) : null;
-                      return (
-                        <div key={g.id} className="task-row" style={{ padding: "4px 0" }}>
-                          <i className={`task-prio ${m ? "" : "blue"}`} style={{ background: m?.color }} />
-                          <div className="task-main">
-                            <div className="task-title" style={{ fontSize: 13 }}>{g.goal_text}</div>
-                            <div className="task-desc" style={{ fontSize: 11 }}>
-                              {plat ? `${m?.icon} ${m?.label}` : "全平台"} · 目标 {g.target_value}
-                              {g.metric_scope ? ` · ${g.metric_scope}` : ""}
-                            </div>
-                          </div>
-                          <div style={{ minWidth: 70, textAlign: "right" }}>
-                            {g.achievement_rate != null ? (
-                              <div style={{ fontSize: 13, fontWeight: 600, color: g.achievement_rate >= 100 ? "#12b76a" : "inherit" }}>
-                                {g.achievement_rate.toFixed(0)}%
-                              </div>
-                            ) : (
-                              <span className="tag gray" style={{ fontSize: 10 }}>待采集</span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* 最近轮次 */}
-        <div className="panel">
-          <div className="panel-head">
-            <div>
-              <div className="panel-title">📋 最近轮次</div>
-              <div className="panel-sub">螺旋引擎 9 态 · 创建时间倒序</div>
-            </div>
-            <a href="?page=production" className="btn ghost">全部 →</a>
-          </div>
-          {rounds.length === 0 ? (
-            <EmptyHint next="到「内容生产」创建第一轮">暂无轮次</EmptyHint>
-          ) : (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr><th>轮次</th><th>状态</th><th>创建时间</th></tr>
-                </thead>
-                <tbody>
-                  {rounds.slice(0, 6).map((r) => (
-                    <tr key={r.id}>
-                      <td>Round {r.round_number}</td>
-                      <td><span className={`tag ${statusTag(r.status)}`}>{statusLabel(r.status)}</span></td>
-                      <td style={{ color: "var(--muted)", fontSize: 12 }}>
-                        {new Date(r.created_at).toLocaleString("zh-CN")}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
           )}
         </div>
@@ -400,69 +346,145 @@ export default function Dashboard() {
   );
 }
 
-// ============================================
-// 子组件 + helper（全部留在本文件，不再分裂）
-// ============================================
+// ============================================================
+// 子组件
+// ============================================================
 
-function KpiCard({
-  icon, label, value, hint, tone, href,
-}: {
-  icon: string; label: string; value: string | number; hint?: string;
-  tone?: "green" | "red" | "blue" | "orange" | "gray"; href?: string;
+function Metric({ label, icon, iconTone, value, unit, foot }: {
+  label: string; icon: string; iconTone?: "orange" | "teal"; value: number; unit: string; foot: React.ReactNode[];
 }) {
-  const colorMap: Record<string, string> = {
-    green: "#12b76a", red: "#f85149", blue: "#1f6bff", orange: "#d97706", gray: "var(--text)",
-  };
-  const card = (
-    <div style={{
-      background: "var(--panel)", border: "1px solid var(--border)",
-      borderRadius: 10, padding: "14px 16px",
-      ...(href ? { cursor: "pointer" } : {}),
-    }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ fontSize: 11, color: "var(--muted)", letterSpacing: 0.5 }}>{icon} {label}</div>
+  const toneStyle = iconTone === "orange"
+    ? { background: "var(--orange-weak)", color: "var(--orange)" }
+    : iconTone === "teal" ? { background: "var(--teal-weak)", color: "var(--teal)" } : undefined;
+  return (
+    <div className="metric">
+      <div className="metric-top">
+        <span className="metric-label">{label}</span>
+        <span className="metric-icon" style={toneStyle} aria-hidden="true">{icon}</span>
       </div>
-      <div style={{ fontSize: 28, fontWeight: 750, color: tone ? colorMap[tone] : "var(--text)", marginTop: 4 }}>
-        {value}
+      <div className="metric-val">
+        {value} <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 500 }}>{unit}</span>
       </div>
-      {hint && <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2, lineHeight: 1.4 }}>{hint}</div>}
+      <div className="metric-foot">{foot}</div>
     </div>
   );
-  return href ? <a href={href} style={{ textDecoration: "none", color: "inherit", display: "block" }}>{card}</a> : card;
 }
 
-function statusTag(s: string): string {
-  const cls: Record<string, string> = {
-    created: "gray", producing: "orange", awaiting_publish: "blue",
-    collecting_metrics: "purple", analyzing: "teal",
-    completed: "green", partial_completed: "orange", failed: "red", cancelled: "gray",
+function PlatformLane({ platform, enabled, loggedIn, broken, progress, goal, insight, onOpen }: {
+  platform: Platform; enabled: boolean; loggedIn: boolean; broken: boolean;
+  progress?: PlatformProgress; goal?: Goal; insight?: InsightItem; onOpen: (page: string) => void;
+}) {
+  const m = platformMeta(platform);
+  const breakdown = progress?.status_breakdown ?? {};
+  const total = progress?.total_drafts ?? 0;
+  // 当前阶段 = 最靠后的、有草稿的阶段
+  let current = -1;
+  DRAFT_STAGES.forEach((s, i) => { if ((breakdown[s.key] ?? 0) > 0) current = i; });
+
+  const state = !enabled
+    ? { cls: "gray", text: "未启用" }
+    : broken ? { cls: "red", text: "熔断冷却" }
+    : !loggedIn ? { cls: "orange", text: "未登录" }
+    : total > 0 ? { cls: "green", text: "运行中" }
+    : { cls: "blue", text: "待开始" };
+
+  const failed = (breakdown.failed ?? 0) + (breakdown.expired ?? 0);
+  const next = !enabled ? "在系统设置中启用该平台"
+    : broken ? "到运营控制台执行熔断恢复验证"
+    : !loggedIn ? "扫码登录后才能保存草稿"
+    : (breakdown.draft_saved ?? 0) > 0 ? `${breakdown.draft_saved} 篇草稿待你确认发布`
+    : total === 0 ? "等待新一轮生产"
+    : "等待数据采集";
+
+  return (
+    <div className="lane" style={!enabled ? { opacity: 0.7 } : undefined}>
+      <div className="lane-head">
+        <div className="lane-name">
+          <span className={`platform-logo ${PLATFORM_CLS[platform]}`} aria-hidden="true">{m.label.slice(0, 1)}</span>
+          {m.label}
+        </div>
+        <span className={`tag ${state.cls}`}>{state.text}</span>
+      </div>
+      <div className="lane-meta">
+        草稿 {total} 篇{failed ? ` · 失败/过期 ${failed}` : ""} · 目标：
+        {goal ? `${metricLabel(goal.target_metric)} ${goal.achievement_rate != null ? `${Math.round(goal.achievement_rate)}%` : "待采集"}` : "未设置"}
+      </div>
+      <div className="lane-stages">
+        {DRAFT_STAGES.map((s, i) => {
+          const n = breakdown[s.key] ?? 0;
+          const cls = current < 0 ? "" : i < current ? "done" : i === current ? (broken ? "issue" : "current") : "";
+          return (
+            <span key={s.key} className={`stage ${cls}`}>
+              {s.label}{n ? ` ${n}` : ""}
+            </span>
+          );
+        })}
+      </div>
+      {insight?.conclusion && (
+        <div className="tiny" style={{ marginTop: 8 }} title={insight.conclusion}>复盘：{insight.conclusion}</div>
+      )}
+      <div className="lane-foot">
+        <small>下一动作：{next}</small>
+        <div className="flex">
+          {enabled && !loggedIn && (
+            <button type="button" className="btn sm soft" onClick={() => onOpen("accounts")}>去登录</button>
+          )}
+          <button type="button" className="btn sm" onClick={() => onOpen(broken ? "operations" : "production")}>查看任务</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AgentFlow({ round, hotCount, publishableHot, unjudgedHot, drafts, awaiting, insights }: {
+  round?: SpiralRound; hotCount: number; publishableHot: number; unjudgedHot: number; drafts: number; awaiting: number; insights: number;
+}) {
+  // 以最近一轮的状态推断当前所处步骤；没有轮次时停在「发现」
+  const stepOf: Record<string, number> = {
+    created: 1, producing: 2, awaiting_publish: 3, collecting_metrics: 4, analyzing: 4,
+    completed: 5, partial_completed: 5,
   };
-  return cls[s] ?? "gray";
+  const active = round ? (stepOf[round.status] ?? 0) : 0;
+  const halted = round && ["failed", "cancelled"].includes(round.status);
+
+  const steps = [
+    { t: "发现", d: "热点、行业资讯采集", s: hotCount ? `采集 ${hotCount} 条` : "暂无采集" },
+    { t: "研判", d: "匹配账号定位与红线", s: unjudgedHot ? `${publishableHot} 条匹配 · ${unjudgedHot} 待研判` : `${publishableHot} 条匹配` },
+    { t: "策划与创作", d: "各平台独立生产与质量门", s: `${drafts} 篇草稿` },
+    { t: "发布与运营", d: "存草稿，人工确认发布", s: awaiting ? `${awaiting} 轮待确认` : "无待确认" },
+    { t: "归因复盘", d: "单平台复盘回写策略", s: insights ? `${insights} 个平台有结论` : "等待数据" },
+  ];
+
+  return (
+    <div className="agent-flow">
+      {steps.map((st, i) => {
+        const cls = halted && i === active ? "pause" : i < active ? "done" : i === active ? "active" : "";
+        return (
+          <div key={st.t} className={`flow-step ${cls}`} aria-current={i === active ? "step" : undefined}>
+            <div className="num">STEP 0{i + 1}</div>
+            <div className="ft">{st.t}</div>
+            <div className="fd">{st.d}</div>
+            <div className="fs">{i < active ? "✓ " : i === active ? "● " : ""}{st.s}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
-function statusLabel(s: string): string {
-  const map: Record<string, string> = {
-    created: "创建", producing: "生产中", awaiting_publish: "待发布",
-    collecting_metrics: "采集中", analyzing: "复盘中",
-    completed: "已完成", partial_completed: "部分完成", failed: "失败", cancelled: "已取消",
-  };
-  return map[s] ?? s;
+
+// ============================================================
+// helpers
+// ============================================================
+
+const PRIORITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
+function byPriority(a: ActionItem, b: ActionItem) {
+  return (PRIORITY_ORDER[a.priority ?? "medium"] ?? 1) - (PRIORITY_ORDER[b.priority ?? "medium"] ?? 1);
 }
-function statusLabelShort(s: string): string {
-  const m: Record<string, string> = {
-    draft_saved: "已存草稿", user_published: "已发布", data_fetching: "采集中",
-    published: "已采集", failed: "失败", cancelled: "取消", expired: "过期",
-    draft_pending: "待存草稿",
-  };
-  return m[s] ?? s;
+function priorityTone(p?: string) {
+  return p === "high" ? "red" : p === "low" ? "blue" : "";
 }
-function severityToTone(sev?: string): string {
-  const m: Record<string, string> = { high: "red", medium: "orange", low: "blue" };
-  return m[(sev ?? "medium").toLowerCase()] ?? "gray";
-}
-function actionItemTitle(it: any): string {
-  if (it.type === "round_timeout") return `⏳ 轮次 Round ${it.round_id ?? "?"} 超过 72h 未确认发布`;
-  if (it.type === "goal_overdue") return `🎯 目标 ${it.goal_text ?? ""} 已超期未达成`;
-  if (it.type === "circuit_breaker_cooled") return `🔴 ${it.platform ?? ""} 熔断冷却到期，待恢复验证`;
-  if (it.type === "circuit_breaker_active") return `🔴 ${it.platform ?? ""} 熔断中`;
-  return it.reason ?? "待处理事项";
+function actionTarget(it: ActionItem): string {
+  if (it.type === "goal_strategy") return "goals";
+  if (it.type === "publish_decision") return "production";
+  return "operations";
 }

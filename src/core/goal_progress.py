@@ -30,6 +30,12 @@ METRIC_COLUMNS: dict[str, tuple[str, str]] = {
 }
 
 
+# 比率类指标：metrics 表里存的是 0–1 小数（adapters.base.interaction_rate 等），
+# 但目标值由人按「百分数」填写（互动率 ≥ 4 表示 4%）。current_value 回写时统一换算为百分数，
+# 让 target / baseline / current 三者同一单位，达成率才有意义。
+PERCENT_METRICS = {"interaction_rate", "like_rate", "collect_rate"}
+
+
 class GoalProgressUpdater:
     """按 target_metric 聚合 metrics → 回写 goals.current_value。"""
 
@@ -74,6 +80,8 @@ class GoalProgressUpdater:
         sample_count = int(agg_row["n"] or 0) if agg_row else 0
         # R3：没有样本 → NULL（不是 0）
         value: Optional[float] = float(agg_row["v"]) if agg_row and agg_row["v"] is not None else None
+        if value is not None and row["target_metric"] in PERCENT_METRICS:
+            value = round(value * 100.0, 4)  # 0.038 → 3.8（%）
 
         now = datetime.now().isoformat(timespec="seconds")
         self.conn.execute(
@@ -89,6 +97,7 @@ class GoalProgressUpdater:
         # 达成 → 结束目标 + 通知（G-15：goal_completed 场景）
         rate = self.achievement_rate(
             current=value, baseline=row["baseline_value"], target=row["target_value"],
+            scope=row["metric_scope"] or "delta",
         )
         if rate is not None and rate >= 100 and row["status"] == "active":
             self.conn.execute(
@@ -111,8 +120,63 @@ class GoalProgressUpdater:
     @staticmethod
     def achievement_rate(
         current: Optional[float], baseline: Optional[float], target: Optional[float],
+        scope: Optional[str] = "delta",
     ) -> Optional[float]:
-        """R21：(current - baseline) / target_value × 100。任一分量 NULL → NULL。"""
-        if current is None or baseline is None or target is None or target == 0:
+        """R21 达成率（百分比，不截断，可 >100 或 <0）。任一必要分量 NULL → NULL。
+
+        - delta（增量口径，默认）：(current - baseline) / target × 100
+        - total（总量口径，DB CHECK 值）：current / target × 100 —— 目标值本身就是要达到的绝对水平
+          （如互动率 ≥ 4%），此时减基线会把进度算错。
+        """
+        if current is None or target is None or target == 0:
+            return None
+        if scope in ("total", "absolute"):
+            return current / target * 100.0
+        if baseline is None:
             return None
         return (current - baseline) / target * 100.0
+
+    @classmethod
+    def rate_for(cls, row) -> Optional[float]:
+        """从 goals 行（dict / sqlite3.Row）直接算达成率，统一各调用点口径。"""
+        get = row.get if isinstance(row, dict) else (lambda k: row[k] if k in row.keys() else None)
+        return cls.achievement_rate(
+            current=get("current_value"), baseline=get("baseline_value"),
+            target=get("target_value"), scope=get("metric_scope") or "delta",
+        )
+
+    @classmethod
+    def summarize(cls, rows: list, now: Optional[datetime] = None) -> dict:
+        """总体目标进度汇总（Dashboard / Goals 的 goal-hero 用，前端不再自行计算）。
+
+        口径：只看 status='active' 的目标；percent = 已有达成率目标的等权平均，
+        每个目标先截断到 [0, 100] 再平均（单个目标超额不能掩盖其它目标落后）。
+        当前没有目标权重字段，所以不做加权；没有任何目标有数据 → percent = None（R21：未知 ≠ 0）。
+        """
+        now = now or datetime.now()
+        active = [dict(r) for r in rows if (dict(r).get("status") or "active") == "active"]
+        rates = []
+        for g in active:
+            r = cls.rate_for(g)
+            if r is not None:
+                rates.append(max(0.0, min(100.0, r)))
+        starts = sorted(g["metric_period_start"] for g in active if g.get("metric_period_start"))
+        ends = sorted(g["metric_period_end"] for g in active if g.get("metric_period_end"))
+        period_end = ends[-1] if ends else None
+        days_left = None
+        if period_end:
+            try:
+                end_dt = datetime.fromisoformat(period_end[:10])
+                days_left = (end_dt.date() - now.date()).days
+            except ValueError:
+                days_left = None
+        return {
+            "percent": round(sum(rates) / len(rates), 1) if rates else None,
+            "method": "equal_weight_mean",
+            "active_goals": len(active),
+            "counted_goals": len(rates),
+            "pending_goals": len(active) - len(rates),
+            "period_start": starts[0] if starts else None,
+            "period_end": period_end,
+            "days_left": days_left,
+        }

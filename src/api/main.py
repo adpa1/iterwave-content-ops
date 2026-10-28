@@ -18,6 +18,7 @@ POST /api/rounds/{id}/transition  轮次状态迁移
 GET  /api/drafts          草稿列表
 POST /api/drafts/{id}/publish_confirm  用户发布确认（R1 手动触发）
 GET  /api/goals           目标列表
+GET  /api/goals/summary   总体目标进度（已有数据目标达成率等权平均）
 POST /api/goals           创建阶段目标
 GET  /api/metrics         已采集数据列表
 GET  /api/circuit_breaker 熔断器状态
@@ -25,7 +26,8 @@ POST /api/circuit_breaker/recover  触发 3 步恢复
 POST /api/circuit_breaker/reset     手动重置
 GET  /api/gaps            缺口分析
 GET  /api/topics/score    选题评分（可传 topic_ids 范围）
-GET  /api/hot_topics      热点雷达
+GET  /api/hot_topics      热点雷达（只读库）
+POST /api/hot_topics/refresh  触发后台采集 + 标签匹配
 """
 
 from __future__ import annotations
@@ -177,6 +179,11 @@ def _build_app() -> FastAPI:
                 invalidation["current_signature"][:12],
             )
         _g_ctx["plan_version_manager"] = pvm
+
+        # 热点：库里没有新鲜数据时启动后补跑一次后台采集（不阻塞启动）
+        from ..core import hot_topic_service
+        if cfg.hot_topics.enabled is not False and hot_topic_service.is_stale(cfg, conn):
+            hot_topic_service.trigger_background(cfg, trigger="startup")
 
         logger.info("✅ FastAPI 应用启动完成，%d 个模块已加载", len(_g_ctx))
 
@@ -533,13 +540,16 @@ def _register_routes(app: FastAPI) -> None:
         for r in rows:
             item = dict(r)
             # R21：达成率后端算，任一分量 NULL → NULL（前端显示灰色「数据待采集」）
-            item["achievement_rate"] = GoalProgressUpdater.achievement_rate(
-                current=item.get("current_value"),
-                baseline=item.get("baseline_value"),
-                target=item.get("target_value"),
-            )
+            item["achievement_rate"] = GoalProgressUpdater.rate_for(item)
             result.append(item)
         return result
+
+    @app.get("/api/goals/summary")
+    def goals_summary():
+        """总体目标进度（goal-hero）：等权平均口径由后端统一计算，前端只展示。"""
+        conn = _g()["conn"]
+        rows = conn.execute("SELECT * FROM goals").fetchall()
+        return GoalProgressUpdater.summarize(rows)
 
     @app.post("/api/goals")
     def create_goal(req: CreateGoalRequest):
@@ -574,13 +584,9 @@ def _register_routes(app: FastAPI) -> None:
         result = []
         for r in rows:
             item = dict(r)
-            item["achievement_rate"] = GoalProgressUpdater.achievement_rate(
-                current=item.get("current_value"),
-                baseline=item.get("baseline_value"),
-                target=item.get("target_value"),
-            )
+            item["achievement_rate"] = GoalProgressUpdater.rate_for(item)
             result.append(item)
-        return {"updated": values, "goals": result}
+        return {"updated": values, "goals": result, "summary": GoalProgressUpdater.summarize(rows)}
 
     # --- 轮次 ---
     @app.get("/api/rounds")
@@ -1304,13 +1310,29 @@ def _register_routes(app: FastAPI) -> None:
     # --- 热点雷达（R22：采集失败不显示数字）---
     @app.get("/api/hot_topics")
     def hot_topics(refresh: bool = Query(False)):
+        """热点雷达：只读库（采集 + 标签匹配由后台定时任务完成）。
+
+        refresh=true 兼容旧前端：触发一次后台刷新后立即返回当前库内数据，不阻塞请求。
+        """
+        from ..core import hot_topic_service
+
         conn = _g()["conn"]
-        collector = HotTopicCollector(_g()["cfg"], conn)
-        try:
-            return collector.overview(force=refresh)
-        except Exception as exc:  # noqa: BLE001 — 采集异常不能 500 打穿前端
-            logger.exception("热点雷达采集异常")
-            raise HTTPException(502, f"热点采集异常: {exc}") from exc
+        cfg = _g()["cfg"]
+        if refresh:
+            hot_topic_service.trigger_background(cfg, trigger="manual")
+        data = HotTopicCollector(cfg, conn).overview()
+        data["refresh_job"] = hot_topic_service.status()
+        return data
+
+    @app.post("/api/hot_topics/refresh", status_code=202)
+    def hot_topics_refresh():
+        """手动触发后台采集 + 标签匹配，立即返回任务状态（前端轮询 GET /api/hot_topics 的 refresh_job）。"""
+        from ..core import hot_topic_service
+
+        cfg = _g()["cfg"]
+        if cfg.hot_topics.enabled is False:
+            raise HTTPException(409, "热点采集已在配置中关闭（hot_topics.enabled=false）")
+        return hot_topic_service.trigger_background(cfg, trigger="manual")
 
     @app.post("/api/hot_topics/import")
     def import_hot_topic(req: dict):
@@ -1661,15 +1683,16 @@ def _register_routes(app: FastAPI) -> None:
     # --- 四平台进度聚合（Dashboard #11：四个平台独立进度）---
     @app.get("/api/platform_progress")
     def platform_progress():
-        """返回每个 enabled 平台的：总草稿数 / 各状态分布 / 熔断状态。"""
+        """返回全部 4 个平台的：是否启用 / 总草稿数 / 各状态分布 / 熔断状态。
+
+        启用判定与 /api/status 共用 cfg.platforms.enabled_keys()，避免两处口径不一致；
+        未启用的平台也返回（enabled=false），前端四平台 lane 不必自行补齐。
+        """
         conn = _g()["conn"]
         cfg = _g()["cfg"]
-        enabled_platforms = [
-            p for p, conf in (cfg.platforms.model_dump() if hasattr(cfg.platforms, "model_dump") else dict(cfg.platforms)).items()
-            if isinstance(conf, dict) and conf.get("enabled", True)
-        ] or ["xhs", "douyin", "kuaishou", "wechat_channels"]
+        enabled_keys = set(cfg.platforms.enabled_keys())
         result = {}
-        for p in enabled_platforms:
+        for p in [pl.value for pl in Platform]:
             # 各状态计数
             status_rows = conn.execute(
                 "SELECT status, COUNT(*) as cnt FROM drafts WHERE platform=? GROUP BY status",
@@ -1686,6 +1709,7 @@ def _register_routes(app: FastAPI) -> None:
             ).fetchone()
             cb = cb_row[0] > 0
             result[p] = {
+                "enabled": p in enabled_keys,
                 "total_drafts": total,
                 "status_breakdown": status_map,
                 "circuit_broken": cb,
@@ -1708,29 +1732,43 @@ def _register_routes(app: FastAPI) -> None:
         now = datetime.now()
         items: list[dict] = []
 
-        # 1. 目标长期无进度（current_value IS NULL 或 < target_value，且 metric_period_end 已过）
+        def _pname(p: Optional[str]) -> str:
+            if not p:
+                return "全平台"
+            try:
+                return Platform(p).display_name
+            except ValueError:
+                return p
+
+        # 1. 目标已过统计周期仍未达成：达成率与 /api/goals 同一口径（GoalProgressUpdater.rate_for），
+        #    metric_period_end 是日期，必须按「日期 < 今天」比较，否则截止当天就会被误判超期
         goal_rows = conn.execute(
             """SELECT id, goal_text, target_platform, target_metric, target_value,
-                      baseline_at, current_value, metric_period_end
+                      metric_scope, baseline_value, baseline_at, current_value, metric_period_end
                FROM goals
                WHERE status='active'
                  AND metric_period_end IS NOT NULL
-                 AND metric_period_end < ?
-                 AND (current_value IS NULL OR current_value < target_value)
+                 AND substr(metric_period_end, 1, 10) < ?
             """,
-            (now.isoformat(),),
+            (now.date().isoformat(),),
         ).fetchall()
         for r in goal_rows:
-            target_val = r["target_value"] or 0
+            rate = GoalProgressUpdater.rate_for(r)
+            if rate is not None and rate >= 100:
+                continue
+            pct = f"{rate:.0f}%" if rate is not None else "数据待采集"
             cur_val = r["current_value"]
-            pct = f"{(cur_val / target_val * 100):.0f}%" if (cur_val is not None and target_val > 0) else "待采集"
             items.append({
                 "id": f"goal:{r['id']}",
                 "type": "goal_strategy",
                 "title": f"目标「{r['goal_text']}」已过截止日期 {r['metric_period_end'][:10]} 但未达成（{pct}）",
-                "detail": f"{r['target_platform'] or '全平台'} · {r['target_metric']} 目标 {target_val} · 当前 {cur_val or '—'}",
+                "detail": (
+                    f"{_pname(r['target_platform'])} · {r['target_metric']} 目标 {r['target_value']}"
+                    f" · 当前 {cur_val if cur_val is not None else '待采集'}"
+                ),
                 "priority": "high",
                 "source": "goals",
+                "platform": r["target_platform"],
                 "created_at": r["metric_period_end"],
                 "actions": ["go_goal"],
             })
@@ -1771,7 +1809,8 @@ def _register_routes(app: FastAPI) -> None:
             items.append({
                 "id": f"cb:{r['id']}",
                 "type": "circuit_recover",
-                "title": f"{r['platform']} 熔断冷却已到期（原因：{r['reason']}），需执行 3 步恢复验证",
+                "title": f"{_pname(r['platform'])} 熔断冷却已到期（原因：{r['reason']}），需执行 3 步恢复验证",
+                "platform": r["platform"],
                 "detail": f"冷却到期于 {r['cooldown_until'][:16]}",
                 "priority": "high",
                 "source": "circuit_breaker",
@@ -1793,7 +1832,8 @@ def _register_routes(app: FastAPI) -> None:
             items.append({
                 "id": f"cb2:{r['id']}",
                 "type": "circuit_active",
-                "title": f"{r['platform']} 熔断中（原因：{r['reason']}），冷却至 {r['cooldown_until'][:16] if r['cooldown_until'] else '—'}",
+                "title": f"{_pname(r['platform'])} 熔断中（原因：{r['reason']}），冷却至 {r['cooldown_until'][:16] if r['cooldown_until'] else '—'}",
+                "platform": r["platform"],
                 "priority": "medium",
                 "source": "circuit_breaker",
                 "created_at": r["detected_at"],
@@ -1891,7 +1931,11 @@ def _register_routes(app: FastAPI) -> None:
         get_all_accounts as _get_all_accounts,
         cancel_login as _cancel_login,
         clear_login as _clear_login,
+        submit_sms_code as _submit_sms_code,
     )
+
+    class SmsCodeRequest(BaseModel):
+        code: str
 
     def _valid_platform(platform: str) -> str:
         """校验平台代号；非法 raise HTTPException。"""
@@ -1924,9 +1968,18 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/accounts/{platform}/logout")
     def logout_platform(platform: str):
-        """注销：清 storage_state.json（下次发布前需重新扫码）。"""
+        """注销：清持久化 profile + storage_state + 登录标记（下次需重新扫码）。"""
         p = _valid_platform(platform)
         return _clear_login(p)
+
+    @app.post("/api/accounts/{platform}/sms")
+    def submit_platform_sms(platform: str, req: SmsCodeRequest):
+        """回填短信验证码（登录进入 sms_required 时由前端提交，runner 读走后继续登录）。"""
+        p = _valid_platform(platform)
+        try:
+            return _submit_sms_code(p, req.code)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
 
     @app.post("/api/accounts/{platform}/cancel_login")
     def cancel_platform_login(platform: str):

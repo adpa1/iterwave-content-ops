@@ -161,15 +161,11 @@ class RoundStateMachine:
         if all(fs == "failed" for fs in fetch_statuses):
             return "failed"
 
-        # R10 第二路：存在掉队篇目 → partial_completed
-        # 收紧语义：仅统计"真正进入过发布流程"的篇目（user_published/published/data_fetching 系），
-        # 存草稿阶段就失败的死草稿(draft_failed)不计入，避免把"1 篇成功 + 1 篇从未存上"
-        # 的轮次误判为掉队（D7）。
-        published_flow = [
-            s for s in statuses
-            if s not in ("draft_pending", "draft_saved", "failed")
-        ]
-        if any(s in ("cancelled", "expired") for s in published_flow):
+        # R10 第二路：存在掉队篇目（cancelled / failed / expired）→ partial_completed
+        # 与模块头 R10 定义一致：存草稿阶段就 failed 的篇目同样是本轮没交付的内容，
+        # 计入掉队；否则「1 篇成功 + 1 篇平台存草稿失败」会被报成 completed，夸大完成度（R3）。
+        # 仍处在 draft_pending / draft_saved 的篇目交给超时收口，不在这里判定。
+        if any(s in ("cancelled", "failed", "expired") for s in statuses):
             return "partial_completed"
 
         # R10 第一路：全部采集成功/部分成功 → completed
@@ -246,6 +242,26 @@ class DraftStateMachine:
     # ------------------------------------------------------------------
     # R8 独立超时判定
     # ------------------------------------------------------------------
+
+    def collect_metrics_phase_timeout(
+        self, round_id: int, now: Optional[datetime] = None, timeout_hours: int = 72,
+    ) -> bool:
+        """R8：collecting_metrics 阶段是否超时（按轮次 collecting_metrics_started_at 计时）。
+
+        只做判定、不改任何草稿状态 —— 阶段超时与单篇 publish_confirm 超时互不影响。
+        """
+        from datetime import timedelta
+        row = self.db.execute(
+            "SELECT status, collecting_metrics_started_at FROM spiral_rounds WHERE id = ?",
+            (round_id,),
+        ).fetchone()
+        if not row or row[0] != "collecting_metrics" or not row[1]:
+            return False
+        try:
+            started = datetime.fromisoformat(row[1])
+        except ValueError:
+            return False
+        return (now or datetime.now()) - started > timedelta(hours=timeout_hours)
 
     def check_expired_drafts(
         self, now: Optional[datetime] = None,

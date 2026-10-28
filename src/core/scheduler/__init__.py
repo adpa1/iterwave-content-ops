@@ -116,7 +116,7 @@ class SchedulerEngine:
 
     # ------------------------------------------------------------------
     def _register_all_jobs(self) -> None:
-        """注册 8 类任务。"""
+        """注册 9 类定时任务（含 hot_topics_refresh）。"""
         # 0. publish_polling — 每 30min
         self.scheduler.add_job(
             _run_publish_polling,
@@ -174,6 +174,17 @@ class SchedulerEngine:
             id="round_timeout_sweeper",
             replace_existing=True,
         )
+
+        # 9. hot_topics_refresh — 热点异步采集 + 标签匹配（间隔取 hot_topics.refresh_interval_minutes）
+        if getattr(self.cfg.hot_topics, "enabled", True) is not False:
+            self.scheduler.add_job(
+                _run_hot_topics_refresh,
+                IntervalTrigger(minutes=max(5, int(self.cfg.hot_topics.refresh_interval_minutes or 30))),
+                id="hot_topics_refresh",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
 
         # 8. round_review — 每 10min（R10：collecting_metrics → analyzing → 终态 + 螺旋复盘 + 通知）
         self.scheduler.add_job(
@@ -698,6 +709,12 @@ class SchedulerEngine:
             f"如果你想更深入了解，可以在评论区继续互动，我会第一时间回复！"
         )
 
+    async def _job_hot_topics_refresh(self) -> None:
+        """后台采集热点并做标签匹配；独立连接、在线程里执行，不阻塞事件循环。"""
+        from ..hot_topic_service import run_once
+
+        await asyncio.to_thread(run_once, self.cfg, None, trigger="scheduler")
+
     async def _job_kb_scan(self) -> None:
         """每天 6:00 扫描选题库增量 — 对比 topic_index 插入新选题。"""
         if self.conn is None:
@@ -1051,6 +1068,11 @@ async def _run_publish_polling() -> None:
 async def _run_data_fetch(draft_id: str, attempt: int = 1) -> None:
     if _ACTIVE_ENGINE is not None:
         await _ACTIVE_ENGINE._job_data_fetch(draft_id, attempt)
+
+
+async def _run_hot_topics_refresh() -> None:
+    if _ACTIVE_ENGINE is not None:
+        await _ACTIVE_ENGINE._job_hot_topics_refresh()
 
 
 async def _run_daily_ops() -> None:

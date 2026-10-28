@@ -29,6 +29,8 @@ export default function Accounts() {
   const [err, setErr] = useState<string | null>(null);
   const [activeLogin, setActiveLogin] = useState<Platform | null>(null);
   const [loginStatus, setLoginStatus] = useState<LoginStatus | null>(null);
+  const [smsCode, setSmsCode] = useState("");
+  const [smsSubmitting, setSmsSubmitting] = useState(false);
 
   const load = async () => {
     setErr(null);
@@ -40,15 +42,18 @@ export default function Accounts() {
 
   useEffect(() => { load(); }, []);
 
-  // 轮询登录状态（2s 一次，最多 300s）
+  // 轮询登录状态（2s 一次）。只有 success / expired / error 是终态——
+  // unknown 只会出现在 runner 刚启动、状态文件还没写出时，不能当终态停止轮询（否则二维码永远出不来）
   useEffect(() => {
     if (!activeLogin) return;
     let stop = false;
+    const deadline = Date.now() + 300_000;
     const t = setInterval(async () => {
+      if (Date.now() > deadline) { clearInterval(t); return; }
       try {
         const st = await api.loginStatus(activeLogin);
         setLoginStatus(st);
-        if (["success", "expired", "error", "unknown"].includes(st.state)) {
+        if (["success", "expired", "error"].includes(st.state)) {
           // 结束状态：再等 1s 后关弹窗
           setTimeout(() => {
             if (st.state === "success") {
@@ -70,12 +75,24 @@ export default function Accounts() {
     setActiveLogin(p);
     setLoginStatus(null);
     try {
-      await api.startLogin(p, 300);
-      // 初始状态从 accounts 里可能已有 QR，但还是主动拉一次 status
-      const st = await api.loginStatus(p);
+      // 重新获取二维码 / 重试时必须重启 runner，否则后端会直接返回旧进程的状态
+      const st = await api.startLogin(p, true);
       setLoginStatus(st);
     } catch (e: any) {
       setLoginStatus({ platform: p, platform_display: PLATFORM_EMOJI[p], state: "error", message: e.message, ts: Date.now() });
+    }
+  };
+
+  const handleSubmitSms = async () => {
+    if (!activeLogin) return;
+    setSmsSubmitting(true);
+    try {
+      await api.submitLoginSms(activeLogin, smsCode);
+      setSmsCode("");
+    } catch (e: any) {
+      alert("验证码提交失败：" + e.message);
+    } finally {
+      setSmsSubmitting(false);
     }
   };
 
@@ -94,9 +111,9 @@ export default function Accounts() {
           <div className="eyebrow">ACCOUNT MANAGEMENT</div>
           <h1 className="page-title">账号与登录态管理</h1>
           <div className="page-desc">
-            四平台登录状态 · 扫码登录（headed Chromium 不阻塞 FastAPI） · 注销清理 storage_state。
-            <span style={{ marginLeft: 8, color: "var(--orange)", fontSize: 12 }}>
-              ⚠ 扫码登录需要本机 GUI + Chromium；服务器（无显示）用 {`Xvfb + --headed`} 或在本地 Mac 跑
+            四平台登录状态 · 后台无头浏览器抠出二维码，在本页用手机 App 扫码 · 注销会清理本地登录态。
+            <span style={{ marginLeft: 8, color: "var(--muted)", fontSize: 12 }}>
+              本机有桌面、需要在弹出窗口里登录时，启动后端前设置 ITERWAVE_LOGIN_HEADED=1
             </span>
           </div>
         </div>
@@ -241,8 +258,25 @@ export default function Accounts() {
                 </span>
                 {loginStatus.state === "qr_ready" && (
                   <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
-                    请在弹出的 Chromium 浏览器中扫码（5 分钟内有效）
+                    用 {loginStatus.platform_display} App 扫描上方二维码（有效期约几分钟，过期会自动刷新）
                   </div>
+                )}
+                {loginStatus.state === "sms_required" && (
+                  <form
+                    style={{ display: "flex", gap: 6, justifyContent: "center", marginTop: 10 }}
+                    onSubmit={(e) => { e.preventDefault(); handleSubmitSms(); }}
+                  >
+                    <label className="sr-only" htmlFor="sms-code">短信验证码</label>
+                    <input
+                      id="sms-code" className="field" inputMode="numeric" autoComplete="one-time-code"
+                      placeholder="手机收到的验证码" value={smsCode} maxLength={8}
+                      onChange={(e) => setSmsCode(e.target.value.replace(/\D/g, ""))}
+                      style={{ width: 160 }}
+                    />
+                    <button type="submit" className="btn sm primary" disabled={smsSubmitting || smsCode.length < 4}>
+                      {smsSubmitting ? "提交中…" : "提交"}
+                    </button>
+                  </form>
                 )}
                 {loginStatus.state === "expired" && (
                   <button className="btn sm primary" style={{ marginTop: 10 }} onClick={() => handleLogin(activeLogin)}>🔄 刷新二维码</button>
@@ -251,7 +285,7 @@ export default function Accounts() {
                   <button className="btn sm primary" style={{ marginTop: 10 }} onClick={() => handleLogin(activeLogin)}>🔄 重试</button>
                 )}
                 {loginStatus.state === "success" && (
-                  <div className="tag green" style={{ marginTop: 6 }}>✅ 登录成功！storage_state 已保存</div>
+                  <div className="tag green" style={{ marginTop: 6 }}>登录成功，登录态已保存</div>
                 )}
               </div>
             )}

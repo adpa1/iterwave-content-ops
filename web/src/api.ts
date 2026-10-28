@@ -199,8 +199,14 @@ export interface HotTopicItem {
   time_sensitive: number | null;
   evidence_status: "collected" | "demo" | "failed";
   dimension: string | null;
+  /** true 与账号定位关联 / false 已研判无关或落入禁止方向 / null 待研判 */
   dimension_match: boolean | null;
   dimension_hits: string[];
+  /** 0–100 关联分；null = 未研判（不是 0 分） */
+  match_score?: number | null;
+  match_angle?: string | null;
+  match_reason?: string | null;
+  match_method?: "keyword" | "llm" | null;
   publishable: boolean;
   redline_hits: string[];
 }
@@ -217,31 +223,50 @@ export interface InsightItem {
   best_title_style: Record<string, unknown>;
   best_card_style: string | null;
   top_dimensions: string[];
-  summary: string;
-  confidence: number;
+  sample_count?: number;
+  avg_interaction_rate?: number | null;
+  /** 后端实际返回的结论文案 */
+  conclusion?: string;
+  summary?: string;
+  confidence?: number;
   evidence_days: { date: string; avg: number | null; drafts: number }[];
   suggestions: string[];
 }
 
-/** 四平台进度（/api/platform_progress 返回的 per-platform 分组） */
+/** /api/goals/summary：总体目标进度 */
+export interface GoalSummary {
+  /** 0–100；null = 没有任何活跃目标有数据（R21：未知 ≠ 0） */
+  percent: number | null;
+  method: "equal_weight_mean" | string;
+  active_goals: number;
+  counted_goals: number;
+  pending_goals: number;
+  period_start: string | null;
+  period_end: string | null;
+  days_left: number | null;
+}
+
+/** 四平台进度（/api/platform_progress，固定返回 4 个平台） */
 export interface PlatformProgress {
+  /** 与 /api/status.enabled_platforms 同一口径 */
+  enabled: boolean;
   total_drafts: number;
   /** { draft_saved: 3, user_published: 1, data_fetching: 2, ... } */
   status_breakdown: Record<string, number>;
   circuit_broken: boolean;
 }
 
-/** 待处理/阻塞事项（/api/action_items） */
+/** 待处理/阻塞事项（/api/action_items，字段以后端 main.py action_items() 为准） */
 export interface ActionItem {
-  /** round_timeout | goal_overdue | circuit_breaker_cooled | circuit_breaker_active | ... */
+  id: string;
+  /** goal_strategy | publish_decision | circuit_recover | circuit_active */
   type: string;
-  platform?: Platform;
-  round_id?: number;
-  goal_id?: string;
-  goal_text?: string;
-  reason?: string;
-  due_at?: string;
-  severity?: "high" | "medium" | "low";
+  title: string;
+  detail?: string;
+  priority?: "high" | "medium" | "low";
+  source?: string;
+  created_at?: string | null;
+  actions?: string[];
 }
 
 export interface HotSourceStatus {
@@ -252,10 +277,25 @@ export interface HotSourceStatus {
   discovered_at: string | null;
 }
 
+export interface HotRefreshJob {
+  running: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  trigger: string | null;
+  report: Record<string, string> | null;
+  match: Record<string, unknown> | null;
+  error: string | null;
+}
+
 export interface HotTopicsResponse {
   enabled: boolean;
   cached: boolean;
   refreshed_at: string | null;
+  /** 距上次采集超过刷新间隔 */
+  stale?: boolean;
+  /** 后台采集任务状态（GET 只读库，采集由定时任务 / POST refresh 完成） */
+  refresh_job?: HotRefreshJob;
+  match?: { threshold: number; matched: number; rejected: number; pending: number; method: string | null };
   refresh_interval_minutes?: number;
   sources: HotSourceStatus[];
   items: HotTopicItem[];
@@ -470,6 +510,10 @@ export interface LoginStatus {
   qr_path?: string | null;
   /** data:image/png;base64,xxx */
   qr_base64?: string | null;
+  /** 二维码文件的修改时间（ms），换码时变化 */
+  qr_ts?: number;
+  proc_alive?: boolean;
+  has_storage_state?: boolean;
   ts: number;
 }
 export interface AiCallRecord {
@@ -596,12 +640,14 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
 export const api = {
   status: () => fetchJson<SystemStatus>("/api/status"),
   goals: () => fetchJson<Goal[]>("/api/goals"),
+  /** 总体目标进度（后端统一计算等权平均，前端只展示） */
+  goalsSummary: () => fetchJson<GoalSummary>("/api/goals/summary"),
   createGoal: (data: Partial<Goal>) =>
     fetchJson<{ id: string; message: string }>("/api/goals", {
       method: "POST", body: JSON.stringify(data),
     }),
   refreshGoalProgress: () =>
-    fetchJson<{ updated: Record<string, number | null>; goals: Goal[] }>(
+    fetchJson<{ updated: Record<string, number | null>; goals: Goal[]; summary: GoalSummary }>(
       "/api/goals/progress/refresh", { method: "POST" },
     ),
   rounds: (status?: string) =>
@@ -636,6 +682,9 @@ export const api = {
     }),
   scoreTopics: (limit = 20) =>
     fetchJson<{ mode: string; topics: ScoredTopic[] }>(`/api/topics/score?limit=${limit}`),
+  /** 触发后台采集 + 标签匹配（立即返回，202） */
+  refreshHotTopics: () =>
+    fetchJson<HotRefreshJob & { started: boolean }>("/api/hot_topics/refresh", { method: "POST" }),
   hotTopics: (refresh = false) =>
     fetchJson<HotTopicsResponse>(`/api/hot_topics${refresh ? "?refresh=true" : ""}`),
   gaps: (roundId?: number) =>
@@ -779,13 +828,15 @@ export const api = {
     fetchJson<RedlineRecord[]>(`/api/redline_history?limit=${limit}`),
   // === 账号管理 ===
   accounts: () => fetchJson<{ accounts: AccountInfo[] }>("/api/accounts"),
-  startLogin: (platform: Platform, timeout = 300) =>
-    fetchJson<{ status: string; platform: string; task_id?: number; error?: string }>(
-      `/api/accounts/${platform}/login?timeout=${timeout}`, { method: "POST" }
-    ),
+  /** 启动扫码登录；restart=true 会先结束仍在运行的旧登录进程 */
+  startLogin: (platform: Platform, restart = false) =>
+    fetchJson<LoginStatus>(`/api/accounts/${platform}/login${restart ? "?restart=true" : ""}`, { method: "POST" }),
   loginStatus: (platform: Platform) => fetchJson<LoginStatus>(`/api/accounts/${platform}/login_status`),
   logout: (platform: Platform) =>
     fetchJson<{ status: string; platform: string }>(`/api/accounts/${platform}/logout`, { method: "POST" }),
+  /** 短信验证码回填（登录进入 sms_required 时） */
+  submitLoginSms: (platform: Platform, code: string) =>
+    fetchJson<{ ok: boolean }>(`/api/accounts/${platform}/sms`, { method: "POST", body: JSON.stringify({ code }) }),
   cancelLogin: (platform: Platform) =>
     fetchJson<{ status: string; platform: string }>(`/api/accounts/${platform}/cancel_login`, { method: "POST" }),
 };

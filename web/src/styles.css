@@ -1,32 +1,9 @@
 /* ============================================================
-   IterWave — 设计系统
-   提取自 easel_workbench_v9.html 的 CSS 变量 + 组件样式
+   IterWave — 页面级样式
+   基础设计系统（变量、壳层、按钮、表单、面板、响应式）来自 demo-base.css，
+   即 easel_workbench_v10.html 的原样 CSS；此文件只放 React 页面特有的补充样式。
    ============================================================ */
 :root {
-  --bg: #f5f7fb;
-  --surface: #ffffff;
-  --surface-2: #f8fafc;
-  --nav: #172438;
-  --nav-2: #22344b;
-  --line: #e5eaf2;
-  --line-2: #d8e0eb;
-  --text: #17243a;
-  --muted: #697991;
-  --subtle: #91a0b5;
-  --blue: #4263eb;
-  --blue-weak: #edf2ff;
-  --teal: #0f9f91;
-  --teal-weak: #e5f8f5;
-  --orange: #d97706;
-  --orange-weak: #fff4e4;
-  --red: #d9485f;
-  --red-weak: #fff0f2;
-  --purple: #7655cf;
-  --purple-weak: #f2edff;
-  --green: #16865d;
-  --green-weak: #e7f8ef;
-  --shadow: 0 10px 30px rgba(23, 36, 58, 0.05);
-  --radius: 13px;
 
   /* —— 以下为页面内联样式引用但此前未定义的设计令牌，统一在此补齐 —— */
   --accent: var(--blue);
@@ -41,241 +18,12 @@
 /* 显式给根元素上底色：避免页面底部 / 回弹区域露出浏览器默认白色画布 */
 html { scrollbar-gutter: stable; background: var(--bg); }
 
-/* 允许页面正常横向滚动（宽表格等内容应由 .table-wrap 局部滚动） */
-body { overflow-x: visible; }
-
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  font-size: 14px;
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-}
-button { cursor: pointer; font-family: inherit; }
-input, select, textarea { font-family: inherit; font-size: 13px; }
-
-/* ===== 全局布局 ===== */
-.app { display: flex; min-height: 100vh; }
-
-.sidebar {
-  width: 240px;
-  flex-basis: 240px;
-  flex-shrink: 0;
-  background: var(--nav);
-  color: #c7d4e8;
-  display: flex;
-  flex-direction: column;
-  padding: 22px 0;
-  position: sticky;
-  top: 0;
-  height: 100vh;
-  overflow-y: auto;
-}
-.sidebar-brand {
-  padding: 0 22px 22px;
-  border-bottom: 1px solid #2c3e58;
-  margin-bottom: 16px;
-}
-.sidebar-brand .logo {
-  font-size: 18px;
-  font-weight: 700;
-  color: #fff;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.sidebar-brand .logo-dot {
-  width: 10px; height: 10px; border-radius: 50%;
-  background: linear-gradient(135deg, var(--blue), var(--purple));
-}
-.sidebar-brand .sub { font-size: 11px; color: #7a8ea8; margin-top: 4px; }
-
-.sidebar .nav-section { padding: 8px 0; }
-.sidebar .nav-label { font-size: 10px; color: #5a7090; text-transform: uppercase; letter-spacing: 0.5px; padding: 8px 22px 4px; }
-.sidebar .nav-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 9px 22px;
-  color: #a5b6ce;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
-  border-left: 2px solid transparent;
-  transition: all 0.15s;
-}
-.sidebar .nav-item:hover { background: rgba(255,255,255,0.04); color: #fff; }
-.sidebar .nav-item.active {
-  background: rgba(66,99,235,0.12);
-  color: #fff;
-  border-left-color: var(--blue);
-}
-.sidebar .nav-item .icon {
-  width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;
-  font-size: 14px;
-}
-.sidebar .nav-item .badge {
-  margin-left: auto;
-  font-size: 10px;
-  background: #2a3f5f;
-  color: #c7d4e8;
-  padding: 1px 6px;
-  border-radius: 8px;
-}
-.sidebar .nav-item.active .badge { background: var(--blue); color: #fff; }
-
-.sidebar-bottom {
-  margin-top: auto;
-  padding: 14px 22px;
-  border-top: 1px solid #2c3e58;
-  font-size: 11px;
-  color: #7a8ea8;
-}
-
-/* min-width:0 关键：否则 flex 子项的最小内容宽度会被宽表格撑开，
-   导致整页横向溢出、底部出现横向滚动条（即“底部白色条带”）。
-   加上后宽表格改由 .table-wrap 内部横向滚动，页面不再溢出。 */
-.content { flex: 1; min-width: 0; padding: 28px 32px; max-width: 1400px; }
-
-/* ===== 页面头部 ===== */
-.page-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; }
-.page-head .eyebrow { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
-.page-title { font-size: 24px; font-weight: 700; margin: 4px 0 6px; }
-.page-desc { font-size: 13px; color: var(--muted); max-width: 680px; }
-.head-actions { display: flex; gap: 8px; }
-
-/* ===== 面板 ===== */
-.panel {
-  background: var(--surface);
-  border-radius: var(--radius);
-  border: 1px solid var(--line);
-  padding: 18px;
-  margin-bottom: 16px;
-  box-shadow: var(--shadow);
-}
-.panel-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
-.panel-title { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 700; }
-.panel-title .icon {
-  width: 26px; height: 26px; border-radius: 7px;
-  display: flex; align-items: center; justify-content: center;
-  background: var(--blue-weak); color: var(--blue); font-size: 14px;
-}
-.panel-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
-
-/* ===== 标签 ===== */
-.tag {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 3px 10px; border-radius: 20px;
-  font-size: 11px; font-weight: 600;
-  background: var(--blue-weak); color: var(--blue);
-}
-.tag.green { background: var(--green-weak); color: var(--green); }
-.tag.orange { background: var(--orange-weak); color: var(--orange); }
-.tag.red { background: var(--red-weak); color: var(--red); }
-.tag.purple { background: var(--purple-weak); color: var(--purple); }
-.tag.gray { background: #eef1f6; color: #6b7b93; }
+/* 页面头部 / 面板 / 标签 / 按钮 / 表单 统一使用 demo-base.css；以下为 demo 没有的补充色 */
 .tag.teal { background: var(--teal-weak); color: var(--teal); }
-.tag.blue { background: var(--blue-weak); color: var(--blue); }
 .tag.white { background: #ffffff24; color: #fff; }
 
-/* ===== 按钮 ===== */
-.btn {
-  padding: 8px 14px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
-  color: var(--text);
-  font-size: 12.5px;
-  font-weight: 600;
-  transition: all 0.15s;
-}
-.btn:hover { border-color: var(--blue); color: var(--blue); }
-.btn.primary { background: var(--blue); color: #fff; border-color: var(--blue); }
-.btn.primary:hover { background: #364fc7; color: #fff; }
-.btn.danger { background: var(--red); color: #fff; border-color: var(--red); }
-.btn.danger:hover { background: #b83750; color: #fff; }
-.btn.sm { padding: 5px 10px; font-size: 11.5px; }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-/* ===== 表单 ===== */
-.field {
-  width: 100%;
-  padding: 9px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
-  font-size: 13px;
-  outline: none;
-  transition: border-color 0.15s;
-}
-.field:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-weak); }
-.field-area { resize: vertical; min-height: 100px; }
-.form-label { font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 5px; display: block; }
-
-/* ===== Grid ===== */
-.grid { display: grid; gap: 14px; }
-.grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-
-/* ===== KPI / Metric ===== */
-.grid.kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.metric {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 16px 18px;
-}
-.metric-label { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
-.metric-val { font-size: 24px; font-weight: 700; margin: 4px 0; color: var(--text); }
-.metric-foot { font-size: 11px; color: var(--subtle); }
-
-/* ===== Tabs ===== */
-.tabs {
-  display: flex; flex-wrap: wrap; gap: 4px; padding: 4px;
-  background: #edf1f7; border-radius: 10px;
-  width: max-content; max-width: 100%;
-}
-.tabs .tab {
-  padding: 7px 12px; border: 0; border-radius: 7px;
-  font-size: 12px; font-weight: 650; color: #66758b; background: transparent;
-}
-.tabs .tab.active { background: #fff; color: var(--blue); box-shadow: 0 1px 4px rgba(38, 54, 80, 0.1); }
-
-/* ===== Table ===== */
-.table-wrap { overflow-x: auto; }
-.table-wrap table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.table-wrap th { text-align: left; padding: 10px 12px; color: var(--muted); font-size: 11px; font-weight: 650; border-bottom: 1px solid var(--line); text-transform: uppercase; letter-spacing: 0.3px; }
-.table-wrap td { padding: 11px 12px; border-bottom: 1px solid var(--line); }
-.table-wrap tr:hover td { background: #fafbfd; }
-
-/* ===== List ===== */
-.list { display: flex; flex-direction: column; gap: 10px; }
-.task-row {
-  display: flex; align-items: center; gap: 12px;
-  padding: 12px 14px; background: var(--surface-2);
-  border-radius: 10px;
-}
-.task-prio {
-  width: 6px; height: 32px; border-radius: 3px;
-  background: var(--line-2); flex-shrink: 0;
-}
-.task-prio.blue { background: var(--blue); }
-.task-prio.green { background: var(--green); }
-.task-prio.orange { background: var(--orange); }
-.task-prio.red { background: var(--red); }
-.task-prio.purple { background: var(--purple); }
-.task-main { flex: 1; min-width: 0; }
-.task-title { font-weight: 650; font-size: 13px; }
-.task-desc { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
-
-/* ===== Flex utils ===== */
-.flex { display: flex; align-items: center; gap: 10px; }
-.flex.between { justify-content: space-between; }
-.flex.wrap { flex-wrap: wrap; }
+/* Grid / Metric / Tabs / Table / List / Flex 使用 demo-base.css；以下为 React 页面额外用到的 */
 .flex.col { flex-direction: column; }
-.tiny { font-size: 10.5px; color: var(--subtle); }
-.note { font-size: 11.5px; color: var(--muted); padding: 10px 12px; background: var(--surface-2); border-radius: 8px; border-left: 3px solid var(--line-2); }
 
 /* ===== 状态 pill ===== */
 .status-pill {
@@ -308,23 +56,10 @@ input, select, textarea { font-family: inherit; font-size: 13px; }
 .cb-card.ok .cb-badge { background: var(--green); color: #fff; }
 .cb-card .cb-info { font-size: 11.5px; color: var(--muted); margin-top: 8px; }
 
-/* ===== Toast ===== */
-.toast-container {
-  position: fixed; bottom: 24px; right: 24px; z-index: 9999;
-  display: flex; flex-direction: column; gap: 10px;
-}
-.toast {
-  padding: 12px 18px; background: var(--nav); color: #fff;
-  border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-  font-size: 13px; font-weight: 500;
-  animation: slideIn 0.2s ease-out;
-}
-.toast.success { background: var(--green); }
-.toast.error { background: var(--red); }
-@keyframes slideIn {
-  from { transform: translateX(100%); opacity: 0; }
-  to { transform: translateX(0); opacity: 1; }
-}
+/* ===== Toast（结构与样式沿用 demo .toast-area / .toast，这里只补类型色条） ===== */
+.toast.success { border-left: 3px solid var(--green); }
+.toast.error { border-left: 3px solid var(--red); }
+.toast.info { border-left: 3px solid var(--blue); }
 
 /* ===== Loading ===== */
 .loading { padding: 40px; text-align: center; color: var(--muted); font-size: 13px; }
@@ -386,7 +121,7 @@ input, select, textarea { font-family: inherit; font-size: 13px; }
   font-size: 11.5px;
   font-weight: 680;
   white-space: nowrap;
-  transition: all 0.15s;
+  transition: background-color .15s, color .15s, border-color .15s, box-shadow .15s;
 }
 .compact-tab-button:hover {
   background: #fff;
@@ -399,108 +134,31 @@ input, select, textarea { font-family: inherit; font-size: 13px; }
   box-shadow: 0 1px 4px rgba(38, 54, 80, 0.06);
 }
 
-/* ===== 全局顶部栏 ===== */
-.topbar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 28px; height: 52px;
-  background: var(--surface); border-bottom: 1px solid var(--line);
-  position: sticky; top: 0; z-index: 50;
-  gap: 16px;
+/* ===== 壳层补充（demo 中为静态 HTML，React 版需要的语义化补丁） ===== */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
-.topbar-left { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); min-width: 0; }
-.topbar-left .sep { color: var(--subtle); margin: 0 2px; }
-.topbar-left strong { color: var(--text); font-weight: 600; }
-.topbar-search {
-  flex: 1; max-width: 360px;
-  position: relative;
+.crumb-sep { color: #c0cad8; margin: 0 7px; }
+.health-btn {
+  width: 100%; border: 0; background: transparent; font-family: inherit; text-align: left;
+  border-radius: 6px; cursor: pointer;
 }
-.topbar-search input {
-  width: 100%; padding: 7px 12px 7px 30px;
-  border: 1px solid var(--line); border-radius: 8px;
-  background: var(--surface-2); font-size: 12.5px;
-  outline: none; transition: border-color 0.15s;
-}
-.topbar-search input:focus { border-color: var(--blue); background: #fff; }
-.topbar-search::before {
-  content: "⌕"; position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
-  color: var(--subtle); font-size: 14px;
-}
-.topbar-right { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
-.topbar-right .user-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 10px; border-radius: 20px;
-  background: var(--surface-2); font-weight: 500;
-}
-.topbar-right .user-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+.health-btn:hover { background: #ffffff10; }
+.health-btn:focus-visible, .nav:focus-visible { outline: 2px solid #7b98ff; outline-offset: 1px; }
 
-/* 应用外壳：顶栏 + 侧栏 + 主区 */
-.app-shell { display: flex; flex-direction: column; min-height: 100vh; }
-.app-shell .app { flex: 1; min-height: 0; }
+/* 链接形态的按钮去下划线，与 <button class="btn"> 一致 */
+a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
 
-/* 侧栏底部平台状态常驻条 */
-.sidebar-platforms {
-  padding: 12px 18px; border-top: 1px solid #2c3e58;
-  display: flex; flex-wrap: wrap; gap: 6px;
+/* 页面内尚未改用 .field 的裸表单控件，先统一成 demo 的 .field 外观（逐页替换为 .field 后可删） */
+.content input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not(.field),
+.content select:not(.field),
+.content textarea:not(.field) {
+  border: 1px solid var(--line-2); border-radius: 8px; background: #fff;
+  padding: 8px 10px; font-size: 11.5px; color: var(--text);
 }
-.sidebar-platforms .plat-chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 3px 7px; border-radius: 5px;
-  font-size: 10.5px; font-weight: 600;
-  cursor: pointer;
-}
-.sidebar-platforms .plat-chip.ok { background: #1d4636; color: #53d3ad; }
-.sidebar-platforms .plat-chip.broken { background: #4a1d2a; color: #ff6b82; }
-.sidebar-platforms .plat-chip.nologin { background: #3d3016; color: #ffc66b; }
-.sidebar-platforms .plat-chip .dot { width: 5px; height: 5px; border-radius: 50%; }
-
-/* ===== 响应式 — 四断点 ===== */
-
-/* 1440px 及以上：宽屏，完整侧栏 + 宽内容区 */
-@media (min-width: 1440px) {
-  .content { max-width: 1500px; }
-}
-
-/* 1280px：中等屏，缩小留白，双列布局仍可行 */
-@media (max-width: 1280px) {
-  .sidebar { width: 210px; flex-basis: 210px; }
-  .content { padding: 22px 24px; }
-  .grid.kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .grid.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .topbar { padding: 0 20px; }
-}
-
-/* 1024px：窄屏，多列布局折叠 */
-@media (max-width: 1024px) {
-  .sidebar { width: 180px; flex-basis: 180px; }
-  .sidebar .nav-item { padding: 8px 14px; font-size: 12.5px; }
-  .content { padding: 18px; }
-  .grid.two { grid-template-columns: 1fr; }
-  .grid.three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .page-head { flex-wrap: wrap; gap: 12px; }
-  .page-head .head-actions { width: 100%; justify-content: flex-end; }
-  .topbar-search { max-width: 200px; }
-  .topbar-right { gap: 6px; }
-}
-
-/* 768px 及以下：移动端/小屏 */
-@media (max-width: 768px) {
-  .sidebar {
-    width: 60px; flex-basis: 60px;
-    padding-top: 14px;
-  }
-  .sidebar .nav-item { justify-content: center; padding: 10px 0; font-size: 0; }
-  .sidebar .nav-item .icon { font-size: 16px; }
-  .sidebar-brand > div:first-child > div:last-child { display: none; } /* 隐藏品牌文字 */
-  .sidebar-bottom > div:first-child { display: none; } /* 隐藏版本号 */
-  .sidebar-platforms { display: none; }
-  .sidebar .nav-label { display: none; }
-  .sidebar-brand { padding: 0 12px 14px; }
-
-  .content { padding: 14px; }
-  .grid.kpis, .grid.four, .grid.three { grid-template-columns: 1fr; }
-  .page-title { font-size: 20px; }
-  .topbar { padding: 0 12px; height: 44px; }
-  .topbar-search { display: none; }
-  .topbar-right .user-chip { font-size: 11px; padding: 4px 8px; }
-  .page-head-actions { flex-wrap: wrap; }
+.content input:not([type="checkbox"]):not([type="radio"]):not(.field):focus-visible,
+.content select:not(.field):focus-visible,
+.content textarea:not(.field):focus-visible {
+  border-color: #91a8ff; outline: none; box-shadow: 0 0 0 3px #edf1ff;
 }

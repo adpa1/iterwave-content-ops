@@ -75,9 +75,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   return (
     <AppContext.Provider value={{ status, refreshStatus, toasts, showToast, pending, withPending, isPending }}>
       {children}
-      <div className="toast-container">
+      <div className="toast-area" role="status" aria-live="polite">
         {toasts.map((t) => (
-          <div key={t.id} className={`toast ${t.type || ""}`}>{t.text}</div>
+          <div key={t.id} className={`toast ${t.type || "info"}`}>
+            <b>{t.type === "error" ? "需要处理" : t.type === "success" ? "已完成" : "提示"}</b>
+            <span>{t.text}</span>
+          </div>
         ))}
       </div>
     </AppContext.Provider>
