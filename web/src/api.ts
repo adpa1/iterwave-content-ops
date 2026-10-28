@@ -217,8 +217,12 @@ export interface InsightItem {
   best_title_style: Record<string, unknown>;
   best_card_style: string | null;
   top_dimensions: string[];
-  summary: string;
-  confidence: number;
+  sample_count?: number;
+  avg_interaction_rate?: number | null;
+  /** 后端实际返回的结论文案 */
+  conclusion?: string;
+  summary?: string;
+  confidence?: number;
   evidence_days: { date: string; avg: number | null; drafts: number }[];
   suggestions: string[];
 }
@@ -231,17 +235,17 @@ export interface PlatformProgress {
   circuit_broken: boolean;
 }
 
-/** 待处理/阻塞事项（/api/action_items） */
+/** 待处理/阻塞事项（/api/action_items，字段以后端 main.py action_items() 为准） */
 export interface ActionItem {
-  /** round_timeout | goal_overdue | circuit_breaker_cooled | circuit_breaker_active | ... */
+  id: string;
+  /** goal_strategy | publish_decision | circuit_recover | circuit_active */
   type: string;
-  platform?: Platform;
-  round_id?: number;
-  goal_id?: string;
-  goal_text?: string;
-  reason?: string;
-  due_at?: string;
-  severity?: "high" | "medium" | "low";
+  title: string;
+  detail?: string;
+  priority?: "high" | "medium" | "low";
+  source?: string;
+  created_at?: string | null;
+  actions?: string[];
 }
 
 export interface HotSourceStatus {

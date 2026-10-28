@@ -2,6 +2,16 @@ import { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import EmptyHint from "../components/EmptyHint";
 import { api, Goal, SystemConfigView } from "../api";
+import GoalHero, { isActiveGoal, metricLabel, formatMetricValue, currentProgressText } from "../components/GoalHero";
+import { ALL_PLATFORMS, Platform, platformMeta } from "../platforms";
+
+const GOAL_STATUS_LABEL: Record<string, string> = {
+  active: "进行中", completed: "已达成", expired: "已过期", cancelled: "已取消", paused: "已暂停",
+};
+
+const PLATFORM_CLS: Record<Platform, string> = {
+  xhs: "xhs", douyin: "douyin", kuaishou: "kuaishou", wechat_channels: "channels",
+};
 
 const METRICS = [
   { value: "followers_gained", label: "新增粉丝" },
@@ -39,7 +49,7 @@ const EMPTY_GOAL = {
 };
 
 export default function Goals() {
-  const { showToast, withPending } = useApp();
+  const { showToast, withPending, status } = useApp();
   const [goals, setGoals] = useState<Goal[]>([]);
   const [cfgView, setCfgView] = useState<SystemConfigView | null>(null);
   const [newGoal, setNewGoal] = useState({ ...EMPTY_GOAL });
@@ -115,207 +125,120 @@ export default function Goals() {
         </div>
       </div>
 
-      {/* 原型 goals view：总体目标画像（账号北极星） */}
-      <div className="panel" style={{ marginBottom: 14 }}>
-        <div className="panel-head">
-          <div>
-            <div className="panel-title"><span className="icon">◎</span>总体目标画像 · 账号北极星</div>
-            <div className="panel-sub">R2：UltimateGoalChecker 的检查依据；文案/策略/评论 三场景均不得偏离此画像</div>
+      <GoalHero
+        goals={goals}
+        personaKeywords={cfgView?.readonly.persona_keywords}
+        forbiddenDirections={cfgView?.readonly.forbidden_directions}
+        onCreateGoal={() => document.getElementById("new-goal")?.scrollIntoView({ behavior: "smooth" })}
+      />
+
+      <div className="grid two">
+        {/* 平台阶段目标：每个平台独立，只统计该平台自己的目标 */}
+        <div className="panel">
+          <div className="panel-head">
+            <div>
+              <div className="panel-title"><span className="icon" aria-hidden="true">◎</span>平台阶段目标</div>
+              <div className="panel-sub">每个平台的目标单独计算；全平台目标见上方关键结果</div>
+            </div>
+          </div>
+          <div className="grid two">
+            {ALL_PLATFORMS.map((p) => {
+              const m = platformMeta(p);
+              const pGoals = goals.filter((g) => isActiveGoal(g) && g.target_platform === p);
+              return (
+                <div key={p} className="platform-goal">
+                  <div className="platform-goal-head">
+                    <div className="platform-name">
+                      <span className={`platform-logo ${PLATFORM_CLS[p]}`} aria-hidden="true">{m.label.slice(0, 1)}</span>
+                      {m.label}
+                    </div>
+                    <span className="tag gray">{pGoals.length} 项</span>
+                  </div>
+                  {pGoals.length === 0 ? (
+                    <div className="tiny">未设置阶段目标</div>
+                  ) : pGoals.map((g) => (
+                    <div key={g.id} style={{ marginTop: 8 }}>
+                      <div className="goal-main">
+                        <b>{g.achievement_rate == null ? "—" : `${Math.round(g.achievement_rate)}%`}</b>
+                        <span>{metricLabel(g.target_metric)} · 目标 {formatMetricValue(g.target_metric, g.target_value)} · 当前 {currentProgressText(g)}</span>
+                      </div>
+                      <div className="progress">
+                        <span style={{ width: `${Math.min(100, Math.max(0, g.achievement_rate ?? 0))}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         </div>
-        {!cfgView ? (
-          <div className="note">加载画像中…</div>
-        ) : (
-          <div className="grid two">
+
+        {/* 策略与约束（全部来自 /api/config） */}
+        <div className="panel">
+          <div className="panel-head">
             <div>
-              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>账号人设关键词</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {cfgView.readonly.persona_keywords.length === 0 ? (
-                  <span className="tag gray">未配置</span>
-                ) : cfgView.readonly.persona_keywords.map((k) => (
-                  <span key={k} className="tag blue">{k}</span>
-                ))}
-              </div>
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>禁止方向 / 红线关键词（{cfgView.readonly.redline_keywords_count} 个）</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {cfgView.readonly.forbidden_directions.length === 0 ? (
-                  <span className="tag gray">未配置</span>
-                ) : cfgView.readonly.forbidden_directions.map((k) => (
-                  <span key={k} className="tag red">{k}</span>
-                ))}
-              </div>
+              <div className="panel-title"><span className="icon" aria-hidden="true">⚑</span>策略与约束</div>
+              <div className="panel-sub">R2 / R22 红线 · 定位关键词 · 禁止方向，来自 config.yaml</div>
             </div>
           </div>
-        )}
-      </div>
-
-      {/* ====== 新增：分项目标 + 策略约束 ====== */}
-      {goals.length > 0 && cfgView && (
-        <div className="grid two" style={{ marginTop: 16 }}>
-          {/* 分项目标进度卡（按平台聚合） */}
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <div className="panel-title">🎯 分项目标进度卡</div>
-                <div className="panel-sub">总体目标拆解到各平台 · 自动聚合达成率</div>
-              </div>
-            </div>
-            <div className="grid two">
-              {["xhs", "douyin", "kuaishou", "wechat_channels"].map((p) => {
-                const pGoals = goals.filter((g) => !g.target_platform || g.target_platform === p);
-                if (pGoals.length === 0) return null;
-                const avgRate =
-                  pGoals.map((g) => g.achievement_rate).filter((r) => r != null);
-                const rate = avgRate.length
-                  ? avgRate.reduce((a, b) => a + b, 0) / avgRate.length
-                  : null;
-                const PLATFORM_META: Record<string, { label: string; emoji: string }> = {
-                  xhs: { label: "小红书", emoji: "📕" },
-                  douyin: { label: "抖音", emoji: "🎵" },
-                  kuaishou: { label: "快手", emoji: "⚡" },
-                  wechat_channels: { label: "视频号", emoji: "💚" },
-                };
-                const meta = PLATFORM_META[p]!;
-                return (
-                  <div
-                    key={p}
-                    style={{
-                      padding: 12,
-                      borderRadius: 8,
-                      border: "1px solid var(--border)",
-                      background: "var(--card)",
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        marginBottom: 8,
-                      }}
-                    >
-                      <span style={{ fontWeight: 700 }}>
-                        {meta.emoji} {meta.label}
-                      </span>
-                      <span
-                        style={{
-                          fontSize: 18,
-                          fontWeight: 800,
-                          color:
-                            rate == null
-                              ? "var(--subtle)"
-                              : rate >= 100
-                              ? "var(--green)"
-                              : rate >= 50
-                              ? "var(--orange)"
-                              : "var(--red)",
-                        }}
-                      >
-                        {rate == null ? "—" : `${rate.toFixed(0)}%`}
-                      </span>
-                    </div>
-                    <div
-                      style={{
-                        height: 8,
-                        background: "var(--line)",
-                        borderRadius: 4,
-                        overflow: "hidden",
-                      }}
-                    >
-                      <div
-                        style={{
-                          width: `${rate ?? 0}%`,
-                          height: "100%",
-                          background:
-                            rate == null
-                              ? "var(--line)"
-                              : rate >= 100
-                              ? "var(--green)"
-                              : "var(--blue)",
-                          transition: "width .3s",
-                        }}
-                      />
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 11,
-                        color: "var(--subtle)",
-                        marginTop: 6,
-                      }}
-                    >
-                      {pGoals.length} 项目标
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* 策略约束表 */}
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <div className="panel-title">📋 策略与约束</div>
-                <div className="panel-sub">R2/R22 红线 · 定位关键词 · 禁用方向</div>
-              </div>
-            </div>
+          {!cfgView ? (
+            <div className="note">加载配置中…</div>
+          ) : (
             <div className="list">
               <div className="task-row">
-                <i className="task-prio green" />
+                <i className="task-prio green" aria-hidden="true" />
                 <div className="task-main">
                   <div className="task-title">账号定位关键词</div>
-                  <div className="task-desc" style={{ fontSize: 11 }}>
-                    {(cfgView?.readonly.persona_keywords || []).join("、") || "—"}
+                  <div className="flex wrap" style={{ gap: 6, marginTop: 4 }}>
+                    {cfgView.readonly.persona_keywords.length === 0
+                      ? <span className="tag gray">未配置</span>
+                      : cfgView.readonly.persona_keywords.map((k) => <span key={k} className="tag blue">{k}</span>)}
                   </div>
                 </div>
               </div>
               <div className="task-row">
-                <i className="task-prio orange" />
+                <i className="task-prio" aria-hidden="true" />
                 <div className="task-main">
-                  <div className="task-title">禁区方向</div>
-                  <div className="task-desc" style={{ fontSize: 11 }}>
-                    {(cfgView?.readonly.forbidden_directions || []).join("、") || "—"}
+                  <div className="task-title">禁止方向</div>
+                  <div className="flex wrap" style={{ gap: 6, marginTop: 4 }}>
+                    {cfgView.readonly.forbidden_directions.length === 0
+                      ? <span className="tag gray">未配置</span>
+                      : cfgView.readonly.forbidden_directions.map((k) => <span key={k} className="tag red">{k}</span>)}
                   </div>
                 </div>
               </div>
               <div className="task-row">
-                <i className="task-prio red" />
+                <i className="task-prio red" aria-hidden="true" />
                 <div className="task-main">
-                  <div className="task-title">🔴 红线敏感词库（R22 强制开启，不可关闭）</div>
-                  <div className="task-desc" style={{ fontSize: 11 }}>
-                    已内置 {cfgView?.readonly.redline_keywords_count ?? 0} 条
-                  </div>
+                  <div className="task-title">红线敏感词库（R22 强制开启，不可关闭）</div>
+                  <div className="task-desc">已配置 {cfgView.readonly.redline_keywords_count} 条</div>
                 </div>
               </div>
               <div className="task-row">
-                <i className="task-prio blue" />
+                <i className="task-prio blue" aria-hidden="true" />
                 <div className="task-main">
                   <div className="task-title">评分模式</div>
-                  <div className="task-desc" style={{ fontSize: 11 }}>
-                    由样本量自动切换：冷启动 → 样本积累 → 稳定运行
-                  </div>
+                  <div className="task-desc">当前 {status?.scoring_mode ?? "—"} · 由已发布样本量自动切换</div>
                 </div>
               </div>
               <div className="task-row">
-                <i className="task-prio gray" />
+                <i className="task-prio" aria-hidden="true" />
                 <div className="task-main">
                   <div className="task-title">LLM 模型</div>
-                  <div className="task-desc" style={{ fontSize: 11 }}>
-                    {cfgView?.readonly.llm_model || "—"} · API Key{" "}
-                    {cfgView?.readonly.llm_has_api_key ? "✅ 已配" : "❌ 未配"}
+                  <div className="task-desc">
+                    {cfgView.readonly.llm_model || "—"} · API Key {cfgView.readonly.llm_has_api_key ? "已配置" : "未配置"}
                   </div>
                 </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
-      )}
+      </div>
 
-      <div className="panel">
+      <div className="panel" id="new-goal">
         <div className="panel-head">
           <div>
-            <div className="panel-title">📌 新建阶段目标</div>
+            <div className="panel-title"><span className="icon" aria-hidden="true">＋</span>新建阶段目标</div>
             <div className="panel-sub">R21：指标 / 目标值 / 口径 / 基线 / 统计周期 / 数据来源 缺一不可（缺则后端 422）</div>
           </div>
         </div>
@@ -417,7 +340,7 @@ export default function Goals() {
                 return (
                   <tr key={g.id}>
                     <td style={{ fontWeight: 600 }}>{g.goal_text}</td>
-                    <td>{g.target_platform || "全平台"}</td>
+                    <td>{g.target_platform ? platformMeta(g.target_platform).label : "全平台"}</td>
                     <td style={{ fontSize: 11 }}>{METRICS.find((m) => m.value === g.target_metric)?.label ?? g.target_metric}</td>
                     <td>{g.target_value}</td>
                     <td>{g.current_value != null
@@ -437,7 +360,7 @@ export default function Goals() {
                         </div>
                       ) : <span style={{ color: "var(--subtle)", fontSize: 11 }}>数据待采集</span>}
                     </td>
-                    <td><span className={`tag ${g.status === "active" ? "green" : g.status === "completed" ? "blue" : "gray"}`}>{g.status}</span></td>
+                    <td><span className={`tag ${g.status === "active" ? "green" : g.status === "completed" ? "blue" : "gray"}`}>{GOAL_STATUS_LABEL[g.status] ?? g.status}</span></td>
                   </tr>
                 );
               })}
