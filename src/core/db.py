@@ -239,3 +239,148 @@ class Migration:
 
     def __repr__(self) -> str:
         return f"<Migration v{self.version}: {self.name}>"
+
+
+# ======================================================================
+# 共享连接的线程安全包装
+# ======================================================================
+#
+# Web 进程里所有同步路由在 FastAPI 线程池里并发执行，又共用 lifespan 建的一个
+# sqlite3 连接（还有调度器线程、事件循环里的执行器）。sqlite3 的同一连接被多线程
+# 交错使用游标时会出现 fetchone() 返回 None、IndexError、
+# "Recursive use of cursors not allowed" 等随机错误 —— 前端表现为页面随机
+# 「加载失败：500」。
+#
+# LockedConnection 用一把可重入锁把「执行 + 取完结果」包成原子操作：execute()
+# 在锁内把结果全部取出，返回一个只读的结果游标，之后的 fetchone/fetchall/迭代
+# 都不再触碰底层连接。SQLite 本身就是单写者，串行化对吞吐影响很小。
+
+import threading as _threading
+
+
+class _BufferedCursor:
+    """execute() 的结果：结果集已在锁内全部取出。"""
+
+    __slots__ = ("_rows", "_pos", "description", "lastrowid", "rowcount")
+
+    def __init__(self, cur: sqlite3.Cursor):
+        self.description = cur.description
+        self._rows = cur.fetchall() if cur.description is not None else []
+        self._pos = 0
+        self.lastrowid = cur.lastrowid
+        self.rowcount = cur.rowcount
+
+    def fetchone(self):
+        if self._pos >= len(self._rows):
+            return None
+        row = self._rows[self._pos]
+        self._pos += 1
+        return row
+
+    def fetchmany(self, size: int = 1):
+        rows = self._rows[self._pos:self._pos + size]
+        self._pos += len(rows)
+        return rows
+
+    def fetchall(self):
+        rows = self._rows[self._pos:]
+        self._pos = len(self._rows)
+        return rows
+
+    def __iter__(self):
+        while True:
+            row = self.fetchone()
+            if row is None:
+                return
+            yield row
+
+    def close(self) -> None:
+        self._rows = []
+
+
+class _LockedCursor:
+    """conn.cursor() 的替身：每次 execute 都走连接锁。"""
+
+    def __init__(self, owner: "LockedConnection"):
+        self._owner = owner
+        self._res: Optional[_BufferedCursor] = None
+
+    def execute(self, sql, params=()):
+        self._res = self._owner.execute(sql, params)
+        return self
+
+    def executemany(self, sql, seq):
+        self._res = self._owner.executemany(sql, seq)
+        return self
+
+    def __getattr__(self, name):
+        if self._res is None:
+            raise AttributeError(name)
+        return getattr(self._res, name)
+
+    def __iter__(self):
+        return iter(self._res or [])
+
+    def close(self) -> None:
+        self._res = None
+
+
+class LockedConnection:
+    """线程安全的 sqlite3.Connection 代理（接口与原连接一致）。"""
+
+    def __init__(self, conn: sqlite3.Connection):
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_lock", _threading.RLock())
+
+    @property
+    def raw(self) -> sqlite3.Connection:
+        return self._conn
+
+    def execute(self, sql, params=()):
+        with self._lock:
+            return _BufferedCursor(self._conn.execute(sql, params))
+
+    def executemany(self, sql, seq):
+        with self._lock:
+            return _BufferedCursor(self._conn.executemany(sql, seq))
+
+    def executescript(self, script):
+        with self._lock:
+            return _BufferedCursor(self._conn.executescript(script))
+
+    def cursor(self):
+        return _LockedCursor(self)
+
+    def commit(self) -> None:
+        with self._lock:
+            self._conn.commit()
+
+    def rollback(self) -> None:
+        with self._lock:
+            self._conn.rollback()
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+    def __enter__(self):
+        self._lock.acquire()
+        try:
+            self._conn.__enter__()
+        except BaseException:
+            self._lock.release()
+            raise
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            return self._conn.__exit__(*exc)
+        finally:
+            self._lock.release()
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._conn, name, value)
+
