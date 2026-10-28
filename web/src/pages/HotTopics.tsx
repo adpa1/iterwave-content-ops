@@ -13,9 +13,11 @@ export default function HotTopics() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scoredError, setScoredError] = useState<string | null>(null);
   const [scored, setScored] = useState<{ mode: string; topics: ScoredTopic[] } | null>(null);
   // G-24：4 道门限（热度/时效可调；维度匹配/可发布性为 R22 硬锁，不可关）
   const [cfgView, setCfgView] = useState<SystemConfigView | null>(null);
+  const [cfgError, setCfgError] = useState<string | null>(null);
   const [gates, setGates] = useState({ heat: "", heatOn: true, hours: "", timeOn: true });
   const [importingKey, setImportingKey] = useState<string | null>(null);
 
@@ -54,12 +56,15 @@ export default function HotTopics() {
 
   useEffect(() => {
     loadHot();
-    api.scoreTopics(10).then(setScored).catch(console.error);
+    api.scoreTopics(10).then(setScored).catch((e) => {
+      setScoredError(e instanceof Error ? e.message : String(e));
+    });
     loadConfig();
   }, []);
 
   /** G-24：读门限配置（可编辑两项 + R22 两道硬锁只读） */
   async function loadConfig() {
+    setCfgError(null);
     try {
       const v = await api.config();
       setCfgView(v);
@@ -70,7 +75,8 @@ export default function HotTopics() {
         timeOn: v.editable.hot_topics.time_filter_enabled ?? true,
       });
     } catch (e) {
-      console.error(e);
+      const msg = e instanceof Error ? e.message : String(e);
+      setCfgError(msg);  // N2 真实修复：可见错误态，不再静默 console.error
     }
   }
 

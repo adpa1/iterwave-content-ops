@@ -13,6 +13,8 @@ import logging
 from datetime import datetime, date
 from typing import Optional
 
+from ..redact import redact as _redact_exc  # R23 异常日志脱敏
+
 from ...adapters.base import (
     PlatformAdapter, Platform, ContentToPublish, CircuitBreakerReason, AdapterError,
     NotLoggedInError, PlatformUnsupportedError,
@@ -54,7 +56,7 @@ class OperationsEngine:
             return
         notifier.emit(
             "login_expired",
-            f"{platform.display_name} 登录态失效，需重新扫码：{str(exc)[:120]}",
+            f"{platform.display_name} 登录态失效，需重新扫码：{_redact_exc(str(exc))[:120]}",
             platform=platform.value,
         )
 
@@ -101,21 +103,21 @@ class OperationsEngine:
             success = await adapter.reply_comment(draft_id, comment_id, content)
         except PlatformUnsupportedError as exc:
             # G-02：平台能力不支持（如视频号网页端无评论区）→ skipped，不算失败
-            logger.info("⏭ %s 被动回复跳过：%s", platform.value, exc)
+            logger.info("⏭ %s 被动回复跳过：%s", platform.value, _redact_exc(str(exc)))
             self._log_op(
                 platform, "passive_reply", "skipped",
                 target_url=draft_id, target_author=comment_id,
-                error_msg=str(exc)[:500],
+                error_msg=_redact_exc(str(exc))[:500],
             )
             return False
         except AdapterError as exc:
-            logger.warning("❌ %s 被动回复失败：%s", platform.value, exc)
+            logger.warning("❌ %s 被动回复失败：%s", platform.value, _redact_exc(str(exc)))
             if isinstance(exc, NotLoggedInError):
                 self._notify_login_expired(platform, exc)
             self._log_op(
                 platform, "passive_reply", "failed",
                 target_url=draft_id, target_author=comment_id, content=content,
-                rhythm_wait_seconds=wait_seconds, error_msg=str(exc)[:500],
+                rhythm_wait_seconds=wait_seconds, error_msg=_redact_exc(str(exc))[:500],
             )
             return False
         self._log_op(
@@ -173,20 +175,20 @@ class OperationsEngine:
         try:
             comment_id = await adapter.post_comment(target_url, content)
         except PlatformUnsupportedError as exc:
-            logger.info("⏭ %s 主动评论跳过：%s", platform.value, exc)
+            logger.info("⏭ %s 主动评论跳过：%s", platform.value, _redact_exc(str(exc)))
             self._log_op(
                 platform, "active_comment", "skipped",
-                target_url=target_url, content=content, error_msg=str(exc)[:500],
+                target_url=target_url, content=content, error_msg=_redact_exc(str(exc))[:500],
             )
             return None
         except AdapterError as exc:
-            logger.warning("❌ %s 主动评论失败：%s", platform.value, exc)
+            logger.warning("❌ %s 主动评论失败：%s", platform.value, _redact_exc(str(exc)))
             if isinstance(exc, NotLoggedInError):
                 self._notify_login_expired(platform, exc)
             self._log_op(
                 platform, "active_comment", "failed",
                 target_url=target_url, content=content,
-                rhythm_wait_seconds=wait_seconds, error_msg=str(exc)[:500],
+                rhythm_wait_seconds=wait_seconds, error_msg=_redact_exc(str(exc))[:500],
             )
             return None
         # comment_id=None → 可能已发出但无法确认
@@ -236,19 +238,19 @@ class OperationsEngine:
         try:
             success = await adapter.follow_user(user_id)
         except PlatformUnsupportedError as exc:
-            logger.info("⏭ %s 关注跳过：%s", platform.value, exc)
+            logger.info("⏭ %s 关注跳过：%s", platform.value, _redact_exc(str(exc)))
             self._log_op(
                 platform, "follow", "skipped",
-                target_author=user_id, error_msg=str(exc)[:500],
+                target_author=user_id, error_msg=_redact_exc(str(exc))[:500],
             )
             return False
         except AdapterError as exc:
-            logger.warning("❌ %s 关注失败：%s", platform.value, exc)
+            logger.warning("❌ %s 关注失败：%s", platform.value, _redact_exc(str(exc)))
             if isinstance(exc, NotLoggedInError):
                 self._notify_login_expired(platform, exc)
             self._log_op(
                 platform, "follow", "failed",
-                target_author=user_id, error_msg=str(exc)[:500],
+                target_author=user_id, error_msg=_redact_exc(str(exc))[:500],
             )
             return False
         self._log_op(

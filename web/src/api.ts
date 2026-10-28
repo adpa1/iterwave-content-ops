@@ -1,6 +1,9 @@
 // ===== API Client — 所有后端调用集中在这里 =====
 
-export type Platform = "xhs" | "douyin" | "kuaishou" | "wechat_channels";
+// Platform 类型 + 元数据：唯一来源在 platforms.ts
+import type { Platform as _Platform } from "./platforms";
+export type Platform = _Platform;
+export { platformMeta, PLATFORM_META, ALL_PLATFORMS } from "./platforms";
 
 export interface RecoveryInfo {
   interrupted_tasks: number;
@@ -197,6 +200,23 @@ export interface HotTopicItem {
   dimension_hits: string[];
   publishable: boolean;
   redline_hits: string[];
+}
+
+/** /api/insights 返回的每平台复盘洞察 */
+export interface InsightItem {
+  id: number;
+  round_id: number;
+  platform: Platform;
+  analyzed_at: string;
+  days_analyzed: number;
+  trend: { avg: number | null; p25: number | null; p50: number | null; p75: number | null };
+  best_hours: number[];
+  best_title_style: Record<string, unknown>;
+  best_card_style: string | null;
+  top_dimensions: string[];
+  sample_count: number;
+  avg_interaction_rate: number | null;
+  conclusion: string;
 }
 
 export interface HotSourceStatus {
@@ -402,6 +422,47 @@ export interface PipelineResponse {
   per_platform: PipelinePlatformRow[];
 }
 
+// ===== P1 — AI 证据审计链 =====
+export interface AiCallRecord {
+  id: number;
+  step: string;
+  module?: string | null;
+  model: string;
+  prompt_version: string;
+  algo_version?: string | null;
+  input_digest?: string | null;
+  tokens_in?: number | null;
+  tokens_out?: number | null;
+  latency_ms: number;
+  duration_ms?: number | null;
+  output_valid?: number | null;
+  success: number;
+  attempt?: number;
+  called_at: string;
+}
+
+export interface UserOverrideRecord {
+  id: number;
+  round_id?: number | null;
+  ai_call_id?: number | null;
+  override_field: string | null;
+  original_value: string | null;
+  override_value: string | null;
+  reason: string;
+  overridden_by: string;
+  overridden_at: string;
+}
+
+export interface RedlineRecord {
+  id: string;
+  round_id: number | null;
+  platform: Platform;
+  title: string;
+  guard_outcome: "warn" | "fail" | "error" | string;
+  guard_reason: string | null;
+  created_at: string;
+}
+
 // ===== 运营控制台补充类型 =====
 export interface OpsKpiResponse {
   today_ops: Record<string, Record<string, number>>;
@@ -530,6 +591,9 @@ export const api = {
     fetchJson<HotTopicsResponse>(`/api/hot_topics${refresh ? "?refresh=true" : ""}`),
   gaps: (roundId?: number) =>
     fetchJson<SpiralAnalysis>(roundId ? `/api/gaps?round_id=${roundId}` : "/api/gaps"),
+  /** 复盘洞察（螺旋引擎输出，每平台纵深分析 + 结论） */
+  insights: () =>
+    fetchJson<{ items: InsightItem[] }>("/api/insights"),
   /** 复盘「采纳建议」：把缺口维度写回母计划（后端触发 R18 下游失效） */
   adoptGaps: (dimensions: string[]) =>
     fetchJson<{ signature: string; adopted_dimensions: string[]; stale_rounds: number[] }>(
@@ -648,4 +712,14 @@ export const api = {
     ),
   pipeline: (roundId: number) =>
     fetchJson<PipelineResponse>(`/api/rounds/${roundId}/pipeline`),
+  // === P1 — AI 证据审计链 ===
+  aiCalls: (limit = 200, step?: string) => {
+    const p = new URLSearchParams({ limit: String(limit) });
+    if (step) p.set("step", step);
+    return fetchJson<AiCallRecord[]>(`/api/ai_calls?${p}`);
+  },
+  userOverride: (limit = 200) =>
+    fetchJson<UserOverrideRecord[]>(`/api/user_override?limit=${limit}`),
+  redlineHistory: (limit = 200) =>
+    fetchJson<RedlineRecord[]>(`/api/redline_history?limit=${limit}`),
 };

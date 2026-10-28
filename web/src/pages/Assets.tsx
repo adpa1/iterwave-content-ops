@@ -33,8 +33,9 @@ export default function Assets() {
     setLoading(true);
     setError(null);
     try {
-      // 并行拉取：任一失败都视为加载失败（不做静默兜底）
-      const [score, draftList, kbRes, cfgRes, hotRes, refs, voices, templates] = await Promise.all([
+      // Promise.allSettled — 各请求独立失败不阻断其他成功结果
+      // 尤其 hotTopics 是外部公益 API（易挂），不能让它拖垮整个页面
+      const results = await Promise.allSettled([
         api.scoreTopics(30),
         api.drafts(),
         api.kbInspect(),
@@ -44,16 +45,29 @@ export default function Assets() {
         api.assets("voice"),
         api.assets("template"),
       ]);
-      setScored(score);
-      setDrafts(draftList);
-      setKb(kbRes);
-      setConfig(cfgRes);
-      setHot(hotRes.items ?? []);
+      // 成功的逐个 set；失败的汇总成 error 提示
+      const failures: string[] = [];
+      const ok = (i: number) => results[i].status === "fulfilled";
+      const v = (i: number) => ok(i) ? (results[i] as PromiseFulfilledResult<any>).value : null;
+      if (!ok(0)) failures.push("选题评分"); else setScored(v(0));
+      if (!ok(1)) failures.push("草稿列表"); else setDrafts(v(1));
+      if (!ok(2)) failures.push("题库检查"); else setKb(v(2));
+      if (!ok(3)) failures.push("配置"); else setConfig(v(3));
+      if (!ok(4)) failures.push("热点（外部公益 API）"); else setHot(v(4)?.items ?? []);
+      if (!ok(5)) failures.push("外部参考资产");
+      if (!ok(6)) failures.push("个人画像资产");
+      if (!ok(7)) failures.push("模板资产");
+
+      const refs = v(5); const voices = v(6); const templates = v(7);
       setAssets({
-        reference: refs.items,
-        voice: voices.items,
-        template: templates.items,
+        reference: refs?.items ?? [],
+        voice: voices?.items ?? [],
+        template: templates?.items ?? [],
       });
+
+      if (failures.length > 0) {
+        setError(`部分数据加载失败：${failures.join("、")} — 已展示成功部分`);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

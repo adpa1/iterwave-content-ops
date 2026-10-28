@@ -1,5 +1,5 @@
 # ============================================================
-# Redbook Easel — 主配置文件
+# IterWave — 主配置文件
 # 唯一可修改的配置源，所有模块从此读取
 # 时间统一本地时区（R5），严禁 datetime.utcnow()
 # ============================================================
@@ -248,6 +248,9 @@ hot_topics:
 llm:
   enabled: false
   provider: "ark"
+  # ⚠️ 通道选择（与 src/core/config.py 的 llm.base_url 保持一致，不可混用）：
+  #   /api/v3      → 按量付费通道（默认）
+  #   /api/plan/v3 → 专属 plan 通道（若火山账号是专属套餐，两处都改成 /api/plan/v3）
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
   model: "doubao-seed-1-6-250615"
   api_key_env: "ARK_API_KEY"

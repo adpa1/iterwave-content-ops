@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import logging
 import threading
 import time
@@ -187,7 +188,7 @@ def _build_app() -> FastAPI:
             logger.info("⏹️ FastAPI 应用关闭")
 
     app = FastAPI(
-        title="Redbook Easel — 四平台图文运营 Agent",
+        title="IterWave — 四平台图文运营 Agent",
         version="0.1.0",
         lifespan=lifespan,
     )
@@ -271,6 +272,14 @@ class CreateGoalRequest(BaseModel):
 class CreateRoundRequest(BaseModel):
     goal_id: Optional[str] = None
     topic_count: int = 5
+
+class NotifyRuleRequest(BaseModel):
+    scenario: str
+    channel: str
+    level: str
+    enabled: bool = True
+    condition: Optional[str] = None
+    notes: Optional[str] = None
     platforms: Optional[list[str]] = None
 
 
@@ -1489,6 +1498,17 @@ def _register_routes(app: FastAPI) -> None:
             "UPDATE task_runs SET status = ?, finished_at = ?, error_msg = ? WHERE id = ?",
             (target, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), note, run_id),
         )
+        # R17 收口：同步回写运营日志 ops_logs（引擎对 active_comment/follow 写的 pending_verify）。
+        # ops_logs 无 task_run 外键，且引擎写 ops_logs 时未带 round_id（该列恒为 NULL），
+        # 故只能按"同平台"近似收口该平台的待核实操作（pending_verify 量级小，且本就需用户核实）。
+        row2 = conn.execute(
+            "SELECT platform FROM task_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        if row2 and row2["platform"]:
+            conn.execute(
+                "UPDATE ops_logs SET status = ? WHERE platform = ? AND status = 'pending_verify'",
+                (target, row2["platform"]),
+            )
         conn.commit()
         return {"id": run_id, "status": target}
 
@@ -1626,6 +1646,266 @@ def _register_routes(app: FastAPI) -> None:
             return KbReader(cfg).inspect()
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(500, f"选题库检查失败：{e}")
+
+    # ============================================================
+    # Dashboard 补齐（对比报告 3.1 🔴 后端真缺失）
+    # ============================================================
+
+    # --- 四平台进度聚合（Dashboard #11：四个平台独立进度）---
+    @app.get("/api/platform_progress")
+    def platform_progress():
+        """返回每个 enabled 平台的：总草稿数 / 各状态分布 / 熔断状态。"""
+        conn = _g()["conn"]
+        cfg = _g()["cfg"]
+        enabled_platforms = [
+            p for p, conf in (cfg.platforms.model_dump() if hasattr(cfg.platforms, "model_dump") else dict(cfg.platforms)).items()
+            if isinstance(conf, dict) and conf.get("enabled", True)
+        ] or ["xhs", "douyin", "kuaishou", "wechat_channels"]
+        result = {}
+        for p in enabled_platforms:
+            # 各状态计数
+            status_rows = conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM drafts WHERE platform=? GROUP BY status",
+                (p,),
+            ).fetchall()
+            status_map = {r[0]: r[1] for r in status_rows}
+            # 总数
+            total = sum(status_map.values())
+            # 熔断状态（resolved_at IS NULL 即熔断中）
+            cb_row = conn.execute(
+                "SELECT COUNT(*) FROM circuit_breaker_events "
+                "WHERE platform=? AND resolved_at IS NULL",
+                (p,),
+            ).fetchone()
+            cb = cb_row[0] > 0
+            result[p] = {
+                "total_drafts": total,
+                "status_breakdown": status_map,
+                "circuit_broken": cb,
+            }
+        return result
+
+    # --- 决策待办聚合（Dashboard #9：需要你决策的事项）---
+    @app.get("/api/action_items")
+    def action_items():
+        """聚合三类需要人工决策的事项：
+
+        1. goals：有 target_platform、但 achievement_rate 为 NULL 且 baseline_at 过期
+        2. rounds：status='awaiting_publish' 超过 72h（R8 publish_confirm_timeout）
+        3. circuit_breaker：cooldown_until 已到期、但 resolved_at 仍 NULL（需要 try_recover）
+
+        返回统一 action_items[] 列表，前端按 type 分组显示。
+        """
+        from datetime import datetime, timedelta as td
+        conn = _g()["conn"]
+        now = datetime.now()
+        items: list[dict] = []
+
+        # 1. 目标长期无进度（current_value IS NULL 或 < target_value，且 metric_period_end 已过）
+        goal_rows = conn.execute(
+            """SELECT id, goal_text, target_platform, target_metric, target_value,
+                      baseline_at, current_value, metric_period_end
+               FROM goals
+               WHERE status='active'
+                 AND metric_period_end IS NOT NULL
+                 AND metric_period_end < ?
+                 AND (current_value IS NULL OR current_value < target_value)
+            """,
+            (now.isoformat(),),
+        ).fetchall()
+        for r in goal_rows:
+            target_val = r["target_value"] or 0
+            cur_val = r["current_value"]
+            pct = f"{(cur_val / target_val * 100):.0f}%" if (cur_val is not None and target_val > 0) else "待采集"
+            items.append({
+                "id": f"goal:{r['id']}",
+                "type": "goal_strategy",
+                "title": f"目标「{r['goal_text']}」已过截止日期 {r['metric_period_end'][:10]} 但未达成（{pct}）",
+                "detail": f"{r['target_platform'] or '全平台'} · {r['target_metric']} 目标 {target_val} · 当前 {cur_val or '—'}",
+                "priority": "high",
+                "source": "goals",
+                "created_at": r["metric_period_end"],
+                "actions": ["go_goal"],
+            })
+
+        # 2. 轮次等待发布超过 72h
+        rounds_rows = conn.execute(
+            """SELECT id, round_number, status, awaiting_publish_ended_at, created_at
+               FROM spiral_rounds
+               WHERE status='awaiting_publish'
+                 AND awaiting_publish_ended_at IS NOT NULL
+                 AND awaiting_publish_ended_at < ?
+            """,
+            (now.isoformat(),),
+        ).fetchall()
+        for r in rounds_rows:
+            items.append({
+                "id": f"round:{r['id']}",
+                "type": "publish_decision",
+                "title": f"Round {r['round_number']} 已超过 {r['awaiting_publish_ended_at'][:10]} 等待发布，需确认或取消",
+                "detail": f"超时 {(now - datetime.fromisoformat(r['awaiting_publish_ended_at'])).days} 天",
+                "priority": "high",
+                "source": "rounds",
+                "created_at": r["created_at"],
+                "actions": ["go_round"],
+            })
+
+        # 3. 熔断冷却到期未恢复（需要 try_recover 3 步验证）
+        cb_rows = conn.execute(
+            """SELECT id, platform, reason, detected_at, cooldown_until, resolved_at
+               FROM circuit_breaker_events
+               WHERE resolved_at IS NULL
+                 AND cooldown_until IS NOT NULL
+                 AND cooldown_until < ?
+            """,
+            (now.isoformat(),),
+        ).fetchall()
+        for r in cb_rows:
+            items.append({
+                "id": f"cb:{r['id']}",
+                "type": "circuit_recover",
+                "title": f"{r['platform']} 熔断冷却已到期（原因：{r['reason']}），需执行 3 步恢复验证",
+                "detail": f"冷却到期于 {r['cooldown_until'][:16]}",
+                "priority": "high",
+                "source": "circuit_breaker",
+                "created_at": r["detected_at"],
+                "actions": ["run_recover"],
+            })
+
+        # 4. circuits 熔断但 cooldown 未到期（低优先级提醒）
+        cb2 = conn.execute(
+            """SELECT id, platform, reason, detected_at, cooldown_until
+               FROM circuit_breaker_events
+               WHERE resolved_at IS NULL
+                 AND (cooldown_until IS NULL OR cooldown_until >= ?)
+               LIMIT 5
+            """,
+            (now.isoformat(),),
+        ).fetchall()
+        for r in cb2:
+            items.append({
+                "id": f"cb2:{r['id']}",
+                "type": "circuit_active",
+                "title": f"{r['platform']} 熔断中（原因：{r['reason']}），冷却至 {r['cooldown_until'][:16] if r['cooldown_until'] else '—'}",
+                "priority": "medium",
+                "source": "circuit_breaker",
+                "created_at": r["detected_at"],
+                "actions": ["go_ops"],
+            })
+
+        return {"items": items, "total": len(items)}
+
+    # ============================================================
+    # Operations 补齐（对比报告 3.7 🔴 后端真缺失）
+    # ============================================================
+
+    # --- 通知规则配置（目前规则硬编码在 notify 模块，补可编辑 CRUD）---
+    @app.get("/api/notify_rules")
+    def list_notify_rules():
+        conn = _g()["conn"]
+        try:
+            rows = conn.execute(
+                "SELECT * FROM notify_rules ORDER BY id ASC"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # 表不存在 — 自动建表（首次调用时 lazy create）
+            conn.executescript(_NOTIFY_RULES_SCHEMA)
+            conn.commit()
+            rows = []
+        return [dict(r) for r in rows]
+
+    @app.post("/api/notify_rules")
+    def create_notify_rule(req: NotifyRuleRequest):
+        conn = _g()["conn"]
+        try:
+            conn.execute("SELECT 1 FROM notify_rules LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.executescript(_NOTIFY_RULES_SCHEMA); conn.commit()
+        cur = conn.execute(
+            """INSERT INTO notify_rules (scenario, channel, level, enabled, condition, notes, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+            (req.scenario, req.channel, req.level, 1 if req.enabled else 0,
+             req.condition, req.notes),
+        )
+        conn.commit()
+        return {"id": cur.lastrowid, "message": "创建成功"}
+
+    @app.patch("/api/notify_rules/{rule_id}")
+    def update_notify_rule(rule_id: int, req: NotifyRuleRequest):
+        conn = _g()["conn"]
+        conn.execute(
+            """UPDATE notify_rules SET scenario=?, channel=?, level=?, enabled=?,
+                      condition=?, notes=?, updated_at=datetime('now')
+               WHERE id=?""",
+            (req.scenario, req.channel, req.level, 1 if req.enabled else 0,
+             req.condition, req.notes, rule_id),
+        )
+        conn.commit()
+        return {"id": rule_id, "message": "更新成功"}
+
+    @app.delete("/api/notify_rules/{rule_id}")
+    def delete_notify_rule(rule_id: int):
+        conn = _g()["conn"]
+        conn.execute("DELETE FROM notify_rules WHERE id=?", (rule_id,))
+        conn.commit()
+        return {"message": "删除成功"}
+
+    # ============================================================
+    # P1 — AI 证据审计链（对比报告缺口）
+    # ============================================================
+
+    @app.get("/api/ai_calls")
+    def list_ai_calls(limit: int = Query(200, ge=1, le=2000), step: str | None = None):
+        conn = _g()["conn"]
+        sql = "SELECT * FROM ai_calls"
+        args: list = []
+        if step:
+            sql += " WHERE step = ?"
+            args.append(step)
+        sql += " ORDER BY called_at DESC LIMIT ?"
+        args.append(limit)
+        rows = conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
+
+    @app.get("/api/user_override")
+    def list_user_override(limit: int = Query(200, ge=1, le=2000)):
+        conn = _g()["conn"]
+        rows = conn.execute(
+            "SELECT * FROM user_override ORDER BY overridden_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    @app.get("/api/redline_history")
+    def list_redline_history(limit: int = Query(200, ge=1, le=2000)):
+        """红线拦截历史：从 contents 表中 guard_outcome != 'pass' 的记录聚合"""
+        conn = _g()["conn"]
+        rows = conn.execute(
+            """SELECT id, round_id, platform, title, guard_outcome, guard_reason,
+                      created_at
+               FROM contents
+               WHERE guard_outcome IN ('warn', 'fail', 'error')
+               ORDER BY created_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ============================================================
+# notify_rules 表 schema（lazy create，首次调用 get/post 时自动建立）
+# ============================================================
+_NOTIFY_RULES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS notify_rules (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    scenario   TEXT NOT NULL,            -- 触发场景（circuit_broken / round_completed / ...）
+    channel    TEXT NOT NULL,            -- 渠道（macos / wecom / feishu / console）
+    level      TEXT NOT NULL,            -- 提醒等级（info / warning / critical）
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    condition  TEXT,                     -- 条件表达式（SQL fragment / JSON filter）
+    notes      TEXT,
+    created_at DATETIME,
+    updated_at DATETIME
+);
+"""
 
 
 

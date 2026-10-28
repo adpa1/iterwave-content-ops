@@ -116,12 +116,21 @@ class RoundStateMachine:
     # 轮次流转触发（R9/R10）
     # ------------------------------------------------------------------
 
-    def on_all_drafts_saved(self, round_id: int) -> None:
-        """所有启用平台的草稿都 saved/failed → producing 结束 → awaiting_publish。"""
-        self.transition(round_id, "awaiting_publish", "所有草稿已存或已失败")
-
     def on_first_publish_confirmed(self, round_id: int) -> None:
-        """首篇 user_published → 进入 collecting_metrics。"""
+        """首篇 user_published → 进入 collecting_metrics。
+
+        D6 守卫：若轮次仍处 producing（如异步确认 / 干跑 save_drafts=false），
+        先补齐 awaiting_publish 再进 collecting_metrics，避免 transition 静默失败卡死。
+        轮询发布确认(D2)与手动确认(D6)共用此入口，均受益。
+        """
+        current = self.db.execute(
+            "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+        ).fetchone()
+        if not current:
+            return
+        if current[0] == "producing":
+            self.transition(round_id, "awaiting_publish",
+                            "发布确认前补齐：producing→awaiting_publish")
         self.transition(round_id, "collecting_metrics", "首篇发布确认")
 
     def decide_analyzing_exit(self, round_id: int) -> str:
@@ -152,8 +161,15 @@ class RoundStateMachine:
         if all(fs == "failed" for fs in fetch_statuses):
             return "failed"
 
-        # R10 第二路：存在 cancelled / failed / expired 的掉队篇目 → partial_completed
-        if any(s in ("cancelled", "failed", "expired") for s in statuses):
+        # R10 第二路：存在掉队篇目 → partial_completed
+        # 收紧语义：仅统计"真正进入过发布流程"的篇目（user_published/published/data_fetching 系），
+        # 存草稿阶段就失败的死草稿(draft_failed)不计入，避免把"1 篇成功 + 1 篇从未存上"
+        # 的轮次误判为掉队（D7）。
+        published_flow = [
+            s for s in statuses
+            if s not in ("draft_pending", "draft_saved", "failed")
+        ]
+        if any(s in ("cancelled", "expired") for s in published_flow):
             return "partial_completed"
 
         # R10 第一路：全部采集成功/部分成功 → completed
@@ -258,22 +274,3 @@ class DraftStateMachine:
                 self.transition(draft_id, "expired", reason="publish_confirm_timeout + grace 到期")
                 expired_ids.append(draft_id)
         return expired_ids
-
-    def collect_metrics_phase_timeout(self, round_id: int, now: Optional[datetime] = None) -> bool:
-        """collecting_metrics_timeout（首篇 published 起计 72h）。
-
-        超时 → 数据未齐的篇目标记 fetch_status=failed，强制进入 analyzing。
-        """
-        now = now or datetime.now()
-        row = self.db.execute(
-            "SELECT collecting_metrics_started_at FROM spiral_rounds WHERE id = ?",
-            (round_id,),
-        ).fetchone()
-        if not row or not row[0]:
-            return False
-        try:
-            start = datetime.fromisoformat(row[0])
-        except ValueError:
-            return False
-        from datetime import timedelta
-        return (now - start) > timedelta(hours=72)

@@ -287,10 +287,12 @@ class ScoringEngine:
         return 100.0 * (2 ** (-age / half_life))
 
     def _score_gap_weight(self, topic: TopicItem) -> float:
-        """缺口加权：gap_analyzer 输出的 0-1 归一化强度（占位实现）。
+        """缺口加权（占位实现，未接真实缺口数据）。
 
-        完整实现要查 gap_analyzer 的持久化输出。先根据 topic.dimension
-        与全局中位数比较粗略估算。
+        ⚠️ 项目内目前没有可调用的 gap_analyzer 持久化模块（仅有 api 层的 gap_analysis
+        端点与 spiral 的概念提及），无法取得真实的"缺口填补强度"。此处仍按维度选题数
+        与全局中位数比较做粗略估算（覆盖缺口→高加权 90，否则 40）。
+        如需真实计分，需先实现 gap_analyzer 并把其持久化输出接到这里。
         """
         # 查该维度当前选题数
         row = self.db.execute(

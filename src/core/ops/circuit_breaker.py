@@ -40,9 +40,39 @@ class CircuitBreakerEngine:
     # ------------------------------------------------------------------
 
     def trigger(self, platform: Platform, reason: CircuitBreakerReason) -> None:
-        """触发某平台熔断 — 记录 circuit_breaker_events 表。"""
+        """触发某平台熔断 — 幂等插入（同平台同 reason 未 resolved 时跳过）。
+
+        去重逻辑（N1 修复）：
+        - 检查是否已有 resolved_at IS NULL 且同 platform + reason 的事件
+        - 若有 → 只刷新 cooldown_until（延长冷却），不新增事件
+        - 若无 → 新插入事件
+        这避免了多点触发同一信号时产生 N 条堆积事件，恢复 job 一次
+        就能解除整条平台的熔断态。
+        """
         now = datetime.now()
         cooldown_until = now + timedelta(minutes=self.cooldown_minutes)
+
+        # 幂等检查
+        existing = self.db.execute(
+            "SELECT id FROM circuit_breaker_events "
+            "WHERE platform = ? AND reason = ? AND resolved_at IS NULL LIMIT 1",
+            (platform.value, reason.value),
+        ).fetchone()
+
+        if existing:
+            # 已有同 reason 未 resolved 事件 → 刷新 cooldown（延长）即可
+            self.db.execute(
+                "UPDATE circuit_breaker_events SET cooldown_until = ? WHERE id = ?",
+                (cooldown_until.isoformat(), existing[0]),
+            )
+            self.db.commit()
+            logger.info(
+                "🔁 %s 熔断信号重复（reason=%s），已延长冷却至 %s",
+                platform.value, reason.value, cooldown_until.isoformat(),
+            )
+            return
+
+        # 新事件
         self.db.execute(
             "INSERT INTO circuit_breaker_events (platform, reason, detected_at, cooldown_until) "
             "VALUES (?, ?, ?, ?)",
@@ -69,28 +99,21 @@ class CircuitBreakerEngine:
     # ------------------------------------------------------------------
 
     def is_circuit_broken(self, platform: Platform) -> bool:
-        """检查某平台当前是否熔断（有未 resolved 且 cooldown_until > now 的事件）。
+        """R6 熔断门控：存在 resolved_at IS NULL 的事件 → 视为熔断中。
 
-        注意：cooldown_until 存的是本地时间（R5），不能用 SQLite 的
-        datetime('now')（UTC）比较，必须在 Python 侧用 datetime.now()。
+        重要语义：冷却到期 ≠ 自动放行。闸门由「3 步恢复验证是否通过」
+        决定（即 resolved_at 是否已被写入）。cooldown_until 仅作为
+        try_recover 是否允许尝试 3 步的前置条件，对闸门不起决定作用。
+
+        在调度暂停或 5min 扫描空窗期，即便冷却已到期但 try_recover
+        从未执行 → 闸门仍关闭 → 不会撞风控。
         """
-        rows = self.db.execute(
-            "SELECT cooldown_until FROM circuit_breaker_events "
-            "WHERE platform = ? AND resolved_at IS NULL",
+        row = self.db.execute(
+            "SELECT 1 FROM circuit_breaker_events "
+            "WHERE platform = ? AND resolved_at IS NULL LIMIT 1",
             (platform.value,),
-        ).fetchall()
-        now = datetime.now()
-        for row in rows:
-            raw = row["cooldown_until"]
-            if not raw:
-                continue
-            try:
-                until = datetime.fromisoformat(str(raw))
-            except ValueError:
-                continue
-            if until > now:
-                return True
-        return False
+        ).fetchone()
+        return row is not None
 
     def active_events(self, platform: Optional[Platform] = None) -> list[dict]:
         """返回未 resolved 的熔断事件列表。"""
@@ -110,11 +133,15 @@ class CircuitBreakerEngine:
     async def try_recover(self, platform: Platform) -> dict:
         """R6 红线 — 冷却到期后跑 3 步验证。
 
+        N1 修复（批量语义）：
+        - 三步通过后，一次性 UPDATE 该平台 **全部** resolved_at IS NULL 的事件
+          （不再只解最早到期的那一条）
+        - 三步失败（登录失效 / 轻量动作失败）→ 延长该平台全部未 resolved 事件冷却
         返回 {passed: bool, step_results: {step: ok, reason: ...}}
         """
         results: dict = {"passed": False, "steps": {}, "reason": ""}
 
-        # 0. 找到该平台最早到期的熔断事件
+        # 0. 找最早到期事件（三步通过前需要检查冷却是否到期）
         row = self.db.execute(
             "SELECT id, cooldown_until FROM circuit_breaker_events "
             "WHERE platform = ? AND resolved_at IS NULL "
@@ -157,8 +184,8 @@ class CircuitBreakerEngine:
         results["steps"]["test_login"] = login_ok
 
         if not login_ok:
-            results["reason"] = "登录态无效，延长 cooldown 1h"
-            self._extend_cooldown(event_id, 60)
+            results["reason"] = "登录态无效，延长全部事件 cooldown 1h"
+            self._extend_all_cooldowns(platform, 60)
             return results
 
         # Step 3: test_lightweight_action
@@ -170,19 +197,24 @@ class CircuitBreakerEngine:
         results["steps"]["test_lightweight_action"] = light_ok
 
         if not light_ok:
-            results["reason"] = "轻量动作失败，延长 cooldown 1h"
-            self._extend_cooldown(event_id, 60)
+            results["reason"] = "轻量动作失败，延长全部事件 cooldown 1h"
+            self._extend_all_cooldowns(platform, 60)
             return results
 
-        # 三步全部通过 → resolved
+        # 三步全部通过 → 批量 resolved 该平台所有未 resolved 事件
         results["passed"] = True
         results["reason"] = "三步验证全部通过，恢复运营"
-        self.db.execute(
-            "UPDATE circuit_breaker_events SET resolved_at = ?, resolved_by = 'auto' WHERE id = ?",
-            (datetime.now().isoformat(), event_id),
+        cur = self.db.execute(
+            "UPDATE circuit_breaker_events SET resolved_at = ?, resolved_by = 'auto' "
+            "WHERE platform = ? AND resolved_at IS NULL",
+            (datetime.now().isoformat(), platform.value),
         )
         self.db.commit()
-        logger.info("✅ %s 熔断恢复成功（3 步全部通过）", platform.value)
+        count = cur.rowcount
+        logger.info(
+            "✅ %s 熔断恢复成功（3 步全部通过，批量解除 %d 条事件）",
+            platform.value, count,
+        )
         return results
 
     def manual_reset(self, platform: Platform) -> int:
@@ -202,10 +234,22 @@ class CircuitBreakerEngine:
     # 内部
     # ------------------------------------------------------------------
 
-    def _extend_cooldown(self, event_id: int, minutes: int) -> None:
-        """延长 cooldown N 分钟（R6 任何一步没过）。"""
-        self.db.execute(
-            "UPDATE circuit_breaker_events SET cooldown_until = datetime(cooldown_until, ?) WHERE id = ?",
-            (f"+{minutes} minutes", event_id),
+    def _extend_all_cooldowns(self, platform: Platform, minutes: int) -> int:
+        """批量延长该平台所有未 resolved 事件冷却 N 分钟（N1 修复）。
+
+        原来只延长单条（最早到期的那一条），现在批量延长避免
+        剩余事件冷却已到期、又被闸门误判。
+        返回被延长的事件数。
+        """
+        cur = self.db.execute(
+            "UPDATE circuit_breaker_events SET cooldown_until = datetime(cooldown_until, ?) "
+            "WHERE platform = ? AND resolved_at IS NULL",
+            (f"+{minutes} minutes", platform.value),
         )
         self.db.commit()
+        count = cur.rowcount
+        logger.info(
+            "⏳ 延长 %s 全部未 resolved 事件冷却 %d 分钟（%d 条）",
+            platform.value, minutes, count,
+        )
+        return count

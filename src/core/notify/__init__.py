@@ -51,20 +51,8 @@ _EVENT_CATALOG: dict[str, tuple[str, str, str]] = {
 
 _APP_TITLE = "四平台运营 Agent"
 
-# R23 脱敏：cookie / token / authorization 的值只留前 4 位
-_SECRET_PATTERN = re.compile(
-    r"(?i)\b(cookie|token|authorization|api[_-]?key)\b\s*[:=]\s*([^\s,;]+)"
-)
-
-
-def _redact(text: str) -> str:
-    """把文本里的 cookie/token 值脱敏（保留前 4 位 + ***）。"""
-    def _repl(m: re.Match) -> str:
-        key, value = m.group(1), m.group(2)
-        head = value[:4]
-        return f"{key}=***" if len(value) <= 4 else f"{key}={head}***"
-
-    return _SECRET_PATTERN.sub(_repl, text)
+# R23 脱敏工具：统一走 src.core.redact（避免多模块各写一份）
+from ..redact import redact as _redact  # noqa: F401 — 对外兼容 _redact 名字
 
 
 def _as_escape(text: str) -> str:
@@ -121,7 +109,7 @@ class Notifier:
 
         # R23：正文统一脱敏
         body = _redact(message or "")
-        head = title or default_title
+        head = _redact(title or default_title)  # R23：标题同样脱敏（手机号/微信号等）
         if platform and not title:
             head = f"{head} · {platform}"
 

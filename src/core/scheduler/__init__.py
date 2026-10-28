@@ -234,7 +234,7 @@ class SchedulerEngine:
             return
 
         rows = self.conn.execute(
-            "SELECT d.id, d.platform, d.draft_id, c.title "
+            "SELECT d.id, d.platform, d.draft_id, d.round_id, c.title "
             "FROM drafts d JOIN contents c ON d.content_id = c.id "
             "WHERE d.status = 'draft_saved'"
         ).fetchall()
@@ -267,6 +267,16 @@ class SchedulerEngine:
             ):
                 confirmed += 1
                 self.schedule_data_fetch(row["id"], now + timedelta(hours=delay_hours))
+                # D2 修复：轮询确认发布须与手动确认（main.py:721）对等，
+                # 推进轮次状态机 → collecting_metrics，否则轮次永远卡 awaiting_publish
+                if self.sm_round is not None and row["round_id"] is not None:
+                    try:
+                        self.sm_round.on_first_publish_confirmed(row["round_id"])
+                    except Exception:  # noqa: BLE001 — 单篇失败不影响轮询批次
+                        logger.exception(
+                            "[APS] publish_polling 推进轮次状态机失败 draft=%s round=%s",
+                            row["id"], row["round_id"],
+                        )
                 if getattr(self, "notifier", None):
                     self.notifier.emit(
                         "publish_confirmed",
@@ -324,11 +334,14 @@ class SchedulerEngine:
             self.conn.execute(
                 "UPDATE metrics SET fetch_status = ?, fetched_at = ?, attempt = ?, "
                 "raw_response = ?, likes = ?, collects = ?, comments = ?, shares = ?, "
-                "views = ?, new_followers = ? WHERE id = ?",
+                "views = ?, new_followers = ?, like_rate = ?, collect_rate = ?, "
+                "interaction_rate = ?, follower_efficiency = ? WHERE id = ?",
                 (
                     snap.fetch_status.value, datetime.now().isoformat(), metrics_attempt,
                     snap.raw_response, snap.likes, snap.collects, snap.comments,
-                    snap.shares, snap.views, snap.new_followers, prev["id"],
+                    snap.shares, snap.views, snap.new_followers,
+                    snap.like_rate, snap.collect_rate, snap.interaction_rate,
+                    snap.follower_efficiency, prev["id"],
                 ),
             )
             logger.info("[APS] data_fetch 当天重复采集 → 覆盖 metrics id=%s（第 %d 次）",
@@ -336,13 +349,16 @@ class SchedulerEngine:
         else:
             self.conn.execute(
                 "INSERT INTO metrics (draft_id, content_id, platform, fetch_status, fetched_at, "
-                "attempt, raw_response, likes, collects, comments, shares, views, new_followers) "
-                "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)",
+                "attempt, raw_response, likes, collects, comments, shares, views, new_followers, "
+                "like_rate, collect_rate, interaction_rate, follower_efficiency) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     draft_id, row["content_id"], platform.value, snap.fetch_status.value,
                     datetime.now().isoformat(), snap.raw_response,
                     snap.likes, snap.collects, snap.comments, snap.shares, snap.views,
                     snap.new_followers,
+                    snap.like_rate, snap.collect_rate, snap.interaction_rate,
+                    snap.follower_efficiency,
                 ),
             )
         self.conn.commit()

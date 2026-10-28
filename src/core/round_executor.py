@@ -31,7 +31,7 @@ from typing import Optional
 
 from .config import PROJECT_ROOT
 from .kb_reader import KbReader
-from .content_pipeline import generate_copy_content, make_card
+from .content_pipeline import generate_copy_content, make_card, _llm_available
 from .plan_version import PlanVersionManager
 from .guard.ultimate_goal_checker import CheckOutcome, CheckResult
 from ..adapters.base import Platform, ContentToPublish
@@ -321,6 +321,17 @@ class RoundExecutor:
                         )
 
                     if outcome.passes:
+                        accepted = (title, body, tags, outcome)
+                        break
+
+                    # D8：模板降级（无 LLM，无法自我改写）下 WARN 会确定性重复相同文案，
+                    # 重试只会第 3 次仍 WARN → 被当 FAIL 确定性丢弃。故无 LLM 时 WARN 不再丢弃，
+                    # 改为"采用 + 告警留痕"；有 LLM 时仍走重检（能改写，命中 R2 重检要求）。
+                    if outcome.result == CheckResult.WARN and not _llm_available(self.cfg):
+                        logger.warning(
+                            "⚠️ G2 WARN 采用+告警（非丢弃）%s 第 %d 次: %s",
+                            platform.value, attempt + 1, outcome.reason,
+                        )
                         accepted = (title, body, tags, outcome)
                         break
 

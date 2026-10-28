@@ -64,5 +64,6 @@ PROJECT_MEMORY.md
 开源建议.md
 大哥修改意见.md
 功能缺口清单.md
+对比报告*.md
 *.html  # 本地 HTML 原型
 verify_*.py  # 内部验证脚本

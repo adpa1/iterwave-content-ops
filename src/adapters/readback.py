@@ -246,13 +246,27 @@ def snapshot_from_work(platform: Platform, work: dict, raw: str) -> MetricsSnaps
     comments = stats.get("comments")
     shares = stats.get("shares")
 
-    present = [v for v in (views, likes, collects, comments, shares) if v is not None]
+    # 各平台核心指标维度不同：抖音/快手无 collects(收藏)/shares(分享) 概念，
+    # 以 views/likes/comments 为核心维度；小红书/视频号需 5 项齐全（D5）。
+    core_dims = (
+        ("views", "likes", "comments")
+        if platform in (Platform.DOUYIN, Platform.KUAISHOU)
+        else ("views", "likes", "collects", "comments", "shares")
+    )
+    dims = (
+        ("views", views), ("likes", likes), ("collects", collects),
+        ("comments", comments), ("shares", shares),
+    )
+    present = [v for _, v in dims if v is not None]
+    core_present = [v for k, v in dims if k in core_dims and v is not None]
+
     if not present:
         status = FetchStatus.PARSE_ERROR
         error = "页面结构变化或未登录，未解析到任何指标"
-    elif views is None or len(present) < 5:
+    elif len(core_present) < len(core_dims):
+        missing = [k for k, v in dims if k in core_dims and v is None]
         status = FetchStatus.PARTIAL
-        error = f"仅解析到 {len(present)}/5 项指标"
+        error = f"仅解析到 {len(core_present)}/{len(core_dims)} 项核心指标（缺失：{','.join(missing)}）"
     else:
         status = FetchStatus.SUCCESS
         error = None

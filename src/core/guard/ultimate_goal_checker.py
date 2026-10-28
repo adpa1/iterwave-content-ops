@@ -54,7 +54,10 @@ class CheckOutcome:
 
     @property
     def passes(self) -> bool:
-        return self.result in (CheckResult.PASS, CheckResult.WARN)
+        """仅 PASS 算通过。WARN（原则违反、画像不匹配）不算通过 ——
+        R2 红线要求"原则违反 → 修改后重检"，WARN 必须进入 G1 重写循环。
+        """
+        return self.result == CheckResult.PASS
 
     @property
     def must_regenerate(self) -> bool:

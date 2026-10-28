@@ -259,6 +259,11 @@ class LlmConfig(BaseModel):
     """文案生成用 LLM（Agent Plan / 方舟）。无 key 时自动降级模板。"""
     enabled: bool = False
     provider: str = "ark"
+    # ⚠️ 通道选择（重要，关乎计费与可用性，R23 安全）：
+    #   - /api/v3      → 按量付费通道（默认，适合大多数按 token 计费场景）
+    #   - /api/plan/v3 → 专属 plan 通道（项目记忆要求"不可混用"；若你的火山账号是
+    #                     专属套餐，必须把这里和 config.yaml 的 llm.base_url 都改成 /api/plan/v3）
+    # 两处必须保持一致，否则混用通道会导致 404 / 计费异常。
     base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     model: str = "doubao-seed-1-6-250615"
     api_key_env: str = "ARK_API_KEY"          # R23：只从 .env 读，不落库不落日志

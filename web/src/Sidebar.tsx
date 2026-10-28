@@ -22,6 +22,7 @@ export const NAV_ITEMS: NavItem[] = [
   { page: "gaps",       label: "缺口分析", icon: "△", section: "洞察" },
 
   { page: "agent",      label: "Agent 编排", icon: "⎇", section: "系统" },
+  { page: "onboarding", label: "首次配置向导", icon: "✧", section: "系统" },
   { page: "settings",   label: "系统设置", icon: "⚙", section: "系统" },
 
   { page: "assets",     label: "内容资产", icon: "☷", section: "资产" },
@@ -61,9 +62,9 @@ export default function Sidebar({ current, onChange, brokenPlatforms }: Props) {
             display: "grid", placeItems: "center",
             color: "#fff", fontWeight: 800, fontSize: 17,
             boxShadow: "0 5px 14px #172b65",
-          }}>R</div>
+          }}>I</div>
           <div>
-            <div style={{ fontWeight: 750, letterSpacing: ".2px", fontSize: 15, color: "#fff" }}>Redbook Easel</div>
+            <div style={{ fontWeight: 750, letterSpacing: ".2px", fontSize: 15, color: "#fff" }}>IterWave</div>
             <div style={{ fontSize: 10, color: "#8fa4bf", marginTop: 1 }}>四平台图文半自动运营</div>
           </div>
         </div>

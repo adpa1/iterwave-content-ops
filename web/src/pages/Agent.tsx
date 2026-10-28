@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import EmptyHint from "../components/EmptyHint";
-import { api, Platform, SystemStatus } from "../api";
+import { api, Platform, SystemStatus, AiCallRecord, UserOverrideRecord, RedlineRecord } from "../api";
 
 const PLATFORM_LABEL: Record<string, string> = {
   xhs: "📕 小红书", douyin: "🎵 抖音", kuaishou: "⚡ 快手", wechat_channels: "💚 视频号",
@@ -44,12 +44,29 @@ export default function Agent() {
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // P1 — AI 审计链状态
+  const [aiCalls, setAiCalls] = useState<AiCallRecord[] | null>(null);
+  const [aiCallsError, setAiCallsError] = useState<string | null>(null);
+  const [overrides, setOverrides] = useState<UserOverrideRecord[] | null>(null);
+  const [overridesError, setOverridesError] = useState<string | null>(null);
+  const [redlines, setRedlines] = useState<RedlineRecord[] | null>(null);
+  const [redlinesError, setRedlinesError] = useState<string | null>(null);
+  const [auditTab, setAuditTab] = useState<"ai" | "override" | "redline">("ai");
+
   const load = async () => {
     setError(null);
     try { setStatus(await api.status()); }
     catch (e: any) { setError(e.message); }
   };
   useEffect(() => { load(); }, []);
+
+  const loadAudit = async () => {
+    setAiCallsError(null); setOverridesError(null); setRedlinesError(null);
+    try { setAiCalls(await api.aiCalls(200)); } catch (e: any) { setAiCallsError(e.message); }
+    try { setOverrides(await api.userOverride(200)); } catch (e: any) { setOverridesError(e.message); }
+    try { setRedlines(await api.redlineHistory(200)); } catch (e: any) { setRedlinesError(e.message); }
+  };
+  useEffect(() => { loadAudit(); }, []);
 
   const broken = status?.circuit_broken_platforms ?? [];
   const loginMissing = status?.platforms_without_login ?? [];
@@ -211,6 +228,151 @@ export default function Agent() {
             </div>
           </div>
         ))}
+      </div>
+
+      {/* 📋 P1 — AI 证据审计链（对比报告缺口补齐） */}
+      <div className="panel">
+        <div className="panel-head">
+          <div>
+            <div className="panel-title"><span className="icon">📋</span>AI 证据审计链</div>
+            <div className="panel-sub">LLM 调用记录 · 人工覆盖痕迹 · 终极目标红线拦截历史 — 原型 view-review → 缺口与 AI 证据 的 live 对应</div>
+          </div>
+          <button className="btn sm" onClick={loadAudit} style={{ marginLeft: 10 }}>↻ 刷新</button>
+        </div>
+
+        {/* Tab 切换 */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 12, borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
+          {([
+            { key: "ai", label: `① LLM 调用记录${aiCalls ? ` (${aiCalls.length})` : ""}` },
+            { key: "override", label: `② 人工覆盖痕迹${overrides ? ` (${overrides.length})` : ""}` },
+            { key: "redline", label: `③ 红线拦截历史${redlines ? ` (${redlines.length})` : ""}` },
+          ] as const).map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setAuditTab(t.key)}
+              style={{
+                padding: "6px 14px",
+                fontSize: 12,
+                fontWeight: auditTab === t.key ? 700 : 500,
+                background: auditTab === t.key ? "var(--blue)" : "transparent",
+                color: auditTab === t.key ? "#fff" : "var(--text)",
+                border: auditTab === t.key ? "1px solid var(--blue)" : "1px solid var(--border)",
+                borderRadius: 6,
+                cursor: "pointer",
+              }}
+            >{t.label}</button>
+          ))}
+        </div>
+
+        {/* ① AI Calls */}
+        {auditTab === "ai" && (
+          <>
+            {aiCallsError && <div className="note" style={{ color: "var(--red)" }}>加载失败：{aiCallsError}</div>}
+            {!aiCalls && !aiCallsError && <div className="note">加载中…</div>}
+            {aiCalls && aiCalls.length === 0 && (
+              <EmptyHint next="启动真实 LLM 生成后自动记录">还没有真实 LLM 调用记录</EmptyHint>
+            )}
+            {aiCalls && aiCalls.length > 0 && (
+              <div className="table-wrap">
+                <table>
+                  <thead><tr>
+                    <th>时间</th><th>Step</th><th>模型</th><th>Prompt Ver</th>
+                    <th>Tokens In</th><th>Tokens Out</th><th>延迟</th><th>结果</th>
+                  </tr></thead>
+                  <tbody>
+                    {aiCalls.slice(0, 100).map((r) => (
+                      <tr key={r.id}>
+                        <td style={{ fontSize: 11, fontFamily: "monospace", color: "var(--subtle)" }}>{r.called_at}</td>
+                        <td style={{ fontSize: 12, fontFamily: "monospace" }}>{r.step}</td>
+                        <td>{r.model}</td>
+                        <td style={{ fontSize: 11, fontFamily: "monospace" }}>{r.prompt_version}</td>
+                        <td>{r.tokens_in ?? <span style={{ color: "var(--subtle)" }}>—</span>}</td>
+                        <td>{r.tokens_out ?? <span style={{ color: "var(--subtle)" }}>—</span>}</td>
+                        <td>{r.latency_ms}ms</td>
+                        <td>
+                          {r.success ? <span className="tag green">OK</span> : <span className="tag red">FAIL</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {aiCalls.length > 100 && <div style={{ fontSize: 11, color: "var(--subtle)", marginTop: 6 }}>只显示最近 100 条（共 {aiCalls.length} 条）</div>}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ② User Override */}
+        {auditTab === "override" && (
+          <>
+            {overridesError && <div className="note" style={{ color: "var(--red)" }}>加载失败：{overridesError}</div>}
+            {!overrides && !overridesError && <div className="note">加载中…</div>}
+            {overrides && overrides.length === 0 && (
+              <EmptyHint next="编辑内容时选择「驳回」或「重新过 G2」后自动留痕">还没有人工覆盖痕迹</EmptyHint>
+            )}
+            {overrides && overrides.length > 0 && (
+              <div className="table-wrap">
+                <table>
+                  <thead><tr>
+                    <th>时间</th><th>轮次</th><th>字段</th><th>原值</th><th>新值</th><th>操作人</th><th>原因</th>
+                  </tr></thead>
+                  <tbody>
+                    {overrides.slice(0, 100).map((r) => (
+                      <tr key={r.id}>
+                        <td style={{ fontSize: 11, fontFamily: "monospace", color: "var(--subtle)" }}>{r.overridden_at}</td>
+                        <td>{r.round_id ? `#${r.round_id}` : <span style={{ color: "var(--subtle)" }}>—</span>}</td>
+                        <td style={{ fontFamily: "monospace", fontSize: 11 }}>{r.override_field ?? "—"}</td>
+                        <td style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.original_value ?? "—"}</td>
+                        <td style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.override_value ?? "—"}</td>
+                        <td>{r.overridden_by}</td>
+                        <td style={{ maxWidth: 200, fontSize: 12 }}>{r.reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ③ Redline History */}
+        {auditTab === "redline" && (
+          <>
+            {redlinesError && <div className="note" style={{ color: "var(--red)" }}>加载失败：{redlinesError}</div>}
+            {!redlines && !redlinesError && <div className="note">加载中…</div>}
+            {redlines && redlines.length === 0 && (
+              <EmptyHint next="选题或文案违反红线时会自动拦截并记录">还没有红线拦截历史 ✅</EmptyHint>
+            )}
+            {redlines && redlines.length > 0 && (
+              <div className="table-wrap">
+                <table>
+                  <thead><tr>
+                    <th>时间</th><th>轮次</th><th>平台</th><th>标题</th><th>拦截类型</th><th>原因</th>
+                  </tr></thead>
+                  <tbody>
+                    {redlines.slice(0, 100).map((r) => (
+                      <tr key={r.id}>
+                        <td style={{ fontSize: 11, fontFamily: "monospace", color: "var(--subtle)" }}>{r.created_at}</td>
+                        <td>{r.round_id ? `#${r.round_id}` : "—"}</td>
+                        <td>{PLATFORM_LABEL[r.platform] ?? r.platform}</td>
+                        <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</td>
+                        <td>
+                          {r.guard_outcome === "fail" ? <span className="tag red">❌ FAIL</span>
+                           : r.guard_outcome === "warn" ? <span className="tag orange">⚠️ WARN</span>
+                           : <span className="tag gray">{r.guard_outcome}</span>}
+                        </td>
+                        <td style={{ maxWidth: 240, fontSize: 12 }}>{r.guard_reason ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div style={{ fontSize: 11, color: "var(--subtle)", marginTop: 6 }}>
+                  💡 R2 终极目标检查器 → 违反账号定位 → 拦截打回；拦截历史永久审计可追溯
+                </div>
+              </div>
+            )}
+          </>
+        )}
       </div>
     </>
   );

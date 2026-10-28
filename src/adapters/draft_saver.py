@@ -350,14 +350,14 @@ class DraftSaver:
         return None
 
     async def _fallback_save_draft(self, page: Page) -> bool:
-        """兜底：遍历所有按钮，挑第一个不含"发布"关键词的。"""
-        buttons = await page.locator("button").all()
-        for btn in buttons:
+        """兜底：只从 PLATFORM_SELECTORS[platform]['save_draft_button'] 候选选择器里挑第一个可见的。
+
+        不再用关键词启发式遍历全页按钮——页面改版易误点"发布/发送"类按钮（R1 红线）。
+        """
+        for sel in self.selectors.get("save_draft_button", []):
             try:
-                text = (await btn.inner_text()).strip()
-                if text and "发布" not in text and "发送" not in text and any(
-                    kw in text for kw in ["草稿", "保存", "存"]
-                ):
+                btn = page.locator(sel).first
+                if await btn.is_visible():
                     await btn.click()
                     return True
             except Exception:

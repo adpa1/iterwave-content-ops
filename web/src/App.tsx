@@ -11,6 +11,7 @@ import Analytics from "./pages/Analytics";
 import Gaps from "./pages/Gaps";
 import Assets from "./pages/Assets";
 import Agent from "./pages/Agent";
+import Onboarding from "./pages/Onboarding";
 import Settings from "./pages/Settings";
 
 function Router() {
@@ -51,6 +52,7 @@ function Router() {
       case "gaps": return <Gaps />;
       case "assets": return <Assets />;
       case "agent": return <Agent />;
+      case "onboarding": return <Onboarding />;
       case "settings": return <Settings />;
       default: return <Dashboard />;
     }
