@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import Sidebar, { NAV_ITEMS } from "./Sidebar";
 import { AppProvider, useApp } from "./AppContext";
-import { Platform } from "./platforms";
+import { platformMeta } from "./platforms";
 import Dashboard from "./pages/Dashboard";
 import HotTopics from "./pages/HotTopics";
 import Goals from "./pages/Goals";
@@ -64,22 +64,18 @@ function Router() {
   const currentNav = NAV_ITEMS.find((n) => n.page === page);
 
   return (
-    <div className="app-shell">
-      <Topbar
-        section={currentNav?.section ?? ""}
-        label={currentNav?.label ?? ""}
-        scoringMode={status?.scoring_mode}
+    <div className="app">
+      <Sidebar
+        current={page}
+        onChange={setPage}
+        brokenPlatforms={status?.circuit_broken_platforms || []}
+        loggedIn={status?.logged_in_platforms || []}
+        enabled={status?.enabled_platforms || []}
+        activeRounds={status?.active_rounds}
       />
-      <div className="app">
-        <Sidebar
-          current={page}
-          onChange={setPage}
-          brokenPlatforms={status?.circuit_broken_platforms || []}
-          loggedIn={status?.logged_in_platforms || []}
-          enabled={status?.enabled_platforms || []}
-          noLogin={status?.platforms_without_login || []}
-        />
-        <main className="content">
+      <div className="main">
+        <Topbar label={currentNav?.label ?? ""} onNavigate={setPage} />
+        <main className="content" id="main-content">
           {render()}
         </main>
       </div>
@@ -87,27 +83,43 @@ function Router() {
   );
 }
 
-// ===== 全局顶部栏 =====
-function Topbar({ section, label, scoringMode }: { section: string; label: string; scoringMode?: string }) {
-  const { status } = useApp();
+// ===== 全局顶部栏（对齐 demo：64px 半透明 + 日期 / 引导 / 通知 / 头像） =====
+const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+function todayLabel() {
+  const d = new Date();
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 · ${WEEKDAYS[d.getDay()]}`;
+}
+
+function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string) => void }) {
+  const { status, showToast } = useApp();
+  const broken = status?.circuit_broken_platforms || [];
+  const noLogin = (status?.enabled_platforms || []).filter((p) => !(status?.logged_in_platforms || []).includes(p));
+  const notices = broken.length + noLogin.length;
+
+  const openNotices = () => {
+    if (!notices) { showToast("暂无需要处理的提醒", "info"); return; }
+    const parts: string[] = [];
+    if (broken.length) parts.push(`${broken.map((p) => platformMeta(p).label).join("、")} 处于熔断`);
+    if (noLogin.length) parts.push(`${noLogin.map((p) => platformMeta(p).label).join("、")} 未登录`);
+    showToast(parts.join("；"), broken.length ? "error" : "info");
+  };
+
   return (
     <header className="topbar">
-      <div className="topbar-left">
-        <span style={{ fontWeight: 700, color: "var(--text)" }}>IterWave</span>
-        <span className="sep">/</span>
-        <span>{section}</span>
-        <span className="sep">/</span>
-        <strong>{label}</strong>
-        {scoringMode && <span style={{ marginLeft: 8, color: "var(--teal)", fontSize: 11 }}>· {scoringMode}</span>}
+      <div className="crumb">
+        IterWave <span className="crumb-sep" aria-hidden="true">/</span><strong>{label}</strong>
       </div>
-      <div className="topbar-search">
-        <input placeholder="搜索内容 / 选题 / 任务（演示）" />
-      </div>
-      <div className="topbar-right">
-        {status?.circuit_broken_platforms.length ? (
-          <span className="tag red" title="熔断平台">🚨 熔断 {status.circuit_broken_platforms.length}</span>
-        ) : null}
-        <span className="user-chip"><span className="dot" />本地工作区</span>
+      <div className="top-actions">
+        <label className="sr-only" htmlFor="globalSearch">全局搜索</label>
+        <input id="globalSearch" type="search" className="search" placeholder="搜索选题、内容、热点、任务…" />
+        <span className="today">{todayLabel()}</span>
+        <button type="button" className="btn sm soft" onClick={() => onNavigate("onboarding")}>
+          <span aria-hidden="true">☷</span> 新手引导 / 快速配置
+        </button>
+        <button type="button" className="btn sm" onClick={openNotices} aria-label={`通知，${notices} 条待处理`}>
+          <span aria-hidden="true">♧</span> 通知 <span>{notices}</span>
+        </button>
+        <div className="avatar" aria-hidden="true">I</div>
       </div>
     </header>
   );
