@@ -132,7 +132,10 @@ input, select, textarea { font-family: inherit; font-size: 13px; }
   color: #7a8ea8;
 }
 
-.content { flex: 1; padding: 28px 32px; max-width: 1400px; }
+/* min-width:0 关键：否则 flex 子项的最小内容宽度会被宽表格撑开，
+   导致整页横向溢出、底部出现横向滚动条（即“底部白色条带”）。
+   加上后宽表格改由 .table-wrap 内部横向滚动，页面不再溢出。 */
+.content { flex: 1; min-width: 0; padding: 28px 32px; max-width: 1400px; }
 
 /* ===== 页面头部 ===== */
 .page-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; }

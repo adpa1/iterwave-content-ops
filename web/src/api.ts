@@ -217,9 +217,31 @@ export interface InsightItem {
   best_title_style: Record<string, unknown>;
   best_card_style: string | null;
   top_dimensions: string[];
-  sample_count: number;
-  avg_interaction_rate: number | null;
-  conclusion: string;
+  summary: string;
+  confidence: number;
+  evidence_days: { date: string; avg: number | null; drafts: number }[];
+  suggestions: string[];
+}
+
+/** 四平台进度（/api/platform_progress 返回的 per-platform 分组） */
+export interface PlatformProgress {
+  total_drafts: number;
+  /** { draft_saved: 3, user_published: 1, data_fetching: 2, ... } */
+  status_breakdown: Record<string, number>;
+  circuit_broken: boolean;
+}
+
+/** 待处理/阻塞事项（/api/action_items） */
+export interface ActionItem {
+  /** round_timeout | goal_overdue | circuit_breaker_cooled | circuit_breaker_active | ... */
+  type: string;
+  platform?: Platform;
+  round_id?: number;
+  goal_id?: string;
+  goal_text?: string;
+  reason?: string;
+  due_at?: string;
+  severity?: "high" | "medium" | "low";
 }
 
 export interface HotSourceStatus {
@@ -425,7 +447,31 @@ export interface PipelineResponse {
   per_platform: PipelinePlatformRow[];
 }
 
-// ===== P1 — AI 证据审计链 =====
+// ===== 账号管理 =====
+export interface AccountInfo {
+  platform: Platform;
+  platform_display: string;
+  platform_icon?: string;
+  /** logged_in | logging_in | not_logged_in */
+  status: string;
+  login_proc_state?: string;
+  login_proc_message?: string;
+  has_storage_state: boolean;
+  /** 扫码中的 QR（data:image/png;base64,xxx） */
+  qr_base64?: string | null;
+}
+
+export interface LoginStatus {
+  platform: Platform;
+  platform_display: string;
+  /** starting | qr_ready | scanned | sms_required | verifying | success | expired | error | unknown */
+  state: string;
+  message: string;
+  qr_path?: string | null;
+  /** data:image/png;base64,xxx */
+  qr_base64?: string | null;
+  ts: number;
+}
 export interface AiCallRecord {
   id: number;
   step: string;
@@ -597,6 +643,12 @@ export const api = {
   /** 复盘洞察（螺旋引擎输出，每平台纵深分析 + 结论） */
   insights: () =>
     fetchJson<{ items: InsightItem[] }>("/api/insights"),
+  /** 四平台 draft 真实分组（Dashboard 右侧进度卡用） */
+  platformProgress: () =>
+    fetchJson<Record<Platform, PlatformProgress>>("/api/platform_progress"),
+  /** 待处理/阻塞事项（Dashboard KPI + 待我处理列表用） */
+  actionItems: () =>
+    fetchJson<{ items: ActionItem[]; total: number }>("/api/action_items"),
   /** 复盘「采纳建议」：把缺口维度写回母计划（后端触发 R18 下游失效） */
   adoptGaps: (dimensions: string[]) =>
     fetchJson<{ signature: string; adopted_dimensions: string[]; stale_rounds: number[] }>(
@@ -725,4 +777,15 @@ export const api = {
     fetchJson<UserOverrideRecord[]>(`/api/user_override?limit=${limit}`),
   redlineHistory: (limit = 200) =>
     fetchJson<RedlineRecord[]>(`/api/redline_history?limit=${limit}`),
+  // === 账号管理 ===
+  accounts: () => fetchJson<{ accounts: AccountInfo[] }>("/api/accounts"),
+  startLogin: (platform: Platform, timeout = 300) =>
+    fetchJson<{ status: string; platform: string; task_id?: number; error?: string }>(
+      `/api/accounts/${platform}/login?timeout=${timeout}`, { method: "POST" }
+    ),
+  loginStatus: (platform: Platform) => fetchJson<LoginStatus>(`/api/accounts/${platform}/login_status`),
+  logout: (platform: Platform) =>
+    fetchJson<{ status: string; platform: string }>(`/api/accounts/${platform}/logout`, { method: "POST" }),
+  cancelLogin: (platform: Platform) =>
+    fetchJson<{ status: string; platform: string }>(`/api/accounts/${platform}/cancel_login`, { method: "POST" }),
 };

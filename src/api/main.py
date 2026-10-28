@@ -1555,13 +1555,28 @@ def _register_routes(app: FastAPI) -> None:
     # --- 节奏调度配置（只读）---
     @app.get("/api/rhythm")
     def rhythm_config():
-        """平台独立配额 / 时段窗口（RhythmController 生效中的配置）。"""
+        """平台独立配额 / 时段窗口（RhythmController 生效中的配置）。
+
+        返回结构与前端 RhythmConfig 接口严格对齐：
+        {
+          enabled_platforms: [...],
+          quotas: { platform: { passive_replies, active_comments, follows } },
+          posting_windows: { platform: ["08:00-23:00"] },
+          min_interval_seconds: int,
+        }
+        """
         cfg = _g()["cfg"]
         enabled = cfg.platforms.enabled_keys()
         quotas_map = getattr(cfg.rhythm, "daily_quotas", None) or {}
         windows = cfg.rhythm.windows or {}
+
+        # ops 时段窗口（所有平台共用）
         ops_win = windows.get("ops")
-        draft_win = windows.get("draft_save")
+        ops_range = f"{ops_win.start_hour:02d}:00-{ops_win.end_hour:02d}:00" if ops_win else "08:00-23:00"
+
+        # 每平台 posting_windows：目前四平台共用 ops 窗口（后续可分平台配）
+        posting_windows = {p: [ops_range] for p in enabled}
+
         return {
             "enabled_platforms": enabled,
             "quotas": {
@@ -1572,16 +1587,8 @@ def _register_routes(app: FastAPI) -> None:
                 }
                 for p in enabled
             },
-            "windows": {
-                "ops": {
-                    "start_hour": ops_win.start_hour,
-                    "end_hour": ops_win.end_hour,
-                } if ops_win else None,
-                "draft_save": {
-                    "start_hour": draft_win.start_hour,
-                    "end_hour": draft_win.end_hour,
-                } if draft_win else None,
-            },
+            "posting_windows": posting_windows,
+            "min_interval_seconds": getattr(cfg.rhythm, "min_interval_seconds", 30),
         }
 
     # --- 系统配置（G-13：白名单可写 + config_changes 审计）---
@@ -1874,6 +1881,58 @@ def _register_routes(app: FastAPI) -> None:
             "SELECT * FROM user_override ORDER BY overridden_at DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ============================================================
+    # 账号管理（扫码登录四平台 — 直接调 Easel publish.py login）
+    # ============================================================
+    from ..core.account_login import (
+        start_login as _start_login,
+        get_login_status as _get_login_status,
+        get_all_accounts as _get_all_accounts,
+        cancel_login as _cancel_login,
+        clear_login as _clear_login,
+    )
+
+    def _valid_platform(platform: str) -> str:
+        """校验平台代号；非法 raise HTTPException。"""
+        from fastapi import HTTPException
+        valid = {"xhs", "douyin", "kuaishou", "wechat_channels"}
+        if platform not in valid:
+            raise HTTPException(400, f"未知平台 {platform}，支持: {sorted(valid)}")
+        return platform
+
+    @app.get("/api/accounts")
+    def list_accounts():
+        """四平台账号状态汇总（Accounts 页顶部四卡片用）。"""
+        return {"accounts": _get_all_accounts()}
+
+    @app.post("/api/accounts/{platform}/login")
+    def start_platform_login(platform: str, restart: bool = Query(False)):
+        """启动后台登录 subprocess（调 Easel vendor xhs_publish.py login / douyin_publish.py login / web_publisher.py login-qr）。
+
+        立即返回当前状态 + QR base64（如果已生成）。前端轮询 GET /api/accounts/{platform}/login_status 拿进度。
+        重启登录加 ?restart=true（先 terminate 旧进程再起新的）。
+        """
+        p = _valid_platform(platform)
+        return _start_login(p, restart=restart)
+
+    @app.get("/api/accounts/{platform}/login_status")
+    def platform_login_status(platform: str):
+        """前端轮询：返回登录进度 + QR base64（data:image/png;base64,... 直嵌 <img>）。"""
+        p = _valid_platform(platform)
+        return _get_login_status(p)
+
+    @app.post("/api/accounts/{platform}/logout")
+    def logout_platform(platform: str):
+        """注销：清 storage_state.json（下次发布前需重新扫码）。"""
+        p = _valid_platform(platform)
+        return _clear_login(p)
+
+    @app.post("/api/accounts/{platform}/cancel_login")
+    def cancel_platform_login(platform: str):
+        """取消进行中的登录（terminate subprocess + 清状态文件）。"""
+        p = _valid_platform(platform)
+        return _cancel_login(p)
 
     @app.get("/api/redline_history")
     def list_redline_history(limit: int = Query(200, ge=1, le=2000)):

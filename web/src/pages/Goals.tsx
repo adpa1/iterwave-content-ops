@@ -151,10 +151,171 @@ export default function Goals() {
         )}
       </div>
 
+      {/* ====== 新增：分项目标 + 策略约束 ====== */}
+      {goals.length > 0 && cfgView && (
+        <div className="grid two" style={{ marginTop: 16 }}>
+          {/* 分项目标进度卡（按平台聚合） */}
+          <div className="panel">
+            <div className="panel-head">
+              <div>
+                <div className="panel-title">🎯 分项目标进度卡</div>
+                <div className="panel-sub">总体目标拆解到各平台 · 自动聚合达成率</div>
+              </div>
+            </div>
+            <div className="grid two">
+              {["xhs", "douyin", "kuaishou", "wechat_channels"].map((p) => {
+                const pGoals = goals.filter((g) => !g.target_platform || g.target_platform === p);
+                if (pGoals.length === 0) return null;
+                const avgRate =
+                  pGoals.map((g) => g.achievement_rate).filter((r) => r != null);
+                const rate = avgRate.length
+                  ? avgRate.reduce((a, b) => a + b, 0) / avgRate.length
+                  : null;
+                const PLATFORM_META: Record<string, { label: string; emoji: string }> = {
+                  xhs: { label: "小红书", emoji: "📕" },
+                  douyin: { label: "抖音", emoji: "🎵" },
+                  kuaishou: { label: "快手", emoji: "⚡" },
+                  wechat_channels: { label: "视频号", emoji: "💚" },
+                };
+                const meta = PLATFORM_META[p]!;
+                return (
+                  <div
+                    key={p}
+                    style={{
+                      padding: 12,
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      background: "var(--card)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        marginBottom: 8,
+                      }}
+                    >
+                      <span style={{ fontWeight: 700 }}>
+                        {meta.emoji} {meta.label}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 18,
+                          fontWeight: 800,
+                          color:
+                            rate == null
+                              ? "var(--subtle)"
+                              : rate >= 100
+                              ? "var(--green)"
+                              : rate >= 50
+                              ? "var(--orange)"
+                              : "var(--red)",
+                        }}
+                      >
+                        {rate == null ? "—" : `${rate.toFixed(0)}%`}
+                      </span>
+                    </div>
+                    <div
+                      style={{
+                        height: 8,
+                        background: "var(--line)",
+                        borderRadius: 4,
+                        overflow: "hidden",
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${rate ?? 0}%`,
+                          height: "100%",
+                          background:
+                            rate == null
+                              ? "var(--line)"
+                              : rate >= 100
+                              ? "var(--green)"
+                              : "var(--blue)",
+                          transition: "width .3s",
+                        }}
+                      />
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: "var(--subtle)",
+                        marginTop: 6,
+                      }}
+                    >
+                      {pGoals.length} 项目标
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 策略约束表 */}
+          <div className="panel">
+            <div className="panel-head">
+              <div>
+                <div className="panel-title">📋 策略与约束</div>
+                <div className="panel-sub">R2/R22 红线 · 定位关键词 · 禁用方向</div>
+              </div>
+            </div>
+            <div className="list">
+              <div className="task-row">
+                <i className="task-prio green" />
+                <div className="task-main">
+                  <div className="task-title">账号定位关键词</div>
+                  <div className="task-desc" style={{ fontSize: 11 }}>
+                    {(cfgView?.readonly.persona_keywords || []).join("、") || "—"}
+                  </div>
+                </div>
+              </div>
+              <div className="task-row">
+                <i className="task-prio orange" />
+                <div className="task-main">
+                  <div className="task-title">禁区方向</div>
+                  <div className="task-desc" style={{ fontSize: 11 }}>
+                    {(cfgView?.readonly.forbidden_directions || []).join("、") || "—"}
+                  </div>
+                </div>
+              </div>
+              <div className="task-row">
+                <i className="task-prio red" />
+                <div className="task-main">
+                  <div className="task-title">🔴 红线敏感词库（R22 强制开启，不可关闭）</div>
+                  <div className="task-desc" style={{ fontSize: 11 }}>
+                    已内置 {cfgView?.readonly.redline_keywords_count ?? 0} 条
+                  </div>
+                </div>
+              </div>
+              <div className="task-row">
+                <i className="task-prio blue" />
+                <div className="task-main">
+                  <div className="task-title">评分模式</div>
+                  <div className="task-desc" style={{ fontSize: 11 }}>
+                    由样本量自动切换：冷启动 → 样本积累 → 稳定运行
+                  </div>
+                </div>
+              </div>
+              <div className="task-row">
+                <i className="task-prio gray" />
+                <div className="task-main">
+                  <div className="task-title">LLM 模型</div>
+                  <div className="task-desc" style={{ fontSize: 11 }}>
+                    {cfgView?.readonly.llm_model || "—"} · API Key{" "}
+                    {cfgView?.readonly.llm_has_api_key ? "✅ 已配" : "❌ 未配"}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="panel">
         <div className="panel-head">
           <div>
-            <div className="panel-title"><span className="icon">＋</span>新建阶段目标</div>
+            <div className="panel-title">📌 新建阶段目标</div>
             <div className="panel-sub">R21：指标 / 目标值 / 口径 / 基线 / 统计周期 / 数据来源 缺一不可（缺则后端 422）</div>
           </div>
         </div>

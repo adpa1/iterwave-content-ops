@@ -17,6 +17,10 @@ data/*.db
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
+data/_login/        # 登录态 cookie（敏感）
+data/_login_qr/     # 登录二维码临时图
+data/_profiles/     # Playwright 浏览器 profile（含登录态）
+outputs/            # 运行时输出目录
 backups/
 
 # ===== 登录态文件（R23）=====

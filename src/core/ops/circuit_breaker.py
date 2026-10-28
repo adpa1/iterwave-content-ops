@@ -124,7 +124,9 @@ class CircuitBreakerEngine:
             params.append(platform.value)
         sql += " ORDER BY detected_at DESC"
         rows = self.db.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+        # 显式 dict 构造（比 dict(r) 稳，不管 row_factory 有没有 sqlite3.Row）
+        colnames = [d[0] for d in self.db.execute("PRAGMA table_info(circuit_breaker_events)").fetchall()]
+        return [dict(zip(colnames, tuple(r))) for r in rows]
 
     # ------------------------------------------------------------------
     # R6 3 步恢复验证（冷却到期 ≠ 自动恢复）

@@ -9,21 +9,22 @@ export interface NavItem {
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  { page: "dashboard",  label: "运营总览", icon: "◉", section: "指挥与发现" },
-  { page: "hot",        label: "热点雷达", icon: "✳", section: "指挥与发现" },
-  { page: "goals",      label: "目标与策略", icon: "◎", section: "指挥与发现" },
-  { page: "assets",     label: "内容资产", icon: "☷", section: "指挥与发现" },
+  { page: "dashboard",  label: "运营总览", icon: "🏠", section: "指挥与发现" },
+  { page: "hot",        label: "热点雷达", icon: "🔥", section: "指挥与发现" },
+  { page: "goals",      label: "目标与策略", icon: "🎯", section: "指挥与发现" },
+  { page: "assets",     label: "内容资产", icon: "📚", section: "指挥与发现" },
 
-  { page: "production", label: "内容生产", icon: "⎇", section: "内容作战" },
-  { page: "calendar",   label: "内容日历", icon: "◷", section: "内容作战" },
+  { page: "production", label: "内容生产", icon: "📝", section: "内容作战" },
+  { page: "calendar",   label: "内容日历", icon: "📅", section: "内容作战" },
 
-  { page: "operations", label: "运营控制台", icon: "⌁", section: "运营与复盘" },
-  { page: "analytics",  label: "数据复盘", icon: "▦", section: "运营与复盘" },
-  { page: "gaps",       label: "缺口与实验", icon: "△", section: "运营与复盘" },
+  { page: "operations", label: "运营控制台", icon: "⚙️", section: "运营与复盘" },
+  { page: "analytics",  label: "数据复盘", icon: "📊", section: "运营与复盘" },
+  { page: "gaps",       label: "缺口与实验", icon: "🔬", section: "运营与复盘" },
 
-  { page: "agent",      label: "工作流诊断", icon: "⎇", section: "Agent 与设置" },
+  { page: "agent",      label: "工作流诊断", icon: "🔧", section: "Agent 与设置" },
+  { page: "accounts",   label: "账号与登录", icon: "🔐", section: "Agent 与设置" },
   { page: "settings",   label: "账号与设置", icon: "⚙", section: "Agent 与设置" },
-  { page: "onboarding", label: "首启配置向导", icon: "✧", section: "Agent 与设置" },
+  { page: "onboarding", label: "首启配置向导", icon: "🚀", section: "Agent 与设置" },
 ];
 
 interface Props {
