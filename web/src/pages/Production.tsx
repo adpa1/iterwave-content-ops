@@ -309,6 +309,25 @@ export default function Production() {
     });
   };
 
+  /** G-36：小红书草稿只在浏览器本地，关闭即消失 → 提供「复制文案」闭环 */
+  const handleCopy = async () => {
+    if (!selectedContentId) return;
+    const tags = editTags
+      .split(/[,，\s]+/)
+      .map((t) => t.trim().replace(/^#+/, ""))
+      .filter(Boolean)
+      .map((t) => `#${t}`);
+    const text = [editTitle.trim(), editBody.trim(), tags.join(" ")]
+      .filter(Boolean)
+      .join("\n\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast("✅ 已复制标题 + 正文 + 标签，可直接粘贴到平台", "success");
+    } catch {
+      showToast("复制失败，请手动选中文本框复制", "error");
+    }
+  };
+
   const handleRecheck = async () => {
     if (!selectedContentId) return;
     await withPending("recheck-content", async () => {
@@ -963,6 +982,31 @@ export default function Production() {
 
                 <label style={{ fontSize: 12, color: "var(--muted)" }}>标签（空格或逗号分隔）</label>
                 <input value={editTags} onChange={(e) => setEditTags(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+
+                {/* G-36：复制文案 + 下载卡片，补齐小红书本地草稿的发布闭环 */}
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+                  <button className="btn" onClick={handleCopy}>📋 复制文案</button>
+                  {Array.from({ length: selectedContent.image_count }, (_, i) => (
+                    <a
+                      key={i}
+                      className="btn sm"
+                      href={api.contentImageUrl(selectedContent.id, i)}
+                      download
+                      style={{ textDecoration: "none" }}
+                    >
+                      ⬇ 下载卡片 {i + 1}
+                    </a>
+                  ))}
+                  {selectedContent.image_count === 0 && (
+                    <span style={{ fontSize: 12, color: "var(--subtle)" }}>本篇无卡片图</span>
+                  )}
+                </div>
+                {(selectedContent.platform === "xhs" || selectedContent.platform === "douyin") && (
+                  <div className="note" style={{ marginBottom: 10, fontSize: 12 }}>
+                    🟠 {selectedContent.platform === "xhs" ? "小红书「暂存离开」" : "抖音「暂存离开」"}草稿存于发布浏览器本地（localStorage `publish_cache`），浏览器关闭即消失（G-36）。
+                    用「复制文案」+「下载卡片」在自己的 App 里手动发布即可。
+                  </div>
+                )}
 
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
                   <button className="btn primary" onClick={handleSaveContent} disabled={isPending("save-content")}>

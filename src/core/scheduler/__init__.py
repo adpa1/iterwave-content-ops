@@ -612,8 +612,11 @@ class SchedulerEngine:
             logger.info("[APS] comment_polling 跳过：运营已全局暂停")
             return
 
+        # platform_note_url：发布确认时用户补填的笔记链接。没有它就无法定位评论区
+        # （内部 draft id 拼 https://.../explore/draft-xxx 只会 404），直接跳过。
         drafts = self.conn.execute(
-            "SELECT d.id, d.platform, d.user_confirmed_at, d.saved_at, c.title "
+            "SELECT d.id, d.platform, d.user_confirmed_at, d.saved_at, "
+            "       d.platform_note_url, c.title "
             "FROM drafts d JOIN contents c ON d.content_id = c.id "
             "WHERE d.status IN ('user_published','published') "
             "  AND (d.user_confirmed_at IS NOT NULL OR d.saved_at IS NOT NULL) "
@@ -633,10 +636,17 @@ class SchedulerEngine:
             adapter = self.adapters.get(platform)
             if adapter is None:
                 continue
+            note_url = row["platform_note_url"]
+            if not note_url:
+                logger.info(
+                    "[APS] comment_polling 跳过 draft=%s：未填平台笔记链接（发布确认时可补填）",
+                    row["id"],
+                )
+                continue
 
             async with self.platform_locks[platform]:
                 try:
-                    comments = await adapter.fetch_new_comments(row["id"])
+                    comments = await adapter.fetch_new_comments(note_url)
                 except Exception as exc:
                     logger.warning("[APS] comment_polling %s fetch_new_comments 异常: %s",
                                    platform.value, exc)
@@ -647,18 +657,19 @@ class SchedulerEngine:
                     content = comment.get("content") or comment.get("text") or ""
                     if not comment_id:
                         continue
-                    # 幂等检查（ops_logs 已有回复）
+                    # 幂等检查（R16：笔记 + comment_id 维度；失败记录不算已回复）
                     exists = self.conn.execute(
                         "SELECT 1 FROM ops_logs WHERE platform = ? AND action_type = 'passive_reply' "
-                        "AND target_url = ? AND content = ?",
-                        (platform.value, comment_id, content),
+                        "AND target_url = ? AND target_author = ? "
+                        "AND status IN ('success','pending_verify')",
+                        (platform.value, note_url, comment_id),
                     ).fetchone()
                     if exists:
                         continue
-                    # 调用运营引擎
+                    # 调用运营引擎（note_url 同时作为 R16 幂等键的「篇」维度）
                     reply_text = self._reply_template(row["title"] or content[:10])
                     ok = await self.ops.passive_reply(
-                        platform, row["id"], comment_id, reply_text,
+                        platform, note_url, comment_id, reply_text,
                     )
                     if ok:
                         total_replied += 1

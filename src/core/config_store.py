@@ -434,6 +434,16 @@ def changed_job_ids(keys) -> set[str]:
     return out
 
 
+def llm_channel(base_url: str) -> str:
+    """按 base_url 判定计费通道：plan（Agent Plan 专属通道）/ metered（按量付费）/ custom。"""
+    url = (base_url or "").rstrip("/")
+    if url.endswith("/api/plan/v3"):
+        return "plan"
+    if url.endswith("/api/v3"):
+        return "metered"
+    return "custom"
+
+
 def current_config_view(cfg: Config, conn) -> dict[str, Any]:
     """Settings 页展示 + 编辑所需的白名单字段当前值。"""
     enabled = cfg.platforms.enabled_keys()
@@ -493,6 +503,8 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             "llm_model": cfg.llm.model,
             "llm_fallback_model": getattr(cfg.llm, "fallback_model", None),
             "llm_base_url": cfg.llm.base_url,
+            # 计费通道：由 base_url 推导（前端下拉选择按量付费 / 专属 Agent Plan）
+            "llm_channel": llm_channel(cfg.llm.base_url),
             "llm_temperature": cfg.llm.temperature,
             "llm_timeout_seconds": cfg.llm.timeout_seconds,
             "llm_enabled": cfg.llm.enabled,

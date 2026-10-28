@@ -75,13 +75,20 @@ _PLATFORM_HOME: dict["Platform", str] = {
 _LOGIN_URL_RE = re.compile(r"(passport|/login|login\.)", re.IGNORECASE)
 
 
-def _is_login_page(url: str, page) -> bool:
-    """判断当前页是否被踢到登录页（URL + 常见登录控件双判）。"""
+async def _is_login_page(url: str, page) -> bool:
+    """判断当前页是否被踢到登录页（URL + 常见登录控件双判）。
+
+    page 是 **async** Playwright Page：`query_selector_all` / `is_visible` 都必须 await，
+    否则拿到的是未 await 的 coroutine（旧实现会静默失效，登录墙判断永远 False）。
+    """
     if _LOGIN_URL_RE.search(url or ""):
         return True
     try:
         selectors = 'button:has-text("扫码登录"), [class*="login-btn"], [class*="login-box"]'
-        return any(el.is_visible() for el in page.query_selector_all(selectors))
+        for el in await page.query_selector_all(selectors):
+            if await el.is_visible():
+                return True
+        return False
     except Exception:  # noqa: BLE001 — DOM 查询失败不阻塞判断
         return False
 
@@ -294,21 +301,18 @@ class PlatformAdapter(ABC):
 
         R3：解析不到的字段为 None；一个数字都没有 → parse_error，绝不补 0。
         """
+        import asyncio
         import json
 
         from .readback import (
             ReadbackUnavailable, failed_snapshot, match_work,
-            read_works, snapshot_from_work,
+            read_works_sync, snapshot_from_work,
         )
-        from . import new_context_for_platform
 
         try:
-            async with new_context_for_platform(self.platform) as ctx:
-                page = await ctx.new_page()
-                try:
-                    works = read_works(page, self.platform)
-                finally:
-                    await page.close()
+            # vendor 读回是同步实现：放到线程里用独立 sync Playwright 跑，
+            # 不能把 async Page 传进去（只会得到未 await 的 coroutine）。
+            works = await asyncio.to_thread(read_works_sync, self.platform)
         except ReadbackUnavailable as exc:
             logger.warning("读回不可用 platform=%s: %s", self.platform.value, exc)
             return failed_snapshot(self.platform, str(exc))
@@ -372,10 +376,18 @@ class PlatformAdapter(ABC):
                 page = await ctx.new_page()
                 try:
                     await page.goto(home, wait_until="domcontentloaded", timeout=20000)
-                    await page.wait_for_timeout(1500)
+                    # SPA 首屏异步渲染：视频号实测要 6~8s body 才非空，固定 1.5s 会误判登录失效。
+                    try:
+                        await page.wait_for_function(
+                            "() => document.body && document.body.innerText.trim().length >= 50",
+                            timeout=10000,
+                        )
+                    except Exception:  # noqa: BLE001 — 超时交给下方 body 长度判定
+                        pass
+                    await page.wait_for_timeout(500)
                     url = page.url or ""
 
-                    if _is_login_page(url, page):
+                    if await _is_login_page(url, page):
                         return False, f"登录态失效（跳转登录页 {url[:80]}）"
 
                     if not require_content:

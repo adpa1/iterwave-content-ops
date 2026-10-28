@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import EmptyHint from "../components/EmptyHint";
-import { AdvancedEditor, KbEditor, LlmEditor, PlatformToggles, TimeoutEditor } from "../components/ConfigEditors";
+import { AdvancedEditor, KbEditor, LlmEditor, PlatformStyleEditor, PlatformToggles, TimeoutEditor } from "../components/ConfigEditors";
 import { api, type SystemStatus, type SystemConfigView } from "../api";
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -272,6 +272,20 @@ export default function Settings() {
             )}
           </>
         )}
+      </div>
+
+      {/* 平台文案风格（platform_styles 表，migrations/016）*/}
+      <div className="panel" style={{ marginBottom: 16 }}>
+        <div className="panel-head">
+          <div>
+            <div className="panel-title"><span className="icon">✎</span>平台文案风格（platform_styles 表）</div>
+            <div className="panel-sub">
+              标题风格 / 正文结构 / 语气 / 话题标签存在库里，文案生成时实时读取（LLM 提示词与模板降级共用）；
+              改完下一次生成立即生效，并写 config_changes 审计
+            </div>
+          </div>
+        </div>
+        <PlatformStyleEditor />
       </div>
 
       {/* 本地知识库（G-13 / 原型 step 3）：可编辑 */}

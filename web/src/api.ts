@@ -110,6 +110,8 @@ export interface Draft {
   round_id?: number | null;
   topic_id?: string | null;
   scheduled_publish_at?: string | null;
+  /** 用户补填的平台笔记链接（被动评论轮询靠它定位笔记） */
+  platform_note_url?: string | null;
 }
 
 /** POST /api/rounds/{id}/run 的执行报告（RoundExecutor.run 返回） */
@@ -385,6 +387,8 @@ export interface SystemConfigView {
     llm_model: string;
     llm_fallback_model: string;
     llm_base_url: string;
+    /** 计费通道：plan=Agent Plan 专属通道，metered=按量付费，custom=自定义端点 */
+    llm_channel: "plan" | "metered" | "custom";
     llm_temperature: number;
     llm_timeout_seconds: number;
     llm_enabled: boolean;
@@ -597,6 +601,8 @@ export interface ContentItem {
   body: string;
   tags: string[];
   image_count: number;
+  /** G-36：卡片图文件名（下载走 contentImageUrl，不下发绝对路径） */
+  image_paths?: string[];
   word_count: number | null;
   card_style: string | null;
   guard_outcome: string | null;
@@ -792,6 +798,18 @@ export interface NotifyRule {
   updated_at?: string | null;
 }
 
+/** 平台文案风格（platform_styles 表）：文案生成时注入 prompt + 标签兜底 */
+export interface PlatformStyle {
+  platform: Platform;
+  title_style: string;
+  body_style: string;
+  tone: string;
+  /** 不带 # 前缀；空数组 = 不加平台通用标签，只留选题维度标签 */
+  hashtags: string[];
+  updated_at?: string | null;
+  updated_by?: string | null;
+}
+
 export interface RhythmConfig {
   enabled_platforms: Platform[];
   quotas: Record<Platform, { passive_replies: number; active_comments: number; follows: number }>;
@@ -856,10 +874,12 @@ export const api = {
     if (platform) p.set("platform", platform);
     return fetchJson<Draft[]>(`/api/drafts?${p}`);
   },
-  confirmPublish: (draftId: string) =>
-    fetchJson<{ draft_id: string; status: string }>(`/api/drafts/${draftId}/publish_confirm`, {
-      method: "POST",
-    }),
+  /** noteUrl：已发布笔记链接（可选；不填则该篇跳过被动评论轮询） */
+  confirmPublish: (draftId: string, noteUrl?: string) =>
+    fetchJson<{ draft_id: string; status: string; note_url?: string | null }>(
+      `/api/drafts/${draftId}/publish_confirm`,
+      { method: "POST", body: JSON.stringify({ note_url: noteUrl ?? null }) },
+    ),
   /** 「❌ 不发了」：draft_pending / draft_saved → cancelled */
   cancelDraft: (draftId: string) =>
     fetchJson<{ draft_id: string; status: string }>(`/api/drafts/${draftId}/cancel`, {
@@ -948,6 +968,15 @@ export const api = {
     }),
   deleteNotifyRule: (id: number) =>
     fetchJson<{ message: string }>(`/api/notify_rules/${id}`, { method: "DELETE" }),
+  /** platform_styles 表：平台文案风格与话题标签（改后下次生成即生效） */
+  platformStyles: () => fetchJson<{ items: PlatformStyle[] }>("/api/platform_styles"),
+  updatePlatformStyle: (
+    platform: Platform,
+    data: Partial<Pick<PlatformStyle, "title_style" | "body_style" | "tone" | "hashtags">>,
+  ) =>
+    fetchJson<{ platform: Platform; changed: number; fields?: Record<string, string>; message?: string }>(
+      `/api/platform_styles/${platform}`, { method: "PATCH", body: JSON.stringify(data) },
+    ),
   // === 运营控制台 ===
   /** days = 展示窗口（1=今日，7/30/90）；与 R12 评分 90 天口径独立 */
   opsKpi: (days = 1) => fetchJson<OpsKpiResponse>(`/api/ops_kpi?days=${days}`),
@@ -1039,6 +1068,8 @@ export const api = {
     if (platform) p.set("platform", platform);
     return fetchJson<{ round_id: number; items: ContentItem[] }>(`/api/contents?${p}`);
   },
+  /** G-36：已生成卡片图的下载地址（后端校验文件在 output 目录内） */
+  contentImageUrl: (id: string, index: number) => `/api/contents/${id}/images/${index}`,
   updateContent: (id: string, data: { title?: string; body?: string; tags?: string[]; reason?: string }) =>
     fetchJson<{ id: string; changed: boolean; title: string; body: string; tags: string[] }>(
       `/api/contents/${id}`, { method: "PATCH", body: JSON.stringify(data) },

@@ -375,13 +375,12 @@ class LlmConfig(BaseModel):
     enabled: bool = False
     provider: str = "ark"
     # ⚠️ 通道选择（重要，关乎计费与可用性，R23 安全）：
-    #   - /api/v3      → 按量付费通道（默认，适合大多数按 token 计费场景）
-    #   - /api/plan/v3 → 专属 plan 通道（项目记忆要求"不可混用"；若你的火山账号是
-    #                     专属套餐，必须把这里和 config.yaml 的 llm.base_url 都改成 /api/plan/v3）
-    # 两处必须保持一致，否则混用通道会导致 404 / 计费异常。
+    #   - /api/v3      → 按量付费通道
+    #   - /api/plan/v3 → 专属 Agent Plan 通道（Agent Plan 只支持套餐内模型）
+    # 「系统设置 → 主模型与备用」可在线切换，最终以 config.yaml / config_overrides.json 为准。
     base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
-    model: str = "doubao-seed-1-6-250615"
-    fallback_model: str = ""                  # 主模型失败时的兜底模型；空串 = 不启用
+    model: str = "doubao-seed-2.1-lite"
+    fallback_model: str = "doubao-seed-2.0-mini"   # 主模型失败时的兜底模型；空串 = 不启用
     api_key_env: str = "ARK_API_KEY"          # R23：只从 .env 读，不落库不落日志
     temperature: float = 0.7
     timeout_seconds: int = 60

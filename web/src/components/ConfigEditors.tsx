@@ -5,8 +5,8 @@
  * API Key 单独走 POST /api/config/llm_key 写入 config/.env（R23 不回传明文）。
  * 这里的组件只提交「真正改动」的字段，未改动不提交。
  */
-import { useState } from "react";
-import { api, type SystemConfigView } from "../api";
+import { useEffect, useState } from "react";
+import { api, type Platform, type PlatformStyle, type SystemConfigView } from "../api";
 import { useApp } from "../AppContext";
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -210,6 +210,24 @@ export function KbEditor({ view, onSaved }: {
 // =====================================================================
 // 主模型 / 兜底模型 / API Key
 // =====================================================================
+// 火山方舟两条计费通道：按量付费 /、Agent Plan 专属通道。
+// Agent Plan 只支持套餐内模型（见 https://www.volcengine.com/docs/82379/2366394），
+// 用不支持的模型会返回 404 UnsupportedModel。
+const ARK_CHANNEL_BASE: Record<string, string> = {
+  metered: "https://ark.cn-beijing.volces.com/api/v3",
+  plan: "https://ark.cn-beijing.volces.com/api/plan/v3",
+};
+const ARK_PLAN_MODELS = [
+  "doubao-seed-2.1-lite",
+  "doubao-seed-2.0-mini",
+  "doubao-seed-2.1-pro",
+  "deepseek-v4.1-flash",
+  "deepseek-v4.1-flash-economy",
+  "glm-5.3-flash",
+  "kimi-k3",
+  "kimi-k3.1-pro",
+];
+
 export function LlmEditor({ view, onSaved }: {
   view: SystemConfigView; onSaved?: () => void;
 }) {
@@ -218,6 +236,9 @@ export function LlmEditor({ view, onSaved }: {
   const [provider, setProvider] = useState(view.readonly.llm_provider || "ark");
   const [model, setModel] = useState(view.readonly.llm_model || "");
   const [fallback, setFallback] = useState(view.readonly.llm_fallback_model || "");
+  const [channel, setChannel] = useState<"plan" | "metered" | "custom">(
+    view.readonly.llm_channel || "metered",
+  );
   const [baseUrl, setBaseUrl] = useState(view.readonly.llm_base_url || "");
   const [temperature, setTemperature] = useState(String(view.readonly.llm_temperature ?? ""));
   const [timeoutSec, setTimeoutSec] = useState(String(view.readonly.llm_timeout_seconds ?? ""));
@@ -280,19 +301,42 @@ export function LlmEditor({ view, onSaved }: {
         <input style={{ ...inputStyle, width: 200 }} value={provider}
           onChange={(e) => setProvider(e.target.value)} placeholder="ark" />
       </Field>
-      <Field label="主模型">
+      <Field label="计费通道（火山方舟）">
+        <select className="field" style={{ ...inputStyle }} value={channel}
+          onChange={(e) => {
+            const next = e.target.value as "plan" | "metered" | "custom";
+            setChannel(next);
+            if (ARK_CHANNEL_BASE[next]) setBaseUrl(ARK_CHANNEL_BASE[next]);
+          }}>
+          <option value="plan">专属 Agent Plan（/api/plan/v3）</option>
+          <option value="metered">按量付费（/api/v3）</option>
+          <option value="custom">自定义端点</option>
+        </select>
+      </Field>
+      <Field label="主模型（Agent Plan 套餐只支持套餐内模型，选错会 404）">
         <input style={{ ...inputStyle, fontFamily: "monospace" }} value={model}
-          onChange={(e) => setModel(e.target.value)} placeholder="doubao-seed-1-6-250615" />
+          list="ark-plan-models" onChange={(e) => setModel(e.target.value)}
+          placeholder="doubao-seed-2.1-lite" />
+        <datalist id="ark-plan-models">
+          {ARK_PLAN_MODELS.map((m) => <option key={m} value={m} />)}
+        </datalist>
       </Field>
       <Field label="兜底模型（可留空）">
         <input style={{ ...inputStyle, fontFamily: "monospace" }} value={fallback}
           onChange={(e) => setFallback(e.target.value)} placeholder="留空 = 不启用兜底" />
       </Field>
-      <Field label="Base URL（按量付费 /api/v3 ↔ 专属通道 /api/plan/v3）">
-        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
-          placeholder="https://ark.cn-beijing.volces.com/api/v3" />
-      </Field>
+      {channel === "custom" ? (
+        <Field label="Base URL（自定义端点）">
+          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder="https://ark.cn-beijing.volces.com/api/v3" />
+        </Field>
+      ) : (
+        <div style={{ fontSize: 12, color: "var(--subtle)" }}>
+          端点：<span style={{ fontFamily: "monospace" }}>{ARK_CHANNEL_BASE[channel]}</span>
+          （切换通道后保存即生效，无需重启）
+        </div>
+      )}
       <div className="grid three" style={{ gap: 10 }}>
         <Field label="temperature（0-2）">
           <input className="field" type="number" step="0.1" min={0} max={2} style={{ width: "100%" }}
@@ -759,5 +803,138 @@ export function NotifyChannelsEditor({ view, onSaved }: {
       <SaveBar onSave={save} busy={busy}
         hint="启用只是允许发送；Webhook URL 仍只存 config/.env（R23，绝不回传页面）" />
     </>
+  );
+}
+
+// =====================================================================
+// 平台文案风格（platform_styles 表）：标题风格 / 正文结构 / 语气 / 话题标签
+// =====================================================================
+type StyleDraft = { title_style: string; body_style: string; tone: string; hashtags: string };
+
+export function PlatformStyleEditor() {
+  const { showToast, withPending, isPending } = useApp();
+  const [styles, setStyles] = useState<PlatformStyle[] | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, StyleDraft>>({});
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+
+  const load = async () => {
+    try {
+      const res = await api.platformStyles();
+      setStyles(res.items);
+      const next: Record<string, StyleDraft> = {};
+      for (const s of res.items) {
+        next[s.platform] = {
+          title_style: s.title_style,
+          body_style: s.body_style,
+          tone: s.tone,
+          hashtags: s.hashtags.join(", "),
+        };
+      }
+      setDrafts(next);
+      setLoadErr(null);
+    } catch (e) {
+      setLoadErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  /** "治愈, 壁纸" → ["治愈","壁纸"]；标签统一去掉 # 前缀与重复项 */
+  const parseTags = (text: string): string[] => {
+    const out: string[] = [];
+    for (const raw of text.split(/[,，\n]/)) {
+      const tag = raw.trim().replace(/^#+/, "");
+      if (tag && !out.includes(tag)) out.push(tag);
+    }
+    return out;
+  };
+
+  const save = async (platform: Platform) => {
+    const cur = styles?.find((s) => s.platform === platform);
+    const d = drafts[platform];
+    if (!cur || !d) return;
+    const updates: Partial<Pick<PlatformStyle, "title_style" | "body_style" | "tone" | "hashtags">> = {};
+    if (d.title_style.trim() !== cur.title_style) updates.title_style = d.title_style.trim();
+    if (d.body_style.trim() !== cur.body_style) updates.body_style = d.body_style.trim();
+    if (d.tone.trim() !== cur.tone) updates.tone = d.tone.trim();
+    const tags = parseTags(d.hashtags);
+    if (JSON.stringify(tags) !== JSON.stringify(cur.hashtags)) updates.hashtags = tags;
+
+    if (Object.keys(updates).length === 0) { showToast("没有改动", "info"); return; }
+    const pendingKey = `platform_style:${platform}`;
+    try {
+      const res = await withPending(pendingKey, () => api.updatePlatformStyle(platform, updates));
+      if (!res) return;
+      showToast(`✅ ${PLATFORM_LABELS[platform] ?? platform} 已保存 ${res.changed} 项，写入 config_changes 审计`, "success");
+      await load();
+    } catch (e: any) {
+      showToast(`保存失败: ${e?.message ?? e}`, "error");
+    }
+  };
+
+  if (loadErr) {
+    return (
+      <div className="note" style={{ color: "var(--red)", display: "flex", gap: 10, alignItems: "center" }}>
+        <span>加载失败: {loadErr}</span>
+        <button className="btn sm" onClick={load}>↻ 重试</button>
+      </div>
+    );
+  }
+  if (styles === null) return <div className="note">加载中…</div>;
+  if (styles.length === 0) {
+    return (
+      <div className="note">
+        暂无平台风格记录。确认数据库已执行迁移 <code>016_platform_styles.sql</code>。
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <div className="note" style={{ fontSize: 12 }}>
+        这些内容存在 <code>platform_styles</code> 表里，文案生成时实时读取（LLM 提示词 + 模板降级都走它）。
+        话题标签留空 = 只带选题维度标签，不会再出现写死的垂类话题。
+      </div>
+      {styles.map((s) => {
+        const d = drafts[s.platform];
+        if (!d) return null;
+        const busy = isPending(`platform_style:${s.platform}`);
+        return (
+          <div key={s.platform} style={{ padding: 12, border: "1px solid var(--border)", borderRadius: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <strong style={{ fontSize: 13 }}>{PLATFORM_LABELS[s.platform] ?? s.platform}</strong>
+              <button className="btn primary sm" disabled={busy} onClick={() => save(s.platform)}>
+                {busy ? "保存中…" : "保存"}
+              </button>
+            </div>
+            <div className="grid three" style={{ gap: 10 }}>
+              <Field label="标题风格">
+                <input style={inputStyle} value={d.title_style}
+                  onChange={(e) => setDrafts((p) => ({ ...p, [s.platform]: { ...p[s.platform], title_style: e.target.value } }))} />
+              </Field>
+              <Field label="正文结构">
+                <input style={inputStyle} value={d.body_style}
+                  onChange={(e) => setDrafts((p) => ({ ...p, [s.platform]: { ...p[s.platform], body_style: e.target.value } }))} />
+              </Field>
+              <Field label="语气">
+                <input style={inputStyle} value={d.tone}
+                  onChange={(e) => setDrafts((p) => ({ ...p, [s.platform]: { ...p[s.platform], tone: e.target.value } }))} />
+              </Field>
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <Field label="话题标签（逗号分隔，不带 #；留空 = 只用选题维度标签）">
+                <input style={inputStyle} value={d.hashtags} placeholder="如：治愈, 壁纸, 锁屏"
+                  onChange={(e) => setDrafts((p) => ({ ...p, [s.platform]: { ...p[s.platform], hashtags: e.target.value } }))} />
+              </Field>
+            </div>
+            {s.updated_at && (
+              <div style={{ fontSize: 11, color: "var(--subtle)", marginTop: 8 }}>
+                最近更新 {s.updated_at}（{s.updated_by ?? "—"}）
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }

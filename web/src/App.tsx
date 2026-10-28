@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Component, useEffect, useState, type ReactNode } from "react";
 import Sidebar, { NAV_ITEMS } from "./Sidebar";
 import { AppProvider, useApp } from "./AppContext";
 import { platformMeta } from "./platforms";
@@ -76,7 +76,7 @@ function Router() {
       <div className="main">
         <Topbar label={currentNav?.label ?? ""} onNavigate={setPage} />
         <main className="content" id="main-content">
-          {render()}
+          <PageBoundary key={page}>{render()}</PageBoundary>
         </main>
       </div>
     </div>
@@ -123,6 +123,43 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string) 
       </div>
     </header>
   );
+}
+
+// ===== 页面级错误边界：单页渲染异常时给出提示，不让整站空白 =====
+class PageBoundary extends Component<{ children: ReactNode }, { err: Error | null }> {
+  state = { err: null as Error | null };
+
+  static getDerivedStateFromError(err: Error) {
+    return { err };
+  }
+
+  render() {
+    if (this.state.err) {
+      return (
+        <div className="panel">
+          <div className="panel-head">
+            <div>
+              <div className="panel-title"><span className="icon">⚠️</span>页面渲染出错</div>
+              <div className="panel-sub">
+                通常是前端与后端版本不一致（后端改了接口没重启）或某条数据异常
+              </div>
+            </div>
+          </div>
+          <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, color: "var(--muted)" }}>
+            {this.state.err.message}
+          </pre>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button className="btn sm" onClick={() => this.setState({ err: null })}>重试</button>
+            <button className="btn sm" onClick={() => { window.location.search = "?page=dashboard"; }}>
+              回到总览
+            </button>
+            <button className="btn sm" onClick={() => window.location.reload()}>刷新页面</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 export default function App() {

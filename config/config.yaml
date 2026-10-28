@@ -254,12 +254,13 @@ hot_topics:
 llm:
   enabled: false
   provider: "ark"
-  # ⚠️ 通道选择（与 src/core/config.py 的 llm.base_url 保持一致，不可混用）：
-  #   /api/v3      → 按量付费通道（默认）
-  #   /api/plan/v3 → 专属 plan 通道（若火山账号是专属套餐，两处都改成 /api/plan/v3）
+  # ⚠️ 通道选择（「系统设置 → 主模型与备用」可直接选，无需手改本文件）：
+  #   /api/v3      → 按量付费通道
+  #   /api/plan/v3 → 专属 Agent Plan 通道（Agent Plan 只支持套餐内模型，
+  #                  e.g. doubao-seed-2.1-lite / doubao-seed-2.0-mini / deepseek-v4.1-flash-economy）
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "doubao-seed-1-6-250615"
-  fallback_model: ""            # 主模型失败时兜底；空 = 不启用（可在「系统设置」在线改）
+  model: "doubao-seed-2.1-lite"
+  fallback_model: "doubao-seed-2.0-mini"   # 主模型失败时兜底；空 = 不启用（可在「系统设置」在线改）
   api_key_env: "ARK_API_KEY"
   temperature: 0.7
   timeout_seconds: 60

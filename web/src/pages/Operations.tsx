@@ -411,6 +411,8 @@ function PublishPane() {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 已发布笔记链接：被动评论轮询用它定位笔记；不填则该篇跳过轮询
+  const [noteUrls, setNoteUrls] = useState<Record<string, string>>({});
 
   const fetchDrafts = async () => {
     try {
@@ -429,7 +431,8 @@ function PublishPane() {
     setPending(id);
     try {
       // G-11：同一草稿的确认按钮在请求中禁用，重复点击被 withPending 拦截
-      const res = await withPending(`publish:${id}`, () => api.confirmPublish(id));
+      const noteUrl = (noteUrls[id] ?? "").trim();
+      const res = await withPending(`publish:${id}`, () => api.confirmPublish(id, noteUrl || undefined));
       if (res) {
         // 行内即时更新，无需等整表刷新
         setDrafts((prev) => prev.map((d) => (d.id === id ? { ...d, status: res.status } : d)));
@@ -475,15 +478,23 @@ function PublishPane() {
                   状态：<strong>{d.status}</strong> · {d.saved_at ? `存草稿 ${new Date(d.saved_at).toLocaleString("zh-CN")}` : ""}
                 </div>
               </div>
-              <div className="task-actions">
+              <div className="task-actions" style={{ display: "flex", gap: 6, alignItems: "center" }}>
                 {d.status === "draft_saved" && (
-                  <button
-                    className="btn sm success"
-                    disabled={pending !== null}
-                    onClick={() => confirm(d.id)}
-                  >
-                    {pending === d.id ? "提交中…" : "✅ 我已发布"}
-                  </button>
+                  <>
+                    <input
+                      value={noteUrls[d.id] ?? d.platform_note_url ?? ""}
+                      onChange={(e) => setNoteUrls((prev) => ({ ...prev, [d.id]: e.target.value }))}
+                      placeholder="已发布笔记链接（可选，填了才自动拉评论）"
+                      style={{ width: 240, fontSize: 12 }}
+                    />
+                    <button
+                      className="btn sm success"
+                      disabled={pending !== null}
+                      onClick={() => confirm(d.id)}
+                    >
+                      {pending === d.id ? "提交中…" : "✅ 我已发布"}
+                    </button>
+                  </>
                 )}
               </div>
             </div>

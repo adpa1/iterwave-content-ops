@@ -152,7 +152,9 @@ class XiaohongshuAdapter(PlatformAdapter):
     async def fetch_new_comments(self, draft_id: str) -> list[dict]:
         """拉取某篇已发布笔记的评论列表（真实 DOM 采集）。
 
-        G-02：无登录态 → NotLoggedInError（ops_logs 记 failed），不返回假空列表。
+        G-02：页面出现登录弹窗 **且一条评论也抓不到** → NotLoggedInError（ops_logs 记 failed），
+        不返回假空列表。注意：小红书评论区游客可读，登录弹窗（「登录后推荐更懂你的笔记」）
+        本身不代表评论不可读，所以先抓再判定，不能一见到弹窗就失败。
         """
         self._require_login()
         ctx_mgr = await self._get_browser_context()
@@ -161,13 +163,14 @@ class XiaohongshuAdapter(PlatformAdapter):
             try:
                 await page.goto(self._note_url(draft_id), wait_until="domcontentloaded", timeout=30_000)
                 await page.wait_for_timeout(1_500)
-                if await page.query_selector(_LOGIN_HINT):
-                    raise NotLoggedInError("小红书登录态已失效（页面出现登录提示）")
+                login_modal = await page.query_selector(_LOGIN_HINT) is not None
                 for _ in range(3):  # 评论区懒加载：滚到底再抓
                     await page.mouse.wheel(0, 2_000)
                     await page.wait_for_timeout(600)
 
                 raw = await page.evaluate(_FETCH_COMMENTS_JS) or []
+                if not raw and login_modal:
+                    raise NotLoggedInError("小红书登录态已失效（出现登录弹窗且抓不到任何评论）")
                 items: list[dict] = []
                 for c in raw:
                     cid = str(c.get("id") or "").strip()

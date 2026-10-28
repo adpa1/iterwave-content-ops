@@ -249,7 +249,9 @@ class ScoringEngine:
         haystack = (topic.title + " " + topic.summary + " " + topic.dimension).lower()
         hits = sum(1 for kw in persona if kw.lower() in haystack)
         total = len(persona)
-        return 40 + 60 * (hits / total) if total > 0 else 60.0
+        # 零命中 = 0 分（完全偏离账号定位的选题必须被显著压低，
+        # 否则「新鲜但无关」的选题会靠时效+新鲜度挤掉「用过但高度相关」的选题）
+        return 100 * (hits / total) if total > 0 else 60.0
 
     def _score_history_performance(self, topic: TopicItem, mode: str) -> float:
         """历史表现：同维度历史平均互动率（收缩估计）。"""

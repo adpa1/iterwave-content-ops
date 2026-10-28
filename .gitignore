@@ -40,6 +40,10 @@ data/outputs/
 data/screenshots/
 data/logs/
 *.log
+# 运行时配置覆盖（本地个性化，不应入库）
+data/config_overrides.json
+# 登录二维码临时图（敏感，含登录态）
+data/*_qr.png
 
 # ===== IDE =====
 .vscode/

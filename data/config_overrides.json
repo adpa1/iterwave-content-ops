@@ -1,5 +1,0 @@
-{
-  "circuit_breaker.cooldown_minutes": 30,
-  "hot_topics.filters.heat_threshold": 5000,
-  "rhythm.daily_quotas.xhs.active_comments": 10
-}

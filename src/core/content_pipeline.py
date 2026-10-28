@@ -27,35 +27,60 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================================
-# 平台文案风格
+# 平台文案风格（migrations/016_platform_styles.sql，Settings 页可编辑）
 # =====================================================================
 
-PLATFORM_STYLES: dict[Platform, dict] = {
-    Platform.XHS: {
-        "title_style": "emoji + 数字式标题，突出获得感",
-        "body_style": "分段清晰，带要点符号，结尾引导互动",
-        "hashtag": ["#AI学习", "#效率工具", "#个人成长"],
-        "tone": "亲切、第一人称、口语化",
-    },
-    Platform.DOUYIN: {
-        "title_style": "口语化，直接点痛点",
-        "body_style": "短段落，节奏快，适合配字幕",
-        "hashtag": ["#AI", "#干货分享", "#学习"],
-        "tone": "有冲击力、直接",
-    },
-    Platform.KUAISHOU: {
-        "title_style": "接地气，直接给方案",
-        "body_style": "直白，不绕弯子",
-        "hashtag": ["#AI", "#涨知识"],
-        "tone": "朴实、真实",
-    },
-    Platform.WECHAT_CHANNELS: {
-        "title_style": "正式但不生硬，偏观点式",
-        "body_style": "结构化，适合长阅读",
-        "hashtag": ["#AI教育", "#科技"],
-        "tone": "专业、克制",
-    },
+# DB 不可用时的兜底：只给通用结构，不带任何垂类标签。
+# 话题标签属于账号运营数据，必须来自库（platform_styles.hashtags），
+# 不能把某个垂类的话题写死进代码。
+_FALLBACK_STYLE: dict = {
+    "title_style": "简洁直接，突出价值点",
+    "body_style": "分段清晰，结尾引导互动",
+    "tone": "自然、口语化",
+    "hashtags": [],
 }
+
+
+def load_platform_style(platform: Platform, conn=None) -> dict:
+    """读取平台文案风格：platform_styles 表 → 通用兜底。
+
+    返回 {"title_style", "body_style", "tone", "hashtags"}，
+    hashtags 为不带 # 前缀的标签列表（可能为空，空表示只带选题维度标签）。
+    """
+    if conn is not None:
+        try:
+            row = conn.execute(
+                "SELECT title_style, body_style, tone, hashtags "
+                "FROM platform_styles WHERE platform = ?",
+                (platform.value,),
+            ).fetchone()
+        except Exception:  # noqa: BLE001 — 老库无表时退回兜底，不中断文案生成
+            logger.warning(
+                "platform_styles 读取失败，使用通用兜底 platform=%s", platform.value
+            )
+            row = None
+        if row is not None:
+            try:
+                raw_tags = json.loads(row[3] or "[]")
+            except (TypeError, ValueError):
+                raw_tags = []
+            tags = [
+                str(t).strip().lstrip("#")
+                for t in (raw_tags if isinstance(raw_tags, list) else [])
+                if str(t).strip()
+            ]
+            return {
+                "title_style": str(row[0] or _FALLBACK_STYLE["title_style"]),
+                "body_style": str(row[1] or _FALLBACK_STYLE["body_style"]),
+                "tone": str(row[2] or _FALLBACK_STYLE["tone"]),
+                "hashtags": tags,
+            }
+    return {
+        "title_style": _FALLBACK_STYLE["title_style"],
+        "body_style": _FALLBACK_STYLE["body_style"],
+        "tone": _FALLBACK_STYLE["tone"],
+        "hashtags": [],
+    }
 
 
 # =====================================================================
@@ -84,10 +109,12 @@ def generate_copy_content(
 
     conn 不为空时，LLM 调用会写 ai_calls 审计表（tokens/latency/success）。
     """
+    style = load_platform_style(platform, conn)
+
     if cfg is not None and _llm_available(cfg):
         try:
             result = _generate_via_llm(
-                cfg, topic_title, topic_summary, dimension, platform,
+                cfg, topic_title, topic_summary, dimension, platform, style,
                 conn=conn, topic_id=topic_id, round_id=round_id,
                 reject_reason=reject_reason, strategy_hints=strategy_hints,
             )
@@ -96,7 +123,7 @@ def generate_copy_content(
         except Exception:  # noqa: BLE001 — LLM 失败必须降级而不是中断
             logger.exception("LLM 文案生成失败，降级为模板 platform=%s", platform.value)
 
-    return _generate_via_template(topic_title, topic_summary, dimension, platform)
+    return _generate_via_template(topic_title, topic_summary, dimension, platform, style)
 
 
 def build_hint_block(strategy_hints: Optional[list[str]]) -> str:
@@ -120,6 +147,7 @@ def _llm_available(cfg) -> bool:
 
 def _generate_via_llm(
     cfg, topic_title: str, topic_summary: str, dimension: str, platform: Platform,
+    style: dict,
     conn=None, topic_id: Optional[str] = None, round_id: Optional[int] = None,
     reject_reason: Optional[str] = None,
     strategy_hints: Optional[list[str]] = None,
@@ -128,7 +156,6 @@ def _generate_via_llm(
     import httpx
 
     llm = cfg.llm
-    style = PLATFORM_STYLES[platform]
     api_key = os.getenv(llm.api_key_env)
     if not api_key:
         return None
@@ -144,8 +171,21 @@ def _generate_via_llm(
         f"摘要：{topic_summary[:300]}\n"
         f"内容方向：{dimension}\n"
         f"要求：标题不超过 20 字；正文 150-400 字；标签 3-5 个；"
-        f"不得出现违法违规内容；不得脱离「{dimension}」方向。"
+        f"不得出现违法违规内容；不得脱离「{dimension}」方向；"
+        f"不得编造事实、产品、公司、数据、奖项或用户评价。"
     )
+    # 账号画像：让文案自带定位关键词，避免产出与账号人设无关的内容
+    goal = getattr(cfg, "ultimate_goal", None)
+    if goal is not None:
+        kws = [str(k).strip() for k in (getattr(goal, "persona_keywords", None) or []) if str(k).strip()]
+        forb = [str(k).strip() for k in (getattr(goal, "forbidden_directions", None) or []) if str(k).strip()]
+        if kws:
+            user_prompt += (
+                f"\n账号定位关键词：{'、'.join(kws[:8])}；"
+                f"标题或正文必须自然出现其中至少 1 个，不得生硬堆砌。"
+            )
+        if forb:
+            user_prompt += f"\n禁止方向：{'；'.join(forb[:5])}。"
     prompt_hints = build_hint_block(strategy_hints)
     if prompt_hints:
         user_prompt += prompt_hints
@@ -207,7 +247,11 @@ def _generate_via_llm(
         return None
     title = str(parsed.get("title") or "").strip()
     body = str(parsed.get("body") or "").strip()
-    tags = parsed.get("tags") or style["hashtag"]
+    # 标签兜底顺序：LLM 输出 → 库里配置的平台标签 → 选题维度标签
+    tags = parsed.get("tags") or style["hashtags"] or [f"#{dimension}"]
+    if isinstance(tags, str):
+        tags = [t for t in re.split(r"[,\s]+", tags) if t]
+    tags = [f"#{str(t).strip().lstrip('#')}" for t in tags if str(t).strip()][:5]
     output_valid = bool(title and body)
     _log_ai_call(
         conn, platform, llm.model, topic_id, round_id,
@@ -219,7 +263,7 @@ def _generate_via_llm(
         logger.warning("LLM 返回字段不完整，降级模板")
         return None
     if not isinstance(tags, list):
-        tags = style["hashtag"]
+        tags = style["hashtags"] or [f"#{dimension}"]
     return title[:40], body, [str(t) for t in tags][:6]
 
 
@@ -251,9 +295,9 @@ def _log_ai_call(
 
 def _generate_via_template(
     topic_title: str, topic_summary: str, dimension: str, platform: Platform,
+    style: dict,
 ) -> tuple[str, str, list[str]]:
     """模板降级（无 LLM 时使用，质量低于 LLM 但结构完整）。"""
-    style = PLATFORM_STYLES[platform]
     summary = (topic_summary or "").strip()
     snippet = summary[:120] + ("…" if len(summary) > 120 else "")
 
@@ -292,7 +336,8 @@ def _generate_via_template(
             f"欢迎就这个判断一起讨论。"
         )
 
-    return title, body, list(style["hashtag"])
+    # 标签只来自「选题维度 + 库里配置的平台标签」，不再有写死的垂类话题
+    return title, body, [f"#{dimension}"] + list(style["hashtags"])
 
 
 # =====================================================================
@@ -390,7 +435,7 @@ def make_card(
     subtitle: str,
     output_dir: Path,
     platform: Platform = Platform.XHS,
-    footer: str = "AI 教育 · 每日一招",
+    footer: str = "",
 ) -> Path:
     """生成 1080×1440 图文卡片（渐变背景 + 折行标题 + 维度标签 + 页脚）。
 
@@ -446,12 +491,13 @@ def make_card(
         fill=(255, 255, 255), width=6,
     )
 
-    # 页脚
-    footer_font = _load_font(36)
-    draw.text(
-        (margin, height - margin - 60), footer,
-        fill=(255, 255, 255), font=footer_font,
-    )
+    # 页脚（留空则不绘制，避免把某个垂类的品牌语写死进所有账号）
+    if footer.strip():
+        footer_font = _load_font(36)
+        draw.text(
+            (margin, height - margin - 60), footer,
+            fill=(255, 255, 255), font=footer_font,
+        )
 
     img.save(str(output_path), format="PNG", optimize=True)
     logger.info("🖼️ 图片卡片生成: %s (%dx%d)", output_path, width, height)

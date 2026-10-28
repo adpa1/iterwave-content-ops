@@ -96,6 +96,28 @@ _LABEL_PATTERNS: dict[str, tuple[str, ...]] = {
 }
 
 
+# 小红书 note-manager 卡片：日期之后是 5 个裸数字（没有「点赞/收藏」标签），
+# 实测顺序 = 曝光（观看）/ 点赞 / 收藏 / 评论 / 分享。
+_XHS_TAIL_NUM_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}(?:\s+\d{1,2}:\d{2})?[^\d]*"
+    r"((?:\d+(?:[.,]\d+)?(?:万|亿)?\s+){4}\d+(?:[.,]\d+)?(?:万|亿)?)\s*$"
+)
+
+
+def _parse_xhs_card_counts(text: str) -> dict[str, Optional[int]]:
+    """按「日期后 5 个裸数字」解析小红书卡片；不是 5 个 → 全 None（R3）。"""
+    result: dict[str, Optional[int]] = {k: None for k in _LABEL_PATTERNS}
+    m = _XHS_TAIL_NUM_RE.search(text or "")
+    if not m:
+        return result
+    parts = m.group(1).split()
+    if len(parts) != 5:
+        return result
+    for key, raw in zip(("views", "likes", "collects", "comments", "shares"), parts):
+        result[key] = parse_cn_number(raw)
+    return result
+
+
 def _extract_counts_from_text(text: str) -> dict[str, Optional[int]]:
     """从卡片纯文本里抽点赞/收藏/评论/分享/播放。抽不到 = None。"""
     result: dict[str, Optional[int]] = {k: None for k in _LABEL_PATTERNS}
@@ -123,11 +145,43 @@ class ReadbackUnavailable(RuntimeError):
     """该平台没有可用读回实现。"""
 
 
+def read_works_sync(platform: Platform, limit: int = 20) -> list[dict]:
+    """在独立线程里用**同步** Playwright 跑 vendor 读回（vendor 是同步实现）。
+
+    base._fetch_metrics_via_readback 跑在 async Playwright 上；把 async Page 传给
+    同步 vendor 只会拿到未 await 的 coroutine（实测 fetch_metrics 永远 failed，
+    伴随 "coroutine 'Page.wait_for_selector' was never awaited"）。因此这里自己起
+    一个 headed 浏览器 + storage_state，调用方用 asyncio.to_thread 包一层。
+    """
+    err = _ensure_easel_importable()
+    if err:
+        raise ReadbackUnavailable(err)
+
+    from playwright.sync_api import sync_playwright
+    from ..core.login_manager import _platform_state_path, has_login_state
+
+    if not has_login_state(platform):
+        raise ReadbackUnavailable(f"{platform.display_name} 无登录态文件，请先扫码登录")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False)
+        try:
+            ctx = browser.new_context(storage_state=str(_platform_state_path(platform)))
+            page = ctx.new_page()
+            try:
+                return read_works(page, platform, limit=limit)
+            finally:
+                page.close()
+                ctx.close()
+        finally:
+            browser.close()
+
+
 def read_works(page, platform: Platform, limit: int = 20) -> list[dict]:
     """读取本人作品列表，返回归一化 dict 列表。
 
     {
-      "content_id": str, "title": str, "published_at_ms": int|None,
+      "content_id": str, "title": str, "url": str, "published_at_ms": int|None,
       "stats": {"views","likes","collects","comments","shares"}  # 值可能 None
     }
     失败抛异常，由调用方转成 fetch_status。
@@ -179,17 +233,66 @@ def read_works(page, platform: Platform, limit: int = 20) -> list[dict]:
     if platform == Platform.XHS:
         import account_stats as acc
 
-        notes = acc._scrape_notes("xiaohongshu", page, {})  # noqa: SLF001 — 复用 vendor 复制件的解析
+        # 不能直接用 acc._scrape_notes：它返回的 dict 只有 title/note_id/url/cover/stat（stat 为空），
+        # 丢掉了卡片纯文本，导致计数永远是 None → 每篇都 parse_error。这里复用它的导航/判定
+        # 与 _XHS_NOTES_JS，但自己保留 text 和可点链接。
+        # note-manager 的卡片不是 <a>，href 为空；xsec_token 要从它的 JSON 接口里截获，
+        # 才能拼出可直接打开（并抓评论）的笔记链接。
+        token_map: dict[str, str] = {}
+
+        def _on_resp(resp) -> None:
+            try:
+                if "json" in ((resp.headers or {}).get("content-type", "")):
+                    token_map.update(acc._extract_note_tokens(resp.json()))
+            except Exception:  # noqa: BLE001 — 单条响应解析失败不影响整体
+                pass
+
+        page.on("response", _on_resp)
+        try:
+            page.goto("https://creator.xiaohongshu.com/new/note-manager",
+                      wait_until="commit", timeout=15000)
+            if acc._login_wall(page):  # noqa: SLF001 — 复用 vendor 纯函数
+                raise ReadbackUnavailable("小红书登录态失效（note-manager 出现登录墙）")
+            try:
+                page.wait_for_selector(".note-card, [role='tab']", timeout=10000)
+            except Exception as exc:  # noqa: BLE001
+                raise ReadbackUnavailable(f"小红书 note-manager 未加载出笔记卡片: {exc}") from exc
+            acc._xhs_open_published_notes(page)  # noqa: SLF001
+            try:
+                page.wait_for_selector(".note-card", timeout=8000)
+            except Exception:  # noqa: BLE001
+                return []
+            page.wait_for_timeout(800)
+            raw_notes = page.evaluate(acc._XHS_NOTES_JS) or []  # noqa: SLF001
+        finally:
+            try:
+                page.remove_listener("response", _on_resp)
+            except Exception:  # noqa: BLE001
+                pass
+
         out: list[dict] = []
-        for note in notes or []:
-            counts = _extract_counts_from_text(note.get("text") or "")
+        for note in raw_notes:
+            if not acc.is_public_xhs_note(note):  # noqa: SLF001
+                continue
+            nid = note.get("noteId") or ""
+            tok = token_map.get(nid, "")
+            url = (
+                f"https://www.xiaohongshu.com/explore/{nid}?xsec_token={tok}&xsec_source=pc_creatormng"
+                if nid and tok else
+                f"https://www.xiaohongshu.com/explore/{nid}" if nid else ""
+            )
+            text = note.get("text") or ""
+            counts = _parse_xhs_card_counts(text)
+            if all(v is None for v in counts.values()):
+                counts = _extract_counts_from_text(text)  # 有标签的改版兜底
             out.append({
-                "content_id": note.get("note_id") or "",
+                "content_id": nid,
                 "title": note.get("title") or "",
+                "url": url,
                 "published_at_ms": None,
                 "stats": counts,
             })
-        return out
+        return out[:limit]
 
     if platform == Platform.WECHAT_CHANNELS:
         # Easel 没有视频号逐篇读回：用页面文本兜底，解析不到就如实失败

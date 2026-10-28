@@ -389,6 +389,21 @@ class NotifyRuleRequest(BaseModel):
         return v
 
 
+class PlatformStyleUpdate(BaseModel):
+    """平台文案风格（platform_styles 表）：只提交改动字段。"""
+
+    title_style: Optional[str] = Field(None, max_length=200)
+    body_style: Optional[str] = Field(None, max_length=200)
+    tone: Optional[str] = Field(None, max_length=200)
+    hashtags: Optional[list[str]] = Field(None, max_length=10)
+
+
+class PublishConfirmRequest(BaseModel):
+    """发布确认的可选补充：已发布笔记链接（被动评论轮询用它定位笔记）。"""
+
+    note_url: Optional[str] = Field(None, max_length=500)
+
+
 class TransitionRequest(BaseModel):
     target_status: str
     reason: str = ""
@@ -891,15 +906,28 @@ def _register_routes(app: FastAPI) -> None:
         return [dict(r) for r in rows]
 
     @app.post("/api/drafts/{draft_id}/publish_confirm")
-    def confirm_publish(draft_id: str):
-        """R1 用户手动点击"✅ 我已发布"触发 user_published。"""
+    def confirm_publish(draft_id: str, req: Optional[PublishConfirmRequest] = None):
+        """R1 用户手动点击"✅ 我已发布"触发 user_published。
+
+        req.note_url 可选：平台笔记链接。被动评论轮询靠它定位笔记，
+        不填则该草稿跳过评论轮询（内部 draft id 拼不出有效笔记地址）。
+        """
         conn = _g()["conn"]
         row = conn.execute(
             "SELECT platform FROM drafts WHERE id = ?", (draft_id,)
         ).fetchone()
+        note_url = (req.note_url or "").strip() if req else ""
+        if note_url and not note_url.startswith(("http://", "https://")):
+            raise HTTPException(422, "note_url 必须是完整的 http(s) 链接")
         ok = _g()["sm_draft"].transition(draft_id, "user_published", reason="用户确认发布")
         if not ok:
             raise HTTPException(400, "状态迁移失败")
+        if note_url:
+            conn.execute(
+                "UPDATE drafts SET platform_note_url = ? WHERE id = ?",
+                (note_url, draft_id),
+            )
+            conn.commit()
         # 首篇 user_published → collecting_metrics
         round_id = _find_round_for_draft(conn, draft_id)
         if round_id:
@@ -910,7 +938,7 @@ def _register_routes(app: FastAPI) -> None:
             f"草稿 {draft_id} 已由用户确认发布，进入数据采集",
             platform=dict(row)["platform"] if row else None,
         )
-        return {"draft_id": draft_id, "status": "user_published"}
+        return {"draft_id": draft_id, "status": "user_published", "note_url": note_url or None}
 
     @app.post("/api/drafts/{draft_id}/cancel")
     def cancel_draft(draft_id: str):
@@ -1219,8 +1247,28 @@ def _register_routes(app: FastAPI) -> None:
             except (TypeError, ValueError):
                 paths = []
             row["image_count"] = len(paths)
+            # G-36：只回传文件名，下载走 /api/contents/{id}/images/{i}（不暴露绝对路径）
+            row["image_paths"] = [Path(str(p)).name for p in paths]
             items.append(row)
         return {"round_id": round_id, "items": items}
+
+    @app.get("/api/contents/{content_id}/images/{index}")
+    def get_content_image(content_id: str, index: int):
+        """G-36：下载已生成的卡片图（只允许该内容登记过、且在本项目 output 目录下的文件）。"""
+        conn = _g()["conn"]
+        cfg = _g()["cfg"]
+        row = _content_row(conn, content_id)
+        try:
+            paths = json.loads(row["image_paths"] or "[]")
+        except (TypeError, ValueError):
+            paths = []
+        if not isinstance(paths, list) or index < 0 or index >= len(paths):
+            raise HTTPException(404, "图片序号超出范围")
+        root = cfg.resolve_path(cfg.paths.output_dir).resolve()
+        path = Path(str(paths[index])).resolve()
+        if root not in path.parents or not path.is_file():
+            raise HTTPException(404, "图片文件不存在（可能已被清理）")
+        return FileResponse(str(path), filename=path.name, media_type="image/png")
 
     @app.patch("/api/contents/{content_id}")
     def update_content(content_id: str, req: UpdateContentRequest):
@@ -2343,6 +2391,98 @@ def _register_routes(app: FastAPI) -> None:
         conn.execute("DELETE FROM notify_rules WHERE id=?", (rule_id,))
         conn.commit()
         return {"message": "删除成功"}
+
+    # --- 平台文案风格（platform_styles 表，migrations/016）---
+    @app.get("/api/platform_styles")
+    def list_platform_styles():
+        conn = _g()["conn"]
+        rows = conn.execute(
+            "SELECT platform, title_style, body_style, tone, hashtags, "
+            "updated_at, updated_by FROM platform_styles ORDER BY platform"
+        ).fetchall()
+        items = []
+        for r in rows:
+            try:
+                tags = json.loads(r["hashtags"] or "[]")
+            except (TypeError, ValueError):
+                tags = []
+            items.append({
+                "platform": r["platform"],
+                "title_style": r["title_style"],
+                "body_style": r["body_style"],
+                "tone": r["tone"],
+                # 存的是不带 # 的标签；空数组 = 只带选题维度标签
+                "hashtags": tags if isinstance(tags, list) else [],
+                "updated_at": r["updated_at"],
+                "updated_by": r["updated_by"],
+            })
+        return {"items": items}
+
+    @app.patch("/api/platform_styles/{platform}")
+    def update_platform_style(platform: str, req: PlatformStyleUpdate):
+        """改平台风格 / 话题标签：立即生效，逐字段写 config_changes 审计。"""
+        conn = _g()["conn"]
+        if platform not in {p.value for p in Platform}:
+            raise HTTPException(400, "platform 只能是 xhs / douyin / kuaishou / wechat_channels")
+        row = conn.execute(
+            "SELECT title_style, body_style, tone, hashtags FROM platform_styles "
+            "WHERE platform = ?",
+            (platform,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(
+                404, f"{platform} 尚无平台风格记录（请确认迁移 016 已执行）"
+            )
+
+        new_values: dict[str, str] = {}
+        for field in ("title_style", "body_style", "tone"):
+            value = getattr(req, field)
+            if value is None:
+                continue
+            text = value.strip()
+            if not text:
+                raise HTTPException(422, f"{field} 不能为空")
+            new_values[field] = text
+        if req.hashtags is not None:
+            tags: list[str] = []
+            for raw in req.hashtags:
+                tag = str(raw).strip().lstrip("#")
+                if tag and tag not in tags:
+                    tags.append(tag)
+            new_values["hashtags"] = json.dumps(tags, ensure_ascii=False)
+
+        old_values = {
+            "title_style": row["title_style"],
+            "body_style": row["body_style"],
+            "tone": row["tone"],
+            "hashtags": row["hashtags"] or "[]",
+        }
+        changed = [
+            (k, old_values[k], v) for k, v in new_values.items() if old_values[k] != v
+        ]
+        if not changed:
+            return {"platform": platform, "changed": 0, "message": "没有改动"}
+
+        now = datetime.now().isoformat(timespec="seconds")  # R5：本地时区
+        for key, old, new in changed:
+            # 审计口径与 config_changes 一致：platform_styles.<platform>.<field>
+            conn.execute(
+                "INSERT INTO config_changes (key, old_value, new_value, changed_at) "
+                "VALUES (?, ?, ?, ?)",
+                (f"platform_styles.{platform}.{key}", str(old), str(new), now),
+            )
+        assignments = ", ".join(f"{k} = ?" for k in new_values)
+        conn.execute(
+            f"UPDATE platform_styles SET {assignments}, updated_at = ?, updated_by = ? "
+            "WHERE platform = ?",
+            (*new_values.values(), now, "settings_ui", platform),
+        )
+        conn.commit()
+        return {
+            "platform": platform,
+            "changed": len(changed),
+            "fields": {key: new for key, _old, new in changed},
+        }
 
     # ============================================================
     # P1 — AI 证据审计链（对比报告缺口）
