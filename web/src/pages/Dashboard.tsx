@@ -1,4 +1,4 @@
-import { navigate } from "../nav";
+import { navigate, useUrlTab } from "../nav";
 import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import AsyncPanel from "../components/AsyncPanel";
@@ -16,6 +16,13 @@ import { platformMeta, Platform, ALL_PLATFORMS } from "../platforms";
  *   /api/platform_progress /api/action_items /api/config
  * 任何接口没有数据时显示空态或「待采集」，不填演示数。
  */
+
+const DASH_TABS = [
+  { k: "decide", l: "待处理决策" },
+  { k: "platforms", l: "平台生产进度" },
+  { k: "agent", l: "Agent 编排与目标" },
+] as const;
+type DashTab = typeof DASH_TABS[number]["k"];
 
 const PLATFORM_CLS: Record<Platform, string> = {
   xhs: "xhs", douyin: "douyin", kuaishou: "kuaishou", wechat_channels: "channels",
@@ -37,6 +44,7 @@ const ROUND_STATUS_LABEL: Record<string, string> = {
 };
 
 export default function Dashboard() {
+  const [dashTab, setDashTab] = useUrlTab<DashTab>(DASH_TABS.map((t) => t.k), "decide");
   const { status } = useApp();
   const [rounds, setRounds] = useState<SpiralRound[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
@@ -130,7 +138,7 @@ export default function Dashboard() {
       <div className="grid kpis" style={{ marginBottom: 15 }}>
         <Metric
           label="待你处理"
-          icon="✋"
+          icon="!"
           value={actions.length + awaitingRounds.length}
           unit="项"
           foot={[
@@ -166,13 +174,20 @@ export default function Dashboard() {
         />
       </div>
 
+      <div className="tabs page-tabs">
+        {DASH_TABS.map((t) => (
+          <button key={t.k} type="button" className={`tab ${dashTab === t.k ? "active" : ""}`} onClick={() => setDashTab(t.k)}>{t.l}</button>
+        ))}
+      </div>
+
       {/* ===== 决策 + 热点 ===== */}
+      {dashTab === "decide" && (
       <div className="grid two">
         <div className="panel">
           <div className="panel-head">
             <div>
               <div className="panel-title"><span className="icon" aria-hidden="true">✓</span>需要你决策的事项</div>
-              <div className="panel-sub">来自 /api/action_items 与待发布轮次，按优先级排序</div>
+              <div className="panel-sub">Agent 自动完成准备工作，关键节点由你决定</div>
             </div>
             <button type="button" className="btn sm" onClick={() => go("operations")}>全部处理 →</button>
           </div>
@@ -249,7 +264,10 @@ export default function Dashboard() {
         </div>
       </div>
 
+      )}
+
       {/* ===== 四平台 lane ===== */}
+      {dashTab === "platforms" && (
       <div className="panel">
         <div className="panel-head">
           <div>
@@ -275,7 +293,10 @@ export default function Dashboard() {
         </div>
       </div>
 
+      )}
+
       {/* ===== Agent 编排 + 目标 ===== */}
+      {dashTab === "agent" && (
       <div className="grid two">
         <div className="panel">
           <div className="panel-head">
@@ -338,6 +359,7 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+      )}
     </AsyncPanel>
   );
 }

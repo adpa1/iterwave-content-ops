@@ -24,7 +24,7 @@ const METRICS = [
 ];
 
 const DATA_SOURCES = [
-  { value: "account_stats", label: "account_stats 平台读回" },
+  { value: "account_stats", label: "平台后台读回" },
   { value: "platform_api", label: "平台 API" },
   { value: "manual", label: "人工录入" },
 ];
@@ -55,6 +55,7 @@ export default function Goals() {
   const [cfgView, setCfgView] = useState<SystemConfigView | null>(null);
   const [newGoal, setNewGoal] = useState({ ...EMPTY_GOAL });
   const [submitting, setSubmitting] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** 编辑中的目标（null = 未编辑）；current_value 只由采集回写，这里不提供 */
@@ -93,9 +94,10 @@ export default function Goals() {
         }),
       );
       if (res !== undefined) {
-        showToast("✅ 目标已创建");
+        showToast("✓ 目标已创建");
         await load();
         setNewGoal({ ...EMPTY_GOAL });
+        setCreating(false);
       }
     } catch (e: any) { showToast(`创建失败: ${e.message}`, "error"); }
     finally { setSubmitting(false); }
@@ -123,7 +125,7 @@ export default function Goals() {
         }),
       );
       if (res !== undefined) {
-        showToast("✅ 目标已更新");
+        showToast("✓ 目标已更新");
         setEditing(null);
         await load();
       }
@@ -138,7 +140,7 @@ export default function Goals() {
       if (res !== undefined) {
         setGoals(res.goals);
         setSummary(res.summary);
-        showToast(`🔄 已刷新 ${Object.keys(res.updated).length} 个目标进度`);
+        showToast(`↻ 已刷新 ${Object.keys(res.updated).length} 个目标进度`);
       }
     } catch (e: any) { showToast(`刷新失败: ${e.message}`, "error"); }
     finally { setRefreshing(false); }
@@ -155,10 +157,10 @@ export default function Goals() {
           </div>
         </div>
         <div className="head-actions">
-          <span className="tag gray">R21 口径定义：未知 ≠ 0</span>
           <button className="btn" onClick={handleRefreshProgress} disabled={refreshing}>
             {refreshing ? "刷新中…" : "↻ 刷新进度"}
           </button>
+          <button className="btn primary" onClick={() => { setCreating(true); setTimeout(() => document.getElementById("new-goal")?.scrollIntoView({ behavior: "smooth" }), 0); }}>＋ 新建目标</button>
         </div>
       </div>
 
@@ -167,7 +169,7 @@ export default function Goals() {
         summary={summary}
         personaKeywords={cfgView?.readonly.persona_keywords}
         forbiddenDirections={cfgView?.readonly.forbidden_directions}
-        onCreateGoal={() => document.getElementById("new-goal")?.scrollIntoView({ behavior: "smooth" })}
+        onCreateGoal={() => { setCreating(true); setTimeout(() => document.getElementById("new-goal")?.scrollIntoView({ behavior: "smooth" }), 0); }}
       />
 
       <div className="grid two">
@@ -216,7 +218,7 @@ export default function Goals() {
           <div className="panel-head">
             <div>
               <div className="panel-title"><span className="icon" aria-hidden="true">⚑</span>策略与约束</div>
-              <div className="panel-sub">R2 / R22 红线 · 定位关键词 · 禁止方向；可在「系统设置 / 首次向导」在线编辑</div>
+              <div className="panel-sub">红线 · 定位关键词 · 禁止方向；可在「系统设置 / 首次向导」在线编辑</div>
             </div>
           </div>
           {!cfgView ? (
@@ -248,7 +250,7 @@ export default function Goals() {
               <div className="task-row">
                 <i className="task-prio red" aria-hidden="true" />
                 <div className="task-main">
-                  <div className="task-title">红线敏感词库（R22 强制开启，不可关闭）</div>
+                  <div className="task-title">红线敏感词库</div>
                   <div className="task-desc">已配置 {cfgView.readonly.redline_keywords_count} 条</div>
                 </div>
               </div>
@@ -273,12 +275,14 @@ export default function Goals() {
         </div>
       </div>
 
-      <div className="panel" id="new-goal">
+      {creating && (
+      <div className="panel" id="new-goal" style={{ borderColor: "var(--blue)" }}>
         <div className="panel-head">
           <div>
             <div className="panel-title"><span className="icon" aria-hidden="true">＋</span>新建阶段目标</div>
-            <div className="panel-sub">R21：指标 / 目标值 / 口径 / 基线 / 统计周期 / 数据来源 缺一不可（缺则后端 422）</div>
+            <div className="panel-sub">指标、目标值、口径、基线、统计周期和数据来源都要填写，进度才有计算依据</div>
           </div>
+          <div className="head-actions"><button className="btn sm" onClick={() => setCreating(false)}>收起</button></div>
         </div>
         <div className="grid four" style={{ gap: 10 }}>
           <div>
@@ -345,6 +349,7 @@ export default function Goals() {
           {submitting ? "提交中…" : "创建目标"}
         </button>
       </div>
+      )}
 
       {editing && (
         <div className="panel" style={{ borderColor: "var(--blue)" }}>
@@ -446,7 +451,7 @@ export default function Goals() {
         </div>
         {error && (
           <div className="note" style={{ color: "var(--red)", marginBottom: 10, display: "flex", gap: 8, alignItems: "center" }}>
-            <span>⚠️ {error}</span><button className="btn sm" onClick={load}>重试</button>
+            <span>! {error}</span><button className="btn sm" onClick={load}>重试</button>
           </div>
         )}
         <div className="table-wrap">

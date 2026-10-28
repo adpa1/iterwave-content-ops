@@ -7,10 +7,10 @@ import { useApp } from "../AppContext";
 const STEPS = [
   { key: "persona",  label: "① 账号画像",     hint: "终极目标 / 红线 / 定位关键词" },
   { key: "platforms", label: "② 启用平台",    hint: "4 选 2 起；建议先 1 平台跑通" },
-  { key: "kb",       label: "③ 选题库 KB",    hint: "选题来源：SQLite / CSV / JSONL" },
+  { key: "kb",       label: "③ 选题库 KB",    hint: "选题来源：本地文件或数据库" },
   { key: "llm",      label: "④ 模型配置",     hint: "Provider / Model / API Key" },
-  { key: "skills",   label: "⑤ Skills 环境",  hint: "检查登录态 / Playwright / 依赖" },
-  { key: "goals",    label: "⑥ 阶段目标",     hint: "R21 口径：指标 / 目标值 / 基线" },
+  { key: "skills",   label: "⑤ Skills 环境",  hint: "检查登录与运行环境" },
+  { key: "goals",    label: "⑥ 阶段目标",     hint: "指标 / 目标值 / 基线" },
   { key: "check",    label: "⑦ 检查清单",     hint: "预检 + 启动首轮" },
 ] as const;
 
@@ -114,7 +114,7 @@ export default function Onboarding() {
         metric_period_end: goalForm.metric_period_end,
         data_source: goalForm.data_source,
       });
-      showToast("✅ 阶段目标已创建并写入 goals 表", "success");
+      showToast("✓ 阶段目标已创建并写入 goals 表", "success");
       await reload();
       setGoalForm((f) => ({ ...f, goal_text: "" }));
     } catch (e: any) {
@@ -146,7 +146,7 @@ export default function Onboarding() {
           <div className="eyebrow">FIRST-TIME SETUP</div>
           <h1 className="page-title">首次配置向导</h1>
           <div className="page-desc">
-            7 步完成 IterWave 初始化。每一步都能直接编辑并保存，保存后立即生效（写 config_changes 审计）。
+            7 步完成 IterWave 初始化。每一步都能直接编辑并保存，保存后立即生效。
           </div>
         </div>
       </div>
@@ -184,7 +184,7 @@ export default function Onboarding() {
           <div>
             <div className="panel-title" style={{ marginBottom: 16 }}>① 账号画像 · 终极目标</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              账号定位关键词 + 禁区。这些决定了 R2 终极目标检查器拦截什么内容。
+              账号定位关键词 + 禁区。这些决定了 终极目标检查器拦截什么内容。
             </p>
             <PersonaEditor view={cfg} onSaved={reload} />
           </div>
@@ -199,12 +199,12 @@ export default function Onboarding() {
             <PlatformToggles view={cfg} onSaved={reload} loggedIn={status.logged_in_platforms} />
             {status.circuit_broken_platforms.length > 0 && (
               <div className="note" style={{ marginTop: 12, color: "var(--orange)" }}>
-                🚨 已熔断：{status.circuit_broken_platforms.map((p) => PLATFORM_NAMES[p]).join("、")}
+                ! 已熔断：{status.circuit_broken_platforms.map((p) => PLATFORM_NAMES[p]).join("、")}
                 （需在「运营控制台」走 3 步恢复验证）
               </div>
             )}
             <div className="note" style={{ marginTop: 12 }}>
-              🔑 启用 ≠ 可发布：还需要扫码登录，入口在「账号连接」页。
+              ▣ 启用 ≠ 可发布：还需要扫码登录，入口在「账号连接」页。
             </div>
           </div>
         )}
@@ -213,7 +213,7 @@ export default function Onboarding() {
           <div>
             <div className="panel-title" style={{ marginBottom: 16 }}>③ 选题库 Knowledge Base</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              选题来源：本地 SQLite / CSV / JSONL。必须有 title + dimension 两个核心字段。
+              选题来源可以是本地 CSV、JSONL 或数据库，至少要有「标题」和「维度」两列。
             </p>
             <KbEditor view={cfg} onSaved={reload} />
           </div>
@@ -223,12 +223,12 @@ export default function Onboarding() {
           <div>
             <div className="panel-title" style={{ marginBottom: 16 }}>④ 模型配置</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              Provider + Model + API Key（Key 存 <code>.env</code>，不进前端明文，R23）。
+              选择服务商与模型并填写 API Key（Key 只保存在本机，不会回显）。
             </p>
             <LlmEditor view={cfg} onSaved={reload} />
             {!cfg.readonly.llm_has_api_key && (
               <div className="note" style={{ marginTop: 12, color: "var(--orange)" }}>
-                ⚠ API Key 未配置 → 选题评分 + 文案生成 + 终极目标检查 全部不可用。
+                ! API Key 未配置 → 选题评分 + 文案生成 + 终极目标检查 全部不可用。
               </div>
             )}
           </div>
@@ -244,11 +244,11 @@ export default function Onboarding() {
               <table>
                 <thead><tr><th>信号</th><th>值</th><th>状态</th></tr></thead>
                 <tbody>
-                  <tr><td>评分模式</td><td>{status.scoring_mode}</td><td><span className="tag green">✅</span></td></tr>
+                  <tr><td>评分模式</td><td>{status.scoring_mode}</td><td><span className="tag green">✓</span></td></tr>
                   <tr><td>活跃轮次</td><td>{status.active_rounds}</td><td><span className={`tag ${status.active_rounds > 0 ? "blue" : "gray"}`}>{status.active_rounds > 0 ? "运行中" : "空闲（正常）"}</span></td></tr>
                   <tr><td>已发布样本</td><td>{status.published_samples}</td><td><span className={`tag ${status.published_samples >= 10 ? "green" : "orange"}`}>{status.published_samples >= 10 ? "样本充足" : "冷启动中"}</span></td></tr>
-                  <tr><td>熔断平台</td><td>{status.circuit_broken_platforms.length > 0 ? status.circuit_broken_platforms.join(", ") : "—"}</td><td>{status.circuit_broken_platforms.length > 0 ? <span className="tag red">🚨 阻塞</span> : <span className="tag green">OK</span>}</td></tr>
-                  <tr><td>缺登录态平台</td><td>{status.platforms_without_login.length > 0 ? status.platforms_without_login.map((p) => PLATFORM_NAMES[p]).join(", ") : "—"}</td><td>{status.platforms_without_login.length > 0 ? <span className="tag orange">⚠ 需登录</span> : <span className="tag green">OK</span>}</td></tr>
+                  <tr><td>熔断平台</td><td>{status.circuit_broken_platforms.length > 0 ? status.circuit_broken_platforms.join(", ") : "—"}</td><td>{status.circuit_broken_platforms.length > 0 ? <span className="tag red">! 阻塞</span> : <span className="tag green">OK</span>}</td></tr>
+                  <tr><td>缺登录态平台</td><td>{status.platforms_without_login.length > 0 ? status.platforms_without_login.map((p) => PLATFORM_NAMES[p]).join(", ") : "—"}</td><td>{status.platforms_without_login.length > 0 ? <span className="tag orange">! 需登录</span> : <span className="tag green">OK</span>}</td></tr>
                   <tr><td>断点恢复 · 中断任务</td><td>{status.recovery.interrupted_tasks}</td><td><span className="tag gray">{status.recovery.interrupted_tasks === 0 ? "无" : "已恢复"}</span></td></tr>
                   <tr><td>断点恢复 · 待核实</td><td>{status.recovery.pending_verify}</td><td><span className="tag gray">{status.recovery.pending_verify === 0 ? "无" : "需人工确认"}</span></td></tr>
                 </tbody>
@@ -261,7 +261,7 @@ export default function Onboarding() {
           <div>
             <div className="panel-title" style={{ marginBottom: 16 }}>⑥ 阶段目标</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              R21 口径：每个目标必须同时定义 6 个字段（指标 + 目标值 + 口径 + 基线 + 周期 + 来源）。
+              每个目标必须同时定义 6 个字段（指标 + 目标值 + 口径 + 基线 + 周期 + 来源）。
             </p>
 
             <div style={{ display: "grid", gap: 12, padding: 14, border: "1px solid var(--border)", borderRadius: 10, marginBottom: 16 }}>
@@ -363,7 +363,7 @@ export default function Onboarding() {
                     {diag.items.map((it) => (
                       <tr key={it.no}>
                         <td>{it.no}</td><td>{it.name}</td>
-                        <td>{it.status === "pass" ? "✅" : it.status === "warn" ? "🟡" : "🔴"}</td>
+                        <td>{it.status === "pass" ? "✓" : it.status === "warn" ? "●" : "●"}</td>
                         <td style={{ fontSize: 12 }}>{it.message}</td>
                         <td>{it.fix_page && it.status !== "pass" && (
                           <button className="btn sm" onClick={() => navigate(it.fix_page!, it.fix_tab ?? undefined)}>去修复</button>
@@ -382,7 +382,7 @@ export default function Onboarding() {
               <CheckRow ok={checks.platforms_ok}   label="启用平台"       detail={`${status.enabled_platforms.length} 个 (${status.enabled_platforms.map((p) => PLATFORM_NAMES[p]).join(", ")})`} />
               <CheckRow ok={checks.login_ok}       label="登录态"         detail={`${status.logged_in_platforms.length} 个已登录`} />
               <CheckRow ok={checks.kb_ok}          label="选题库 KB"      detail={`${cfg.readonly.kb_type} @ ${cfg.readonly.kb_path}`} />
-              <CheckRow ok={checks.llm_ok}         label="LLM API Key"    detail={cfg.readonly.llm_has_api_key ? "✅ 已配置" : "❌ 缺失"} />
+              <CheckRow ok={checks.llm_ok}         label="LLM API Key"    detail={cfg.readonly.llm_has_api_key ? "✓ 已配置" : "✕ 缺失"} />
               <CheckRow ok={checks.goals_ok}        label="阶段目标"       detail={`${goals.length} 条`} />
             </div>
 
@@ -391,8 +391,8 @@ export default function Onboarding() {
                 className="btn primary"
                 disabled={diag ? diag.overall === "block" : !allOk}
                 onClick={() => navigate("production", "pipeline")}
-              >🚀 全部就绪 → 跳转到生产页启动首轮</button>
-              {(diag ? diag.overall === "block" : !allOk) && <span style={{ color: "var(--orange)", fontSize: 12 }}>⚠ 还有项未通过，先完成配置</span>}
+              >↗ 全部就绪 → 跳转到生产页启动首轮</button>
+              {(diag ? diag.overall === "block" : !allOk) && <span style={{ color: "var(--orange)", fontSize: 12 }}>! 还有项未通过，先完成配置</span>}
             </div>
           </div>
         )}
@@ -446,7 +446,7 @@ function CheckRow({ ok, label, detail }: { ok: boolean; label: string; detail: s
         <div className="task-title">{label}</div>
         <div className="task-desc" style={{ fontFamily: "monospace", fontSize: 11 }}>{detail}</div>
       </div>
-      <div>{ok ? <span className="tag green">✅ 通过</span> : <span className="tag orange">❌ 缺失</span>}</div>
+      <div>{ok ? <span className="tag green">✓ 通过</span> : <span className="tag orange">✕ 缺失</span>}</div>
     </div>
   );
 }

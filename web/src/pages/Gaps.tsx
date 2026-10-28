@@ -4,8 +4,8 @@ import EmptyHint from "../components/EmptyHint";
 import { api, Platform, PlatformInsight, SpiralAnalysis } from "../api";
 
 const PLATFORM_LABEL: Record<Platform, string> = {
-  xhs: "📕 小红书", douyin: "🎵 抖音",
-  kuaishou: "⚡ 快手", wechat_channels: "💚 视频号",
+  xhs: "小红书", douyin: "抖音",
+  kuaishou: "快手", wechat_channels: "视频号",
 };
 
 /** R3：NULL 显示灰色「—」，不显示 0 */
@@ -48,7 +48,7 @@ export default function Gaps() {
           <div className="eyebrow">GAP ANALYSIS</div>
           <h1 className="page-title">缺口分析</h1>
           <div className="page-desc">
-            两类缺口 audience 拆分展示（R19）：<strong>coverage_gap</strong>（绿色卡片 → 给用户，正常展示）和 <strong>validation_gap</strong>（紫色卡片 → Agent 内部，灰色小字标注）。
+            两类缺口分开展示：<strong>覆盖缺口</strong>（绿色，需要你决定是否补内容）和 <strong>验证缺口</strong>（紫色，Agent 内部安排的小样本试验）。
           </div>
         </div>
       </div>
@@ -71,14 +71,14 @@ export default function Gaps() {
               <div className="metric-val" style={{ color: "var(--green)" }}>
                 {analysis.gaps.filter((g) => g.audience === "user").length}
               </div>
-              <div className="metric-foot">coverage_gap — 建议补充选题</div>
+              <div className="metric-foot">建议补充选题</div>
             </div>
             <div className="metric">
               <div className="metric-label">Agent 内部缺口</div>
               <div className="metric-val" style={{ color: "var(--purple)" }}>
                 {analysis.gaps.filter((g) => g.audience === "agent").length}
               </div>
-              <div className="metric-foot">validation_gap — Agent 自己试水</div>
+              <div className="metric-foot">Agent 小样本试水</div>
             </div>
           </div>
 
@@ -94,7 +94,7 @@ export default function Gaps() {
                   <div key={i} className={`gap-card ${isUser ? "user" : "agent"}`}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                       <span className={`tag ${isUser ? "green" : "purple"}`}>
-                        {isUser ? "👥 给用户" : "🤖 Agent 内部"}
+                        {isUser ? "◉ 给用户" : "✳ Agent 内部"}
                       </span>
                       <span className="tag gray">{g.gap_type}</span>
                       <span style={{ fontSize: 12, fontWeight: 700 }}>{g.dimension}</span>
@@ -118,7 +118,7 @@ export default function Gaps() {
           <div className="panel">
             <div className="panel-head">
               <div>
-                <div className="panel-title"><span className="icon">🔬</span>单平台纵深</div>
+                <div className="panel-title"><span className="icon">⌁</span>单平台纵深</div>
                 <div className="panel-sub">
                   同口径拆到单平台内部看题材 / 时段 / 标题长度 / 卡片风格与互动率的关系（窗口 {active?.days_analyzed ?? 90} 天，样本按平台内部统计）
                 </div>

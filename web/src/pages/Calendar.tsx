@@ -76,7 +76,7 @@ export default function Calendar() {
     if (!value) { showToast("请先选择排期时间", "error"); return; }
     try {
       await withPending(`schedule:${draftId}`, () => api.scheduleDraft(draftId, value));
-      showToast("✅ 排期已保存（仅排期，不会触发发布，R1）", "success");
+      showToast("✓ 排期已保存（仅排期，不会触发发布）", "success");
       setSelected(null);
       setDraftTime("");
       setPendingDraft((prev) => { const n = { ...prev }; delete n[draftId]; return n; });
@@ -89,7 +89,7 @@ export default function Calendar() {
   const clearSchedule = async (draftId: string) => {
     try {
       await withPending(`schedule-clear:${draftId}`, () => api.updateSchedule(draftId, null));
-      showToast("已取消排期（scheduled_publish_at 已置 NULL）", "success");
+      showToast("已取消排期", "success");
       setSelected(null);
       await load();
     } catch (e: any) {
@@ -104,7 +104,7 @@ export default function Calendar() {
           <div className="eyebrow">PUBLISH CALENDAR</div>
           <h1 className="page-title">内容日历与排期</h1>
           <div className="page-desc">
-            以「内容 × 平台 × 发布时间」为最小排期单元。R1 红线：系统永不自动触发发布动作。
+            以「内容 × 平台 × 发布时间」为最小排期单元。系统永不自动触发发布动作。
             {events.length > 0 && loading === false && (
               <span className="tag teal" style={{ marginLeft: 8 }}>
                 本周 {events.length} 条
@@ -131,8 +131,7 @@ export default function Calendar() {
               <span className="icon">◷</span>{year} 年 {month + 1} 月 · 本周排期
             </div>
             <div className="panel-sub">
-              7 天网格，平台独立色标；来自 drafts.scheduled_publish_at（无排期时兜底为 saved_at）。
-              点色块可改排期。
+              按平台色标显示每篇草稿的计划发布时间；点击可修改排期。
             </div>
           </div>
         </div>
@@ -144,11 +143,11 @@ export default function Calendar() {
             const isToday = d.date.toDateString() === today.toDateString();
             return (
               <div key={i} style={{
-                border: "1px solid var(--line)", borderRadius: 10, padding: 10, minHeight: 140,
+                border: "1px solid var(--line)", borderRadius: 10, padding: 10, minHeight: 120,
                 background: isToday ? "var(--blue-weak)" : "#fff",
               }}>
                 <div style={{
-                  fontSize: 20, fontWeight: 700,
+                  fontSize: 16, fontWeight: 700,
                   color: isToday ? "var(--blue)" : "var(--text)",
                 }}>
                   {d.date.getDate()}
@@ -175,8 +174,9 @@ export default function Calendar() {
                       setDraftTime(_toLocalInput(e.scheduled || e.saved_at));
                     } : undefined}
                     style={{
-                      marginTop: 6, padding: "4px 8px", borderRadius: 6, fontSize: 11, color: "#fff",
-                      background: platformColors[e.platform] || "#666",
+                      marginTop: 6, padding: "4px 8px", borderRadius: 6, fontSize: 11, color: "var(--text)",
+                      background: "var(--surface-2)",
+                      borderLeft: `3px solid ${platformColors[e.platform] || "#666"}`,
                       cursor: editable ? "pointer" : "not-allowed",
                       opacity: editable ? 1 : 0.62,
                       outline: selected?.id === e.id ? "2px solid var(--blue)" : "none",
@@ -185,7 +185,7 @@ export default function Calendar() {
                     <div style={{ fontWeight: 600 }}>
                       {e.title.length > 16 ? e.title.slice(0, 15) + "…" : e.title}
                     </div>
-                    <div style={{ opacity: 0.8, marginTop: 2, fontSize: 10 }}>
+                    <div style={{ color: "var(--muted)", marginTop: 2, fontSize: 10 }}>
                       {e.scheduled ? e.scheduled.slice(11, 16) : "未排期"}
                       {statusLabel[e.status] ? ` · ${statusLabel[e.status]}` : ""}
                     </div>
@@ -242,8 +242,8 @@ export default function Calendar() {
       <div className="panel">
         <div className="panel-head">
           <div>
-            <div className="panel-title"><span className="icon">⏱</span>未排期草稿 · {unscheduled.length} 篇</div>
-            <div className="panel-sub">scheduled_publish_at 为 NULL 的草稿（draft_pending / draft_saved）</div>
+            <div className="panel-title"><span className="icon">◷</span>未排期草稿 · {unscheduled.length} 篇</div>
+            <div className="panel-sub">还没有发布时间的草稿</div>
           </div>
         </div>
         {unscheduled.length === 0 ? (

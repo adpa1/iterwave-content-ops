@@ -14,7 +14,7 @@ export interface RecoveryInfo {
 
 export interface SystemStatus {
   enabled_platforms: Platform[];
-  /** 有登录态的平台（R20 🔴 判定依据） */
+  /** 有登录态的平台（R20 ● 判定依据） */
   logged_in_platforms: Platform[];
   /** 无登录态的平台：真实操作为阻塞状态 */
   platforms_without_login: Platform[];
@@ -880,7 +880,7 @@ export const api = {
       `/api/drafts/${draftId}/publish_confirm`,
       { method: "POST", body: JSON.stringify({ note_url: noteUrl ?? null }) },
     ),
-  /** 「❌ 不发了」：draft_pending / draft_saved → cancelled */
+  /** 「✕ 不发了」：draft_pending / draft_saved → cancelled */
   cancelDraft: (draftId: string) =>
     fetchJson<{ draft_id: string; status: string }>(`/api/drafts/${draftId}/cancel`, {
       method: "POST",

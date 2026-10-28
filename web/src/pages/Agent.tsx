@@ -8,7 +8,7 @@ import {
 } from "../api";
 
 const PLATFORM_LABEL: Record<string, string> = {
-  xhs: "📕 小红书", douyin: "🎵 抖音", kuaishou: "⚡ 快手", wechat_channels: "💚 视频号",
+  xhs: "小红书", douyin: "抖音", kuaishou: "快手", wechat_channels: "视频号",
 };
 
 const TABS = [
@@ -41,12 +41,12 @@ const SKILLS = [
     { id: "prompt_variants",    name: "四平台变体生成",      src: "src/core/content_pipeline.py",       status: "OK", note: "G→G1 同选题×四风格" },
     { id: "ultimate_goal_check",name: "终极目标检查（R2）", src: "src/core/guard/",                    status: "OK", note: "三入口 check_content/strategy/comment" },
     { id: "image_card",         name: "图片卡片制作",        src: "src/core/content_pipeline.py",        status: "OK", note: "Pillow + OpenCV" },
-    { id: "draft_saver",        name: "Playwright 存草稿",  src: "src/adapters/",       status: "⚠️", note: "R1：只点存草稿" },
+    { id: "draft_saver",        name: "Playwright 存草稿",  src: "src/adapters/",       status: "!", note: "R1：只点存草稿" },
   ]},
   { group: "运营与复盘", rows: [
     { id: "circuit_breaker",    name: "熔断器（R6）",       src: "src/core/ops/circuit_breaker.py",   status: "OK", note: "5 信号 + 3 步恢复" },
     { id: "rhythm_controller",  name: "节奏控制器",          src: "src/core/ops/rhythm.py",            status: "OK", note: "平台独立配额 + 时段窗口" },
-    { id: "ops_engine",         name: "运营引擎",           src: "src/core/ops/engine.py",            status: "⚠️", note: "被动回复已接；主动评论/关注极低配额" },
+    { id: "ops_engine",         name: "运营引擎",           src: "src/core/ops/engine.py",            status: "!", note: "被动回复已接；主动评论/关注极低配额" },
     { id: "spiral_engine",      name: "螺旋引擎 + 缺口分析", src: "src/core/spiral/",                  status: "OK", note: "三通道输出" },
     { id: "zscore_normalize",   name: "跨平台归一化（R13）", src: "src/core/metrics/",                 status: "OK", note: "平台内 z-score" },
   ]},
@@ -56,7 +56,7 @@ const SKILLS = [
     { id: "topic_pool",         name: "选题池",              src: "src/core/topic_pool.py",            status: "OK", note: "本地库 + 热点 + 手动，软删除可恢复" },
     { id: "orchestration",      name: "编排与诊断",           src: "src/core/orchestration.py",         status: "OK", note: "步骤开关 / 依赖校验 / 8 点诊断" },
     { id: "scheduler",          name: "APScheduler 10 类任务", src: "src/core/scheduler/",             status: "OK", note: "SQLiteJobStore 持久化" },
-    { id: "platform_readback",  name: "平台数据读回",        src: "src/vendor/easel/",                 status: "⚠️", note: "account_stats / platform_readback 需登录态" },
+    { id: "platform_readback",  name: "平台数据读回",        src: "src/vendor/easel/",                 status: "!", note: "account_stats / platform_readback 需登录态" },
   ]},
 ];
 
@@ -104,7 +104,7 @@ export default function Agent() {
       {error && (
         <div className="panel" style={{ borderColor: "var(--red)", marginBottom: 14 }}>
           <div className="panel-sub" style={{ color: "var(--red)", display: "flex", gap: 10, alignItems: "center" }}>
-            <span>⚠️ 加载失败：{error}</span>
+            <span>! 加载失败：{error}</span>
             <button className="btn sm" onClick={load}>↻ 重试</button>
           </div>
         </div>
@@ -237,7 +237,7 @@ function EditPane({ orch, onSaved }: { orch: OrchestrationView | null; onSaved: 
     try {
       const v = await api.saveOrchestration(steps);
       onSaved(v);
-      showToast("✅ 编排已保存，下一轮按新编排执行", "success");
+      showToast("✓ 编排已保存，下一轮按新编排执行", "success");
     } catch (e: any) { showToast(`保存失败：${e.message}`, "error"); }
   });
   const reset = () => withPending("orch:reset", async () => {
@@ -312,7 +312,7 @@ function DiagnosePane() {
   });
   useEffect(() => { run(); /* 进页自动跑一次（不实测 LLM） */ }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  const icon = { pass: "✅", warn: "🟡", block: "🔴" } as const;
+  const icon = { pass: "✓", warn: "●", block: "●" } as const;
   return (
     <div className="panel">
       <div className="panel-head">
@@ -364,7 +364,7 @@ function TracePane({ status, runs }: { status: SystemStatus | null; runs: Orches
       <div className="panel">
         <div className="panel-head"><div>
           <div className="panel-title"><span className="icon">☷</span>平台子流程</div>
-          <div className="panel-sub">每个平台独立运行（R4 平台隔离）</div>
+          <div className="panel-sub">每个平台独立运行</div>
         </div></div>
         {status.enabled_platforms.length === 0 ? (
           <EmptyHint next="到「系统设置」启用至少 1 个平台">暂无启用的平台</EmptyHint>
@@ -389,7 +389,7 @@ function TracePane({ status, runs }: { status: SystemStatus | null; runs: Orches
       </div>
       <div className="panel">
         <div className="panel-head"><div>
-          <div className="panel-title"><span className="icon">♻️</span>运行与恢复</div>
+          <div className="panel-title"><span className="icon">↻</span>运行与恢复</div>
           <div className="panel-sub">活跃轮次 {status.active_rounds} · 评分模式 {status.scoring_mode}</div>
         </div></div>
         <div className="list">
@@ -462,7 +462,7 @@ function AuditPane() {
       <div className="panel">
         <div className="panel-head">
           <div>
-            <div className="panel-title"><span className="icon">📋</span>AI 证据审计链</div>
+            <div className="panel-title"><span className="icon">☷</span>AI 证据审计链</div>
             <div className="panel-sub">LLM 调用记录 · 人工覆盖痕迹 · 终极目标红线拦截历史 — 原型 view-review → 缺口与 AI 证据 的 live 对应</div>
           </div>
           <button className="btn sm" onClick={loadAudit} style={{ marginLeft: 10 }}>↻ 刷新</button>
@@ -536,7 +536,7 @@ function AuditPane() {
             {overridesError && <div className="note" style={{ color: "var(--red)" }}>加载失败：{overridesError}</div>}
             {!overrides && !overridesError && <div className="note">加载中…</div>}
             {overrides && overrides.length === 0 && (
-              <EmptyHint next="编辑内容时选择「驳回」或「重新过 G2」后自动留痕">还没有人工覆盖痕迹</EmptyHint>
+              <EmptyHint next="编辑内容时选择「驳回」或「重新过目标检查」后自动留痕">还没有人工覆盖痕迹</EmptyHint>
             )}
             {overrides && overrides.length > 0 && (
               <div className="table-wrap">
@@ -569,7 +569,7 @@ function AuditPane() {
             {redlinesError && <div className="note" style={{ color: "var(--red)" }}>加载失败：{redlinesError}</div>}
             {!redlines && !redlinesError && <div className="note">加载中…</div>}
             {redlines && redlines.length === 0 && (
-              <EmptyHint next="选题或文案违反红线时会自动拦截并记录">还没有红线拦截历史 ✅</EmptyHint>
+              <EmptyHint next="选题或文案违反红线时会自动拦截并记录">还没有红线拦截历史 ✓</EmptyHint>
             )}
             {redlines && redlines.length > 0 && (
               <div className="table-wrap">
@@ -585,8 +585,8 @@ function AuditPane() {
                         <td>{PLATFORM_LABEL[r.platform] ?? r.platform}</td>
                         <td style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</td>
                         <td>
-                          {r.guard_outcome === "fail" ? <span className="tag red">❌ FAIL</span>
-                           : r.guard_outcome === "warn" ? <span className="tag orange">⚠️ WARN</span>
+                          {r.guard_outcome === "fail" ? <span className="tag red">✕ FAIL</span>
+                           : r.guard_outcome === "warn" ? <span className="tag orange">! WARN</span>
                            : <span className="tag gray">{r.guard_outcome}</span>}
                         </td>
                         <td style={{ maxWidth: 240, fontSize: 12 }}>{r.guard_reason ?? "—"}</td>
@@ -595,7 +595,7 @@ function AuditPane() {
                   </tbody>
                 </table>
                 <div style={{ fontSize: 11, color: "var(--subtle)", marginTop: 6 }}>
-                  💡 R2 终极目标检查器 → 违反账号定位 → 拦截打回；拦截历史永久审计可追溯
+                  ✦ 终极目标检查器 → 违反账号定位 → 拦截打回；拦截历史永久审计可追溯
                 </div>
               </div>
             )}

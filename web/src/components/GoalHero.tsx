@@ -12,6 +12,10 @@ import { platformMeta } from "../platforms";
 
 export const METRIC_LABELS: Record<string, string> = {
   followers_gained: "新增粉丝",
+  new_followers: "新增粉丝",
+  like_rate: "点赞率",
+  collect_rate: "收藏率",
+  published_count: "发布篇数",
   likes: "点赞数",
   collects: "收藏数",
   views: "曝光数",
@@ -145,6 +149,13 @@ export default function GoalHero({ goals, summary, personaKeywords = [], forbidd
               </div>
             );
           })
+        )}
+        {krs.length > 0 && krs.length < 3 && onCreateGoal && (
+          <button type="button" className="goal-stat goal-stat-add" onClick={onCreateGoal}>
+            <div className="l">关键结果</div>
+            <div className="n" style={{ fontSize: 14 }}>＋ 添加阶段目标</div>
+            <div className="sub">建议每个启用平台设一个</div>
+          </button>
         )}
       </div>
     </section>

@@ -47,7 +47,7 @@ export default function AutogrowPanel() {
       if (n !== st.config[k]) updates[`autogrow.${k}`] = n;
     }
     if (!Object.keys(updates).length) { showToast("没有改动"); return; }
-    try { await api.patchConfig(updates); showToast("✅ 自动闭环设置已保存", "success"); await load(); }
+    try { await api.patchConfig(updates); showToast("✓ 自动闭环设置已保存", "success"); await load(); }
     catch (e: any) { showToast(`保存失败：${e.message}`, "error"); }
   });
 
@@ -70,7 +70,7 @@ export default function AutogrowPanel() {
     <div className="panel" style={{ marginBottom: 16 }}>
       <div className="panel-head">
         <div>
-          <div className="panel-title"><span className="icon">🌱</span>自动闭环（自生长）</div>
+          <div className="panel-title"><span className="icon">↗</span>自动闭环（自生长）</div>
           <div className="panel-sub">复盘结论 → 下一轮选题与文案；条件满足时自动开下一轮并生成草稿，发布仍由你确认</div>
         </div>
         <div className="flex" style={{ gap: 8 }}>

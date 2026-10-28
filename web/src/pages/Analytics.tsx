@@ -3,8 +3,8 @@ import EmptyHint from "../components/EmptyHint";
 import { api, MetricsResponse, MetricRow, Platform, SpiralAnalysis } from "../api";
 
 const PLATFORM_NAME: Record<Platform, string> = {
-  xhs: "📕 小红书", douyin: "🎵 抖音",
-  kuaishou: "⚡ 快手", wechat_channels: "💚 视频号",
+  xhs: "小红书", douyin: "抖音",
+  kuaishou: "快手", wechat_channels: "视频号",
 };
 
 /** R3：NULL 显示灰色「—」，0 显示正常 0 */
@@ -19,6 +19,11 @@ function Z({ value }: { value: number | null | undefined }) {
   const color = value >= 1 ? "var(--green)" : value <= -1 ? "var(--red)" : "var(--text)";
   return <span style={{ color, fontWeight: 600 }}>{value > 0 ? "+" : ""}{value.toFixed(2)}</span>;
 }
+
+const METRIC_NAME: Record<string, string> = {
+  interaction_rate: "互动率", like_rate: "点赞率", collect_rate: "收藏率", follower_efficiency: "涨粉效率",
+  views: "曝光", likes: "点赞", collects: "收藏", comments: "评论", shares: "分享", new_followers: "新增粉丝",
+};
 
 export default function Analytics() {
   const [analysis, setAnalysis] = useState<SpiralAnalysis | null>(null);
@@ -58,15 +63,19 @@ export default function Analytics() {
   const rows: MetricRow[] = metrics?.items ?? [];
   const zStats = metrics?.z_stats ?? [];
   const adjustments = analysis?.strategy_adjustments ?? [];
+  const rateRows = rows.filter((r) => typeof r.interaction_rate === "number");
+  const rateCount = rateRows.length;
+  const avgRate = rateCount ? rateRows.reduce((s, r) => s + (r.interaction_rate as number), 0) / rateCount : null;
+  const zPlatforms = new Set(zStats.filter((z) => z.sample_count >= 2).map((z) => z.platform)).size;
 
   return (
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">DATA NORMALIZATION & Z-SCORE</div>
+          <div className="eyebrow">PERFORMANCE REVIEW</div>
           <h1 className="page-title">数据分析</h1>
           <div className="page-desc">
-            z-score 平台内部基准（R13）。不同平台 +1σ 只代表「高于本平台平均水平 1σ」，不代表相同业务表现。跨平台可对比：互动率、收藏率、涨粉效率。
+            每个平台只和自己的历史比较；互动率、点赞率、收藏率可以跨平台对比，曝光、点赞等原始数字不能。
           </div>
         </div>
         <div className="head-actions">
@@ -74,42 +83,36 @@ export default function Analytics() {
         </div>
       </div>
 
-      <div className="grid three" style={{ marginBottom: 18 }}>
+      <div className="grid kpis" style={{ marginBottom: 15 }}>
         <div className="metric">
-          <div className="metric-label">归一化指标</div>
-          <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 5 }}>
-            {["interaction_rate", "like_rate", "collect_rate", "follower_efficiency"].map((m) => (
-              <span key={m} style={{
-                fontFamily: "monospace", fontSize: 11,
-                background: "var(--blue-weak)", color: "var(--blue)",
-                padding: "2px 7px", borderRadius: 4,
-              }}>{m}</span>
-            ))}
-          </div>
-          <div className="metric-foot" style={{ marginTop: 8 }}>views=NULL/0 → 全比率 NULL，不做除法（R3）</div>
+          <div className="metric-top"><span className="metric-label">已采集内容</span><span className="metric-icon" aria-hidden="true">▤</span></div>
+          <div className="metric-val">{metrics ? metrics.total : "—"} <span className="metric-unit">篇</span></div>
+          <div className="metric-foot">近 {metrics?.z_window_days ?? 90} 天发布的内容</div>
         </div>
         <div className="metric">
-          <div className="metric-label">z-score 参考</div>
-          <div style={{ marginTop: 10, fontWeight: 700, fontSize: 15 }}>平台内部 mean / std</div>
-          <div className="metric-foot" style={{ marginTop: 6 }}>
-            时效窗口 {metrics?.z_window_days ?? 90} 天<br/>样本 &lt; 2 或 std=0 → z 为「—」
-          </div>
+          <div className="metric-top"><span className="metric-label">平均互动率</span><span className="metric-icon" aria-hidden="true">↗</span></div>
+          <div className="metric-val">{avgRate == null ? "—" : `${(avgRate * 100).toFixed(2)}%`}</div>
+          <div className="metric-foot">{avgRate == null ? "暂无有效样本" : `基于 ${rateCount} 篇有效样本`}</div>
         </div>
         <div className="metric">
-          <div className="metric-label">时效窗口</div>
-          <div style={{ marginTop: 10, fontWeight: 700, fontSize: 15 }}>近 90 天发布</div>
-          <div className="metric-foot" style={{ marginTop: 6 }}>过期样本不参与评分</div>
+          <div className="metric-top"><span className="metric-label">可做对比的平台</span><span className="metric-icon" aria-hidden="true">◎</span></div>
+          <div className="metric-val">{zPlatforms} <span className="metric-unit">个</span></div>
+          <div className="metric-foot">至少 2 篇有效样本才参与平台内对比</div>
+        </div>
+        <div className="metric">
+          <div className="metric-top"><span className="metric-label">复盘建议</span><span className="metric-icon" aria-hidden="true">✦</span></div>
+          <div className="metric-val">{adjustments.length} <span className="metric-unit">条</span></div>
+          <div className="metric-foot">来自最近一轮复盘</div>
         </div>
       </div>
 
-      {/* G-08 逐篇数据与归一化 */}
+      {/* G-08 逐篇数据 */}
       <div className="panel">
         <div className="panel-head">
           <div>
-            <div className="panel-title"><span className="icon">σ</span>逐篇数据与归一化</div>
+            <div className="panel-title"><span className="icon">σ</span>逐篇数据</div>
             <div className="panel-sub">
-              原始值来自平台读回（fetch_status 五态）；z 列为平台内部基准。
-              <b>原始曝光/点赞/收藏不可跨平台对比</b>，仅互动率/点赞率/收藏率可跨平台比较。
+              上方为平台读回的原始值，下方为和本平台平均水平的差距。
             </div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
@@ -124,7 +127,7 @@ export default function Analytics() {
 
         {metricsError && (
           <div className="note" style={{ color: "var(--red)", marginBottom: 10, display: "flex", gap: 8, alignItems: "center" }}>
-            <span>⚠️ 数据加载失败：{metricsError}</span>
+            <span>! 数据加载失败：{metricsError}</span>
             <button className="btn sm" onClick={() => loadMetrics(platformFilter)}>重试</button>
           </div>
         )}
@@ -160,7 +163,7 @@ export default function Analytics() {
                         m.fetch_status === "failed" ? "red" :
                         m.fetch_status === "parse_error" ? "red" :
                         "gray"  // pending / 其他：中性色
-                      }`}>{m.fetch_status}</span>
+                      }`}>{({ success: "已采集", partial: "部分采集", failed: "失败", parse_error: "解析失败", pending: "待采集" } as Record<string, string>)[m.fetch_status] ?? m.fetch_status}</span>
                     </td>
                     {/* P1-8 修复：失败态显示 error_msg（来自 metrics.error_msg 字段） */}
                     <td style={{ maxWidth: 180, fontSize: 11, color: (m.fetch_status === "failed" || m.fetch_status === "parse_error") ? "var(--red)" : "var(--subtle)" }}>
@@ -203,22 +206,23 @@ export default function Analytics() {
 
         {metrics && (
           <div className="note" style={{ marginTop: 10 }}>
-            每格上方为原始值，下方为平台内 z-score。z 需要该平台该指标 ≥2 个有效样本且 std&gt;0，否则显示「—」（不是 0）。
-            {zStats.length === 0 && " 当前所有平台样本均不足，暂无法计算 z-score。"}
+            每格上方为原始值，下方为相对本平台平均水平的偏离（正数高于平均）。同一平台至少 2 篇有效样本才会计算，否则显示「—」。
+            {zStats.length === 0 && " 当前各平台样本都不足，暂时无法比较。"}
           </div>
         )}
 
         {metrics && zStats.length > 0 && (
           <div style={{ marginTop: 14 }}>
-            <div className="form-label">平台内基准（mean / std / 样本数）</div>
+            <details>
+            <summary className="form-label" style={{ cursor: "pointer" }}>平台基准（平均值 / 波动 / 样本数）</summary>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>平台</th><th>指标</th><th>mean</th><th>std</th><th>样本数</th><th>可跨平台对比</th></tr></thead>
+                <thead><tr><th>平台</th><th>指标</th><th>平均值</th><th>波动</th><th>样本数</th><th>可跨平台对比</th></tr></thead>
                 <tbody>
                   {zStats.map((s, i) => (
                     <tr key={i}>
                       <td>{PLATFORM_NAME[s.platform as Platform] ?? s.platform}</td>
-                      <td style={{ fontFamily: "monospace", fontSize: 11 }}>{s.metric}</td>
+                      <td>{METRIC_NAME[s.metric] ?? s.metric}</td>
                       <td>{s.mean}</td>
                       <td>{s.std}</td>
                       <td>{s.sample_count}</td>
@@ -232,6 +236,7 @@ export default function Analytics() {
                 </tbody>
               </table>
             </div>
+            </details>
           </div>
         )}
       </div>
@@ -239,13 +244,13 @@ export default function Analytics() {
       <div className="panel">
         <div className="panel-head">
           <div>
-            <div className="panel-title"><span className="icon">△</span>复盘策略调整建议（螺旋引擎输出）</div>
-            <div className="panel-sub">来源：api/gaps 端点（真实后端）</div>
+            <div className="panel-title"><span className="icon">△</span>复盘策略调整建议</div>
+            <div className="panel-sub">根据最近的发布数据自动生成</div>
           </div>
         </div>
         {gapsError && (
           <div className="note" style={{ color: "var(--red)", marginBottom: 10, display: "flex", gap: 8, alignItems: "center" }}>
-            <span>⚠️ {gapsError}</span><button className="btn sm" onClick={loadGaps}>重试</button>
+            <span>! {gapsError}</span><button className="btn sm" onClick={loadGaps}>重试</button>
           </div>
         )}
         {!analysis && !gapsError ? <div className="loading"><div className="spinner" />加载中...</div> : analysis && (
@@ -266,12 +271,12 @@ export default function Analytics() {
               </div>
             )}
             {analysis.evidence && Object.keys(analysis.evidence).length > 0 && (
-              <div style={{ marginTop: 18 }}>
-                <div className="form-label">证据（触发数据）</div>
+              <details style={{ marginTop: 18 }}>
+                <summary className="form-label" style={{ cursor: "pointer" }}>查看触发数据</summary>
                 <pre style={{ background: "var(--surface-2)", padding: 12, borderRadius: 8, fontSize: 11, overflow: "auto" }}>
 {JSON.stringify(analysis.evidence, null, 2)}
                 </pre>
-              </div>
+              </details>
             )}
           </>
         )}
@@ -280,7 +285,7 @@ export default function Analytics() {
       <div className="panel">
         <div className="panel-head">
           <div>
-            <div className="panel-title"><span className="icon">◫</span>缺口分析（R19 两类缺口分开展示）</div>
+            <div className="panel-title"><span className="icon">◫</span>缺口分析</div>
             <div className="panel-sub">覆盖缺口可直接采纳进母计划；验证缺口仅 Agent 内部参考</div>
           </div>
         </div>

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api, Platform, AccountInfo, LoginStatus } from "../api";
 
 const PLATFORM_EMOJI: Record<Platform, string> = {
-  xhs: "📕", douyin: "🎵", kuaishou: "⚡", wechat_channels: "💚",
+  xhs: "小", douyin: "抖", kuaishou: "快", wechat_channels: "视",
 };
 
 const LOGIN_STATE_LABEL: Record<string, { label: string; color: string }> = {
@@ -12,16 +12,16 @@ const LOGIN_STATE_LABEL: Record<string, { label: string; color: string }> = {
   scanned:        { label: "已扫描，等待跳转", color: "orange" },
   sms_required:   { label: "需短信验证",  color: "orange" },
   verifying:      { label: "保存登录态",  color: "blue" },
-  success:        { label: "登录成功 ✅",  color: "green" },
+  success:        { label: "登录成功 ✓",  color: "green" },
   expired:        { label: "二维码过期",  color: "gray" },
-  error:          { label: "登录失败 ❌",  color: "red" },
+  error:          { label: "登录失败 ✕",  color: "red" },
   unknown:        { label: "未知",        color: "gray" },
 };
 
 const ACCOUNT_STATUS_LABEL: Record<string, { label: string; color: string }> = {
-  logged_in:     { label: "✅ 已登录",      color: "green" },
-  logging_in:    { label: "🔐 登录中...",  color: "blue" },
-  not_logged_in: { label: "❌ 未登录",      color: "gray" },
+  logged_in:     { label: "✓ 已登录",      color: "green" },
+  logging_in:    { label: "▣ 登录中...",  color: "blue" },
+  not_logged_in: { label: "✕ 未登录",      color: "gray" },
 };
 
 export default function Accounts() {
@@ -97,7 +97,7 @@ export default function Accounts() {
   };
 
   const handleLogout = async (p: Platform) => {
-    if (!confirm(`确定要退出 ${PLATFORM_EMOJI[p]} 的登录态吗？本地 storage_state.json 将被删除，下次存草稿会提示重新扫码。`)) return;
+    if (!confirm(`确定要退出 ${PLATFORM_EMOJI[p]} 的登录态吗？本地登录信息将被删除，下次存草稿需要重新扫码。`)) return;
     try {
       await api.logout(p);
       load();
@@ -142,7 +142,7 @@ export default function Accounts() {
               {/* 登录进程状态 */}
               {loginSt && a.status === "logging_in" && (
                 <div style={{ marginBottom: 10 }}>
-                  <span className={`tag ${loginSt.color}`} style={{ marginRight: 8 }}>🔐 {loginSt.label}</span>
+                  <span className={`tag ${loginSt.color}`} style={{ marginRight: 8 }}>▣ {loginSt.label}</span>
                   {a.login_proc_message && <span style={{ fontSize: 11, color: "var(--muted)" }}>{a.login_proc_message}</span>}
                 </div>
               )}
@@ -150,25 +150,25 @@ export default function Accounts() {
               {/* 已登录态信息 */}
               {a.status === "logged_in" && (
                 <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 10 }}>
-                  ✅ storage_state.json 存在 · Cookie 已持久化 · 可用于存草稿/运营/采集
+                  ✓ 登录有效 · 可用于存草稿、运营与数据采集
                 </div>
               )}
 
               {/* 操作按钮 */}
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {a.status === "not_logged_in" && (
-                  <button className="btn primary" onClick={() => handleLogin(a.platform as Platform)}>🔐 扫码登录</button>
+                  <button className="btn primary" onClick={() => handleLogin(a.platform as Platform)}>▣ 扫码登录</button>
                 )}
                 {a.status === "logged_in" && (
-                  <button className="btn" onClick={() => handleLogin(a.platform as Platform)}>🔄 重新扫码</button>
+                  <button className="btn" onClick={() => handleLogin(a.platform as Platform)}>↻ 重新扫码</button>
                 )}
                 {a.status === "logging_in" && (
                   <button className="btn" onClick={() => { api.cancelLogin(a.platform as Platform).then(load); setActiveLogin(null); }}>
-                    ❌ 取消登录
+                    ✕ 取消登录
                   </button>
                 )}
                 {a.status === "logged_in" && (
-                  <button className="btn danger" onClick={() => handleLogout(a.platform as Platform)}>🗑 退出登录</button>
+                  <button className="btn danger" onClick={() => handleLogout(a.platform as Platform)}>✕ 退出登录</button>
                 )}
               </div>
             </div>
@@ -183,22 +183,22 @@ export default function Accounts() {
 
       {/* 说明卡 */}
       <div className="panel" style={{ padding: 14, fontSize: 12, color: "var(--muted)" }}>
-        <strong style={{ color: "var(--text)" }}>🔐 扫码登录流程：</strong>
+        <strong style={{ color: "var(--text)" }}>扫码登录流程</strong>
         <br />
-        1. 点「扫码登录」→ 本机 Chromium headed 浏览器弹出四平台 passport 登录页 → Playwright 自动识别并截图 QR
+        1. 点「扫码登录」，本机会弹出平台登录页并显示二维码
         <br />
-        2. 用手机 App 扫描 QR → Worker 检测到离开登录页 → 自动保存 storage_state.json（chmod 600）
+        2. 用手机 App 扫码，登录成功后自动保存登录信息
         <br />
-        3. 登录成功后，后续存草稿/运营/采集动作都会自动恢复登录态，不再弹登录页
+        3. 之后存草稿、运营和数据采集都会自动使用该登录，不再弹登录页
         <br />
         <br />
-        <strong style={{ color: "var(--orange)" }}>⚠ 注意：</strong>
+        <strong style={{ color: "var(--orange)" }}>注意</strong>
         <br />
-        · 四平台 passport URL 可能随时改版，QR selector 需保持更新（Easel account_stats.py 有兜底）
+        · 登录一般 1–3 个月过期，过期后存草稿会失败，点「重新扫码」即可
         <br />
-        · 登录态会过期（一般 1-3 个月），过期后存草稿会被踢回登录页 → 点「重新扫码」
+        · 平台登录页改版时二维码可能识别失败，请联系维护者更新
         <br />
-        · R23 安全：storage_state.json chmod 600，目录 700，git ignore，不进前端明文返回
+        · 登录信息只保存在本机，不会上传或显示在页面上
       </div>
 
       {/* —— 扫码登录弹窗 —— */}
@@ -279,10 +279,10 @@ export default function Accounts() {
                   </form>
                 )}
                 {loginStatus.state === "expired" && (
-                  <button className="btn sm primary" style={{ marginTop: 10 }} onClick={() => handleLogin(activeLogin)}>🔄 刷新二维码</button>
+                  <button className="btn sm primary" style={{ marginTop: 10 }} onClick={() => handleLogin(activeLogin)}>↻ 刷新二维码</button>
                 )}
                 {loginStatus.state === "error" && (
-                  <button className="btn sm primary" style={{ marginTop: 10 }} onClick={() => handleLogin(activeLogin)}>🔄 重试</button>
+                  <button className="btn sm primary" style={{ marginTop: 10 }} onClick={() => handleLogin(activeLogin)}>↻ 重试</button>
                 )}
                 {loginStatus.state === "success" && (
                   <div className="tag green" style={{ marginTop: 6 }}>登录成功，登录态已保存</div>
