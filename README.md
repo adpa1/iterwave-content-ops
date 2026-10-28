@@ -112,28 +112,60 @@ IterWave 的部分平台适配器代码基于 [Easel](https://github.com/kaichen
 - 主动评论、关注等操作极低配额，崩溃场景标记 `pending_verify` 待用户核实
 - 熔断机制：检测到平台异常自动停止所有运营，3 步验证后方可恢复
 
-## 当前进度
+## 代码现状（Early Preview）
 
-| 阶段 | 状态 |
-|---|---|
-| 设计方案 v1.3 | ✅ 完成 |
-| Demo 原型 | ✅ 可交互 |
-| 状态机 + DB schema | ✅ 迁移脚本就绪 |
-| 平台适配器 | 🚧 开发中 |
-| 选题评估 + 螺旋引擎 | 🚧 开发中 |
-| React 前端 | 🚧 开发中 |
+> **非空代码**：Python 10,600+ 行 · TypeScript 5,700+ 行 · pytest 1,088 行 · 9 个 DB 迁移脚本
+>
+> 所有模块均有实质性实现，不是空壳。但真实平台连接（Playwright）、模型调用链路、端到端集成尚未在四平台完整验证。
 
-**交互原型中的模拟操作不代表真实平台连接、模型调用或数据采集已经完成。**
+### 后端核心（src/core/）
 
-## 路线图
+| 模块 | 文件 | 行数 |
+|---|---|---|
+| 配置加载 + Pydantic v2 模型 | config.py | 351 |
+| SQLite + schema 迁移 | db.py | 241 |
+| 两层状态机（轮次 9 态 + 单篇 8 态） | state_machine/__init__.py | 279 |
+| 选题评估引擎（冷启动/样本积累/稳定运行三模式） | scoring/topic_eval.py | 333 |
+| 终极目标检查器（方向性约束） | guard/ultimate_goal_checker.py | 176 |
+| 螺旋引擎 + 缺口分析 | spiral/__init__.py | 285 |
+| 运营引擎（评论/关注） + 熔断 + 节奏控制器 | ops/engine.py + circuit_breaker.py + rhythm.py | 590 |
+| APScheduler 调度器（6 类任务） | scheduler/__init__.py | 1,072 |
+| 内容管线 + 轮次执行器 | content_pipeline.py + round_executor.py | 1,065 |
+| 热点发现（60s.viki.moe 公益 API） | hot_topics.py | 362 |
+| 归一化 z-score + 洞察 | metrics/__init__.py + insights.py | 514 |
+| 计划版本签名（§19 内容一致性） | plan_version.py | 227 |
+| 断点恢复（幂等 + pending_verify） | recovery.py | 151 |
+| 目标进度 + 终极目标口径 | goal_progress.py | 118 |
 
-- Phase 1 — 项目骨架 + DB schema + 配置模块
-- Phase 2 — 平台适配器接口 + 存草稿器
-- Phase 3 — 选题评估 + 文案生成 + 终极目标检查
-- Phase 4 — 状态机 + APScheduler + 断点恢复
-- Phase 5 — 数据拉取 + 归一化 + 螺旋引擎
-- Phase 6 — 运营引擎 + 熔断 + 节奏控制
-- Phase 7 — React 前端
+### 平台适配器（src/adapters/）
+
+| 适配器 | 行数 | 说明 |
+|---|---|---|
+| 小红书 | 321 | 存草稿 + 数据读回 |
+| 抖音 | 277 | 存草稿 + 数据读回 |
+| 快手 | 278 | 存草稿 + 数据读回 |
+| 视频号 | 77 | 存草稿（简化版）|
+| 平台读回（创作者中心数据采集） | 278 | 四平台统一接口 |
+| 存草稿器（红线：永不点发布） | — | draft_saver.py |
+
+### API 层
+
+`src/api/main.py` — 1,645 行 FastAPI 路由，覆盖状态机、选题、评分、运营、熔断、配置、通知等全部端点。
+
+### React 前端（web/）
+
+19 个文件 5,758 行，含 11 个页面：Dashboard · Production · HotTopics · Gaps · Goals · Calendar · Assets · Agent · Analytics · Operations · Settings，以及 Sidebar、AppContext、api 封装、DemoBadge（原型边界标注）等组件。
+
+### 测试
+
+8 个 pytest 文件 1,088 行，覆盖状态机、三模式评分、NULL vs 0 红线、熔断退出路径、调度器任务、API 端点、适配器接口。
+
+### 尚未验证
+
+- Playwright 真实四平台存草稿链路（端到端）
+- 模型调用链路（文案生成 + 终极目标检查 + 图片卡片制作）
+- 四平台数据采集 API 真实连通性
+- 完整螺旋闭环（发布 → 数据 → 复盘 → 策略 → 下一轮）
 
 ## License
 
