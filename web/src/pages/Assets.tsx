@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import AsyncPanel from "../components/AsyncPanel";
 import EmptyHint from "../components/EmptyHint";
+import TopicPoolPane from "../components/TopicPoolPane";
+import CreatedContentPane from "../components/CreatedContentPane";
 import { useApp } from "../AppContext";
+import { useUrlTab } from "../nav";
 import {
   api, AssetItem, AssetType, Draft, HotTopicItem, KbInspect, ScoredTopic, SystemConfigView,
 } from "../api";
@@ -9,7 +12,7 @@ import {
 type Tab = "topics" | "created" | "sources" | "voice" | "templates" | "mapping";
 
 const TABS: { key: Tab; label: string }[] = [
-  { key: "topics", label: "📚 选题库" },
+  { key: "topics", label: "📚 选题池" },
   { key: "created", label: "▣ 已生产内容" },
   { key: "sources", label: "↗ 外部参考" },
   { key: "voice", label: "✎ 个人观点与画像" },
@@ -19,7 +22,7 @@ const TABS: { key: Tab; label: string }[] = [
 
 export default function Assets() {
   const { showToast, withPending, isPending } = useApp();
-  const [tab, setTab] = useState<Tab>("topics");
+  const [tab, setTab] = useUrlTab<Tab>(TABS.map((t) => t.key), "topics");
   const [scored, setScored] = useState<{ mode: string; topics: ScoredTopic[] } | null>(null);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [kb, setKb] = useState<KbInspect | null>(null);
@@ -126,26 +129,7 @@ export default function Assets() {
 
       {tab === "topics" && (
         <>
-          <div className="grid three">
-            <div className="metric">
-              <div className="metric-label">选题总量</div>
-              <div className="metric-val">{total == null ? <span style={{ color: "var(--subtle)" }}>—</span> : total.toLocaleString()}</div>
-              <div className="metric-foot">/api/kb/inspect 实时读取</div>
-            </div>
-            <div className="metric">
-              <div className="metric-label">维度数</div>
-              <div className="metric-val">
-                {kb?.stats.unique_dimensions == null ? <span style={{ color: "var(--subtle)" }}>—</span> : kb.stats.unique_dimensions}
-              </div>
-              <div className="metric-foot">{kb?.field_mapping.dimension ?? "dim"} 字段唯一值</div>
-            </div>
-            <div className="metric">
-              <div className="metric-label">评分模式</div>
-              <div className="metric-val" style={{ fontSize: 16 }}>{scored?.mode ?? "—"}</div>
-              <div className="metric-foot">权重和 = 100%</div>
-            </div>
-          </div>
-
+          <TopicPoolPane />
           <div className="panel" style={{ marginTop: 14 }}>
             <div className="panel-head">
               <div>
@@ -200,45 +184,7 @@ export default function Assets() {
         </>
       )}
 
-      {tab === "created" && (
-        <div className="panel">
-          <div className="panel-head">
-            <div>
-              <div className="panel-title"><span className="icon">▣</span>已生产内容 · 草稿与发布状态</div>
-              <div className="panel-sub">最近 100 条 drafts（含未存草稿）；点击「内容生产」可编辑文案</div>
-            </div>
-          </div>
-          <AsyncPanel
-            loading={loading}
-            error={error}
-            onRetry={load}
-            empty={drafts.length === 0}
-            emptyText={<EmptyHint className="" next="到「内容生产 → 生产线」运行一轮">暂无已生产内容</EmptyHint>}
-            loadingText="加载内容列表..."
-            boxed={false}
-          >
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr><th>草稿</th><th>标题</th><th>平台</th><th>状态</th><th>存草稿时间</th><th>确认发布时间</th></tr>
-                </thead>
-                <tbody>
-                  {drafts.map((d) => (
-                    <tr key={d.id}>
-                      <td style={{ fontSize: 11, color: "var(--subtle)" }}>{d.id}</td>
-                      <td>{d.title ?? <span style={{ color: "var(--subtle)" }}>—</span>}</td>
-                      <td><span className="tag gray">{d.platform}</span></td>
-                      <td><span className="tag">{d.status}</span></td>
-                      <td>{d.saved_at ?? <span style={{ color: "var(--subtle)" }}>—</span>}</td>
-                      <td>{d.user_confirmed_at ?? <span style={{ color: "var(--subtle)" }}>—</span>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </AsyncPanel>
-        </div>
-      )}
+      {tab === "created" && <CreatedContentPane />}
 
       {tab === "sources" && (
         <>

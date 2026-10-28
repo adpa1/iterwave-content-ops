@@ -107,6 +107,9 @@ export interface Draft {
   created_at: string;
   /** LEFT JOIN contents 带出，列表接口可能为空 */
   title?: string | null;
+  round_id?: number | null;
+  topic_id?: string | null;
+  scheduled_publish_at?: string | null;
 }
 
 /** POST /api/rounds/{id}/run 的执行报告（RoundExecutor.run 返回） */
@@ -404,11 +407,127 @@ export interface KbInspect {
 }
 
 // ===== G-09 母计划 / 内容编辑 / 生产线 =====
+export interface PlatformPlan {
+  /** 本平台每轮篇数（≤ 母计划每平台选题数；不填 = 跟随母计划） */
+  topic_count?: number;
+  /** 自动排期的发布时段 HH:MM */
+  publish_slots?: string[];
+}
+
+export interface PlanCadence {
+  round_interval_days?: number;
+  rounds_planned?: number;
+  goal_id?: string;
+}
+
 export interface MasterPlan {
   topic_count_per_platform: number;
   dimension_allocation: Record<string, number>;
   enabled_platforms: string[];
   content_format: string;
+  per_platform?: Record<string, PlatformPlan>;
+  cadence?: PlanCadence;
+}
+
+export interface PlanSuggestion {
+  goal_id: string;
+  suggestion: { topic_count_per_platform: number; enabled_platforms: string[]; cadence: PlanCadence };
+  notes: string[];
+}
+
+export interface PoolTopic {
+  id: string;
+  title: string;
+  dimension: string;
+  summary: string;
+  link: string;
+  date: string | null;
+  source: string;
+  source_kind: "kb" | "hot" | "manual";
+  content_count: number;
+  excluded: boolean;
+  excluded_at: string | null;
+  excluded_reason: string | null;
+}
+
+export interface TopicPoolResponse {
+  items: PoolTopic[];
+  total: number;
+  dimensions: string[];
+  report: { kb_count: number; extra_count: number; excluded_count: number; kb_error: string | null; file_type: string | null };
+}
+
+export type StepState = "success" | "failed" | "skipped" | "pending";
+
+export interface OrchestrationStep {
+  id: string;
+  enabled: boolean;
+  label: string;
+  skill: string;
+  locked: boolean;
+  requires: string[];
+  desc: string;
+  inputs: string[];
+}
+
+export interface OrchestrationView {
+  steps: OrchestrationStep[];
+  updated_at: string | null;
+  default: { id: string; enabled: boolean }[];
+}
+
+export interface OrchestrationRun {
+  round_id: number;
+  round_number: number;
+  status: string;
+  trigger_source: string;
+  created_at: string;
+  duration_seconds: number | null;
+  step_status: Record<string, { status: StepState; detail: string }>;
+  errors: string[];
+  has_report: boolean;
+}
+
+export interface DiagnoseItem {
+  no: number;
+  name: string;
+  status: "pass" | "warn" | "block";
+  message: string;
+  fix_page: string | null;
+  fix_tab: string | null;
+}
+
+export interface DiagnoseResult {
+  overall: "pass" | "warn" | "block";
+  items: DiagnoseItem[];
+  checked_at: string;
+}
+
+export interface DeleteContentsResult {
+  deleted: string[];
+  blocked: { id: string; reason: string }[];
+  not_found: string[];
+  platform_drafts_left: number;
+  files_removed: number;
+}
+
+export interface AutogrowStatus {
+  config: {
+    enabled: boolean; apply_feedback: boolean; topic_count: number; cooldown_hours: number;
+    max_rounds_per_day: number; max_consecutive_failures: number; stop_when_goals_achieved: boolean;
+    feedback_max_bias: number; feedback_lookback_rounds: number;
+  };
+  job_enabled: boolean;
+  next_check_at: string | null;
+  verdict: { can_start: boolean; action: string; reason: string; next_eligible_at?: string };
+  feedback: {
+    source_round_ids: number[];
+    dimension_bias: Record<string, number>;
+    bias_reasons: Record<string, string[]>;
+    copy_hints: Record<string, string[]>;
+    dropped_hints: string[];
+  };
+  recent_runs: { id: number; ran_at: string; action: string; reason: string; round_id: number | null }[];
 }
 
 export interface PlanSignatureHistory {
@@ -425,7 +544,10 @@ export interface PlanResponse {
   updated_at: string | null;
   /** plan_settings=用户保存过 / derived=从最近一轮推导 */
   source: "plan_settings" | "derived" | string;
-  per_platform: Record<Platform, { enabled: boolean; config_enabled: boolean; topic_count: number }>;
+  per_platform: Record<Platform, {
+    enabled: boolean; config_enabled: boolean; topic_count: number;
+    topic_count_override: number | null; publish_slots: string[];
+  }>;
   history: PlanSignatureHistory[];
   /** R18：签名与当前母计划不一致的活跃轮次 */
   stale_rounds: { id: number; round_number: number; status: string; plan_signature: string }[];
@@ -816,6 +938,40 @@ export const api = {
   plans: () => fetchJson<PlanResponse>("/api/plans"),
   savePlan: (data: MasterPlan) =>
     fetchJson<SavePlanResult>("/api/plans", { method: "POST", body: JSON.stringify(data) }),
+  suggestPlanFromGoal: (goal_id: string) =>
+    fetchJson<PlanSuggestion>("/api/plans/suggest_from_goal", { method: "POST", body: JSON.stringify({ goal_id }) }),
+  // —— 选题池 ——
+  topicPool: (q: { q?: string; dimension?: string; source?: string; status?: string; limit?: number; offset?: number } = {}) => {
+    const p = new URLSearchParams();
+    Object.entries(q).forEach(([k, v]) => { if (v !== undefined && v !== "") p.set(k, String(v)); });
+    return fetchJson<TopicPoolResponse>(`/api/topics?${p}`);
+  },
+  createTopic: (data: { title: string; dimension: string; summary?: string; link?: string }) =>
+    fetchJson<{ id: string; created: boolean; restored: boolean }>("/api/topics", { method: "POST", body: JSON.stringify(data) }),
+  deleteTopics: (ids: string[], reason = "") =>
+    fetchJson<{ excluded: string[]; not_found: string[] }>("/api/topics/delete", { method: "POST", body: JSON.stringify({ ids, reason }) }),
+  restoreTopics: (ids: string[]) =>
+    fetchJson<{ restored: string[] }>("/api/topics/restore", { method: "POST", body: JSON.stringify({ ids }) }),
+  purgeTopics: (ids: string[]) =>
+    fetchJson<{ deleted: string[]; kept: string[] }>("/api/topics/purge", { method: "POST", body: JSON.stringify({ ids }) }),
+  // —— 删除 ——
+  deleteContents: (ids: string[]) =>
+    fetchJson<DeleteContentsResult>("/api/contents/delete", { method: "POST", body: JSON.stringify({ ids }) }),
+  deleteRound: (id: number) =>
+    fetchJson<{ round_number: number; contents_deleted: number; platform_drafts_left: number }>(`/api/rounds/${id}`, { method: "DELETE" }),
+  // —— Agent 编排 / 诊断 ——
+  orchestration: () => fetchJson<OrchestrationView>("/api/orchestration"),
+  saveOrchestration: (steps: { id: string; enabled: boolean }[]) =>
+    fetchJson<OrchestrationView>("/api/orchestration", { method: "PUT", body: JSON.stringify({ steps }) }),
+  validateOrchestration: (steps: { id: string; enabled: boolean }[]) =>
+    fetchJson<{ valid: boolean; errors: string[] }>("/api/orchestration/validate", { method: "POST", body: JSON.stringify({ steps }) }),
+  resetOrchestration: () => fetchJson<OrchestrationView>("/api/orchestration/reset", { method: "POST" }),
+  orchestrationRuns: (limit = 10) => fetchJson<{ runs: OrchestrationRun[] }>(`/api/orchestration/runs?limit=${limit}`),
+  diagnose: (live_llm = false) =>
+    fetchJson<DiagnoseResult>("/api/diagnostics", { method: "POST", body: JSON.stringify({ live_llm }) }),
+  // —— 自动闭环 ——
+  autogrow: () => fetchJson<AutogrowStatus>("/api/autogrow"),
+  autogrowRun: () => fetchJson<{ action: string; reason: string; round_id?: number }>("/api/autogrow/run", { method: "POST" }),
   contents: (roundId: number, platform?: Platform) => {
     const p = new URLSearchParams({ round_id: String(roundId) });
     if (platform) p.set("platform", platform);

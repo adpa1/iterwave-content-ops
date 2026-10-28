@@ -756,7 +756,7 @@ def _register_routes(app: FastAPI) -> None:
         platform: Optional[str] = Query(None),
     ):
         conn = _g()["conn"]
-        sql = "SELECT d.*, c.title, c.platform as cfg_platform FROM drafts d "
+        sql = "SELECT d.*, c.title, c.round_id, c.topic_id, c.platform as cfg_platform FROM drafts d "
         sql += "LEFT JOIN contents c ON d.content_id = c.id"
         where: list[str] = []
         params: list = []

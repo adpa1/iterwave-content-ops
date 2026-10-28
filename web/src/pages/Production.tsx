@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useState } from "react";
 import { useApp } from "../AppContext";
+import { useUrlTab } from "../nav";
 import {
   api, RunRoundReport, SpiralRound, Draft, Platform,
-  PlanResponse, ContentItem, PipelineResponse, RecheckResult,
+  PlanResponse, ContentItem, PipelineResponse, RecheckResult, Goal,
 } from "../api";
 import DemoBadge from "../components/DemoBadge";
 import EmptyHint from "../components/EmptyHint";
@@ -50,7 +51,7 @@ interface AllocRow { dim: string; count: number }
 export default function Production() {
   const { showToast, withPending, isPending } = useApp();
 
-  const [tab, setTab] = useState<TabKey>("plan");
+  const [tab, setTab] = useUrlTab<TabKey>(TABS.map((t) => t.key), "plan");
 
   const [rounds, setRounds] = useState<SpiralRound[]>([]);
   const [currentRoundId, setCurrentRoundId] = useState<number | null>(null);
@@ -61,6 +62,11 @@ export default function Production() {
   const [planTopicCount, setPlanTopicCount] = useState(5);
   const [planPlatforms, setPlanPlatforms] = useState<Platform[]>(ALL_PLATFORMS);
   const [allocRows, setAllocRows] = useState<AllocRow[]>([]);
+  const [platformPlans, setPlatformPlans] = useState<Record<string, { topic_count: string; slots: string }>>({});
+  const [cadence, setCadence] = useState<{ interval: string; rounds: string; goal_id: string }>({ interval: "", rounds: "", goal_id: "" });
+  const [goals, setGoals] = useState<Goal[]>([]);
+  const [suggestNotes, setSuggestNotes] = useState<string[]>([]);
+  const [usePlan, setUsePlan] = useState(true);
 
   // 生产线
   const [pipeline, setPipeline] = useState<PipelineResponse | null>(null);
@@ -108,6 +114,17 @@ export default function Production() {
       setPlanTopicCount(p.plan.topic_count_per_platform);
       setPlanPlatforms((p.plan.enabled_platforms as Platform[]) ?? ALL_PLATFORMS);
       setAllocRows(Object.entries(p.plan.dimension_allocation ?? {}).map(([dim, count]) => ({ dim, count })));
+      const pp: Record<string, { topic_count: string; slots: string }> = {};
+      for (const pl of ALL_PLATFORMS) {
+        const conf = p.plan.per_platform?.[pl];
+        pp[pl] = { topic_count: conf?.topic_count ? String(conf.topic_count) : "", slots: (conf?.publish_slots ?? []).join(" ") };
+      }
+      setPlatformPlans(pp);
+      setCadence({
+        interval: p.plan.cadence?.round_interval_days != null ? String(p.plan.cadence.round_interval_days) : "",
+        rounds: p.plan.cadence?.rounds_planned != null ? String(p.plan.cadence.rounds_planned) : "",
+        goal_id: p.plan.cadence?.goal_id ?? "",
+      });
     } catch (e: any) {
       setLoadError(`加载母计划失败：${e.message}`);
     }
@@ -128,6 +145,7 @@ export default function Production() {
 
   useEffect(() => {
     loadPlan();
+    api.goals().then((g) => setGoals(g.filter((x) => x.status === "active"))).catch(() => {});
     refresh().catch((e) => showToast(`加载轮次失败: ${e.message}`, "error"));
     api.status()
       .then((s) => {
@@ -169,11 +187,10 @@ export default function Production() {
     setRunError(null);
     setReport(null);
     try {
-      const res = await api.runRound(currentRoundId, {
-        topic_count: topicCount,
-        platforms: selPlatforms,
-        save_drafts: saveDrafts,
-      });
+      const res = await api.runRound(
+        currentRoundId,
+        usePlan ? {} : { topic_count: topicCount, platforms: selPlatforms, save_drafts: saveDrafts },
+      );
       setReport(res);
       const isDryRun = res.steps.some((s) => s.step === "dry_run");
       if (res.final_status === "failed") {
@@ -231,11 +248,34 @@ export default function Production() {
     }
     await withPending("save-plan", async () => {
       try {
+        const allocTotal = Object.values(alloc).reduce((a, b) => a + b, 0);
+        if (allocTotal > planTopicCount) {
+          showToast(`维度分配合计 ${allocTotal} 条，超过每平台选题数 ${planTopicCount}`, "error");
+          return;
+        }
+        const per_platform: Record<string, { topic_count?: number; publish_slots?: string[] }> = {};
+        for (const pl of planPlatforms) {
+          const v = platformPlans[pl];
+          if (!v) continue;
+          const slots = v.slots.split(/[\s,，]+/).map((x) => x.trim()).filter(Boolean);
+          const bad = slots.find((x) => !/^([01]\d|2[0-3]):[0-5]\d$/.test(x));
+          if (bad) { showToast(`${PLATFORM_NAME[pl]} 发布时段「${bad}」格式应为 HH:MM`, "error"); return; }
+          per_platform[pl] = {
+            ...(v.topic_count ? { topic_count: Math.max(1, Math.min(planTopicCount, Number(v.topic_count) || 1)) } : {}),
+            ...(slots.length ? { publish_slots: slots } : {}),
+          };
+        }
         const res = await api.savePlan({
           topic_count_per_platform: planTopicCount,
           dimension_allocation: alloc,
           enabled_platforms: planPlatforms,
           content_format: plan?.plan.content_format ?? "image_text",
+          per_platform,
+          cadence: {
+            ...(cadence.interval ? { round_interval_days: Number(cadence.interval) } : {}),
+            ...(cadence.rounds ? { rounds_planned: Number(cadence.rounds) } : {}),
+            ...(cadence.goal_id ? { goal_id: cadence.goal_id } : {}),
+          },
         });
         if (res.changed) {
           showToast(
@@ -301,6 +341,54 @@ export default function Production() {
     });
   };
 
+  const handleSuggest = async () => {
+    if (!cadence.goal_id) { showToast("先选择要拆分的目标", "error"); return; }
+    await withPending("plan-suggest", async () => {
+      try {
+        const r = await api.suggestPlanFromGoal(cadence.goal_id);
+        setPlanTopicCount(r.suggestion.topic_count_per_platform);
+        setPlanPlatforms(r.suggestion.enabled_platforms as Platform[]);
+        setCadence((c) => ({
+          ...c,
+          interval: String(r.suggestion.cadence.round_interval_days ?? ""),
+          rounds: String(r.suggestion.cadence.rounds_planned ?? ""),
+        }));
+        setSuggestNotes(r.notes);
+        showToast("已按目标填好建议，确认后点「保存母计划」生效", "success");
+      } catch (e: any) { showToast(`拆分失败：${e.message}`, "error"); }
+    });
+  };
+
+  const handleDeleteContent = async () => {
+    if (!selectedContentId) return;
+    const item = contents.find((c) => c.id === selectedContentId);
+    const extra = item?.draft_status === "draft_saved" ? "\n这篇已存到平台草稿箱，系统不会去平台删除，请自行清理。" : "";
+    if (!window.confirm(`删除「${item?.title ?? ""}」？文案、草稿记录和卡片图片会一起删除，不可恢复。${extra}`)) return;
+    await withPending("delete-content", async () => {
+      try {
+        const r = await api.deleteContents([selectedContentId]);
+        if (r.blocked.length) { showToast(r.blocked[0].reason, "error"); return; }
+        showToast("已删除这篇内容", "success");
+        setSelectedContentId(null);
+        if (currentRoundId) await loadRoundData(currentRoundId);
+      } catch (e: any) { showToast(`删除失败：${e.message}`, "error"); }
+    });
+  };
+
+  const handleDeleteRound = async () => {
+    if (!roundDetail) return;
+    if (!window.confirm(`删除 Round ${roundDetail.round_number}？本轮所有内容、草稿记录、卡片图片一起删除，不可恢复。`)) return;
+    await withPending("delete-round", async () => {
+      try {
+        const r = await api.deleteRound(roundDetail.id);
+        showToast(`已删除 Round ${r.round_number}（内容 ${r.contents_deleted} 篇${r.platform_drafts_left ? `，请到平台草稿箱清理 ${r.platform_drafts_left} 篇` : ""}）`, "success");
+        setCurrentRoundId(null);
+        setRoundDetail(null);
+        await refresh();
+      } catch (e: any) { showToast(`删除失败：${e.message}`, "error"); }
+    });
+  };
+
   const togglePlatform = (p: Platform) => {
     setSelPlatforms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
   };
@@ -309,7 +397,7 @@ export default function Production() {
     setPlanPlatforms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
   };
 
-  const canRun = !!roundDetail && roundDetail.status === "created" && !running && selPlatforms.length > 0;
+  const canRun = !!roundDetail && roundDetail.status === "created" && !running && (usePlan || selPlatforms.length > 0);
   const selectedContent = contents.find((c) => c.id === selectedContentId) ?? null;
 
   // ---------------------------------------------------------------- 渲染
@@ -377,7 +465,7 @@ export default function Production() {
                     style={{ width: 90 }}
                   />
                   <div className="note" style={{ marginTop: 6 }}>
-                    本轮实际执行条数以「③ 生产线」的运行参数为准；这里决定签名与计划口径。
+                    生产线默认按母计划执行；平台分项可单独设置更少的篇数。
                   </div>
 
                   <div className="panel-title" style={{ fontSize: 13, margin: "16px 0 8px" }}>启用平台</div>
@@ -420,6 +508,72 @@ export default function Production() {
                   <button className="btn sm" style={{ marginTop: 8 }} onClick={() => setAllocRows((prev) => [...prev, { dim: "", count: 1 }])}>
                     ＋ 添加维度
                   </button>
+                </div>
+              </div>
+
+              <div className="grid two" style={{ marginTop: 16 }}>
+                <div>
+                  <div className="panel-title" style={{ fontSize: 13, marginBottom: 8 }}>平台分项计划</div>
+                  <div className="table-wrap">
+                    <table>
+                      <thead><tr><th>平台</th><th style={{ width: 90 }}>每轮篇数</th><th>发布时段（自动排期）</th></tr></thead>
+                      <tbody>
+                        {planPlatforms.map((pl) => (
+                          <tr key={pl}>
+                            <td>{PLATFORM_NAME[pl]}</td>
+                            <td>
+                              <input className="field" type="number" min={1} max={planTopicCount} style={{ width: 70 }}
+                                placeholder={String(planTopicCount)} aria-label={`${PLATFORM_NAME[pl]} 每轮篇数`}
+                                value={platformPlans[pl]?.topic_count ?? ""}
+                                onChange={(e) => setPlatformPlans((prev) => ({ ...prev, [pl]: { ...(prev[pl] ?? { slots: "" }), topic_count: e.target.value } }))} />
+                            </td>
+                            <td>
+                              <input className="field" style={{ width: "100%" }} placeholder="如 12:30 20:00"
+                                aria-label={`${PLATFORM_NAME[pl]} 发布时段`}
+                                value={platformPlans[pl]?.slots ?? ""}
+                                onChange={(e) => setPlatformPlans((prev) => ({ ...prev, [pl]: { ...(prev[pl] ?? { topic_count: "" }), slots: e.target.value } }))} />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="note" style={{ marginTop: 6 }}>篇数留空 = 跟随母计划；发布时段需在「Agent 编排」开启「自动排期」后生效。</div>
+                </div>
+                <div>
+                  <div className="panel-title" style={{ fontSize: 13, marginBottom: 8 }}>节奏与目标拆分</div>
+                  <div className="toolbar" style={{ marginBottom: 8 }}>
+                    <label className="flex" style={{ gap: 6, alignItems: "center", fontSize: 12 }}>
+                      关联目标
+                      <select className="field" value={cadence.goal_id} onChange={(e) => setCadence({ ...cadence, goal_id: e.target.value })}>
+                        <option value="">不关联</option>
+                        {goals.map((g) => <option key={g.id} value={g.id}>{g.goal_text}</option>)}
+                      </select>
+                    </label>
+                    <button className="btn sm" onClick={handleSuggest} disabled={!cadence.goal_id || isPending("plan-suggest")}>
+                      {isPending("plan-suggest") ? "计算中…" : "按目标拆分"}
+                    </button>
+                  </div>
+                  <div className="toolbar">
+                    <label className="flex" style={{ gap: 6, alignItems: "center", fontSize: 12 }}>
+                      每
+                      <input className="field" type="number" min={0.5} max={90} step={0.5} style={{ width: 70 }}
+                        value={cadence.interval} placeholder="—" onChange={(e) => setCadence({ ...cadence, interval: e.target.value })} />
+                      天一轮
+                    </label>
+                    <label className="flex" style={{ gap: 6, alignItems: "center", fontSize: 12 }}>
+                      本阶段共
+                      <input className="field" type="number" min={1} max={200} style={{ width: 70 }}
+                        value={cadence.rounds} placeholder="不限" onChange={(e) => setCadence({ ...cadence, rounds: e.target.value })} />
+                      轮
+                    </label>
+                  </div>
+                  {suggestNotes.length > 0 && (
+                    <ul className="note" style={{ marginTop: 8, paddingLeft: 18 }}>
+                      {suggestNotes.map((n, i) => <li key={i}>{n}</li>)}
+                    </ul>
+                  )}
+                  <div className="note" style={{ marginTop: 6 }}>自动闭环按这里的间隔开下一轮，开满计划轮数后自动停止。</div>
                 </div>
               </div>
 
@@ -564,14 +718,22 @@ export default function Production() {
                   </div>
                 )}
 
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
+                <label className="flex" style={{ gap: 6, alignItems: "center", fontSize: 12, marginBottom: 10 }}>
+                  <input type="checkbox" checked={usePlan} onChange={(e) => setUsePlan(e.target.checked)} disabled={running} />
+                  <b>按母计划 + Agent 编排执行</b>
+                  <span style={{ color: "var(--muted)" }}>
+                    {plan ? `（每平台 ${plan.plan.topic_count_per_platform} 篇 · ${(plan.plan.enabled_platforms ?? []).map((x) => PLATFORM_NAME[x as Platform]).join("、")}${Object.keys(plan.plan.dimension_allocation ?? {}).length ? " · 含维度配额" : ""}）` : ""}
+                  </span>
+                </label>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", opacity: usePlan ? 0.5 : 1 }}
+                  aria-disabled={usePlan}>
                   <label style={{ fontSize: 12, color: "var(--muted)" }}>
                     选题数
                     <input
                       type="number" min={1} max={20} value={topicCount}
                       onChange={(e) => setTopicCount(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
                       style={{ width: 64, marginLeft: 6 }}
-                      disabled={running}
+                      disabled={running || usePlan}
                     />
                   </label>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -580,16 +742,18 @@ export default function Production() {
                         key={p}
                         className={`btn sm ${selPlatforms.includes(p) ? "primary" : ""}`}
                         onClick={() => togglePlatform(p)}
-                        disabled={running}
+                        disabled={running || usePlan}
                       >
                         {PLATFORM_NAME[p]}
                       </button>
                     ))}
                   </div>
                   <label style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 4 }}>
-                    <input type="checkbox" checked={saveDrafts} onChange={(e) => setSaveDrafts(e.target.checked)} disabled={running} />
+                    <input type="checkbox" checked={saveDrafts} onChange={(e) => setSaveDrafts(e.target.checked)} disabled={running || usePlan} />
                     执行存草稿（R1：只存草稿）
                   </label>
+                </div>
+                <div style={{ marginTop: 10 }}>
                   <button className="btn primary" onClick={handleRun} disabled={!canRun}>
                     {running ? "⏳ 运行中…" : "▶ 运行本轮"}
                   </button>
@@ -600,7 +764,7 @@ export default function Production() {
                     只有 created 状态的轮次可运行（当前 {roundDetail.status}）。如需重跑，请新建一轮。
                   </div>
                 )}
-                {selPlatforms.length === 0 && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>至少选择一个平台</div>}
+                {!usePlan && selPlatforms.length === 0 && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>至少选择一个平台</div>}
                 {runError && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>⚠️ {runError}</div>}
 
                 {report && (
@@ -636,8 +800,11 @@ export default function Production() {
                                 {s.step === "guard_reject" && `${s.platform} / ${s.topic_id} · ${s.result} · ${s.reason}`}
                                 {s.step === "plan_signature" && `签名 ${s.signature}`}
                                 {s.step === "draft_save" && `${s.platform} · ${s.status ?? ""} ${s.error ?? ""}`}
-                                {!["score", "kb_read", "produce", "dry_run", "save_drafts",
-                                   "guard_reject", "plan_signature", "draft_save"].includes(s.step) && "—"}
+                                {s.step === "apply_feedback" && `吃进复盘结论：${Object.keys((s.dimension_bias as object) ?? {}).length} 个维度调整 · ${s.copy_hint_count} 条文案要点`}
+                                {s.step === "dimension_quota" && `维度配额 ${Object.entries((s.allocation as Record<string, number>) ?? {}).map(([d, n]) => `${d}×${n}`).join("、")}`}
+                                {s.step === "auto_schedule" && `自动排期 ${s.scheduled} 篇`}
+                                {!["score", "kb_read", "produce", "dry_run", "save_drafts", "apply_feedback", "dimension_quota",
+                                   "auto_schedule", "guard_reject", "plan_signature", "draft_save"].includes(s.step) && "—"}
                               </td>
                             </tr>
                           ))}
@@ -804,6 +971,11 @@ export default function Production() {
                   <button className="btn" onClick={handleRecheck} disabled={isPending("recheck-content")}>
                     {isPending("recheck-content") ? "重检中…" : "🔍 重新过 G2"}
                   </button>
+                  <button className="btn danger" style={{ marginLeft: "auto" }} onClick={handleDeleteContent}
+                    disabled={isPending("delete-content") || ["user_published", "data_fetching", "published"].includes(selectedContent.draft_status ?? "")}
+                    title="已发布（有数据）的内容不能删除">
+                    {isPending("delete-content") ? "删除中…" : "删除这篇"}
+                  </button>
                 </div>
 
                 {recheck && (
@@ -927,6 +1099,11 @@ export default function Production() {
                   {(ROUND_TARGETABLE[roundDetail.status] || []).length === 0 && (
                     <span style={{ fontSize: 12, color: "var(--subtle)" }}>当前状态无合法迁移（终态）</span>
                   )}
+                  <button className="btn sm danger" style={{ marginLeft: "auto" }} onClick={handleDeleteRound}
+                    disabled={isPending("delete-round") || ["producing", "collecting_metrics", "analyzing"].includes(roundDetail.status)}
+                    title="进行中的轮次不能删除；有已发布内容的轮次后端会拒绝">
+                    {isPending("delete-round") ? "删除中…" : "删除本轮"}
+                  </button>
                 </div>
 
                 <div style={{ marginTop: 22 }}>

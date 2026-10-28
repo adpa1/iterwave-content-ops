@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
+import { useUrlTab } from "../nav";
 import DemoBadge from "../components/DemoBadge";
 import EmptyHint from "../components/EmptyHint";
+import AutogrowPanel from "../components/AutogrowPanel";
 import {
   api, Platform, CircuitBreakerEvent, Draft,
   OpsKpiResponse, OpsLogItem, TaskRunItem, NotificationItem,
@@ -47,7 +49,7 @@ const TABS: { key: OpsTab; label: string; icon: string }[] = [
 
 export default function Operations() {
   const { showToast, withPending } = useApp();
-  const [tab, setTab] = useState<OpsTab>("kpi");
+  const [tab, setTab] = useUrlTab<OpsTab>(TABS.map((t) => t.key), "kpi");
 
   // 各子页数据源
   const [kpi, setKpi] = useState<OpsKpiResponse | null>(null);
@@ -689,6 +691,7 @@ function SchedulerPane({ jobs, onTriggered }: {
   const active = jobs.jobs.filter((j) => j.enabled).length;
   return (
     <>
+      <AutogrowPanel />
       <div className="grid three" style={{ marginBottom: 16 }}>
         <div className="metric">
           <div className="metric-label">APScheduler 状态</div>

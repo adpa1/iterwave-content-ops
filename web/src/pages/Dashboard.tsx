@@ -1,3 +1,4 @@
+import { navigate } from "../nav";
 import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import AsyncPanel from "../components/AsyncPanel";
@@ -79,12 +80,7 @@ export default function Dashboard() {
 
   useEffect(() => { load(); }, []);
 
-  const go = (page: string) => {
-    const url = new URL(window.location.href);
-    url.searchParams.set("page", page);
-    window.history.pushState({}, "", url.toString());
-    window.dispatchEvent(new PopStateEvent("popstate"));
-  };
+  const go = (page: string, tab?: string) => navigate(page, tab);
 
   // ===== 派生（全部来自接口） =====
   const enabled = (status?.enabled_platforms ?? []) as Platform[];
