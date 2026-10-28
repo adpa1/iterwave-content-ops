@@ -72,6 +72,7 @@ def generate_copy_content(
     topic_id: Optional[str] = None,
     round_id: Optional[int] = None,
     reject_reason: Optional[str] = None,
+    strategy_hints: Optional[list[str]] = None,
 ) -> tuple[str, str, list[str]]:
     """生成单平台文案。LLM 可用则用 LLM，否则模板降级。
 
@@ -88,7 +89,7 @@ def generate_copy_content(
             result = _generate_via_llm(
                 cfg, topic_title, topic_summary, dimension, platform,
                 conn=conn, topic_id=topic_id, round_id=round_id,
-                reject_reason=reject_reason,
+                reject_reason=reject_reason, strategy_hints=strategy_hints,
             )
             if result:
                 return result
@@ -96,6 +97,18 @@ def generate_copy_content(
             logger.exception("LLM 文案生成失败，降级为模板 platform=%s", platform.value)
 
     return _generate_via_template(topic_title, topic_summary, dimension, platform)
+
+
+def build_hint_block(strategy_hints: Optional[list[str]]) -> str:
+    """上一轮复盘要点 → 提示词片段。要点已在 autogrow 里过了合规方向检查；
+    这里只作参考，明确不得为迎合数据脱离方向或触碰红线。"""
+    hints = [h.strip() for h in (strategy_hints or []) if h and h.strip()][:6]
+    if not hints:
+        return ""
+    lines = "\n".join(f"- {h}" for h in hints)
+    return (
+        f"\n上一轮复盘要点（参考，不得为迎合数据脱离内容方向或触碰红线）：\n{lines}"
+    )
 
 
 def _llm_available(cfg) -> bool:
@@ -109,6 +122,7 @@ def _generate_via_llm(
     cfg, topic_title: str, topic_summary: str, dimension: str, platform: Platform,
     conn=None, topic_id: Optional[str] = None, round_id: Optional[int] = None,
     reject_reason: Optional[str] = None,
+    strategy_hints: Optional[list[str]] = None,
 ) -> Optional[tuple[str, str, list[str]]]:
     """调用 Agent Plan（ARK）Chat Completions，强制 JSON 输出。"""
     import httpx
@@ -132,6 +146,9 @@ def _generate_via_llm(
         f"要求：标题不超过 20 字；正文 150-400 字；标签 3-5 个；"
         f"不得出现违法违规内容；不得脱离「{dimension}」方向。"
     )
+    prompt_hints = build_hint_block(strategy_hints)
+    if prompt_hints:
+        user_prompt += prompt_hints
     if reject_reason:
         user_prompt += (
             f"\n上一版文案被合规检查拒收，原因：{reject_reason}。"

@@ -81,8 +81,13 @@ class RoundExecutor:
         topic_count: int = 5,
         platform_values: Optional[list[str]] = None,
         save_drafts: bool = True,
+        feedback=None,
     ) -> dict:
-        """执行一轮。返回结构化执行报告（不抛业务异常，失败写进 report）。"""
+        """执行一轮。返回结构化执行报告（不抛业务异常，失败写进 report）。
+
+        feedback：上一轮复盘结论（StrategyFeedback）。不传且 autogrow.apply_feedback 开启时
+        自动从最近复盘构建 —— 手动轮与自动轮都吃复盘结论，闭环不依赖谁来开轮。
+        """
         round_row = self.conn.execute(
             "SELECT status, goal_id, round_number FROM spiral_rounds WHERE id = ?",
             (round_id,),
@@ -119,6 +124,7 @@ class RoundExecutor:
             raise ValueError(f"轮次 {round_id} 无法进入 producing")
 
         task_run_id = self._start_task_run(round_id)
+        self._feedback = self._resolve_feedback(round_id, feedback, report)
 
         try:
             # ① + ② 选题读取与评分（G 节点）
@@ -228,6 +234,40 @@ class RoundExecutor:
     # ① ② 选题
     # ------------------------------------------------------------------
 
+    def _resolve_feedback(self, round_id: int, feedback, report: dict):
+        """复盘结论 → 本轮。失败只留痕不阻断（没有反馈 = 退回纯评分，不是错误）。"""
+        ag = getattr(self.cfg, "autogrow", None)
+        if feedback is None and ag is not None and ag.apply_feedback:
+            try:
+                from .autogrow import build_feedback
+                feedback = build_feedback(self.cfg, self.conn, self.guard)
+            except Exception:  # noqa: BLE001
+                logger.exception("复盘结论构建失败 round=%s（本轮按纯评分执行）", round_id)
+                report["errors"].append("复盘结论构建失败，本轮未吃进上一轮建议")
+                feedback = None
+        if feedback is None:
+            return None
+        try:
+            self.conn.execute(
+                "UPDATE spiral_rounds SET applied_feedback = COALESCE(applied_feedback, ?) WHERE id = ?",
+                (feedback.to_json(), round_id),
+            )
+            self.conn.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("applied_feedback 写入失败 round=%s", round_id)
+        report["steps"].append({
+            "step": "apply_feedback",
+            "source_round_ids": feedback.source_round_ids,
+            "dimension_bias": feedback.dimension_bias,
+            "copy_hint_count": sum(len(v) for v in feedback.copy_hints.values()),
+            "dropped_hints": len(feedback.dropped_hints),
+        })
+        return feedback
+
+    def _hints_for(self, platform) -> Optional[list[str]]:
+        fb = getattr(self, "_feedback", None)
+        return fb.hints_for(platform.value) if fb is not None else None
+
     def _select_topics(self, topic_count: int, report: dict) -> list:
         try:
             items, kb_report = KbReader(self.cfg).read()
@@ -243,7 +283,7 @@ class RoundExecutor:
             return []
 
         scored = sorted(
-            self.scoring.score_topics(items),
+            self.scoring.score_topics(items, feedback=getattr(self, "_feedback", None)),
             key=lambda s: s.total_score,
             reverse=True,
         )
@@ -267,6 +307,7 @@ class RoundExecutor:
                     "title": s.topic.title,
                     "dimension": s.topic.dimension,
                     "score": round(s.total_score, 2),
+                    "feedback_bias": s.score_breakdown.get("strategy_feedback", {}).get("score", 0),
                     "is_exploration": s.is_exploration,
                 }
                 for s in scored
@@ -309,6 +350,7 @@ class RoundExecutor:
                         topic.title, topic.summary, topic.dimension, platform, self.cfg,
                         self.conn, topic.id, round_id,
                         reject_reason,
+                        self._hints_for(platform),
                     )
 
                     try:

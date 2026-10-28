@@ -180,6 +180,15 @@ def _build_app() -> FastAPI:
             )
         _g_ctx["plan_version_manager"] = pvm
 
+        # 自动闭环：复盘结论 → 下一轮（定时任务 autogrow_next_round 驱动）
+        from ..core.autogrow import AutogrowController
+        autogrow = AutogrowController(
+            cfg, conn, executor, goal_progress=_g_ctx["goal_progress"],
+            notifier=notifier, guard=guard, pvm=pvm,
+        )
+        _g_ctx["autogrow"] = autogrow
+        scheduler.autogrow = autogrow
+
         # 热点：库里没有新鲜数据时启动后补跑一次后台采集（不阻塞启动）
         from ..core import hot_topic_service
         if cfg.hot_topics.enabled is not False and hot_topic_service.is_stale(cfg, conn):
@@ -557,19 +566,12 @@ def _register_routes(app: FastAPI) -> None:
         key = "goal:" + hashlib.sha256(req.model_dump_json().encode()).hexdigest()
 
         def _produce() -> dict:  # G-11：10s 内相同请求只落一条
-            goal_id = f"goal-{uuid.uuid4().hex[:10]}"
-            conn.execute(
-                "INSERT INTO goals (id, goal_text, target_metric, target_value, "
-                "target_platform, metric_scope, data_source, baseline_value, baseline_at, "
-                "metric_period_start, metric_period_end) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (goal_id, req.goal_text, req.target_metric, req.target_value,
-                 req.target_platform, req.metric_scope, req.data_source,
-                 req.baseline_value, req.baseline_at,
-                 req.metric_period_start, req.metric_period_end),
+            from ..core.autogrow import create_round_record
+            return create_round_record(
+                _g()["cfg"], conn, _g()["plan_version_manager"],
+                goal_id=req.goal_id, topic_count=req.topic_count,
+                platforms=getattr(req, "platforms", None), trigger_source="manual",
             )
-            conn.commit()
-            return {"id": goal_id, "message": "目标已创建"}
 
         result, deduped = _dedupe_once(key, _produce)
         return {**result, "deduped": deduped}
@@ -1291,7 +1293,11 @@ def _register_routes(app: FastAPI) -> None:
         ]
         if not topics:
             return {"mode": _g()["scoring"]._determine_mode(), "topics": [], "message": "选题库暂无数据"}
-        scored = _g()["scoring"].score_topics(topics)
+        feedback = None
+        if _g()["cfg"].autogrow.apply_feedback:
+            from ..core.autogrow import build_feedback
+            feedback = build_feedback(_g()["cfg"], _g()["conn"], _g()["guard"])
+        scored = _g()["scoring"].score_topics(topics, feedback=feedback)
         return {
             "mode": scored[0].mode,
             "topics": [
@@ -1550,6 +1556,32 @@ def _register_routes(app: FastAPI) -> None:
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
     # --- APScheduler 定时任务状态 ---
+    # --- 自动闭环（自生长）---
+    @app.get("/api/autogrow")
+    def autogrow_status():
+        """自动闭环状态：开关与参数、现在能否开下一轮（及原因）、将吃进的复盘结论、最近执行记录。"""
+        from ..core.autogrow import build_feedback
+        cfg = _g()["cfg"]
+        ctl = _g()["autogrow"]
+        feedback = build_feedback(cfg, _g()["conn"], _g()["guard"])
+        job = _g()["scheduler"].scheduler.get_job("autogrow_next_round")
+        return {
+            "config": cfg.autogrow.model_dump(),
+            "job_enabled": cfg.scheduler.job("autogrow_next_round").enabled,
+            "next_check_at": job.next_run_time.isoformat() if job and job.next_run_time else None,
+            "verdict": ctl.evaluate(),
+            "feedback": feedback.to_dict(),
+            "recent_runs": ctl.recent_runs(),
+        }
+
+    @app.post("/api/autogrow/run")
+    async def autogrow_run_now():
+        """立即检查并（条件满足时）开下一轮。只跳过冷却期与每日上限；
+        活跃轮次 / 目标达成 / 连续失败 / 全平台熔断仍会拦住。"""
+        result = await _g()["autogrow"].tick(force=True)
+        result.pop("report", None)
+        return result
+
     @app.get("/api/scheduler/jobs")
     def scheduler_jobs():
         """定时任务：配置（开关 / 间隔 / cron）+ APScheduler 实际排期。关闭的任务也会列出。"""
