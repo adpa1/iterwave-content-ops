@@ -117,7 +117,12 @@ class CircuitBreakerReason(str, Enum):
 # =====================================================================
 
 class DraftResult:
-    """存草稿结果。"""
+    """存草稿结果 — 三种语义严格区分（P0-3 / P1-1 修复后）：
+
+    1. ``success=True``          平台确认保存 ✅（检测到 toast / 页面跳转 / 草稿列表）
+    2. ``needs_human_verify=True`` 按钮点了但无成功证据（R17），需人工核实
+    3. ``success=False``         明确失败（登录态过期 / 熔断 / 图片上传数量不符 / 按钮未找到 ...）
+    """
     def __init__(
         self,
         success: bool,
@@ -125,6 +130,11 @@ class DraftResult:
         error_msg: Optional[str] = None,
         login_required: bool = False,
         cb_signal: "Optional[CircuitBreakerReason]" = None,
+        # —— P0-3 / R17 新增 ——
+        needs_human_verify: bool = False,
+        platform_draft_id_missing: bool = False,
+        uploaded_image_count: int = 0,
+        save_evidence: Optional[str] = None,
     ):
         self.success = success
         self.platform_draft_id = platform_draft_id
@@ -132,13 +142,24 @@ class DraftResult:
         self.login_required = login_required
         # R6：页面检测到熔断信号时由调用方（round_executor / ops engine）上报熔断器
         self.cb_signal = cb_signal
+        self.needs_human_verify = needs_human_verify
+        self.platform_draft_id_missing = platform_draft_id_missing
+        self.uploaded_image_count = uploaded_image_count
+        self.save_evidence = save_evidence
 
     def __repr__(self) -> str:
-        return (
-            f"<DraftResult success={self.success} "
-            f"draft_id={self.platform_draft_id} "
-            f"error={self.error_msg}>"
-        )
+        parts = [f"success={self.success}"]
+        if self.needs_human_verify:
+            parts.append("needs_human_verify=YES")
+        if self.platform_draft_id:
+            parts.append(f"draft_id={self.platform_draft_id}")
+        elif self.platform_draft_id_missing:
+            parts.append("draft_id=MISSING")
+        if self.save_evidence:
+            parts.append(f"evidence={self.save_evidence}")
+        if self.error_msg:
+            parts.append(f"error={self.error_msg}")
+        return f"<DraftResult {' '.join(parts)}>"
 
 
 class MetricsSnapshot:

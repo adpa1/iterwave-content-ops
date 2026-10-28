@@ -140,6 +140,7 @@ export default function Analytics() {
               <thead>
                 <tr>
                   <th>平台</th><th>内容</th><th>采集状态</th>
+                  <th>失败原因</th>
                   <th>曝光</th><th>点赞</th><th>收藏</th><th>评论</th>
                   <th>互动率</th><th>点赞率</th><th>收藏率</th>
                 </tr>
@@ -151,7 +152,20 @@ export default function Analytics() {
                     <td style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {m.content_title || <span style={{ color: "var(--subtle)" }}>—</span>}
                     </td>
-                    <td><span className={`tag ${m.fetch_status === "success" ? "green" : m.fetch_status === "partial" ? "orange" : "red"}`}>{m.fetch_status}</span></td>
+                    {/* P1-7 修复：五态颜色分别映射，pending 中性 blue 不显示红色 */}
+                    <td>
+                      <span className={`tag ${
+                        m.fetch_status === "success" ? "green" :
+                        m.fetch_status === "partial" ? "orange" :
+                        m.fetch_status === "failed" ? "red" :
+                        m.fetch_status === "parse_error" ? "red" :
+                        "gray"  // pending / 其他：中性色
+                      }`}>{m.fetch_status}</span>
+                    </td>
+                    {/* P1-8 修复：失败态显示 error_msg（来自 metrics.error_msg 字段） */}
+                    <td style={{ maxWidth: 180, fontSize: 11, color: (m.fetch_status === "failed" || m.fetch_status === "parse_error") ? "var(--red)" : "var(--subtle)" }}>
+                      {(m.fetch_status === "failed" || m.fetch_status === "parse_error") ? (m.error_msg || "—") : <span style={{ color: "transparent" }}>·</span>}
+                    </td>
                     <td>
                       <Num value={m.views} />
                       <div style={{ fontSize: 10 }}><Z value={m.z?.views} /></div>

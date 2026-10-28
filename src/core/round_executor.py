@@ -493,6 +493,25 @@ class RoundExecutor:
                         "draft_saved",
                         f"{platform.display_name} 草稿已保存：{row['title'][:30]}",
                     )
+            elif result.needs_human_verify:
+                # —— R17 / P0-3 新增：按钮点了但无成功证据，需人工核实 ——
+                self.sm_draft.transition(
+                    row["draft_id"], "failed",
+                    reason="needs_human_verify: 存草稿后未检测到平台成功信号",
+                    extra_updates={"error_msg": result.error_msg or "needs_human_verify"},
+                )
+                report.setdefault("drafts_needs_human_verify", 0)
+                report["drafts_needs_human_verify"] += 1
+                report["drafts_failed"] += 1
+                logger.warning(
+                    "存草稿 needs_human_verify platform=%s draft=%s draft_id_missing=%s",
+                    platform.value, row["draft_id"], result.platform_draft_id_missing,
+                )
+                if self.notifier:
+                    self.notifier.emit(
+                        "needs_human_verify",
+                        f"{platform.display_name} 存草稿结果不确定（需人工核实）：{row['title'][:30]}",
+                    )
             else:
                 # R6：页面信号 / 登录态失效 → 真正触发熔断（此前只记日志，熔断器形同虚设）
                 self._report_circuit_signal(platform, result)

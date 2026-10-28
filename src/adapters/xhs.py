@@ -64,13 +64,15 @@ _FIND_REPLY_BTN_JS = """(nickname) => {
 }"""
 
 # 抓评论列表：作者 + 内容 + 尽量取稳定 id
+# P1-2 修复：CSS 选择器里 [class*='xxx'] 用单引号会嵌套在 .querySelector('...') 里触发浏览器 JS SyntaxError
+# → 外层 .querySelector 用双引号，里面 [class*=...] 也用双引号，必须在 Python 里 \\\" 保留反斜杠转义
 _FETCH_COMMENTS_JS = """() => {
     const nodes = Array.from(document.querySelectorAll(
         "[class*='comment-item'], .comment-item, [class*='commentItem']"));
     const out = [];
     for (const n of nodes) {
-        const authorEl = n.querySelector('.author, [class*='author'], [class*='name']');
-        const contentEl = n.querySelector('.content, [class*='content'], [class*='note-text']');
+        const authorEl = n.querySelector(\".author, [class*=\\\"author\\\"], [class*=\\\"name\\\"]\");
+        const contentEl = n.querySelector(\".content, [class*=\\\"content\\\"], [class*=\\\"note-text\\\"]\");
         const author = authorEl ? authorEl.textContent.trim() : '';
         const content = contentEl ? contentEl.textContent.trim() : '';
         if (!author && !content) continue;

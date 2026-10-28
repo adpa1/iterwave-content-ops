@@ -89,6 +89,9 @@ export interface MetricRow {
   collect_rate: number | null;
   fetch_status: string;
   fetched_at: string | null;
+  attempt?: number | null;
+  /** P1-8: 采集失败原因（来自 metrics.error_msg，failed/parse_error 时有值） */
+  error_msg?: string | null;
   /** 平台内部 z-score；样本不足或原值为 NULL 时为 null（R3） */
   z: Record<string, number | null>;
 }
