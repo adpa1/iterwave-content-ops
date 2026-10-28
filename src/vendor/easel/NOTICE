@@ -1,0 +1,16 @@
+Easel（Apache 2.0）原始代码复制说明
+=====================================
+
+本目录下的以下文件复制自 Easel 项目（https://github.com/...，本地参考副本
+Easel-main/skills/shared/scripts/），用于本项目内部复用：
+
+  platform_readback.py
+  account_stats.py
+  login_state.py
+  login_qr.py
+
+复制日期：2026-10-27
+许可证：Apache License 2.0（见同目录 LICENSE）
+
+本项目与 Easel 是两个独立项目：这里保留的是复制件，运行时不再读取 Easel
+源码目录。上游代码保持原样，行为改动一律写在本仓库 src/adapters/。

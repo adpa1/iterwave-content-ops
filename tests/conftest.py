@@ -1,0 +1,117 @@
+"""pytest 公共夹具：临时库 + 造数工具。
+
+所有用例都在 tmp_path 下的独立 SQLite 上跑，不碰 data/easel.db（R23 数据隔离）。
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+import pytest
+
+from src.core.config import Config, load_config
+from src.core.db import Database
+
+
+@pytest.fixture()
+def cfg(tmp_path: Path) -> Config:
+    """真实 config.yaml 基线 + 全部路径重定向到 tmp_path。"""
+    base = load_config()
+    paths = base.paths.model_copy(
+        update={
+            "data_dir": str(tmp_path / "data"),
+            "db_file": str(tmp_path / "easel.db"),
+            "backup_dir": str(tmp_path / "backups"),
+            "output_dir": str(tmp_path / "data" / "outputs"),
+            "screenshot_dir": str(tmp_path / "data" / "screenshots"),
+            "log_dir": str(tmp_path / "data" / "logs"),
+        }
+    )
+    return base.model_copy(update={"paths": paths})
+
+
+@pytest.fixture()
+def conn(cfg: Config):
+    """迁移到最新 schema 的临时库连接。"""
+    db = Database(cfg)
+    db.initialize()
+    c = db.connect()
+    yield c
+    c.close()
+
+
+# =====================================================================
+# 造数工具
+# =====================================================================
+
+class Seed:
+    """最小可用的轮次/选题/内容/草稿/指标造数器。"""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+        self._round_no = 0
+
+    def topic(self, topic_id: str = "t1", dimension: str = "AI教育") -> str:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO topic_index (id, dimension, source, title) VALUES (?, ?, 'test', ?)",
+            (topic_id, dimension, topic_id),
+        )
+        self.conn.commit()
+        return topic_id
+
+    def round(self, status: str = "created", collecting_started_at: Optional[str] = None) -> int:
+        self._round_no += 1
+        cur = self.conn.execute(
+            "INSERT INTO spiral_rounds (round_number, status, topic_ids, content_variants, "
+            "collecting_metrics_started_at) VALUES (?, ?, '[]', '[]', ?)",
+            (self._round_no, status, collecting_started_at),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def draft(
+        self,
+        round_id: int,
+        platform: str = "xhs",
+        draft_status: str = "published",
+        topic_id: str = "t1",
+        saved_at: Optional[str] = None,
+        fetch_status: Optional[str] = "success",
+        views: Optional[int] = None,
+        likes: Optional[int] = None,
+        collects: Optional[int] = None,
+        comments: Optional[int] = None,
+    ) -> str:
+        """造一条 content + draft（+ 可选 metrics）。"""
+        self.topic(topic_id)
+        content_id = uuid.uuid4().hex
+        self.conn.execute(
+            "INSERT INTO contents (id, round_id, topic_id, platform, title, body) "
+            "VALUES (?, ?, ?, ?, 'T', 'B')",
+            (content_id, round_id, topic_id, platform),
+        )
+        draft_id = uuid.uuid4().hex
+        self.conn.execute(
+            "INSERT INTO drafts (id, content_id, platform, status, saved_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (draft_id, content_id, platform, draft_status, saved_at),
+        )
+        if fetch_status is not None:
+            self.conn.execute(
+                "INSERT INTO metrics (draft_id, content_id, platform, fetch_status, fetched_at, attempt, "
+                "views, likes, collects, comments) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)",
+                (draft_id, content_id, platform, fetch_status,
+                 datetime.now().isoformat(sep=" "), views, likes, collects, comments),
+            )
+        self.conn.commit()
+        return draft_id
+
+
+@pytest.fixture()
+def seed(conn) -> Seed:
+    return Seed(conn)

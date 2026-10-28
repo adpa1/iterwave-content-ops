@@ -1,0 +1,140 @@
+"""调度器缺陷回归：kb_scan 列对齐 / data_fetch 重试 / 熔断真实触发。"""
+
+from __future__ import annotations
+
+import asyncio
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+
+from src.adapters.base import CircuitBreakerReason, DraftResult, Platform
+from src.core.scheduler import SchedulerEngine
+from src.core.scoring.topic_eval import TopicItem
+
+
+class _FakeKb:
+    def read(self):
+        return (
+            [
+                TopicItem(id="kt1", title="标题一", dimension="AI教育", source="kb"),
+                TopicItem(id="kt2", title="标题二", dimension="AI教育", source="kb"),
+            ],
+            {"total": 2},
+        )
+
+
+def _engine(cfg, conn) -> SchedulerEngine:
+    eng = SchedulerEngine(cfg, Path(cfg.paths.db_file))
+    eng.wire(conn=conn, adapters={}, kb_reader=_FakeKb())
+    return eng
+
+
+def test_kb_scan_inserts_without_missing_columns(conn: sqlite3.Connection, cfg) -> None:
+    """topic_index 无 tags/summary 列，kb_scan 必须能成功插入（曾因列不存在必崩）。"""
+    eng = _engine(cfg, conn)
+    asyncio.run(eng._job_kb_scan())
+
+    rows = conn.execute(
+        "SELECT id, title, dimension, source FROM topic_index ORDER BY id"
+    ).fetchall()
+    assert [r["id"] for r in rows] == ["kt1", "kt2"]
+    assert rows[0]["title"] == "标题一"
+
+
+def test_metrics_retry_params_from_policy(cfg) -> None:
+    """timeouts.metrics_retry_policy（3次/间隔30min）必须被解析成 (3, 30)。"""
+    eng = SchedulerEngine(cfg, Path(cfg.paths.db_file))
+    assert eng._metrics_retry_params() == (3, 30)
+
+
+def test_retry_job_id_includes_attempt(cfg) -> None:
+    """重试注册必须区分 attempt，否则 replace_existing 会覆盖掉首次任务。"""
+    eng = SchedulerEngine(cfg, Path(cfg.paths.db_file))
+    eng.schedule_data_fetch("d1", datetime.now(), attempt=1)
+    eng.schedule_data_fetch("d1", datetime.now(), attempt=2)
+    ids = {j.id for j in eng.scheduler.get_jobs()}
+    assert {"data_fetch_d1_a1", "data_fetch_d1_a2"} <= ids
+
+
+def test_data_fetch_failure_schedules_retry(cfg, conn, seed) -> None:
+    """采集失败 → 注册下一次 attempt（此前单次失败直接放弃，重试策略形同虚设）。"""
+    from src.adapters.base import FetchStatus, MetricsSnapshot
+    from src.core.state_machine import DraftStateMachine
+
+    r = seed.round()
+    draft_id = seed.draft(r, draft_status="user_published", fetch_status=None)
+
+    # 当天已采集过 6 次（metrics.attempt=6）——不得被误当成作业重试次数
+    conn.execute(
+        "INSERT INTO metrics (draft_id, platform, fetch_status, fetched_at, attempt) "
+        "VALUES (?, 'xhs', 'failed', ?, 6)",
+        (draft_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    )
+    conn.commit()
+
+    class _Ad:
+        async def fetch_metrics(self, *_a, **_k):
+            return MetricsSnapshot(
+                platform=Platform.XHS, fetch_status=FetchStatus.FAILED, error_msg="平台超时",
+            )
+
+    eng = SchedulerEngine(cfg, Path(cfg.paths.db_file))
+    eng.wire(
+        conn=conn, adapters={Platform.XHS: _Ad()},
+        sm_draft=DraftStateMachine(conn),
+    )
+    asyncio.run(eng._job_data_fetch(draft_id, attempt=1))
+
+    ids = {j.id for j in eng.scheduler.get_jobs()}
+    assert f"data_fetch_{draft_id}_a2" in ids
+    assert f"data_fetch_{draft_id}_a1" not in ids
+
+
+def test_round_executor_reports_signal(cfg, conn) -> None:
+    """round_executor._report_circuit_signal 真的调 trigger（R6 熔断不再形同虚设）。"""
+    from src.core.round_executor import RoundExecutor
+
+    class _Cb:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def trigger(self, platform, reason) -> None:
+            self.calls.append((platform, reason))
+
+    cb = _Cb()
+    ex = RoundExecutor(cfg, conn, None, None, {}, None, None, circuit_breaker=cb)
+    ex._report_circuit_signal(
+        Platform.DOUYIN, DraftResult(success=False, cb_signal=CircuitBreakerReason.RATE_LIMIT)
+    )
+    ex._report_circuit_signal(Platform.DOUYIN, DraftResult(success=False, login_required=True))
+    # 无信号的失败不应熔断
+    ex._report_circuit_signal(Platform.DOUYIN, DraftResult(success=False))
+    assert cb.calls == [
+        (Platform.DOUYIN, CircuitBreakerReason.RATE_LIMIT),
+        (Platform.DOUYIN, CircuitBreakerReason.LOGIN_EXPIRED),
+    ]
+
+
+def test_daily_ops_skips_when_globally_paused(cfg, conn) -> None:
+    """全局软暂停 → daily_ops 直接返回，不建 task_run、不调 ops（R-6）。"""
+    from src.core.ops.pause import set_ops_paused
+
+    class _Ops:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def active_comment(self, *_a, **_k):
+            self.calls += 1
+
+        async def follow(self, *_a, **_k):
+            self.calls += 1
+
+    ops = _Ops()
+    eng = SchedulerEngine(cfg, Path(cfg.paths.db_file))
+    eng.wire(conn=conn, adapters={}, ops=ops)
+    set_ops_paused(conn, True)
+
+    asyncio.run(eng._job_daily_ops())
+
+    assert ops.calls == 0
+    assert conn.execute("SELECT COUNT(*) FROM task_runs").fetchone()[0] == 0

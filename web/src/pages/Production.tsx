@@ -1,0 +1,999 @@
+import { Fragment, useEffect, useState } from "react";
+import { useApp } from "../AppContext";
+import {
+  api, RunRoundReport, SpiralRound, Draft, Platform,
+  PlanResponse, ContentItem, PipelineResponse, RecheckResult,
+} from "../api";
+import DemoBadge from "../components/DemoBadge";
+import EmptyHint from "../components/EmptyHint";
+
+const ROUND_STATUSES = ["created", "producing", "awaiting_publish", "collecting_metrics", "analyzing", "completed", "partial_completed", "failed", "cancelled"];
+const ROUND_TARGETABLE: Record<string, string[]> = {
+  created: ["producing", "cancelled"],
+  producing: ["awaiting_publish", "failed", "cancelled"],
+  awaiting_publish: ["collecting_metrics", "cancelled"],
+  collecting_metrics: ["analyzing", "cancelled"],
+  analyzing: ["completed", "partial_completed", "failed"],
+};
+
+const STATUS_CLS: Record<string, string> = {
+  created: "gray", producing: "orange", awaiting_publish: "blue",
+  collecting_metrics: "purple", analyzing: "teal",
+  completed: "green", partial_completed: "orange", failed: "red", cancelled: "gray",
+  draft_pending: "gray", draft_saved: "blue", user_published: "purple",
+  data_fetching: "orange", published: "green", expired: "gray",
+};
+
+const GUARD_CLS: Record<string, string> = {
+  pass: "green", warn: "orange", fail: "red", error: "red",
+};
+
+const PLATFORM_NAME: Record<Platform, string> = {
+  xhs: "📕 小红书", douyin: "🎵 抖音",
+  kuaishou: "⚡ 快手", wechat_channels: "💚 视频号",
+};
+
+const ALL_PLATFORMS: Platform[] = ["xhs", "douyin", "kuaishou", "wechat_channels"];
+
+const TABS = [
+  { key: "plan", label: "① 总计划" },
+  { key: "platforms", label: "② 平台分项计划" },
+  { key: "pipeline", label: "③ 生产线" },
+  { key: "review", label: "④ 内容编辑与审核" },
+  { key: "rounds", label: "⑤ 轮次状态" },
+] as const;
+
+type TabKey = typeof TABS[number]["key"];
+
+interface AllocRow { dim: string; count: number }
+
+export default function Production() {
+  const { showToast, withPending, isPending } = useApp();
+
+  const [tab, setTab] = useState<TabKey>("plan");
+
+  const [rounds, setRounds] = useState<SpiralRound[]>([]);
+  const [currentRoundId, setCurrentRoundId] = useState<number | null>(null);
+  const [roundDetail, setRoundDetail] = useState<(SpiralRound & { drafts: Draft[] }) | null>(null);
+
+  // 总计划
+  const [plan, setPlan] = useState<PlanResponse | null>(null);
+  const [planTopicCount, setPlanTopicCount] = useState(5);
+  const [planPlatforms, setPlanPlatforms] = useState<Platform[]>(ALL_PLATFORMS);
+  const [allocRows, setAllocRows] = useState<AllocRow[]>([]);
+
+  // 生产线
+  const [pipeline, setPipeline] = useState<PipelineResponse | null>(null);
+
+  // 内容编辑与审核
+  const [contents, setContents] = useState<ContentItem[]>([]);
+  const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editBody, setEditBody] = useState("");
+  const [editTags, setEditTags] = useState("");
+  const [recheck, setRecheck] = useState<RecheckResult | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+
+  // 运行本轮
+  const [topicCount, setTopicCount] = useState(5);
+  const [selPlatforms, setSelPlatforms] = useState<Platform[]>(ALL_PLATFORMS);
+  const [saveDrafts, setSaveDrafts] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [report, setReport] = useState<RunRoundReport | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [noLogin, setNoLogin] = useState<Platform[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // ---------------------------------------------------------------- 数据加载
+  const refresh = async () => {
+    try {
+      const r = await api.rounds();
+      setRounds(r);
+      setLoadError(null);
+      const targetId = currentRoundId ?? (r.length > 0 ? r[0].id : null);
+      if (targetId) {
+        setCurrentRoundId(targetId);
+        try { setRoundDetail(await api.round(targetId)); } catch { /* ignore */ }
+      }
+    } catch (e: any) {
+      // G-12：首屏加载失败必须可见 + 可重试，不能只弹一个 toast
+      setLoadError(e?.message ?? "加载轮次失败");
+    }
+  };
+
+  const loadPlan = async () => {
+    try {
+      const p = await api.plans();
+      setPlan(p);
+      setPlanTopicCount(p.plan.topic_count_per_platform);
+      setPlanPlatforms((p.plan.enabled_platforms as Platform[]) ?? ALL_PLATFORMS);
+      setAllocRows(Object.entries(p.plan.dimension_allocation ?? {}).map(([dim, count]) => ({ dim, count })));
+    } catch (e: any) {
+      setLoadError(`加载母计划失败：${e.message}`);
+    }
+  };
+
+  const loadRoundData = async (roundId: number) => {
+    try { setRoundDetail(await api.round(roundId)); } catch { /* ignore */ }
+    try { setPipeline(await api.pipeline(roundId)); } catch { setPipeline(null); }
+    try {
+      const res = await api.contents(roundId);
+      setContents(res.items);
+      setSelectedContentId((prev) => {
+        if (prev && res.items.some((i) => i.id === prev)) return prev;
+        return res.items[0]?.id ?? null;
+      });
+    } catch { setContents([]); }
+  };
+
+  useEffect(() => {
+    loadPlan();
+    refresh().catch((e) => showToast(`加载轮次失败: ${e.message}`, "error"));
+    api.status()
+      .then((s) => {
+        if (s.enabled_platforms?.length) setSelPlatforms(s.enabled_platforms);
+        setNoLogin((s.platforms_without_login ?? []) as Platform[]);
+      })
+      .catch(() => { /* 用默认四平台 */ });
+  }, []);
+
+  useEffect(() => {
+    if (currentRoundId) loadRoundData(currentRoundId);
+  }, [currentRoundId]);
+
+  // 选中内容 → 填充编辑器
+  useEffect(() => {
+    const item = contents.find((c) => c.id === selectedContentId);
+    if (!item) { setEditTitle(""); setEditBody(""); setEditTags(""); return; }
+    setEditTitle(item.title);
+    setEditBody(item.body);
+    setEditTags(item.tags.join(" "));
+    setRecheck(null);
+  }, [selectedContentId, contents]);
+
+  // ---------------------------------------------------------------- 操作
+  const handleCreateRound = async () => {
+    try {
+      const res = await api.createRound({ topic_count: topicCount });
+      showToast(`✅ Round ${res.round_number} 已创建`);
+      setReport(null);
+      await refresh();
+      setCurrentRoundId(res.id);
+      setTab("pipeline");
+    } catch (e: any) { showToast(`创建失败: ${e.message}`, "error"); }
+  };
+
+  const handleRun = async () => {
+    if (!currentRoundId || running) return;
+    setRunning(true);
+    setRunError(null);
+    setReport(null);
+    try {
+      const res = await api.runRound(currentRoundId, {
+        topic_count: topicCount,
+        platforms: selPlatforms,
+        save_drafts: saveDrafts,
+      });
+      setReport(res);
+      const isDryRun = res.steps.some((s) => s.step === "dry_run");
+      if (res.final_status === "failed") {
+        showToast(`❌ 本轮执行失败：${res.errors.join("；") || "未知原因"}`, "error");
+      } else if (isDryRun) {
+        showToast(`✅ 已产出 ${res.contents_created} 篇内容（本次未执行存草稿）`, "success");
+      } else {
+        showToast(`✅ 本轮完成：内容 ${res.contents_created} / 草稿 ${res.drafts_saved}`, "success");
+      }
+      await refresh();
+      await loadRoundData(currentRoundId);
+    } catch (e: any) {
+      setRunError(e.message);
+      showToast(`运行失败: ${e.message}`, "error");
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const handleTransition = async (target: string) => {
+    if (!currentRoundId) return;
+    try {
+      await api.transitionRound(currentRoundId, target, "Web UI 触发");
+      showToast(`🔄 状态已变更为 ${target}`);
+      await refresh();
+      await loadRoundData(currentRoundId);
+    } catch (e: any) { showToast(`变更失败: ${e.message}`, "error"); }
+  };
+
+  const confirmPublish = async (draftId: string) => {
+    try {
+      await api.confirmPublish(draftId);
+      showToast("✅ 已确认发布");
+      await refresh();
+      if (currentRoundId) await loadRoundData(currentRoundId);
+    } catch (e: any) { showToast(`确认失败: ${e.message}`, "error"); }
+  };
+
+  /** 「❌ 不发了」：draft_pending / draft_saved → cancelled（R9：不冻结未发布草稿） */
+  const cancelDraft = async (draftId: string) => {
+    try {
+      await api.cancelDraft(draftId);
+      showToast("已取消该草稿");
+      await refresh();
+      if (currentRoundId) await loadRoundData(currentRoundId);
+    } catch (e: any) { showToast(`取消失败: ${e.message}`, "error"); }
+  };
+
+  const handleSavePlan = async () => {
+    const alloc: Record<string, number> = {};
+    for (const r of allocRows) {
+      const dim = r.dim.trim();
+      if (!dim) continue;
+      alloc[dim] = Math.max(0, Number(r.count) || 0);
+    }
+    await withPending("save-plan", async () => {
+      try {
+        const res = await api.savePlan({
+          topic_count_per_platform: planTopicCount,
+          dimension_allocation: alloc,
+          enabled_platforms: planPlatforms,
+          content_format: plan?.plan.content_format ?? "image_text",
+        });
+        if (res.changed) {
+          showToast(
+            `✅ 母计划已更新：签名 ${res.signature.slice(0, 12)}，${res.stale_rounds.length} 个活跃轮次已标记失效`,
+            "success",
+          );
+        } else {
+          showToast(`签名未变（${res.signature.slice(0, 12)}），无下游失效`, "info");
+        }
+        await loadPlan();
+        await refresh();
+      } catch (e: any) {
+        showToast(`保存母计划失败: ${e.message}`, "error");
+      }
+    });
+  };
+
+  const handleSaveContent = async () => {
+    if (!selectedContentId) return;
+    const tags = editTags.split(/[,，\s]+/).map((t) => t.trim().replace(/^#/, "")).filter(Boolean);
+    await withPending("save-content", async () => {
+      try {
+        const res = await api.updateContent(selectedContentId, {
+          title: editTitle, body: editBody, tags, reason: "UI 编辑",
+        });
+        showToast(res.changed ? "✅ 文案已保存（user_override 已留痕）" : "内容无变化", "success");
+        await loadRoundData(currentRoundId!);
+      } catch (e: any) {
+        showToast(`保存失败: ${e.message}`, "error");
+      }
+    });
+  };
+
+  const handleRecheck = async () => {
+    if (!selectedContentId) return;
+    await withPending("recheck-content", async () => {
+      try {
+        const res = await api.recheckContent(selectedContentId);
+        setRecheck(res);
+        showToast(
+          res.passes ? `✅ G2 重检通过（${res.result}）` : `❌ G2 重检未通过：${res.reason}`,
+          res.passes ? "success" : "error",
+        );
+        await loadRoundData(currentRoundId!);
+      } catch (e: any) {
+        showToast(`重检失败: ${e.message}`, "error");
+      }
+    });
+  };
+
+  const handleReject = async () => {
+    if (!selectedContentId) return;
+    if (!rejectReason.trim()) { showToast("请先填写驳回理由", "error"); return; }
+    await withPending("reject-content", async () => {
+      try {
+        const res = await api.rejectContent(selectedContentId, rejectReason.trim());
+        showToast(`🗑️ 已驳回，影响草稿 ${res.affected_drafts} 条`, "success");
+        setRejectReason("");
+        await loadRoundData(currentRoundId!);
+      } catch (e: any) {
+        showToast(`驳回失败: ${e.message}`, "error");
+      }
+    });
+  };
+
+  const togglePlatform = (p: Platform) => {
+    setSelPlatforms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
+  };
+
+  const togglePlanPlatform = (p: Platform) => {
+    setPlanPlatforms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
+  };
+
+  const canRun = !!roundDetail && roundDetail.status === "created" && !running && selPlatforms.length > 0;
+  const selectedContent = contents.find((c) => c.id === selectedContentId) ?? null;
+
+  // ---------------------------------------------------------------- 渲染
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <div className="eyebrow">CONTENT OPERATIONS ROOM</div>
+          <h1 className="page-title">内容生产</h1>
+          <div className="page-desc">
+            螺旋引擎 9 态轮次状态机 + 单篇 8 态草稿流转。R1 红线：所有草稿只能存草稿，系统永不自动点发布按钮。
+          </div>
+        </div>
+        <div className="head-actions">
+          <button className="btn primary" onClick={handleCreateRound}>＋ 创建新一轮</button>
+          <button className="btn" onClick={() => { refresh(); loadPlan(); if (currentRoundId) loadRoundData(currentRoundId); }}>↻ 刷新</button>
+        </div>
+      </div>
+
+      <div className="tabs" style={{ marginBottom: 14 }}>
+        {TABS.map((t) => (
+          <button key={t.key} className={`tab ${tab === t.key ? "active" : ""}`} onClick={() => setTab(t.key)}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {loadError && (
+        <div className="panel" style={{ borderColor: "var(--red)", marginBottom: 14 }}>
+          <div className="panel-sub" style={{ color: "var(--red)", display: "flex", gap: 10, alignItems: "center" }}>
+            <span>⚠️ 加载失败：{loadError}</span>
+            <button className="btn sm" onClick={() => { refresh(); loadPlan(); }}>↻ 重试</button>
+          </div>
+        </div>
+      )}
+
+      {/* ============ ① 总计划 ============ */}
+      {tab === "plan" && (
+        <div className="panel">
+          <div className="panel-head">
+            <div>
+              <div className="panel-title"><span className="icon">⌘</span>总计划（母计划）</div>
+              <div className="panel-sub">
+                修改签名覆盖字段会生成新 plan_signature，并自动标记下游轮次/草稿失效（§19 / R18）
+              </div>
+            </div>
+            <div style={{ fontFamily: "monospace", fontSize: 11, color: "var(--muted)" }}>
+              当前签名 {plan?.signature ? plan.signature.slice(0, 16) : "—"}
+              <span className={`tag ${plan?.source === "plan_settings" ? "green" : "gray"}`} style={{ marginLeft: 8 }}>
+                {plan?.source === "plan_settings" ? "已保存" : plan?.source === "derived" ? "推导值" : "—"}
+              </span>
+            </div>
+          </div>
+
+          {!plan && <div className="empty">加载母计划中…</div>}
+
+          {plan && (
+            <>
+              <div className="grid two">
+                <div>
+                  <div className="panel-title" style={{ fontSize: 13, marginBottom: 8 }}>每平台选题数</div>
+                  <input
+                    type="number" min={1} max={50} value={planTopicCount}
+                    onChange={(e) => setPlanTopicCount(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+                    style={{ width: 90 }}
+                  />
+                  <div className="note" style={{ marginTop: 6 }}>
+                    本轮实际执行条数以「③ 生产线」的运行参数为准；这里决定签名与计划口径。
+                  </div>
+
+                  <div className="panel-title" style={{ fontSize: 13, margin: "16px 0 8px" }}>启用平台</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {ALL_PLATFORMS.map((p) => (
+                      <button
+                        key={p}
+                        className={`btn sm ${planPlatforms.includes(p) ? "primary" : ""}`}
+                        onClick={() => togglePlanPlatform(p)}
+                      >
+                        {PLATFORM_NAME[p]}
+                      </button>
+                    ))}
+                  </div>
+                  {planPlatforms.length === 0 && (
+                    <div className="note" style={{ color: "var(--red)", marginTop: 6 }}>至少启用一个平台</div>
+                  )}
+                </div>
+
+                <div>
+                  <div className="panel-title" style={{ fontSize: 13, marginBottom: 8 }}>维度分配</div>
+                  {allocRows.length === 0 && (
+                    <EmptyHint next="点下方「＋ 添加维度」录入维度名与条数（如「AI教育 3」），留空表示不限制">暂无维度分配</EmptyHint>
+                  )}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {allocRows.map((row, i) => (
+                      <div key={i} style={{ display: "flex", gap: 6 }}>
+                        <input
+                          value={row.dim} placeholder="维度名" style={{ flex: 1 }}
+                          onChange={(e) => setAllocRows((prev) => prev.map((r, j) => j === i ? { ...r, dim: e.target.value } : r))}
+                        />
+                        <input
+                          type="number" min={0} value={row.count} style={{ width: 72 }}
+                          onChange={(e) => setAllocRows((prev) => prev.map((r, j) => j === i ? { ...r, count: Number(e.target.value) || 0 } : r))}
+                        />
+                        <button className="btn sm" onClick={() => setAllocRows((prev) => prev.filter((_, j) => j !== i))}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                  <button className="btn sm" style={{ marginTop: 8 }} onClick={() => setAllocRows((prev) => [...prev, { dim: "", count: 1 }])}>
+                    ＋ 添加维度
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 16, display: "flex", gap: 8, alignItems: "center" }}>
+                <button
+                  className="btn primary" onClick={handleSavePlan}
+                  disabled={isPending("save-plan") || planPlatforms.length === 0}
+                >
+                  {isPending("save-plan") ? "提交中…" : "💾 保存母计划"}
+                </button>
+                <span className="note">
+                  {plan.updated_at ? `上次保存 ${plan.updated_at}` : "尚未在 UI 保存过（当前为推导值）"}
+                </span>
+              </div>
+
+              {plan.stale_rounds.length > 0 && (
+                <div className="note" style={{ marginTop: 12, color: "var(--orange)" }}>
+                  ⚠️ 以下活跃轮次的签名与当前母计划不一致（下游已标记为基于旧计划）：
+                  {plan.stale_rounds.map((r) => ` Round ${r.round_number}(${r.status})`).join(" · ")}
+                </div>
+              )}
+
+              <div style={{ marginTop: 18 }}>
+                <div className="panel-title" style={{ fontSize: 13, marginBottom: 8 }}>签名历史（最近 10 条）</div>
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>签名</th><th>轮次</th><th>作者</th><th>时间</th></tr></thead>
+                    <tbody>
+                      {plan.history.length === 0 && (
+                        <tr><td colSpan={4}>
+                          <EmptyHint className="" next="点上方「💾 保存母计划」，保存后签名会写入 signature_history">暂无签名记录</EmptyHint>
+                        </td></tr>
+                      )}
+                      {plan.history.map((h, i) => (
+                        <tr key={i}>
+                          <td style={{ fontFamily: "monospace", fontSize: 11 }}>{h.plan_signature.slice(0, 16)}…</td>
+                          <td>{h.round_id ?? "母计划"}</td>
+                          <td>{h.author ?? "—"}</td>
+                          <td style={{ fontSize: 11 }}>{h.created_at}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ============ ② 平台分项计划 ============ */}
+      {tab === "platforms" && (
+        <div className="panel">
+          <div className="panel-head">
+            <div>
+              <div className="panel-title"><span className="icon">⌗</span>平台分项计划</div>
+              <div className="panel-sub">
+                {currentRoundId
+                  ? `Round ${roundDetail?.round_number ?? currentRoundId} 的逐平台变体（每选题 × 每平台一篇）`
+                  : "选择一轮后展示逐平台变体"}
+              </div>
+            </div>
+            <RoundPicker rounds={rounds} value={currentRoundId} onChange={setCurrentRoundId} />
+          </div>
+
+          {!currentRoundId && (
+            <EmptyHint next="点右上角「＋ 创建新一轮」，创建后回到本页选择轮次">暂无轮次</EmptyHint>
+          )}
+
+          {currentRoundId && (
+            <div className="grid two">
+              {ALL_PLATFORMS.map((p) => {
+                const items = contents.filter((c) => c.platform === p);
+                const cfgEnabled = plan?.per_platform?.[p]?.enabled ?? selPlatforms.includes(p);
+                return (
+                  <div key={p} style={{ border: "1px solid var(--line)", borderRadius: 10, padding: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>{PLATFORM_NAME[p]}</div>
+                      <span className={`tag ${cfgEnabled ? "green" : "gray"}`}>
+                        {cfgEnabled ? "计划内启用" : "未启用"}
+                      </span>
+                    </div>
+                    <div className="note" style={{ marginBottom: 8 }}>
+                      目标 {plan?.per_platform?.[p]?.topic_count ?? planTopicCount} 个选题 × 1 篇；本平台已产出 {items.length} 篇
+                    </div>
+                    {items.length === 0 && (
+                      <EmptyHint next="到「③ 生产线」选中本轮并点「▶ 运行本轮」">本轮暂无该平台内容</EmptyHint>
+                    )}
+                    <div className="list">
+                      {items.map((c) => (
+                        <div key={c.id} className="task-row" style={{ cursor: "pointer" }}
+                             onClick={() => { setSelectedContentId(c.id); setTab("review"); }}>
+                          <i className={`task-prio ${GUARD_CLS[c.guard_outcome ?? ""] ?? "gray"}`} />
+                          <div className="task-main">
+                            <div className="task-title">{c.title}</div>
+                            <div className="task-desc">
+                              {c.topic_id ?? "—"} · {c.word_count ?? "—"} 字 · 卡片 {c.image_count} 张
+                              {c.draft_status && <> · 草稿 <span className={`tag ${STATUS_CLS[c.draft_status] ?? "gray"}`}>{c.draft_status}</span></>}
+                            </div>
+                          </div>
+                          <span className={`tag ${GUARD_CLS[c.guard_outcome ?? ""] ?? "gray"}`}>{c.guard_outcome ?? "—"}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ============ ③ 生产线 ============ */}
+      {tab === "pipeline" && (
+        <div className="grid two">
+          <div className="panel" style={{ marginBottom: 0 }}>
+            <div className="panel-head">
+              <div>
+                <div className="panel-title"><span className="icon">▶</span>运行本轮</div>
+                <div className="panel-sub">选题 → 文案（G1）→ G2 检查 → 卡片（H）→ 存草稿（I）</div>
+              </div>
+              <RoundPicker rounds={rounds} value={currentRoundId} onChange={setCurrentRoundId} />
+            </div>
+
+            {!roundDetail && (
+              <EmptyHint next="在右上角轮次下拉框选择一轮；没有轮次就先点页面右上角「＋ 创建新一轮」">尚未选择轮次</EmptyHint>
+            )}
+
+            {roundDetail && (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <div style={{ fontWeight: 700 }}>Round {roundDetail.round_number}</div>
+                  <span className={`tag ${STATUS_CLS[roundDetail.status]}`}>{roundDetail.status}</span>
+                </div>
+
+                {noLogin.length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    <DemoBadge
+                      level="blocked"
+                      text={`${noLogin.map((p) => PLATFORM_NAME[p]).join("、")} 未连接真实账号，存草稿会失败（勾选存草稿前请先登录）`}
+                    />
+                  </div>
+                )}
+
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
+                  <label style={{ fontSize: 12, color: "var(--muted)" }}>
+                    选题数
+                    <input
+                      type="number" min={1} max={20} value={topicCount}
+                      onChange={(e) => setTopicCount(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
+                      style={{ width: 64, marginLeft: 6 }}
+                      disabled={running}
+                    />
+                  </label>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {ALL_PLATFORMS.map((p) => (
+                      <button
+                        key={p}
+                        className={`btn sm ${selPlatforms.includes(p) ? "primary" : ""}`}
+                        onClick={() => togglePlatform(p)}
+                        disabled={running}
+                      >
+                        {PLATFORM_NAME[p]}
+                      </button>
+                    ))}
+                  </div>
+                  <label style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 4 }}>
+                    <input type="checkbox" checked={saveDrafts} onChange={(e) => setSaveDrafts(e.target.checked)} disabled={running} />
+                    执行存草稿（R1：只存草稿）
+                  </label>
+                  <button className="btn primary" onClick={handleRun} disabled={!canRun}>
+                    {running ? "⏳ 运行中…" : "▶ 运行本轮"}
+                  </button>
+                </div>
+
+                {roundDetail.status !== "created" && (
+                  <div className="note" style={{ marginTop: 8 }}>
+                    只有 created 状态的轮次可运行（当前 {roundDetail.status}）。如需重跑，请新建一轮。
+                  </div>
+                )}
+                {selPlatforms.length === 0 && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>至少选择一个平台</div>}
+                {runError && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>⚠️ {runError}</div>}
+
+                {report && (
+                  <div style={{ marginTop: 16 }}>
+                    <div className="panel-title" style={{ fontSize: 13, marginBottom: 10 }}>
+                      执行报告 · 状态 {report.final_status ?? "—"}
+                    </div>
+                    <div className="grid four" style={{ marginBottom: 10 }}>
+                      <MiniStat label="内容产出" value={report.contents_created} />
+                      <MiniStat label="草稿写入" value={report.drafts_created} />
+                      <MiniStat label="存草稿成功" value={report.drafts_saved} tone="green" />
+                      <MiniStat label="G2 拦截" value={report.guard_rejected} tone={report.guard_rejected > 0 ? "orange" : undefined} />
+                    </div>
+                    {report.retry_counts && Object.keys(report.retry_counts).length > 0 && (
+                      <div className="note" style={{ marginBottom: 8 }}>
+                        重试次数：
+                        {Object.entries(report.retry_counts).map(([k, v]) => `${k} × ${v}`).join(" · ")}
+                      </div>
+                    )}
+                    <div className="table-wrap">
+                      <table>
+                        <thead><tr><th>阶段</th><th>结果</th></tr></thead>
+                        <tbody>
+                          {report.steps.map((s, i) => (
+                            <tr key={i}>
+                              <td style={{ fontFamily: "monospace", fontSize: 11 }}>{s.step}</td>
+                              <td style={{ fontSize: 11 }}>
+                                {s.step === "score" && `${(s.selected as unknown[])?.length ?? 0} 条选题入选`}
+                                {s.step === "kb_read" && `${s.count} 条选题库记录`}
+                                {s.step === "produce" && `产出 ${s.contents} 篇内容 · G2 拦截 ${s.guard_rejected} 次`}
+                                {s.step === "dry_run" && `${s.note}`}
+                                {s.step === "save_drafts" && `成功 ${s.saved} · 失败 ${s.failed}`}
+                                {s.step === "guard_reject" && `${s.platform} / ${s.topic_id} · ${s.result} · ${s.reason}`}
+                                {s.step === "plan_signature" && `签名 ${s.signature}`}
+                                {s.step === "draft_save" && `${s.platform} · ${s.status ?? ""} ${s.error ?? ""}`}
+                                {!["score", "kb_read", "produce", "dry_run", "save_drafts",
+                                   "guard_reject", "plan_signature", "draft_save"].includes(s.step) && "—"}
+                              </td>
+                            </tr>
+                          ))}
+                          {report.steps.length === 0 && (
+                            <tr><td colSpan={2}>
+                              <EmptyHint className="" next="重新点「▶ 运行本轮」查看执行报告；若仍为空，请检查后端日志">无阶段记录</EmptyHint>
+                            </td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    {report.errors.length > 0 && (
+                      <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>
+                        ⚠️ {report.errors.join("；")}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* 阶段计数 */}
+          <div className="panel" style={{ marginBottom: 0 }}>
+            <div className="panel-head">
+              <div>
+                <div className="panel-title"><span className="icon">⛓</span>阶段计数</div>
+                <div className="panel-sub">从 DB 实际落库数据回读（不是前端估算）</div>
+              </div>
+            </div>
+
+            {!pipeline && (
+              <EmptyHint next="在右上角轮次下拉框选择一轮，运行后会从 DB 回读各阶段计数">尚未选择轮次</EmptyHint>
+            )}
+
+            {pipeline && (
+              <>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                  {pipeline.stages.map((s) => (
+                    <div key={s.key} className="kpi-card" style={{ flex: "1 1 100px", padding: 10 }}>
+                      <div style={{ fontSize: 11, color: "var(--muted)" }}>{s.label}</div>
+                      <div style={{ fontSize: 22, fontWeight: 800 }}>{s.count}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="note" style={{ marginBottom: 10 }}>
+                  G2 累计拦截 {pipeline.guard_rejections ?? "—"} 次（含重生成前）；
+                  草稿状态：
+                  {Object.keys(pipeline.drafts_by_status).length === 0
+                    ? " 无"
+                    : ` ${Object.entries(pipeline.drafts_by_status).map(([k, v]) => `${k}=${v}`).join(" · ")}`}
+                </div>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr><th>平台</th><th>文案</th><th>G2 通过</th><th>卡片</th><th>草稿已存</th><th>待存</th><th>失败</th></tr>
+                    </thead>
+                    <tbody>
+                      {pipeline.per_platform.length === 0 && (
+                        <tr><td colSpan={7}>
+                          <EmptyHint className="" next="点左侧「▶ 运行本轮」，内容落库后这里会显示各阶段计数">本轮还没有内容落库</EmptyHint>
+                        </td></tr>
+                      )}
+                      {pipeline.per_platform.map((r) => (
+                        <tr key={r.platform}>
+                          <td>{PLATFORM_NAME[r.platform] ?? r.platform}</td>
+                          <td>{r.contents}</td>
+                          <td>{r.guard_pass}</td>
+                          <td>{r.cards}</td>
+                          <td style={{ color: "var(--green)" }}>{r.draft_saved}</td>
+                          <td>{r.draft_pending}</td>
+                          <td style={{ color: r.draft_failed > 0 ? "var(--red)" : undefined }}>{r.draft_failed}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="note" style={{ marginTop: 8 }}>
+                  说明：G1 文案数 = 通过 G2 后落库的数量；被 G2 拦截并丢弃的文案不会出现在这里，只在「G2 累计拦截」计数。
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ============ ④ 内容编辑与审核 ============ */}
+      {tab === "review" && (
+        <div className="grid two">
+          <div className="panel" style={{ marginBottom: 0 }}>
+            <div className="panel-head">
+              <div>
+                <div className="panel-title"><span className="icon">✎</span>本轮内容（{contents.length}）</div>
+                <div className="panel-sub">点击选择后可编辑 / 重检 / 驳回</div>
+              </div>
+              <RoundPicker rounds={rounds} value={currentRoundId} onChange={setCurrentRoundId} />
+            </div>
+            <div className="list">
+              {contents.length === 0 && (
+                <EmptyHint next="到「③ 生产线」选中本轮并点「▶ 运行本轮」">本轮暂无内容</EmptyHint>
+              )}
+              {contents.map((c) => (
+                <div
+                  key={c.id}
+                  className="task-row"
+                  style={{
+                    cursor: "pointer",
+                    border: selectedContentId === c.id ? "2px solid var(--blue)" : "2px solid transparent",
+                  }}
+                  onClick={() => setSelectedContentId(c.id)}
+                >
+                  <i className={`task-prio ${GUARD_CLS[c.guard_outcome ?? ""] ?? "gray"}`} />
+                  <div className="task-main">
+                    <div className="task-title">{c.title}</div>
+                    <div className="task-desc">
+                      {PLATFORM_NAME[c.platform]} · G2 {c.guard_outcome ?? "—"}
+                      {c.draft_status && <> · <span className={`tag ${STATUS_CLS[c.draft_status] ?? "gray"}`}>{c.draft_status}</span></>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="panel" style={{ marginBottom: 0 }}>
+            <div className="panel-head">
+              <div>
+                <div className="panel-title"><span className="icon">🔍</span>编辑与重检</div>
+                <div className="panel-sub">修改文案后必须重新过 G2（R2），检查器异常不会默认通过</div>
+              </div>
+            </div>
+
+            {!selectedContent && (
+              <EmptyHint next="在左侧「本轮内容」列表点击一篇文案">尚未选择内容</EmptyHint>
+            )}
+
+            {selectedContent && (
+              <>
+                <div className="note" style={{ marginBottom: 8 }}>
+                  {PLATFORM_NAME[selectedContent.platform]} · {selectedContent.topic_id ?? "—"} · 卡片 {selectedContent.image_count} 张
+                  {selectedContent.draft_error && (
+                    <span style={{ color: "var(--orange)" }}> · {selectedContent.draft_error}</span>
+                  )}
+                </div>
+
+                <label style={{ fontSize: 12, color: "var(--muted)" }}>标题</label>
+                <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
+
+                <label style={{ fontSize: 12, color: "var(--muted)" }}>正文</label>
+                <textarea
+                  value={editBody}
+                  onChange={(e) => setEditBody(e.target.value)}
+                  rows={10}
+                  style={{ width: "100%", marginBottom: 8, fontFamily: "inherit", resize: "vertical" }}
+                />
+
+                <label style={{ fontSize: 12, color: "var(--muted)" }}>标签（空格或逗号分隔）</label>
+                <input value={editTags} onChange={(e) => setEditTags(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                  <button className="btn primary" onClick={handleSaveContent} disabled={isPending("save-content")}>
+                    {isPending("save-content") ? "提交中…" : "💾 保存修改"}
+                  </button>
+                  <button className="btn" onClick={handleRecheck} disabled={isPending("recheck-content")}>
+                    {isPending("recheck-content") ? "重检中…" : "🔍 重新过 G2"}
+                  </button>
+                </div>
+
+                {recheck && (
+                  <div
+                    className="note"
+                    style={{
+                      marginBottom: 10,
+                      borderLeft: `4px solid ${recheck.passes ? "var(--green)" : "var(--red)"}`,
+                      paddingLeft: 8,
+                    }}
+                  >
+                    重检结果：<b>{recheck.result}</b> · {recheck.passes ? "通过" : "未通过"}
+                    {recheck.reason && <> · 原因：{recheck.reason}</>}
+                    {recheck.redline_hits.length > 0 && <> · 红线命中：{recheck.redline_hits.join("、")}</>}
+                  </div>
+                )}
+
+                <div style={{ borderTop: "1px dashed var(--line)", paddingTop: 10 }}>
+                  <div className="panel-title" style={{ fontSize: 12, marginBottom: 6 }}>驳回（记录理由，不自动改草稿状态）</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input
+                      value={rejectReason} placeholder="例如：观点与账号定位不符"
+                      onChange={(e) => setRejectReason(e.target.value)}
+                      style={{ flex: 1 }}
+                    />
+                    <button className="btn" onClick={handleReject} disabled={isPending("reject-content")}>
+                      {isPending("reject-content") ? "提交中…" : "🗑️ 驳回"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="note" style={{ marginTop: 12 }}>
+                  当前 DB 记录：G2 = <b>{selectedContent.guard_outcome ?? "—"}</b>
+                  {selectedContent.guard_reason && <>（{selectedContent.guard_reason}）</>}
+                  {" · "}正文 {selectedContent.word_count ?? "—"} 字 · 草稿 {selectedContent.draft_status ?? "—"}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ============ ⑤ 轮次状态 ============ */}
+      {tab === "rounds" && (
+        <div className="grid two">
+          <div className="panel" style={{ marginBottom: 0 }}>
+            <div className="panel-head">
+              <div>
+                <div className="panel-title"><span className="icon">≡</span>轮次列表</div>
+                <div className="panel-sub">Round 1 · Round 2 · ...</div>
+              </div>
+            </div>
+            <div className="list">
+              {rounds.length === 0 && (
+                <EmptyHint next="点右上角「＋ 创建新一轮」，创建后即可运行主流程">暂无轮次</EmptyHint>
+              )}
+              {rounds.map((r) => (
+                <div
+                  key={r.id}
+                  className="task-row"
+                  style={{ cursor: "pointer", border: currentRoundId === r.id ? "2px solid var(--blue)" : "2px solid transparent" }}
+                  onClick={() => { setCurrentRoundId(r.id); setReport(null); }}
+                >
+                  <i className={`task-prio ${STATUS_CLS[r.status]}`} />
+                  <div className="task-main">
+                    <div className="task-title">Round {r.round_number}</div>
+                    <div className="task-desc">创建于 {new Date(r.created_at).toLocaleString("zh-CN")}</div>
+                  </div>
+                  <span className={`tag ${STATUS_CLS[r.status]}`}>{r.status}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="panel" style={{ marginBottom: 0 }}>
+            <div className="panel-head">
+              <div>
+                <div className="panel-title">
+                  <span className="icon">⎇</span>当前轮次
+                  {roundDetail && <span className={`tag ${STATUS_CLS[roundDetail.status]}`} style={{ marginLeft: 10 }}>{roundDetail.status}</span>}
+                </div>
+                <div className="panel-sub">合法迁移按钮由后端状态机校验生成</div>
+              </div>
+            </div>
+
+            {!roundDetail && (
+              <EmptyHint next="在左侧「轮次列表」点击一轮；列表为空就先点右上角「＋ 创建新一轮」">尚未选择轮次</EmptyHint>
+            )}
+
+            {roundDetail && (
+              <>
+                <div className="round-track">
+                  {ROUND_STATUSES.map((s, i) => {
+                    const isCurrent = s === roundDetail.status;
+                    const currentIdx = ROUND_STATUSES.indexOf(roundDetail.status);
+                    const isPast = i < currentIdx;
+                    return (
+                      <Fragment key={s}>
+                        {i > 0 && <div className={`track-connector ${isPast ? "completed" : ""}`} />}
+                        <div className={`track-node ${isCurrent ? "active" : ""} ${isPast ? "completed" : ""}`}>
+                          <div className="dot" />
+                          <div className="label">{s}</div>
+                        </div>
+                      </Fragment>
+                    );
+                  })}
+                </div>
+
+                <div className="note" style={{ marginTop: 12 }}>
+                  母计划签名：{roundDetail.plan_signature
+                    ? <span style={{ fontFamily: "monospace" }}>{roundDetail.plan_signature.slice(0, 16)}…</span>
+                    : "—"}
+                  {(roundDetail as any).guard_rejections != null && <> · G2 拦截 {(roundDetail as any).guard_rejections} 次</>}
+                </div>
+
+                <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  <span style={{ fontSize: 11, color: "var(--muted)", marginRight: 4 }}>可迁移到：</span>
+                  {(ROUND_TARGETABLE[roundDetail.status] || []).map((t) => (
+                    <button key={t} className="btn sm" onClick={() => handleTransition(t)}>→ {t}</button>
+                  ))}
+                  {(ROUND_TARGETABLE[roundDetail.status] || []).length === 0 && (
+                    <span style={{ fontSize: 12, color: "var(--subtle)" }}>当前状态无合法迁移（终态）</span>
+                  )}
+                </div>
+
+                <div style={{ marginTop: 22 }}>
+                  <div className="panel-title" style={{ fontSize: 13, marginBottom: 10 }}>📝 单篇草稿（{roundDetail.drafts?.length || 0}）</div>
+                  <div className="table-wrap">
+                    <table>
+                      <thead><tr><th>草稿 ID</th><th>平台</th><th>状态</th><th>操作</th></tr></thead>
+                      <tbody>
+                        {roundDetail.drafts?.length === 0 && (
+                          <tr><td colSpan={4}>
+                            <EmptyHint className="" next="到「③ 生产线」点「▶ 运行本轮」生成内容并存草稿">该轮次暂无草稿</EmptyHint>
+                          </td></tr>
+                        )}
+                        {roundDetail.drafts?.map((d) => (
+                          <tr key={d.id}>
+                            <td style={{ fontFamily: "monospace", fontSize: 11 }}>{d.id.slice(0, 16)}...</td>
+                            <td>{PLATFORM_NAME[d.platform] ?? d.platform}</td>
+                            <td><span className={`tag ${STATUS_CLS[d.status] || "gray"}`}>{d.status}</span></td>
+                            <td>
+                              {d.status === "draft_saved" && (
+                                <button className="btn sm primary" onClick={() => confirmPublish(d.id)}>✅ 我已发布</button>
+                              )}
+                              {(d.status === "draft_saved" || d.status === "draft_pending") && (
+                                <button className="btn sm ghost" style={{ marginLeft: 6 }} onClick={() => cancelDraft(d.id)}>❌ 不发了</button>
+                              )}
+                              {d.status !== "draft_saved" && d.status !== "draft_pending" && <span style={{ color: "var(--subtle)" }}>—</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function RoundPicker({ rounds, value, onChange }: {
+  rounds: SpiralRound[];
+  value: number | null;
+  onChange: (id: number) => void;
+}) {
+  if (rounds.length === 0) return null;
+  return (
+    <select
+      value={value ?? ""}
+      onChange={(e) => onChange(Number(e.target.value))}
+      style={{ fontSize: 12 }}
+    >
+      {rounds.map((r) => (
+        <option key={r.id} value={r.id}>Round {r.round_number} · {r.status}</option>
+      ))}
+    </select>
+  );
+}
+
+function MiniStat({ label, value, tone }: { label: string; value: number; tone?: string }) {
+  const color = tone === "green" ? "var(--green)" : tone === "orange" ? "var(--orange)" : "var(--text)";
+  return (
+    <div className="kpi-card" style={{ padding: 10 }}>
+      <div style={{ fontSize: 11, color: "var(--muted)" }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 800, color }}>{value}</div>
+    </div>
+  );
+}

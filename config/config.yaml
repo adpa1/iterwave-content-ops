@@ -1,0 +1,262 @@
+# ============================================================
+# Redbook Easel — 主配置文件
+# 唯一可修改的配置源，所有模块从此读取
+# 时间统一本地时区（R5），严禁 datetime.utcnow()
+# ============================================================
+
+# ===== 基础路径 =====
+paths:
+  data_dir: "data"                          # SQLite + 运行时输出根目录
+  db_file: "data/easel.db"                  # SQLite 文件
+  backup_dir: "backups"                     # 迁移备份目录
+  output_dir: "data/outputs"                # 图片卡片 / 生图输出
+  screenshot_dir: "data/screenshots"        # Playwright 截图（R23 保留 30 天）
+  log_dir: "data/logs"                      # 日志目录
+
+# ===== 选题库配置（§16.1 字段映射）=====
+topic_kb:
+  path: "/Users/longyi/WorkBuddy/AI 资料/kb.db"
+  type: "auto"                              # auto / sqlite / csv / jsonl
+  table_name: "items"                       # SQLite 读哪张表
+  field_mapping:                            # 通用字段 → 原始字段名（真实 db schema）
+    source: "source"
+    title: "title"
+    summary: "summary"
+    link: "link"
+    date: "pub_date"                        # 实际叫 pub_date
+    dimension: "dim"                        # 实际叫 dim
+
+# ===== 四平台运营计划 =====
+# enabled=false 的平台本轮完全跳过（存草稿/拉数据/运营都不跑）
+platforms:
+  xhs:
+    enabled: true
+    name: "小红书"
+    base_url: "https://creator.xiaohongshu.com"
+    # 账号标识（登录态 key，login_state.py 用）
+    account_key: "xhs_main"
+  douyin:
+    enabled: true
+    name: "抖音"
+    base_url: "https://creator.douyin.com"
+    account_key: "douyin_main"
+  kuaishou:
+    enabled: false
+    name: "快手"
+    base_url: "https://creator.kuaishou.com"
+    account_key: "kuaishou_main"
+  wechat_channels:
+    enabled: true
+    name: "视频号"
+    base_url: "https://channels.weixin.qq.com"
+    account_key: "wechat_main"
+
+# ===== 评分权重（§15 三模式，权重和必须 = 100%）=====
+# 系统按已发布样本量自动切换模式，这里只定义各模式权重
+scoring:
+  cold_start:                    # 全库已发布样本 < 10
+    position_match: 40
+    history_performance: 0        # 冷启动无历史
+    timeliness: 30
+    gap_weight: 0                # 冷启动无缺口
+    freshness: 30
+  sample_accumulating:           # ≥ 10 且有维度样本 < 5
+    position_match: 35
+    history_performance: 10
+    timeliness: 25
+    gap_weight: 10
+    freshness: 20
+  stable_operation:              # 所有活跃维度 ≥ 5
+    position_match: 30
+    history_performance: 25
+    timeliness: 20
+    gap_weight: 15
+    freshness: 10
+  # 时效窗口
+  timeliness_half_life_days:
+    news: 7                      # 时事类 half-life 7 天
+    evergreen: 365               # 常青知识类 half-life 365 天（近似不衰减）
+  # 活跃维度判定
+  active_dimension_min_uses: 2   # 90 天内至少出现多少次才算活跃维度
+  active_dimension_window_days: 90
+  # 收缩估计参数（样本积累模式用）
+  shrinkage_m: 5
+
+# ===== 终极目标画像（§12.3 UltimateGoalChecker）=====
+ultimate_goal:
+  # 账号定位关键词（内容必须匹配）
+  persona_keywords:
+    - "AI教育"
+    - "人工智能"
+    - "效率工具"
+    - "个人成长"
+  # 红线关键词（出现即丢弃重生成，G2 红线分支）
+  redline_keywords:
+    - "赌博"
+    - "色情"
+    - "暴力"
+    - "毒品"
+  # 禁止的主题方向
+  forbidden_directions:
+    - "单纯追热点无沉淀"
+    - "与账号定位无关的娱乐八卦"
+
+# ===== 超时参数表（§14.3，唯一权威定义，严禁用一个超时覆盖多阶段）=====
+timeouts:
+  round_timeout_hours: 48                        # 仅 producing 阶段
+  awaiting_publish_timeout_hours: 120            # 仅 awaiting_publish 阶段
+  publish_confirm_timeout_hours: 72              # per-draft 单篇
+  publish_confirm_grace_hours: 48               # per-draft 单篇
+  collecting_metrics_timeout_hours: 72            # 仅 collecting_metrics 阶段
+  metrics_initial_delay_hours: 24                # user_published 后等拉数据
+  metrics_retry_policy: "3次/间隔30min"           # 采集失败重试
+  goal_max_rounds: 30                            # 一个目标最大轮数
+  round_min_interval_hours: 4                    # 两轮最短间隔
+
+# ===== 熔断机制（§5 停止所有运营）=====
+circuit_breaker:
+  # 5 种触发信号
+  signals:
+    - "captcha"                  # 出现验证码
+    - "rate_limit"               # 限流
+    - "login_expired"            # 登录态过期
+    - "action_blocked"           # 操作被拦截
+    - "device_verify"            # 设备验证
+  # 默认冷却时间（分钟）
+  cooldown_minutes: 30
+  # 3 步恢复验证（R6）
+  recovery:
+    require_cooldown_expired: true
+    require_test_login: true
+    require_lightweight_action: true
+
+# ===== 节奏控制器 =====
+rhythm:
+  # 平台独立配额（每日上限，0=该平台该动作禁用）
+  daily_quotas:
+    xhs:
+      passive_replies: 50
+      active_comments: 10
+      follows: 5
+    douyin:
+      passive_replies: 50
+      active_comments: 10
+      follows: 5
+    kuaishou:
+      passive_replies: 30
+      active_comments: 5
+      follows: 3
+    wechat_channels:
+      passive_replies: 20
+      active_comments: 5
+      follows: 3
+  # 时段窗口（本地时区，R5）
+  windows:
+    # 运营动作的允许时段（避开深夜）
+    ops:
+      start_hour: 8
+      end_hour: 23
+    # 存草稿时段
+    draft_save:
+      start_hour: 9
+      end_hour: 22
+  # 随机间隔（秒，在基准间隔 ± 范围内随机）
+  intervals:
+    passive_reply_base_seconds: 60
+    passive_reply_jitter_seconds: 30
+    active_comment_base_seconds: 300
+    active_comment_jitter_seconds: 120
+    follow_base_seconds: 600
+    follow_jitter_seconds: 300
+
+# ===== 主动运营目标清单（G-03）=====
+# daily_ops 每天 8:00 按此清单 + daily_quotas 派发 task_runs。
+# 目标必须由用户人工指定：空白 = 该平台不派发任何主动动作（不做自动搜索发现）。
+# 主动评论 content 必须通过终极目标检查（红线/联系方式），未通过则 task_run 记 skipped。
+ops_targets:
+  xhs:
+    active_comments: []        # [{url: "https://...", content: "真实观点评论"}]
+    follows: []                # ["用户主页 URL 或 user_id"]
+  douyin:
+    active_comments: []
+    follows: []
+  kuaishou:
+    active_comments: []
+    follows: []
+  wechat_channels:
+    active_comments: []
+    follows: []
+
+# ===== 消息通知 =====
+notifications:
+  channels:
+    # macOS 原生通知（terminal-notifier）
+    macos:
+      enabled: true
+    # 企业微信 webhook
+    wecom:
+      enabled: false
+      webhook_url_env: "WECOM_WEBHOOK_URL"    # 从 .env 读取（R23）
+    # 飞书 webhook
+    feishu:
+      enabled: false
+      webhook_url_env: "FEISHU_WEBHOOK_URL"   # 从 .env 读取（R23）
+  # 7 种通知场景 × 4 级
+  events:
+    - name: "draft_saved"
+      level: "info"
+      enabled: true
+    - name: "draft_failed"
+      level: "error"
+      enabled: true
+    - name: "circuit_broken"
+      level: "critical"
+      enabled: true
+    - name: "login_expired"
+      level: "critical"
+      enabled: true
+    - name: "goal_completed"
+      level: "info"
+      enabled: true
+    - name: "data_fetch_failed"
+      level: "warning"
+      enabled: true
+    - name: "round_completed"
+      level: "info"
+      enabled: true
+
+# ===== 热点数据源（R22，默认公益 API）=====
+hot_topics:
+  enabled: true
+  refresh_interval_minutes: 30
+  sources:
+    - name: "60s.viki.moe"
+      url: "https://60s.viki.moe"
+      platforms: ["weibo", "douyin", "zhihu", "toutiao", "bilibili"]
+  # 4 门筛选（后 2 门不可关闭，R22）
+  filters:
+    heat_threshold: 5000          # 🔥 热度门槛（可关）
+    heat_filter_enabled: true
+    time_window_hours: 48         # ⏰ 时效门槛（可关）
+    time_filter_enabled: true
+    dimension_match_required: true  # 🎯 维度匹配（不可关）
+    publishability_required: true   # ✅ 可发布性（不可关）
+
+# ===== 文案生成 LLM（Agent Plan / 方舟）=====
+# R23：API Key 只放 .env 的 ARK_API_KEY，禁止写进本文件/日志/前端
+# enabled=false 或 .env 无 key → 自动降级为模板文案（不伪装成 AI 生成）
+llm:
+  enabled: false
+  provider: "ark"
+  base_url: "https://ark.cn-beijing.volces.com/api/v3"
+  model: "doubao-seed-1-6-250615"
+  api_key_env: "ARK_API_KEY"
+  temperature: 0.7
+  timeout_seconds: 60
+
+# ===== 数据保留清理（R23，APScheduler 第 7 类任务，每天 6:00）=====
+data_retention:
+  raw_response_days: 90          # 平台原始响应保留
+  screenshot_days: 30             # 截图保留
+  ops_logs_days: 365              # 运营日志保留
+  ai_calls_detail_days: 180       # AI 调用明细保留（聚合统计永久）

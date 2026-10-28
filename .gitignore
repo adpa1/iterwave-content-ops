@@ -1,0 +1,68 @@
+# ===== 虚拟环境 =====
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# ===== 敏感密钥（R23 安全规范）=====
+config/.env
+config/.env.local
+.env
+.env.local
+**/*.key
+**/*.pem
+
+# ===== SQLite 数据库 =====
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+backups/
+
+# ===== 登录态文件（R23）=====
+**/cookies/
+**/login_state.json
+**/*cookie*
+
+# ===== 运行时产物 =====
+data/outputs/
+data/screenshots/
+data/logs/
+*.log
+
+# ===== IDE =====
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# ===== Node / 前端 =====
+node_modules/
+web/dist/
+web/.vite/
+
+# ===== Python 打包 =====
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# ===== 临时 / 测试 =====
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage/
+htmlcov/
+.tox/
+
+# ===== 内部文档（不上开源）=====
+AGENTS.md
+RULES.md
+PROJECT_MEMORY.md
+设计方案.md
+目标.md
+开源建议.md
+大哥修改意见.md
+功能缺口清单.md
+*.html  # 本地 HTML 原型
+verify_*.py  # 内部验证脚本

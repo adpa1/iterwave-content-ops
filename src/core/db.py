@@ -1,0 +1,241 @@
+"""
+SQLite 连接管理 + schema 迁移。
+
+设计要点：
+1. SQLite 纯本地运行，不需要数据库服务器
+2. 初始化执行 PRAGMA foreign_keys = ON（R16 外键约束生效）
+3. schema_version 表追踪版本，启动时检查并执行增量迁移
+4. 每次迁移前自动备份到 backups/（保留最近 10 份）
+5. 全链路类型注解，Pydantic v2 边界校验
+
+用法：
+    from src.core.db import Database
+    db = Database(cfg)
+    db.initialize()
+    conn = db.connect()
+    conn.execute("SELECT * FROM goals")
+"""
+
+from __future__ import annotations
+
+import logging
+import shutil
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+from .config import Config
+
+logger = logging.getLogger(__name__)
+
+# 迁移脚本目录
+MIGRATIONS_DIR = Path(__file__).resolve().parent.parent.parent / "migrations"
+
+
+class Database:
+    """SQLite 数据库管理器 — 连接、迁移、备份。"""
+
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+        self.db_path = cfg.resolve_path(cfg.paths.db_file)
+        self.backup_dir = cfg.resolve_path(cfg.paths.backup_dir)
+
+    # ------------------------------------------------------------------
+    # 基础连接
+    # ------------------------------------------------------------------
+
+    def connect(self) -> sqlite3.Connection:
+        """打开一个连接，启用外键、WAL 模式。"""
+        conn = sqlite3.connect(
+            str(self.db_path),
+            # dict factory 让返回值可以像 dict 访问
+            detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+            check_same_thread=False,  # 异步环境可能多线程访问
+        )
+        conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute("PRAGMA journal_mode = WAL;")    # 读写并发
+        conn.execute("PRAGMA synchronous = NORMAL;")    # WAL 下足够安全
+        conn.execute("PRAGMA timeout = 30000;")        # 忙等 30s
+        conn.row_factory = sqlite3.Row                  # 列名访问
+        return conn
+
+    # ------------------------------------------------------------------
+    # 迁移入口（启动时调用一次）
+    # ------------------------------------------------------------------
+
+    def initialize(self) -> None:
+        """确保数据库存在，schema 版本对齐到最新。"""
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 确定当前版本
+        current_version = self._get_current_version()
+        logger.info("数据库当前 schema_version = %s（无版本 = 全新）", current_version)
+
+        # 发现迁移脚本
+        migrations = self._discover_migrations()
+        pending = [m for m in migrations if m.version > current_version]
+
+        if not pending:
+            logger.info("数据库已对齐最新 schema，无需迁移")
+            return
+
+        # 逐个执行
+        conn = self.connect()
+        try:
+            # 先备份
+            if current_version > 0:
+                self._backup()
+
+            for mig in pending:
+                self._run_migration(conn, mig)
+
+            logger.info("数据库迁移完成，最新版本 = %d", pending[-1].version)
+        except Exception:
+            logger.exception("数据库迁移失败")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # 内部辅助
+    # ------------------------------------------------------------------
+
+    def _get_current_version(self) -> int:
+        """读取 schema_version 表的最大版本；表不存在返回 0。"""
+        if not self.db_path.exists():
+            return 0
+        conn = self.connect()
+        try:
+            cur = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
+            )
+            if cur.fetchone() is None:
+                return 0
+            row = conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_version").fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+
+    def _discover_migrations(self) -> list["Migration"]:
+        """扫描 migrations/*.sql，按文件名中的版本号排序。"""
+        if not MIGRATIONS_DIR.exists():
+            return []
+        migrations: list[Migration] = []
+        for f in MIGRATIONS_DIR.glob("*.sql"):
+            name = f.stem  # 001_init
+            parts = name.split("_", 1)
+            if not parts or not parts[0].isdigit():
+                continue
+            version = int(parts[0])
+            migrations.append(Migration(version=version, path=f, name=parts[1] if len(parts) > 1 else name))
+        migrations.sort(key=lambda m: m.version)
+        return migrations
+
+    def _run_migration(self, conn: sqlite3.Connection, mig: "Migration") -> None:
+        """执行单个迁移脚本并记录版本。"""
+        sql = mig.path.read_text(encoding="utf-8")
+        logger.info("执行迁移 %d — %s（%s）", mig.version, mig.name, mig.path)
+
+        # SQLite 不支持单次多条语句的多结果集执行，用 executescript
+        conn.executescript(sql)
+
+        # 记录版本
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (?, ?)",
+            (mig.version, mig.name),
+        )
+        conn.commit()
+
+    def _backup(self) -> Path:
+        """把当前 db 文件复制到 backups/easel_YYYYMMDD_HHMMSS.db。"""
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = self.backup_dir / f"easel_{ts}.db"
+        # WAL 模式下要连 journal 和 shm 一起备份
+        for suffix in ("", "-wal", "-shm"):
+            src = self.db_path.with_name(self.db_path.name + suffix)
+            if src.exists():
+                shutil.copy2(src, dest.with_name(dest.name + suffix))
+        logger.info("数据库已备份: %s", dest)
+
+        # 保留最近 10 份
+        self._prune_old_backups(keep=10)
+        return dest
+
+    def _prune_old_backups(self, keep: int = 10) -> None:
+        """删除超过 keep 份的旧备份。"""
+        backups = sorted(self.backup_dir.glob("easel_*.db"), reverse=True)
+        for old in backups[keep:]:
+            for suffix in ("", "-wal", "-shm"):
+                target = old.with_name(old.name + suffix)
+                if target.exists():
+                    target.unlink()
+            logger.info("清理旧备份: %s", old.name)
+
+    # ------------------------------------------------------------------
+    # 验证工具
+    # ------------------------------------------------------------------
+
+    def verify_schema(self) -> dict:
+        """返回各表的 CHECK 约束是否完整（R7/R14 验证用）。"""
+        conn = self.connect()
+        try:
+            result: dict = {}
+            # 检查表是否存在
+            cur = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            )
+            existing = {row[0] for row in cur.fetchall()}
+
+            expected_tables = {
+                "schema_version", "goals", "spiral_rounds", "topic_index",
+                "contents", "drafts", "metrics", "ops_logs",
+                "circuit_breaker_events", "config_changes", "platform_insights",
+                "notifications", "task_runs", "ai_calls", "user_override",
+                "signature_history", "hot_topics", "plan_settings",
+                "content_assets",
+            }
+            result["missing_tables"] = sorted(expected_tables - existing)
+            result["existing_tables"] = sorted(existing & expected_tables)
+
+            # drafts 表 CHECK 中 expired 不能漏（R14）
+            if "drafts" in existing:
+                cur = conn.execute("SELECT sql FROM sqlite_master WHERE name='drafts'")
+                ddl = cur.fetchone()[0] or ""
+                result["drafts_has_expired"] = "'expired'" in ddl
+
+            # spiral_rounds CHECK 有全部 9 态（R7）
+            if "spiral_rounds" in existing:
+                cur = conn.execute("SELECT sql FROM sqlite_master WHERE name='spiral_rounds'")
+                ddl = cur.fetchone()[0] or ""
+                result["rounds_has_all_9_statuses"] = all(
+                    s in ddl for s in (
+                        "created", "producing", "awaiting_publish",
+                        "collecting_metrics", "analyzing",
+                        "completed", "partial_completed", "cancelled", "failed",
+                    )
+                )
+
+            # ops_logs.status 必须含 pending_verify（R16/R17 灰色地带恢复）
+            if "ops_logs" in existing:
+                cur = conn.execute("SELECT sql FROM sqlite_master WHERE name='ops_logs'")
+                ddl = cur.fetchone()[0] or ""
+                result["ops_logs_has_pending_verify"] = "pending_verify" in ddl
+
+            return result
+        finally:
+            conn.close()
+
+
+class Migration:
+    """单个迁移脚本的元数据。"""
+
+    def __init__(self, version: int, path: Path, name: str):
+        self.version = version
+        self.path = path
+        self.name = name
+
+    def __repr__(self) -> str:
+        return f"<Migration v{self.version}: {self.name}>"

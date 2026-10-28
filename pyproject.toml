@@ -1,0 +1,40 @@
+[project]
+name = "iterwave-content-ops"
+version = "0.1.0"
+description = "AI 图文内容运营工作台 — 从热点发现、图文生产到发布复盘，让内容持续迭代"
+requires-python = ">=3.11"
+readme = "README.md"
+
+dependencies = [
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "APScheduler>=3.10",
+    "SQLAlchemy>=2.0",
+    "playwright>=1.42",
+    "Pillow>=10.0",
+    "numpy>=1.26",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "sse-starlette>=2.0",
+    "python-dotenv>=1.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.3",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B"]
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
