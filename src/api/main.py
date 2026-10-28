@@ -128,7 +128,9 @@ def _build_app() -> FastAPI:
                         len(applied_overrides), applied_overrides)
         db = Database(cfg)
         db.initialize()
-        conn = db.connect()
+        # 线程安全包装：路由线程池 / 调度器 / 执行器共用这一个连接
+        from src.core.db import LockedConnection
+        conn = LockedConnection(db.connect())
 
         adapters = get_adapters(cfg, conn)
         cb = CircuitBreakerEngine(cfg, conn, adapters)

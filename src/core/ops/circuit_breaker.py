@@ -123,9 +123,11 @@ class CircuitBreakerEngine:
             sql += " AND platform = ?"
             params.append(platform.value)
         sql += " ORDER BY detected_at DESC"
-        rows = self.db.execute(sql, params).fetchall()
-        # 显式 dict 构造（比 dict(r) 稳，不管 row_factory 有没有 sqlite3.Row）
-        colnames = [d[0] for d in self.db.execute("PRAGMA table_info(circuit_breaker_events)").fetchall()]
+        cur = self.db.execute(sql, params)
+        rows = cur.fetchall()
+        # 用本次查询自己的列描述构造 dict：不依赖 row_factory，也不受共享连接上其他查询影响
+        # （旧实现读 PRAGMA table_info 的第 0 列 = cid 而非列名，且并发时会 IndexError）
+        colnames = [d[0] for d in (cur.description or [])]
         return [dict(zip(colnames, tuple(r))) for r in rows]
 
     # ------------------------------------------------------------------
