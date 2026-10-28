@@ -295,6 +295,18 @@ class AutogrowController:
                     "reason": f"最近连续 {ag.max_consecutive_failures} 轮失败，自动闭环暂停；"
                               f"排查后手动跑通一轮即可恢复"}
 
+        plan, plan_at, plan_source = self._plan()
+        cadence = (plan.get("cadence") or {}) if plan_source == "plan_settings" else {}
+        if cadence.get("rounds_planned"):
+            done = self.conn.execute(
+                "SELECT COUNT(*) FROM spiral_rounds WHERE created_at >= ? AND status != 'cancelled'",
+                (plan_at or "1970-01-01",),
+            ).fetchone()[0]
+            if done >= int(cadence["rounds_planned"]):
+                return {"can_start": False, "action": "stopped",
+                        "reason": f"母计划本阶段计划 {cadence['rounds_planned']} 轮已全部开出，"
+                                  f"自动闭环停止；调整母计划节奏后自动恢复"}
+
         if not force:
             if ag.max_rounds_per_day == 0:
                 return {"can_start": False, "action": "skipped", "reason": "每日自动轮上限为 0（已暂停）"}
@@ -309,7 +321,10 @@ class AutogrowController:
             last = self.conn.execute(
                 "SELECT round_number, created_at, transition_log FROM spiral_rounds ORDER BY id DESC LIMIT 1"
             ).fetchone()
-            if last and ag.cooldown_hours:
+            cooldown_hours = ag.cooldown_hours
+            if cadence.get("round_interval_days"):
+                cooldown_hours = int(float(cadence["round_interval_days"]) * 24)  # 母计划节奏优先
+            if last and cooldown_hours:
                 ended = None
                 try:
                     log = json.loads(last[2]) if last[2] else []
@@ -317,19 +332,31 @@ class AutogrowController:
                 except (TypeError, ValueError, AttributeError):
                     ended = None
                 ended = ended or _parse_dt(last[1])
-                if ended and now - ended < timedelta(hours=ag.cooldown_hours):
-                    ready = ended + timedelta(hours=ag.cooldown_hours)
+                if ended and now - ended < timedelta(hours=cooldown_hours):
+                    ready = ended + timedelta(hours=cooldown_hours)
                     return {"can_start": False, "action": "skipped",
-                            "reason": f"冷却中：第 {last[0]} 轮收口后需间隔 {ag.cooldown_hours} 小时",
+                            "reason": f"冷却中：第 {last[0]} 轮收口后需间隔 {cooldown_hours} 小时"
+                                      + ("（母计划节奏）" if cadence.get("round_interval_days") else ""),
                             "next_eligible_at": ready.isoformat(timespec="minutes")}
 
-        platforms = self.executor._resolve_platforms(None) if self.executor else []
+        wanted = list(plan.get("enabled_platforms") or []) if plan_source == "plan_settings" else None
+        platforms = self.executor._resolve_platforms(wanted) if self.executor else []
         usable = [p for p in platforms if not self.executor._platform_broken(p)]
         if not usable:
             return {"can_start": False, "action": "skipped", "reason": "没有可用平台（未启用或全部熔断）"}
 
         return {"can_start": True, "action": "start", "reason": "条件满足",
-                "platforms": [p.value for p in usable]}
+                "platforms": [p.value for p in usable], "plan_source": plan_source}
+
+    def _plan(self) -> tuple[dict, Optional[str], str]:
+        if self.pvm is None:
+            return {}, None, "none"
+        try:
+            plan, _sig, at, source = self.pvm.load_plan()
+            return plan or {}, at, source
+        except Exception:  # noqa: BLE001
+            logger.exception("autogrow 读取母计划失败")
+            return {}, None, "none"
 
     # ------------------------------------------------------------------
     async def tick(self, force: bool = False) -> dict:
@@ -350,6 +377,7 @@ class AutogrowController:
 
         ag = self.cfg.autogrow
         feedback = build_feedback(self.cfg, self.conn, self.guard) if ag.apply_feedback else StrategyFeedback()
+        by_plan = verdict.get("plan_source") == "plan_settings"
         created = create_round_record(
             self.cfg, self.conn, self.pvm,
             topic_count=ag.topic_count, platforms=verdict["platforms"],
@@ -358,8 +386,8 @@ class AutogrowController:
         round_id = created["id"]
         try:
             report = await self.executor.run(
-                round_id, topic_count=ag.topic_count, platform_values=verdict["platforms"],
-                save_drafts=True, feedback=feedback,
+                round_id, topic_count=None if by_plan else ag.topic_count,
+                platform_values=verdict["platforms"], save_drafts=None, feedback=feedback,
             )
         except Exception as exc:  # noqa: BLE001 — 必须留痕，不能静默
             logger.exception("autogrow 第 %s 轮执行异常", created["round_number"])

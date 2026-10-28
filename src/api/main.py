@@ -305,9 +305,30 @@ class TransitionRequest(BaseModel):
 
 
 class RunRoundRequest(BaseModel):
-    topic_count: int = 5
+    """不传 = 按母计划 + Agent 编排执行；传了则本次覆盖。"""
+    topic_count: Optional[int] = Field(None, ge=1, le=50)
     platforms: Optional[list[str]] = None
-    save_drafts: bool = True
+    save_drafts: Optional[bool] = None
+
+
+class IdsRequest(BaseModel):
+    ids: list[str] = Field(min_length=1)
+    reason: str = ""
+
+
+class CreateTopicRequest(BaseModel):
+    title: str
+    dimension: str
+    summary: str = ""
+    link: str = ""
+
+
+class OrchestrationRequest(BaseModel):
+    steps: list[dict]
+
+
+class DiagnoseRequest(BaseModel):
+    live_llm: bool = False
 
 
 class UpdatePlanRequest(BaseModel):
@@ -317,6 +338,44 @@ class UpdatePlanRequest(BaseModel):
     dimension_allocation: dict[str, int] = Field(default_factory=dict)
     enabled_platforms: Optional[list[str]] = None
     content_format: str = "image_text"
+    # 平台分项计划：{平台: {topic_count, publish_slots: ["20:00"]}}
+    per_platform: dict[str, dict] = Field(default_factory=dict)
+    # 节奏：{round_interval_days, rounds_planned, goal_id}
+    cadence: dict = Field(default_factory=dict)
+
+    @field_validator("per_platform")
+    @classmethod
+    def _valid_per_platform(cls, v: dict[str, dict]) -> dict[str, dict]:
+        import re as _re
+        valid = {p.value for p in Platform}
+        for p, conf in v.items():
+            if p not in valid:
+                raise ValueError(f"未知平台: {p}")
+            tc = conf.get("topic_count")
+            if tc not in (None, "") and (not isinstance(tc, int) or isinstance(tc, bool) or tc < 1):
+                raise ValueError(f"{p} 篇数必须是正整数")
+            for slot in conf.get("publish_slots") or []:
+                if not _re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", str(slot).strip()):
+                    raise ValueError(f"{p} 发布时段格式应为 HH:MM，收到 {slot}")
+        return v
+
+    @field_validator("cadence")
+    @classmethod
+    def _valid_cadence(cls, v: dict) -> dict:
+        out = {}
+        if v.get("round_interval_days") not in (None, ""):
+            d = float(v["round_interval_days"])
+            if not 0.5 <= d <= 90:
+                raise ValueError("轮间隔必须在 0.5-90 天之间")
+            out["round_interval_days"] = d
+        if v.get("rounds_planned") not in (None, ""):
+            n = int(v["rounds_planned"])
+            if not 1 <= n <= 200:
+                raise ValueError("计划轮数必须在 1-200 之间")
+            out["rounds_planned"] = n
+        if v.get("goal_id"):
+            out["goal_id"] = str(v["goal_id"])
+        return out
 
     @field_validator("dimension_allocation")
     @classmethod
@@ -758,10 +817,13 @@ def _register_routes(app: FastAPI) -> None:
         enabled = set(plan.get("enabled_platforms") or [])
         per_platform = {}
         for p in Platform:
+            conf = (plan.get("per_platform") or {}).get(p.value, {})
             per_platform[p.value] = {
                 "enabled": p.value in enabled,
                 "config_enabled": bool(getattr(cfg.platforms, p.value).enabled),
-                "topic_count": plan.get("topic_count_per_platform"),
+                "topic_count": PlanVersionManager.platform_topic_count(plan, p.value),
+                "topic_count_override": conf.get("topic_count"),
+                "publish_slots": conf.get("publish_slots") or [],
             }
 
         history = [dict(r) for r in conn.execute(
@@ -805,7 +867,12 @@ def _register_routes(app: FastAPI) -> None:
             platforms=platforms,
             dimension_allocation=req.dimension_allocation,
             content_format=req.content_format,
+            per_platform=req.per_platform,
+            cadence=req.cadence,
         )
+        alloc_total = sum(req.dimension_allocation.values())
+        if alloc_total > req.topic_count_per_platform:
+            raise HTTPException(400, f"维度分配合计 {alloc_total} 条，超过每平台选题数 {req.topic_count_per_platform}")
         result = pvm.save_plan(plan, author="web-ui")
         result["previous_signature"] = previous_signature
         result["changed"] = previous_signature != result["signature"]
@@ -831,7 +898,11 @@ def _register_routes(app: FastAPI) -> None:
             platforms=plan.get("enabled_platforms") or cfg.platforms.enabled_keys(),
             dimension_allocation=allocation,
             content_format=plan.get("content_format") or "image_text",
+            per_platform=plan.get("per_platform"),
+            cadence=plan.get("cadence"),
         )
+        if sum(allocation.values()) > new_plan["topic_count_per_platform"]:
+            new_plan["topic_count_per_platform"] = min(50, sum(allocation.values()))
         result = pvm.save_plan(new_plan, author="web-ui:adopt-gaps")
         result.update({
             "previous_signature": previous_signature,
@@ -839,6 +910,159 @@ def _register_routes(app: FastAPI) -> None:
             "dimension_allocation": allocation,
         })
         return result
+
+    @app.post("/api/plans/suggest_from_goal")
+    def plan_suggest_from_goal(req: dict):
+        """阶段目标拆分（§22 ⑥）：目标 → 每平台篇数 × 计划轮数 × 轮间隔（只给建议，不保存）。"""
+        from src.core.plan_version import suggest_plan_from_goal
+        goal_id = str((req or {}).get("goal_id") or "").strip()
+        if not goal_id:
+            raise HTTPException(400, "goal_id 不能为空")
+        plan, *_ = _g()["plan_version_manager"].load_plan()
+        try:
+            return suggest_plan_from_goal(_g()["cfg"], _g()["conn"], goal_id, plan)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    # --- 选题池（本地选题库 + 热点转入 + 手动录入；软删除可恢复）---
+    @app.get("/api/topics")
+    def list_topic_pool(
+        q: str = "", dimension: str = "", source: str = Query("", pattern="^(|kb|hot|manual)$"),
+        status: str = Query("active", pattern="^(active|excluded|all)$"),
+        limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0),
+    ):
+        from src.core.topic_pool import list_topics
+        return list_topics(_g()["cfg"], _g()["conn"], q=q, dimension=dimension, source=source,
+                           status=status, limit=limit, offset=offset)
+
+    @app.post("/api/topics")
+    def create_topic(req: CreateTopicRequest):
+        from src.core.topic_pool import add_manual_topic
+        try:
+            return add_manual_topic(_g()["conn"], title=req.title, dimension=req.dimension,
+                                    summary=req.summary, link=req.link)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/topics/delete")
+    def delete_topics(req: IdsRequest):
+        """从选题池删除（软删除）：之后不再参与评分与生产，可在「已删除」里恢复。"""
+        from src.core.topic_pool import exclude_topics
+        return exclude_topics(_g()["cfg"], _g()["conn"], req.ids, req.reason)
+
+    @app.delete("/api/topics/{topic_id}")
+    def delete_topic(topic_id: str):
+        from src.core.topic_pool import exclude_topics
+        res = exclude_topics(_g()["cfg"], _g()["conn"], [topic_id])
+        if not res["excluded"]:
+            raise HTTPException(404, f"选题 {topic_id} 不在选题池")
+        return res
+
+    @app.post("/api/topics/restore")
+    def restore_topic_ids(req: IdsRequest):
+        from src.core.topic_pool import restore_topics
+        return restore_topics(_g()["conn"], req.ids)
+
+    @app.post("/api/topics/purge")
+    def purge_topic_ids(req: IdsRequest):
+        """彻底删除手动 / 热点选题（KB 文件里的选题只能软删除；已产出内容的选题保留）。"""
+        from src.core.topic_pool import purge_topics
+        return purge_topics(_g()["conn"], req.ids)
+
+    # --- Agent 编排（§21）---
+    @app.get("/api/orchestration")
+    def get_orchestration():
+        from src.core import orchestration as orch
+        return orch.view(_g()["conn"])
+
+    @app.put("/api/orchestration")
+    def put_orchestration(req: OrchestrationRequest):
+        from src.core import orchestration as orch
+        try:
+            orch.save_steps(_g()["conn"], req.steps)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return orch.view(_g()["conn"])
+
+    @app.post("/api/orchestration/validate")
+    def validate_orchestration(req: OrchestrationRequest):
+        from src.core import orchestration as orch
+        errors = orch.validate_steps([{"id": s.get("id"), "enabled": bool(s.get("enabled"))} for s in req.steps])
+        return {"valid": not errors, "errors": errors}
+
+    @app.post("/api/orchestration/reset")
+    def reset_orchestration():
+        from src.core import orchestration as orch
+        orch.save_steps(_g()["conn"], orch.default_steps(), author="web-ui:reset")
+        return orch.view(_g()["conn"])
+
+    @app.get("/api/orchestration/runs")
+    def orchestration_runs(limit: int = Query(10, ge=1, le=50)):
+        """最近几轮各编排步骤的执行状态 / 耗时（编排预览「最近执行」）。"""
+        from src.core.orchestration import Orchestration, step_status_from_report
+        conn = _g()["conn"]
+        orch_now = Orchestration.load(conn)
+        out = []
+        for r in conn.execute(
+            "SELECT id, round_number, status, trigger_source, created_at, run_report "
+            "FROM spiral_rounds ORDER BY id DESC LIMIT ?", (limit,),
+        ).fetchall():
+            rep_ = None
+            if r["run_report"]:
+                try:
+                    rep_ = json.loads(r["run_report"])
+                except (TypeError, ValueError):
+                    rep_ = None
+            duration = None
+            if rep_ and rep_.get("started_at") and rep_.get("finished_at"):
+                try:
+                    duration = round((datetime.fromisoformat(rep_["finished_at"])
+                                      - datetime.fromisoformat(rep_["started_at"])).total_seconds(), 1)
+                except ValueError:
+                    duration = None
+            out.append({
+                "round_id": r["id"], "round_number": r["round_number"], "status": r["status"],
+                "trigger_source": r["trigger_source"], "created_at": r["created_at"],
+                "duration_seconds": duration,
+                "step_status": (rep_ or {}).get("step_status") or step_status_from_report(rep_, orch_now),
+                "errors": (rep_ or {}).get("errors", [])[:5],
+                "has_report": rep_ is not None,
+            })
+        return {"runs": out}
+
+    @app.post("/api/diagnostics")
+    def run_diagnostics(req: DiagnoseRequest):
+        """8 点端到端流程诊断（§21.3）。"""
+        from src.core.orchestration import diagnose
+        return diagnose(_g()["cfg"], _g()["conn"], cb=_g()["cb"], live_llm=req.live_llm)
+
+    # --- 删除：已生产内容 / 轮次 ---
+    @app.post("/api/contents/delete")
+    def delete_content_ids(req: IdsRequest):
+        from src.core.content_admin import delete_contents
+        return delete_contents(_g()["cfg"], _g()["conn"], req.ids)
+
+    @app.delete("/api/contents/{content_id}")
+    def delete_content(content_id: str):
+        from src.core.content_admin import delete_contents
+        res = delete_contents(_g()["cfg"], _g()["conn"], [content_id])
+        if res["not_found"]:
+            raise HTTPException(404, f"内容 {content_id} 不存在")
+        if res["blocked"]:
+            raise HTTPException(409, res["blocked"][0]["reason"])
+        return res
+
+    @app.delete("/api/rounds/{round_id}")
+    def delete_round_api(round_id: int):
+        from src.core.content_admin import DeleteBlocked, delete_round
+        if round_id in _running_rounds:
+            raise HTTPException(409, f"轮次 {round_id} 正在执行，不能删除")
+        try:
+            return delete_round(_g()["cfg"], _g()["conn"], round_id)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except DeleteBlocked as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     # --- G-09 内容列表 / 编辑 / 重检 / 驳回 ---
     def _content_row(conn, content_id: str):
@@ -1277,20 +1501,9 @@ def _register_routes(app: FastAPI) -> None:
     # --- 选题评分 ---
     @app.get("/api/topics/score")
     def score_topics(limit: int = Query(20, ge=1, le=200)):
-        conn = _g()["conn"]
-        # 从 topic_index 取最近的选题
-        rows = conn.execute(
-            "SELECT id, title, dimension, source, date, first_seen_at FROM topic_index "
-            "ORDER BY first_seen_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        topics = [
-            TopicItem(
-                id=r["id"], title=r["title"] or "", dimension=r["dimension"] or "",
-                date=r["date"],
-            )
-            for r in rows
-        ]
+        """选题池评分预览（与生产同一来源：本地选题库 + 热点转入 + 手动录入，已删除的不参与）。"""
+        from src.core.topic_pool import load_pool
+        topics, _pool_report = load_pool(_g()["cfg"], _g()["conn"])
         if not topics:
             return {"mode": _g()["scoring"]._determine_mode(), "topics": [], "message": "选题库暂无数据"}
         feedback = None
@@ -1309,7 +1522,7 @@ def _register_routes(app: FastAPI) -> None:
                     "is_exploration": s.is_exploration,
                     "breakdown": s.score_breakdown,
                 }
-                for s in scored
+                for s in scored[:limit]
             ],
         }
 
@@ -1360,18 +1573,24 @@ def _register_routes(app: FastAPI) -> None:
             f"{source}|{title}".encode("utf-8")
         ).hexdigest()[:12]
         existing = conn.execute(
-            "SELECT id FROM topic_index WHERE id = ?", (topic_id,)
+            "SELECT id, excluded_at FROM topic_index WHERE id = ?", (topic_id,)
         ).fetchone()
         if existing:
+            if existing["excluded_at"]:
+                conn.execute("UPDATE topic_index SET excluded_at = NULL, excluded_reason = NULL WHERE id = ?",
+                             (topic_id,))
+                conn.commit()
+                return {"id": topic_id, "imported": True, "message": "该热点之前被删除，已恢复到选题池"}
             return {"id": topic_id, "imported": False, "message": "选题库已存在该热点"}
 
         conn.execute(
-            "INSERT INTO topic_index (id, title, dimension, source, date, first_seen_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO topic_index (id, title, dimension, source, date, first_seen_at, link, summary) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 topic_id, title, dimension or None,
                 f"hot:{source}", datetime.now().strftime("%Y-%m-%d"),
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                raw_url, str((req or {}).get("summary") or "").strip() or None,
             ),
         )
         conn.commit()
