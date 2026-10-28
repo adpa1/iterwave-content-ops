@@ -116,83 +116,44 @@ class SchedulerEngine:
 
     # ------------------------------------------------------------------
     def _register_all_jobs(self) -> None:
-        """注册 9 类定时任务（含 hot_topics_refresh）。"""
-        # 0. publish_polling — 每 30min
-        self.scheduler.add_job(
-            _run_publish_polling,
-            IntervalTrigger(minutes=30),
-            id="publish_polling",
-            replace_existing=True,
-        )
+        """按 config.scheduler.jobs 注册定时任务（开关 / 间隔 / cron 全部来自配置）。"""
+        for job_id in JOB_RUNNERS:
+            self.apply_job_config(job_id)
 
-        # 1. data_fetch — 由轮次流程动态注册 date trigger，这里留空壳
-        #    真实注册点在 on_draft_published() 中
-        # 2. daily_ops — 每天 8:00
-        self.scheduler.add_job(
-            _run_daily_ops,
-            CronTrigger(hour=8, minute=0),
-            id="daily_ops",
-            replace_existing=True,
-        )
+    def _trigger_for(self, job_id: str):
+        sched = self.cfg.scheduler.job(job_id)
+        if sched.cron:
+            return CronTrigger.from_crontab(sched.cron)
+        return IntervalTrigger(minutes=int(sched.interval_minutes))
 
-        # 3. comment_polling — 每 30min
-        self.scheduler.add_job(
-            _run_comment_polling,
-            IntervalTrigger(minutes=30),
-            id="comment_polling",
-            replace_existing=True,
-        )
+    def apply_job_config(self, job_id: str) -> dict:
+        """按当前配置（重新）排定单个任务：关闭则移除，开启则 replace_existing 重排。
 
-        # 4. cb_recovery — 每 5min 扫一次
+        运行时修改配置（PATCH /api/config scheduler.jobs.*）后调用，立即生效，无需重启。
+        """
+        if job_id not in JOB_RUNNERS:
+            raise KeyError(f"未知定时任务：{job_id}")
+        sched = self.cfg.scheduler.job(job_id)
+        enabled = sched.enabled
+        if job_id == "hot_topics_refresh" and getattr(self.cfg.hot_topics, "enabled", True) is False:
+            enabled = False
+        if not enabled:
+            if self.scheduler.get_job(job_id) is not None:
+                self.scheduler.remove_job(job_id)
+            logger.info("⏸️ [APS] 定时任务 %s 已关闭", job_id)
+            return {"job_id": job_id, "enabled": False}
+        if self.scheduler.get_job(job_id) is not None:
+            self.scheduler.remove_job(job_id)
         self.scheduler.add_job(
-            _run_cb_recovery,
-            IntervalTrigger(minutes=5),
-            id="cb_recovery",
+            JOB_RUNNERS[job_id],
+            self._trigger_for(job_id),
+            id=job_id,
             replace_existing=True,
+            max_instances=1,
+            coalesce=True,
         )
-
-        # 5. kb_scan — 每天 6:00
-        self.scheduler.add_job(
-            _run_kb_scan,
-            CronTrigger(hour=6, minute=0),
-            id="kb_scan",
-            replace_existing=True,
-        )
-
-        # 6. data_retention_cleanup — 每天 6:00（与 kb_scan 同时，先后执行）
-        self.scheduler.add_job(
-            _run_data_retention_cleanup,
-            CronTrigger(hour=6, minute=0),
-            id="data_retention_cleanup",
-            replace_existing=True,
-        )
-
-        # 7. round_timeout_sweeper — 每小时（R8：producing/awaiting_publish/collecting_metrics 独立超时）
-        self.scheduler.add_job(
-            _run_round_timeout_sweeper,
-            IntervalTrigger(hours=1),
-            id="round_timeout_sweeper",
-            replace_existing=True,
-        )
-
-        # 9. hot_topics_refresh — 热点异步采集 + 标签匹配（间隔取 hot_topics.refresh_interval_minutes）
-        if getattr(self.cfg.hot_topics, "enabled", True) is not False:
-            self.scheduler.add_job(
-                _run_hot_topics_refresh,
-                IntervalTrigger(minutes=max(5, int(self.cfg.hot_topics.refresh_interval_minutes or 30))),
-                id="hot_topics_refresh",
-                replace_existing=True,
-                max_instances=1,
-                coalesce=True,
-            )
-
-        # 8. round_review — 每 10min（R10：collecting_metrics → analyzing → 终态 + 螺旋复盘 + 通知）
-        self.scheduler.add_job(
-            _run_round_review,
-            IntervalTrigger(minutes=10),
-            id="round_review",
-            replace_existing=True,
-        )
+        logger.info("⏰ [APS] 定时任务 %s：%s", job_id, sched.describe())
+        return {"job_id": job_id, "enabled": True, "schedule": sched.describe()}
 
     # ------------------------------------------------------------------
     # 外部接口：动态注册 data_fetch
@@ -767,7 +728,15 @@ class SchedulerEngine:
         - 平台原始响应   → raw_response_days（默认 90）
         - ops_logs       → ops_logs_days（默认 365）
         - ai_calls 明细  → ai_calls_days（默认 180）
+        - 热点           → hot_topics.retention_days / max_rows（热点采集关闭时也照常清理）
         """
+        if self.conn is not None:
+            try:
+                from ..hot_topic_dedup import prune
+                prune(self.conn, retention_days=self.cfg.hot_topics.retention_days,
+                      max_rows=self.cfg.hot_topics.max_rows)
+            except Exception:  # noqa: BLE001 — 热点清理失败不影响其它保留清理
+                logger.exception("[APS] 热点保留清理失败")
         import shutil
         from pathlib import Path as P
         from datetime import datetime, timedelta
@@ -1108,3 +1077,17 @@ async def _run_round_timeout_sweeper() -> None:
 async def _run_round_review() -> None:
     if _ACTIVE_ENGINE is not None:
         await _ACTIVE_ENGINE._job_round_review()
+
+
+# 任务 id → 可 pickle 的模块级执行函数（SQLAlchemyJobStore 要求）
+JOB_RUNNERS = {
+    "publish_polling": _run_publish_polling,
+    "daily_ops": _run_daily_ops,
+    "comment_polling": _run_comment_polling,
+    "cb_recovery": _run_cb_recovery,
+    "kb_scan": _run_kb_scan,
+    "data_retention_cleanup": _run_data_retention_cleanup,
+    "round_timeout_sweeper": _run_round_timeout_sweeper,
+    "round_review": _run_round_review,
+    "hot_topics_refresh": _run_hot_topics_refresh,
+}

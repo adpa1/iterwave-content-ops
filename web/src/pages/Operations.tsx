@@ -629,24 +629,18 @@ function SchedulerPane({ jobs, onTriggered }: {
 }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draft, setDraft] = useState<{ enabled: boolean; mode: "interval" | "cron"; interval: string; cron: string }>(
+    { enabled: true, mode: "interval", interval: "", cron: "" },
+  );
   if (!jobs) return <div className="note">加载中…</div>;
-  const APS_LABEL: Record<string, string> = {
-    publish_polling: "发布轮询（30min）",
-    data_fetch: "数据采集（动态 24h）",
-    daily_ops: "每日运营（每天 8:00）",
-    comment_polling: "评论轮询（30min）",
-    cb_recovery: "熔断恢复（5min）",
-    kb_scan: "题库扫描（每天 6:00）",
-    data_retention_cleanup: "数据保留清理（每天 6:00）",
-    round_timeout_sweeper: "轮次超时判定（每小时）",
-    round_review: "轮次复盘（10min）",
-  };
-  const runNow = async (id: string) => {
-    setBusyId(id);
+
+  const runNow = async (j: SchedulerJob) => {
+    setBusyId(j.id);
     setMsg(null);
     try {
-      await api.runSchedulerJob(id);
-      setMsg(`已触发「${APS_LABEL[id] ?? id}」，可到「任务追踪」查看结果`);
+      await api.runSchedulerJob(j.id);
+      setMsg(`已触发「${j.name}」，可到「任务追踪」查看结果`);
       onTriggered?.();
     } catch (e: any) {
       setMsg(`触发失败: ${e.message}`);
@@ -654,47 +648,129 @@ function SchedulerPane({ jobs, onTriggered }: {
       setBusyId(null);
     }
   };
+
+  const startEdit = (j: SchedulerJob) => {
+    setEditing(j.id);
+    setDraft({
+      enabled: j.enabled,
+      mode: j.cron ? "cron" : "interval",
+      interval: j.interval_minutes != null ? String(j.interval_minutes) : "",
+      cron: j.cron ?? "",
+    });
+  };
+
+  const save = async (j: SchedulerJob) => {
+    const prefix = `scheduler.jobs.${j.id}`;
+    const updates: Record<string, unknown> = {};
+    if (draft.enabled !== j.enabled) updates[`${prefix}.enabled`] = draft.enabled;
+    if (draft.mode === "interval") {
+      const n = Number(draft.interval);
+      if (!Number.isInteger(n) || n < 1) { setMsg("间隔必须是正整数（分钟）"); return; }
+      if (n !== j.interval_minutes || j.cron) updates[`${prefix}.interval_minutes`] = n;
+    } else {
+      const c = draft.cron.trim();
+      if (c.split(/\s+/).length !== 5) { setMsg("cron 必须是 5 段：分 时 日 月 周"); return; }
+      if (c !== j.cron) updates[`${prefix}.cron`] = c;
+    }
+    if (Object.keys(updates).length === 0) { setEditing(null); return; }
+    setBusyId(j.id);
+    try {
+      await api.patchConfig(updates);
+      setMsg(`「${j.name}」已保存并立即重排`);
+      setEditing(null);
+      onTriggered?.();
+    } catch (e: any) {
+      setMsg(`保存失败: ${e.message}`);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const active = jobs.jobs.filter((j) => j.enabled).length;
   return (
     <>
-      <div className="grid two" style={{ marginBottom: 16 }}>
+      <div className="grid three" style={{ marginBottom: 16 }}>
         <div className="metric">
           <div className="metric-label">APScheduler 状态</div>
           <div className="metric-val" style={{ color: jobs.running ? "var(--green)" : "var(--red)" }}>
-            {jobs.running ? "✅ 运行中" : "❌ 已停止"}
+            {jobs.running ? "运行中" : "已停止"}
           </div>
-          <div className="metric-foot">{jobs.jobs.length} 个注册任务</div>
+          <div className="metric-foot">{active} / {jobs.jobs.length} 个任务已启用</div>
         </div>
       </div>
       <div className="panel">
         <div className="panel-head">
           <div className="panel-title"><span className="icon">⏰</span>定时任务（{jobs.jobs.length}）</div>
+          <div className="panel-sub">开关与频率全部来自配置，修改后写入覆盖文件并立即重排，无需重启</div>
         </div>
         {msg && (
-          <div className="panel-sub" style={{ padding: "0 16px 8px", color: "var(--subtle)" }}>{msg}</div>
+          <div className="panel-sub" role="status" style={{ padding: "0 16px 8px", color: "var(--subtle)" }}>{msg}</div>
         )}
         <div className="list">
           {jobs.jobs.length === 0 && (
-            <EmptyHint next="检查后端 APScheduler 是否已启动（/api/scheduler）；启动后 7 类定时任务会自动注册">APScheduler 无注册任务</EmptyHint>
+            <EmptyHint next="检查后端 APScheduler 是否已启动（/api/scheduler/jobs）">没有定时任务</EmptyHint>
           )}
           {jobs.jobs.map((j) => (
-            <div key={j.id} className="task-row">
-              <i className="task-prio blue" />
+            <div key={j.id} className="task-row" style={{ flexWrap: "wrap" }}>
+              <i className={`task-prio ${j.enabled ? "blue" : "gray"}`} />
               <div className="task-main">
-                <div className="task-title">{APS_LABEL[j.id] ?? j.id}</div>
+                <div className="task-title">
+                  {j.name} <code style={{ fontSize: 10, color: "var(--muted)" }}>{j.id}</code>
+                  {!j.enabled && <span className="tag gray" style={{ marginLeft: 6 }}>已关闭</span>}
+                </div>
                 <div className="task-desc">
-                  Trigger: <code style={{ fontSize: 10 }}>{j.trigger}</code>
-                  {j.next_run_time && <> · 下次: {new Date(j.next_run_time).toLocaleString("zh-CN")}</>}
-                  {!j.next_run_time && <> · 未排定</>}
+                  {j.schedule}
+                  {j.enabled && j.next_run_time && <> · 下次 {new Date(j.next_run_time).toLocaleString("zh-CN")}</>}
+                  {j.enabled && !j.next_run_time && <> · 未排定</>}
                 </div>
               </div>
+              {j.configurable && editing !== j.id && (
+                <button className="btn sm" onClick={() => startEdit(j)}>配置</button>
+              )}
               <button
                 className="btn sm"
-                disabled={busyId === j.id}
-                onClick={() => runNow(j.id)}
-                title="立即触发一次（不影响后续排期）"
+                disabled={busyId === j.id || !j.enabled}
+                onClick={() => runNow(j)}
+                title={j.enabled ? "立即触发一次（不影响后续排期）" : "任务已关闭"}
               >
-                {busyId === j.id ? "触发中…" : "▶ 立即执行"}
+                {busyId === j.id ? "处理中…" : "▶ 立即执行"}
               </button>
+              {editing === j.id && (
+                <form
+                  className="flex wrap"
+                  style={{ gap: 8, width: "100%", padding: "10px 0 2px 18px", alignItems: "center" }}
+                  onSubmit={(e) => { e.preventDefault(); save(j); }}
+                >
+                  <label className="flex" style={{ gap: 4, alignItems: "center" }}>
+                    <input type="checkbox" checked={draft.enabled}
+                      onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />
+                    启用
+                  </label>
+                  <label className="sr-only" htmlFor={`mode-${j.id}`}>触发方式</label>
+                  <select id={`mode-${j.id}`} className="field" value={draft.mode}
+                    onChange={(e) => setDraft({ ...draft, mode: e.target.value as "interval" | "cron" })}>
+                    <option value="interval">固定间隔</option>
+                    <option value="cron">cron 表达式</option>
+                  </select>
+                  {draft.mode === "interval" ? (
+                    <label className="flex" style={{ gap: 4, alignItems: "center" }}>
+                      每
+                      <input className="field" type="number" min={1} max={10080} style={{ width: 90 }}
+                        value={draft.interval} onChange={(e) => setDraft({ ...draft, interval: e.target.value })} />
+                      分钟
+                    </label>
+                  ) : (
+                    <label className="flex" style={{ gap: 4, alignItems: "center" }}>
+                      <span className="sr-only">cron</span>
+                      <input className="field" style={{ width: 160, fontFamily: "monospace" }} placeholder="0 8 * * *"
+                        value={draft.cron} onChange={(e) => setDraft({ ...draft, cron: e.target.value })} />
+                      <span style={{ fontSize: 11, color: "var(--muted)" }}>分 时 日 月 周（本地时区）</span>
+                    </label>
+                  )}
+                  <button type="submit" className="btn sm primary" disabled={busyId === j.id}>保存</button>
+                  <button type="button" className="btn sm" onClick={() => setEditing(null)}>取消</button>
+                </form>
+              )}
             </div>
           ))}
         </div>

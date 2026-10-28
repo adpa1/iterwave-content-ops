@@ -160,7 +160,8 @@ class HotTopicMatcher:
     def pending(self, limit: int = MAX_PER_RUN) -> list[dict]:
         rows = self.conn.execute(
             "SELECT id, title FROM hot_topics WHERE evidence_status = 'collected' "
-            "AND title IS NOT NULL AND (match_version IS NULL OR match_version != ?) "
+            "AND title IS NOT NULL AND duplicate_of IS NULL "
+            "AND (match_version IS NULL OR match_version != ?) "
             "ORDER BY heat_score DESC NULLS LAST LIMIT ?",
             (self.version, limit),
         ).fetchall()

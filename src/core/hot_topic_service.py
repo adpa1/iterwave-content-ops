@@ -1,7 +1,7 @@
 """热点异步采集服务：采集 → 落库 → 标签匹配，单飞（同一时刻只跑一次）。
 
 调用方：
-  - APScheduler 定时任务 hot_topics_refresh（每 refresh_interval_minutes 分钟）
+  - APScheduler 定时任务 hot_topics_refresh（频率见 config scheduler.jobs.hot_topics_refresh）
   - POST /api/hot_topics/refresh（手动触发，立即返回，后台线程执行）
   - 应用启动时若库里没有新鲜数据，补跑一次
 

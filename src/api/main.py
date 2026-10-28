@@ -72,7 +72,7 @@ from src.core.plan_version import PlanVersionManager
 from src.core.ops.pause import pause_state, set_ops_paused
 from src.core.config_store import (
     ConfigNotAllowedError, ConfigPatchError, apply_overrides, current_config_view,
-    load_overrides, patch_config,
+    changed_job_ids, load_overrides, patch_config, scheduler_jobs_view,
 )
 from src.adapters.base import Platform
 from src.adapters import get_adapters
@@ -1552,17 +1552,33 @@ def _register_routes(app: FastAPI) -> None:
     # --- APScheduler 定时任务状态 ---
     @app.get("/api/scheduler/jobs")
     def scheduler_jobs():
-        """列出 APScheduler SQLiteJobStore 中注册的任务（含下次运行时间）。"""
-        jobs = _g()["scheduler"].scheduler.get_jobs()
+        """定时任务：配置（开关 / 间隔 / cron）+ APScheduler 实际排期。关闭的任务也会列出。"""
+        sched = _g()["scheduler"]
+        cfg = _g()["cfg"]
+        registered = {job.id: job for job in sched.scheduler.get_jobs()}
         result = []
-        for job in jobs:
+        for job_id, conf in scheduler_jobs_view(cfg).items():
+            job = registered.pop(job_id, None)
             result.append({
-                "id": job.id,
-                "name": job.name or job.id,
-                "next_run_time": job.next_run_time.isoformat() if job.next_run_time else None,
-                "trigger": str(job.trigger),
+                "id": job_id,
+                "name": conf["description"],
+                "enabled": conf["enabled"],
+                "interval_minutes": conf["interval_minutes"],
+                "cron": conf["cron"],
+                "schedule": conf["schedule"],
+                "next_run_time": job.next_run_time.isoformat() if job and job.next_run_time else None,
+                "trigger": str(job.trigger) if job else None,
+                "configurable": True,
             })
-        return {"jobs": result, "count": len(result), "running": _g()["scheduler"].scheduler.running}
+        # 动态注册的一次性任务（data_fetch_* 等）只展示，不可配置
+        for job in registered.values():
+            result.append({
+                "id": job.id, "name": job.name or job.id, "enabled": True,
+                "interval_minutes": None, "cron": None, "schedule": str(job.trigger),
+                "next_run_time": job.next_run_time.isoformat() if job.next_run_time else None,
+                "trigger": str(job.trigger), "configurable": False,
+            })
+        return {"jobs": result, "count": len(result), "running": sched.scheduler.running}
 
     @app.post("/api/scheduler/jobs/{job_id}/run")
     def scheduler_run_job(job_id: str):
@@ -1570,7 +1586,7 @@ def _register_routes(app: FastAPI) -> None:
         sched = _g()["scheduler"]
         job = sched.scheduler.get_job(job_id)
         if job is None:
-            raise HTTPException(404, f"任务不存在: {job_id}")
+            raise HTTPException(404, f"任务不存在或已关闭: {job_id}")
         job.modify(next_run_time=datetime.now())
         return {"job_id": job_id, "triggered_at": datetime.now().isoformat(timespec="seconds")}
 
@@ -1632,6 +1648,17 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=400, detail=str(e))
         except ConfigPatchError as e:
             raise HTTPException(status_code=422, detail=str(e))
+        # 定时任务配置改动 → 立即重排（不用重启）
+        sched = g2.get("scheduler")
+        rescheduled = []
+        if sched is not None:
+            for job_id in sorted(changed_job_ids(c["key"] for c in result["changed"])):
+                try:
+                    rescheduled.append(sched.apply_job_config(job_id))
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("重排定时任务失败 %s", job_id)
+                    rescheduled.append({"job_id": job_id, "error": str(e)})
+        result["rescheduled"] = rescheduled
         return {**result, "config": current_config_view(g2["cfg"], g2["conn"])["editable"]}
 
     # --- 内容资产（G-13：外部参考 / 个人观点 / 内容模板）---
