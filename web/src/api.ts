@@ -227,8 +227,23 @@ export interface InsightItem {
   suggestions: string[];
 }
 
-/** 四平台进度（/api/platform_progress 返回的 per-platform 分组） */
+/** /api/goals/summary：总体目标进度 */
+export interface GoalSummary {
+  /** 0–100；null = 没有任何活跃目标有数据（R21：未知 ≠ 0） */
+  percent: number | null;
+  method: "equal_weight_mean" | string;
+  active_goals: number;
+  counted_goals: number;
+  pending_goals: number;
+  period_start: string | null;
+  period_end: string | null;
+  days_left: number | null;
+}
+
+/** 四平台进度（/api/platform_progress，固定返回 4 个平台） */
 export interface PlatformProgress {
+  /** 与 /api/status.enabled_platforms 同一口径 */
+  enabled: boolean;
   total_drafts: number;
   /** { draft_saved: 3, user_published: 1, data_fetching: 2, ... } */
   status_breakdown: Record<string, number>;
@@ -600,12 +615,14 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
 export const api = {
   status: () => fetchJson<SystemStatus>("/api/status"),
   goals: () => fetchJson<Goal[]>("/api/goals"),
+  /** 总体目标进度（后端统一计算等权平均，前端只展示） */
+  goalsSummary: () => fetchJson<GoalSummary>("/api/goals/summary"),
   createGoal: (data: Partial<Goal>) =>
     fetchJson<{ id: string; message: string }>("/api/goals", {
       method: "POST", body: JSON.stringify(data),
     }),
   refreshGoalProgress: () =>
-    fetchJson<{ updated: Record<string, number | null>; goals: Goal[] }>(
+    fetchJson<{ updated: Record<string, number | null>; goals: Goal[]; summary: GoalSummary }>(
       "/api/goals/progress/refresh", { method: "POST" },
     ),
   rounds: (status?: string) =>

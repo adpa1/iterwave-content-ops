@@ -18,6 +18,7 @@ POST /api/rounds/{id}/transition  轮次状态迁移
 GET  /api/drafts          草稿列表
 POST /api/drafts/{id}/publish_confirm  用户发布确认（R1 手动触发）
 GET  /api/goals           目标列表
+GET  /api/goals/summary   总体目标进度（已有数据目标达成率等权平均）
 POST /api/goals           创建阶段目标
 GET  /api/metrics         已采集数据列表
 GET  /api/circuit_breaker 熔断器状态
@@ -533,13 +534,16 @@ def _register_routes(app: FastAPI) -> None:
         for r in rows:
             item = dict(r)
             # R21：达成率后端算，任一分量 NULL → NULL（前端显示灰色「数据待采集」）
-            item["achievement_rate"] = GoalProgressUpdater.achievement_rate(
-                current=item.get("current_value"),
-                baseline=item.get("baseline_value"),
-                target=item.get("target_value"),
-            )
+            item["achievement_rate"] = GoalProgressUpdater.rate_for(item)
             result.append(item)
         return result
+
+    @app.get("/api/goals/summary")
+    def goals_summary():
+        """总体目标进度（goal-hero）：等权平均口径由后端统一计算，前端只展示。"""
+        conn = _g()["conn"]
+        rows = conn.execute("SELECT * FROM goals").fetchall()
+        return GoalProgressUpdater.summarize(rows)
 
     @app.post("/api/goals")
     def create_goal(req: CreateGoalRequest):
@@ -574,13 +578,9 @@ def _register_routes(app: FastAPI) -> None:
         result = []
         for r in rows:
             item = dict(r)
-            item["achievement_rate"] = GoalProgressUpdater.achievement_rate(
-                current=item.get("current_value"),
-                baseline=item.get("baseline_value"),
-                target=item.get("target_value"),
-            )
+            item["achievement_rate"] = GoalProgressUpdater.rate_for(item)
             result.append(item)
-        return {"updated": values, "goals": result}
+        return {"updated": values, "goals": result, "summary": GoalProgressUpdater.summarize(rows)}
 
     # --- 轮次 ---
     @app.get("/api/rounds")
@@ -1661,15 +1661,16 @@ def _register_routes(app: FastAPI) -> None:
     # --- 四平台进度聚合（Dashboard #11：四个平台独立进度）---
     @app.get("/api/platform_progress")
     def platform_progress():
-        """返回每个 enabled 平台的：总草稿数 / 各状态分布 / 熔断状态。"""
+        """返回全部 4 个平台的：是否启用 / 总草稿数 / 各状态分布 / 熔断状态。
+
+        启用判定与 /api/status 共用 cfg.platforms.enabled_keys()，避免两处口径不一致；
+        未启用的平台也返回（enabled=false），前端四平台 lane 不必自行补齐。
+        """
         conn = _g()["conn"]
         cfg = _g()["cfg"]
-        enabled_platforms = [
-            p for p, conf in (cfg.platforms.model_dump() if hasattr(cfg.platforms, "model_dump") else dict(cfg.platforms)).items()
-            if isinstance(conf, dict) and conf.get("enabled", True)
-        ] or ["xhs", "douyin", "kuaishou", "wechat_channels"]
+        enabled_keys = set(cfg.platforms.enabled_keys())
         result = {}
-        for p in enabled_platforms:
+        for p in [pl.value for pl in Platform]:
             # 各状态计数
             status_rows = conn.execute(
                 "SELECT status, COUNT(*) as cnt FROM drafts WHERE platform=? GROUP BY status",
@@ -1686,6 +1687,7 @@ def _register_routes(app: FastAPI) -> None:
             ).fetchone()
             cb = cb_row[0] > 0
             result[p] = {
+                "enabled": p in enabled_keys,
                 "total_drafts": total,
                 "status_breakdown": status_map,
                 "circuit_broken": cb,
@@ -1708,29 +1710,43 @@ def _register_routes(app: FastAPI) -> None:
         now = datetime.now()
         items: list[dict] = []
 
-        # 1. 目标长期无进度（current_value IS NULL 或 < target_value，且 metric_period_end 已过）
+        def _pname(p: Optional[str]) -> str:
+            if not p:
+                return "全平台"
+            try:
+                return Platform(p).display_name
+            except ValueError:
+                return p
+
+        # 1. 目标已过统计周期仍未达成：达成率与 /api/goals 同一口径（GoalProgressUpdater.rate_for），
+        #    metric_period_end 是日期，必须按「日期 < 今天」比较，否则截止当天就会被误判超期
         goal_rows = conn.execute(
             """SELECT id, goal_text, target_platform, target_metric, target_value,
-                      baseline_at, current_value, metric_period_end
+                      metric_scope, baseline_value, baseline_at, current_value, metric_period_end
                FROM goals
                WHERE status='active'
                  AND metric_period_end IS NOT NULL
-                 AND metric_period_end < ?
-                 AND (current_value IS NULL OR current_value < target_value)
+                 AND substr(metric_period_end, 1, 10) < ?
             """,
-            (now.isoformat(),),
+            (now.date().isoformat(),),
         ).fetchall()
         for r in goal_rows:
-            target_val = r["target_value"] or 0
+            rate = GoalProgressUpdater.rate_for(r)
+            if rate is not None and rate >= 100:
+                continue
+            pct = f"{rate:.0f}%" if rate is not None else "数据待采集"
             cur_val = r["current_value"]
-            pct = f"{(cur_val / target_val * 100):.0f}%" if (cur_val is not None and target_val > 0) else "待采集"
             items.append({
                 "id": f"goal:{r['id']}",
                 "type": "goal_strategy",
                 "title": f"目标「{r['goal_text']}」已过截止日期 {r['metric_period_end'][:10]} 但未达成（{pct}）",
-                "detail": f"{r['target_platform'] or '全平台'} · {r['target_metric']} 目标 {target_val} · 当前 {cur_val or '—'}",
+                "detail": (
+                    f"{_pname(r['target_platform'])} · {r['target_metric']} 目标 {r['target_value']}"
+                    f" · 当前 {cur_val if cur_val is not None else '待采集'}"
+                ),
                 "priority": "high",
                 "source": "goals",
+                "platform": r["target_platform"],
                 "created_at": r["metric_period_end"],
                 "actions": ["go_goal"],
             })
@@ -1771,7 +1787,8 @@ def _register_routes(app: FastAPI) -> None:
             items.append({
                 "id": f"cb:{r['id']}",
                 "type": "circuit_recover",
-                "title": f"{r['platform']} 熔断冷却已到期（原因：{r['reason']}），需执行 3 步恢复验证",
+                "title": f"{_pname(r['platform'])} 熔断冷却已到期（原因：{r['reason']}），需执行 3 步恢复验证",
+                "platform": r["platform"],
                 "detail": f"冷却到期于 {r['cooldown_until'][:16]}",
                 "priority": "high",
                 "source": "circuit_breaker",
@@ -1793,7 +1810,8 @@ def _register_routes(app: FastAPI) -> None:
             items.append({
                 "id": f"cb2:{r['id']}",
                 "type": "circuit_active",
-                "title": f"{r['platform']} 熔断中（原因：{r['reason']}），冷却至 {r['cooldown_until'][:16] if r['cooldown_until'] else '—'}",
+                "title": f"{_pname(r['platform'])} 熔断中（原因：{r['reason']}），冷却至 {r['cooldown_until'][:16] if r['cooldown_until'] else '—'}",
+                "platform": r["platform"],
                 "priority": "medium",
                 "source": "circuit_breaker",
                 "created_at": r["detected_at"],

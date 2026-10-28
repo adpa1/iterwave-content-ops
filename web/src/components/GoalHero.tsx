@@ -1,14 +1,12 @@
-import { Goal } from "../api";
+import { Goal, GoalSummary } from "../api";
 import { platformMeta } from "../platforms";
 
 /**
  * 深色目标叙事卡（对齐 v10 demo 的 .goal-hero）。
  *
- * 全部数据来自 /api/goals 与 /api/config，不含任何硬编码数值：
- * - 总进度 = 「已有达成率的活跃目标」的 achievement_rate 简单平均（等权）。
- *   后端没有目标权重字段，所以不做加权；口径直接写在卡片上。
- *   没有任何目标有数据时显示「数据待采集」，绝不显示 0%（R21：未知 ≠ 0）。
- * - 周期 = 活跃目标里最早的 metric_period_start 到最晚的 metric_period_end。
+ * 全部数据来自 /api/goals、/api/goals/summary 与 /api/config，不含任何硬编码数值：
+ * - 总进度 / 周期 / 剩余天数来自 /api/goals/summary（后端 GoalProgressUpdater.summarize，
+ *   已有数据的活跃目标达成率等权平均；没有数据 → null，显示「数据待采集」，R21：未知 ≠ 0）。
  * - 右侧关键结果 = 活跃目标（按达成率缺失优先暴露、再按截止时间）取前 3 个。
  */
 
@@ -22,6 +20,8 @@ export const METRIC_LABELS: Record<string, string> = {
   interaction_rate: "互动率",
 };
 
+export const PERCENT_METRICS = new Set(["interaction_rate", "like_rate", "collect_rate"]);
+
 export function metricLabel(m: string) {
   return METRIC_LABELS[m] ?? m;
 }
@@ -32,32 +32,9 @@ export function isActiveGoal(g: Goal) {
 
 export function formatMetricValue(metric: string, v: number | null | undefined): string {
   if (v == null) return "—";
-  if (metric === "interaction_rate") return `${(v <= 1 ? v * 100 : v).toFixed(1)}%`;
+  // 比率类指标后端统一以百分数存储（goal_progress.PERCENT_METRICS）：3.8 即 3.8%
+  if (PERCENT_METRICS.has(metric)) return `${Number(v.toFixed(2))}%`;
   return v.toLocaleString("zh-CN");
-}
-
-export interface OverallProgress {
-  /** 0–100，null 表示没有任何目标有数据 */
-  percent: number | null;
-  counted: number;
-  pending: number;
-  start: string | null;
-  end: string | null;
-  daysLeft: number | null;
-}
-
-export function computeOverall(goals: Goal[]): OverallProgress {
-  const active = goals.filter(isActiveGoal);
-  const withData = active.filter((g) => g.achievement_rate != null);
-  const percent = withData.length
-    ? withData.reduce((s, g) => s + Math.min(Math.max(g.achievement_rate as number, 0), 100), 0) / withData.length
-    : null;
-  const starts = active.map((g) => g.metric_period_start).filter(Boolean) as string[];
-  const ends = active.map((g) => g.metric_period_end).filter(Boolean) as string[];
-  const start = starts.length ? starts.sort()[0] : null;
-  const end = ends.length ? ends.sort()[ends.length - 1] : null;
-  const daysLeft = end ? Math.ceil((new Date(end).getTime() - Date.now()) / 86400000) : null;
-  return { percent, counted: withData.length, pending: active.length - withData.length, start, end, daysLeft };
 }
 
 /** delta 口径显示「当前值 − 基线」，与达成率公式一致；absolute 口径显示当前值本身 */
@@ -78,14 +55,22 @@ function fmtDate(s: string | null) {
 
 interface Props {
   goals: Goal[];
+  summary: GoalSummary | null;
   personaKeywords?: string[];
   forbiddenDirections?: string[];
   onCreateGoal?: () => void;
 }
 
-export default function GoalHero({ goals, personaKeywords = [], forbiddenDirections = [], onCreateGoal }: Props) {
+export default function GoalHero({ goals, summary, personaKeywords = [], forbiddenDirections = [], onCreateGoal }: Props) {
   const active = goals.filter(isActiveGoal);
-  const overall = computeOverall(goals);
+  const overall = {
+    percent: summary?.percent ?? null,
+    counted: summary?.counted_goals ?? 0,
+    pending: summary?.pending_goals ?? 0,
+    start: summary?.period_start ?? null,
+    end: summary?.period_end ?? null,
+    daysLeft: summary?.days_left ?? null,
+  };
   const krs = [...active]
     .sort((a, b) => (a.metric_period_end ?? "").localeCompare(b.metric_period_end ?? ""))
     .slice(0, 3);
@@ -149,7 +134,7 @@ export default function GoalHero({ goals, personaKeywords = [], forbiddenDirecti
               <div key={g.id} className="goal-stat" title={g.goal_text}>
                 <div className="l">{plat} · {metricLabel(g.target_metric)}</div>
                 <div className="n">
-                  {g.metric_scope === "delta" && g.target_metric !== "interaction_rate" ? "+" : ""}
+                  {g.metric_scope === "delta" && !PERCENT_METRICS.has(g.target_metric) ? "+" : ""}
                   {formatMetricValue(g.target_metric, g.target_value)}
                 </div>
                 <div className="sub" style={g.current_value == null ? { color: "#c9d6ea" } : undefined}>

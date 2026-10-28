@@ -4,7 +4,7 @@ import AsyncPanel from "../components/AsyncPanel";
 import EmptyHint from "../components/EmptyHint";
 import GoalHero, { isActiveGoal, metricLabel, currentProgressText } from "../components/GoalHero";
 import {
-  api, SpiralRound, Goal, HotTopicItem, InsightItem, PlatformProgress, ActionItem, SystemConfigView,
+  api, SpiralRound, Goal, GoalSummary, HotTopicItem, InsightItem, PlatformProgress, ActionItem, SystemConfigView,
 } from "../api";
 import { platformMeta, Platform, ALL_PLATFORMS } from "../platforms";
 
@@ -39,6 +39,7 @@ export default function Dashboard() {
   const { status } = useApp();
   const [rounds, setRounds] = useState<SpiralRound[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
+  const [summary, setSummary] = useState<GoalSummary | null>(null);
   const [hot, setHot] = useState<HotTopicItem[]>([]);
   const [insights, setInsights] = useState<InsightItem[]>([]);
   const [progress, setProgress] = useState<Partial<Record<Platform, PlatformProgress>>>({});
@@ -59,6 +60,7 @@ export default function Dashboard() {
       api.platformProgress(),
       api.actionItems(),
       api.config(),
+      api.goalsSummary(),
     ]);
     if (r[0].status === "fulfilled") setRounds(r[0].value);
     if (r[1].status === "fulfilled") setGoals(r[1].value);
@@ -67,6 +69,7 @@ export default function Dashboard() {
     if (r[4].status === "fulfilled") setProgress(r[4].value ?? {});
     if (r[5].status === "fulfilled") setActions(r[5].value.items ?? []);
     if (r[6].status === "fulfilled") setCfg(r[6].value);
+    if (r[7].status === "fulfilled") setSummary(r[7].value);
     const failed = r.filter((x) => x.status === "rejected").length;
     if (failed === r.length) setError("后端接口不可用，请确认 API 服务已启动");
     else if (failed) setError(null);
@@ -121,6 +124,7 @@ export default function Dashboard() {
 
       <GoalHero
         goals={goals}
+        summary={summary}
         personaKeywords={cfg?.readonly.persona_keywords}
         forbiddenDirections={cfg?.readonly.forbidden_directions}
         onCreateGoal={() => go("goals")}
@@ -263,7 +267,7 @@ export default function Dashboard() {
             <PlatformLane
               key={p}
               platform={p}
-              enabled={enabled.includes(p)}
+              enabled={progress[p]?.enabled ?? enabled.includes(p)}
               loggedIn={loggedIn.includes(p)}
               broken={broken.includes(p) || !!progress[p]?.circuit_broken}
               progress={progress[p]}

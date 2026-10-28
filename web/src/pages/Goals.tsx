@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import EmptyHint from "../components/EmptyHint";
-import { api, Goal, SystemConfigView } from "../api";
-import GoalHero, { isActiveGoal, metricLabel, formatMetricValue, currentProgressText } from "../components/GoalHero";
+import { api, Goal, GoalSummary, SystemConfigView } from "../api";
+import GoalHero, { PERCENT_METRICS, isActiveGoal, metricLabel, formatMetricValue, currentProgressText } from "../components/GoalHero";
 import { ALL_PLATFORMS, Platform, platformMeta } from "../platforms";
 
 const GOAL_STATUS_LABEL: Record<string, string> = {
@@ -51,6 +51,7 @@ const EMPTY_GOAL = {
 export default function Goals() {
   const { showToast, withPending, status } = useApp();
   const [goals, setGoals] = useState<Goal[]>([]);
+  const [summary, setSummary] = useState<GoalSummary | null>(null);
   const [cfgView, setCfgView] = useState<SystemConfigView | null>(null);
   const [newGoal, setNewGoal] = useState({ ...EMPTY_GOAL });
   const [submitting, setSubmitting] = useState(false);
@@ -59,7 +60,9 @@ export default function Goals() {
 
   const load = async () => {
     try {
-      setGoals(await api.goals());
+      const [gs, sm] = await Promise.all([api.goals(), api.goalsSummary()]);
+      setGoals(gs);
+      setSummary(sm);
       setCfgView(await api.config());
       setError(null);
     } catch (e: any) { setError(e.message); }
@@ -101,6 +104,7 @@ export default function Goals() {
       const res = await withPending("goal:refresh", () => api.refreshGoalProgress());
       if (res !== undefined) {
         setGoals(res.goals);
+        setSummary(res.summary);
         showToast(`🔄 已刷新 ${Object.keys(res.updated).length} 个目标进度`);
       }
     } catch (e: any) { showToast(`刷新失败: ${e.message}`, "error"); }
@@ -127,6 +131,7 @@ export default function Goals() {
 
       <GoalHero
         goals={goals}
+        summary={summary}
         personaKeywords={cfgView?.readonly.persona_keywords}
         forbiddenDirections={cfgView?.readonly.forbidden_directions}
         onCreateGoal={() => document.getElementById("new-goal")?.scrollIntoView({ behavior: "smooth" })}
@@ -255,7 +260,7 @@ export default function Goals() {
             </select>
           </div>
           <div>
-            <label className="form-label">目标值 *</label>
+            <label className="form-label">目标值 *{PERCENT_METRICS.has(newGoal.target_metric) ? "（单位 %，填 4 表示 4%）" : ""}</label>
             <input className="field" type="number" min={1} value={newGoal.target_value}
               onChange={(e) => setNewGoal({ ...newGoal, target_value: Number(e.target.value) })} />
           </div>
@@ -312,7 +317,7 @@ export default function Goals() {
         <div className="panel-head">
           <div>
             <div className="panel-title"><span className="icon">◎</span>所有目标</div>
-            <div className="panel-sub">达成率 =（当前值 − 基线）/ 目标值；任一分量缺失即显示「数据待采集」（不显示 0%）</div>
+            <div className="panel-sub">达成率：增量 =（当前值 − 基线）/ 目标值，总量 = 当前值 / 目标值；任一分量缺失即显示「数据待采集」（不显示 0%）</div>
           </div>
         </div>
         {error && (
