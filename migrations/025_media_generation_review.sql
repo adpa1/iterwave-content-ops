@@ -1,6 +1,7 @@
 -- 025 — AI 配图生成审计、月度配额与人工审核
 ALTER TABLE media_assets ADD COLUMN review_status TEXT NOT NULL DEFAULT 'approved'
     CHECK (review_status IN ('pending_review','approved','rejected'));
+ALTER TABLE media_assets ADD COLUMN review_note TEXT;
 
 CREATE TABLE IF NOT EXISTS media_generation_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
