@@ -16,15 +16,18 @@ import binascii
 import csv
 import hashlib
 import io
+import ipaddress
 import json
 import logging
 import re
+import socket
 import sqlite3
 import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -185,6 +188,47 @@ def _guess_ext(source: dict) -> str:
         return {"csv": "csv", "json": "json", "jsonl": "jsonl", "xlsx": "xlsx", "sqlite": "db", "rss": "xml"}[fmt]
     suffix = Path(str(source.get("path") or source.get("url") or "")).suffix.lower()
     return suffix.lstrip(".") or "csv"
+
+
+def _validate_remote_url(url: str):
+    """仅允许访问解析到公网地址的 HTTP(S) 来源，防止选题源变成 SSRF 入口。"""
+    try:
+        parsed = urlsplit(url)
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("远程地址格式不合法") from exc
+
+    if scheme not in ("http", "https") or not host:
+        raise ValueError("远程地址必须是完整的 http(s) URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("远程地址不能在 URL 中包含用户名或密码")
+
+    host = host.rstrip(".").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        raise ValueError("远程来源不能指向本机或内网地址")
+
+    try:
+        addresses = {ipaddress.ip_address(host)}
+    except ValueError:
+        try:
+            records = socket.getaddrinfo(host, port or (443 if scheme == "https" else 80),
+                                         type=socket.SOCK_STREAM)
+            addresses = {ipaddress.ip_address(record[4][0].split("%", 1)[0]) for record in records}
+        except (OSError, ValueError) as exc:
+            raise ValueError("远程来源域名无法解析") from exc
+
+    if not addresses or any(not address.is_global for address in addresses):
+        raise ValueError("远程来源不能解析到本机、内网或保留 IP 地址")
+    return parsed
+
+
+def _url_origin(parsed) -> tuple[str, str, int]:
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    port = parsed.port or (443 if scheme == "https" else 80)
+    return scheme, host, port
 
 
 # ----------------------------------------------------------------------
@@ -416,23 +460,46 @@ def read_table(path: Path, fmt: str, table_name: Optional[str] = None) -> tuple[
 # ----------------------------------------------------------------------
 
 def fetch_remote(source: dict, timeout: int = 20) -> tuple[list[str], list[dict]]:
-    url = source.get("url") or ""
-    if not url.startswith(("http://", "https://")):
-        raise ValueError("远程地址必须是 http(s) URL")
+    url = (source.get("url") or "").strip()
     headers = {str(k): str(v) for k, v in (source.get("headers") or {}).items() if k and v}
     headers.setdefault("User-Agent", "iterwave/0.1 (+local)")
-    with httpx.stream("GET", url, headers=headers, timeout=timeout, follow_redirects=True) as resp:
-        resp.raise_for_status()
-        size = 0
-        chunks: list[bytes] = []
-        for chunk in resp.iter_bytes():
-            size += len(chunk)
-            if size > MAX_UPLOAD_BYTES:
-                raise ValueError("远程选题库超过 20MB 上限")
-            chunks.append(chunk)
-        raw = b"".join(chunks)
-        fmt = detect_format(url, source.get("format") or "auto",
-                            resp.headers.get("content-type", ""))
+
+    # 手动处理重定向：每一跳都重新检查目标，且禁止跨域跳转以避免鉴权头泄漏。
+    current_url = url
+    raw = b""
+    content_type = ""
+    redirect_statuses = {301, 302, 303, 307, 308}
+    for _ in range(6):
+        parsed = _validate_remote_url(current_url)
+        with httpx.stream(
+            "GET", current_url, headers=headers, timeout=timeout, follow_redirects=False
+        ) as resp:
+            if resp.status_code in redirect_statuses:
+                location = resp.headers.get("location")
+                if not location:
+                    raise ValueError("远程来源返回了不完整的重定向")
+                next_url = urljoin(current_url, location)
+                next_parsed = _validate_remote_url(next_url)
+                if _url_origin(parsed) != _url_origin(next_parsed):
+                    raise ValueError("远程来源不允许跨域重定向，请直接填写最终地址")
+                current_url = next_url
+                continue
+
+            resp.raise_for_status()
+            size = 0
+            chunks: list[bytes] = []
+            for chunk in resp.iter_bytes():
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise ValueError("远程选题库超过 20MB 上限")
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+            content_type = resp.headers.get("content-type", "")
+            break
+    else:
+        raise ValueError("远程来源重定向次数过多")
+
+    fmt = detect_format(current_url, source.get("format") or "auto", content_type)
     text = raw.decode("utf-8", errors="replace")
     if fmt == "json":
         return parse_json(text)
