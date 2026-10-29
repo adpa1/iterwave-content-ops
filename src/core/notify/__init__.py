@@ -251,6 +251,28 @@ class Notifier:
             logger.info("%s webhook 未设置（.env 缺少 %s），跳过", channel, url_env)
             return False
 
+        # .env 可能由人工维护；除公网 IP 校验外，通知目标还必须是对应平台的官方 HTTPS 主机。
+        allowed_hosts = {
+            "wecom": {"qyapi.weixin.qq.com"},
+            "feishu": {"open.feishu.cn", "open.larksuite.com"},
+        }
+        try:
+            from urllib.parse import urlsplit
+
+            parsed = urlsplit(url)
+            hostname = (parsed.hostname or "").lower()
+            if (
+                parsed.scheme.lower() != "https"
+                or hostname not in allowed_hosts.get(channel, set())
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                logger.warning("%s webhook 目标主机不在允许列表，已拒绝", channel)
+                return False
+        except ValueError:
+            logger.warning("%s webhook URL 格式不合法，已拒绝", channel)
+            return False
+
         # .env 可能由人工维护；最终目标必须在实际 TCP 连接中固定为校验通过的公网 IP。
         text = f"【{title}】{body}"
         if channel == "wecom":
