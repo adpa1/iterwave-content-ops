@@ -27,6 +27,7 @@ export default function MediaLibraryPane() {
   const [items, setItems] = useState<MediaAsset[]>([]);
   const [targets, setTargets] = useState<MediaUsageTarget[]>([]);
   const [selectedContentId, setSelectedContentId] = useState("");
+  const [usageRole, setUsageRole] = useState<"cover" | "illustration" | "background">("illustration");
   const [generationSettings, setGenerationSettings] = useState<MediaGenerationSettings | null>(null);
   const [generationPrompt, setGenerationPrompt] = useState("");
   const [query, setQuery] = useState("");
@@ -194,7 +195,7 @@ export default function MediaLibraryPane() {
     }
     await withPending("media:use:" + item.id, async () => {
       try {
-        const result = await api.useMediaAsset(item.id, selectedContentId, "illustration");
+        const result = await api.useMediaAsset(item.id, selectedContentId, usageRole);
         showToast(result.message, "success");
         await load();
       } catch (e) {
@@ -344,6 +345,12 @@ export default function MediaLibraryPane() {
                 </option>
               ))}
             </select>
+            <label className="field" style={{ minWidth: 140 }}>
+              <span className="field-label">在内容中的用途</span>
+              <select value={usageRole} onChange={(event) => setUsageRole(event.target.value as "cover" | "illustration" | "background")}>
+                <option value="cover">封面</option><option value="illustration">正文配图</option><option value="background">背景</option>
+              </select>
+            </label>
             <span className="panel-sub">选择一篇尚未发布的内容，再点击素材卡片中的「配给此内容」。模板渐变图会明确标记为降级，正式配图需人工选择或后续 AI 配图。</span>
           </div>
         )}
