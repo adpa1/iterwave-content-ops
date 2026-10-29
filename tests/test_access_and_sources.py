@@ -38,12 +38,28 @@ def clean_auth_state(monkeypatch, tmp_path):
 
 
 @pytest.fixture()
-def api_client(cfg, conn):
+def unconfigured_api_client(cfg, conn):
     saved = dict(api_main._g_ctx)
     api_main._g_ctx.clear()
     api_main._g_ctx.update({"cfg": cfg, "conn": conn})
     try:
         yield TestClient(api_main._build_app(), base_url="http://127.0.0.1")
+    finally:
+        api_main._g_ctx.clear()
+        api_main._g_ctx.update(saved)
+
+
+@pytest.fixture()
+def api_client(cfg, conn):
+    saved = dict(api_main._g_ctx)
+    api_main._g_ctx.clear()
+    api_main._g_ctx.update({"cfg": cfg, "conn": conn})
+    try:
+        client = TestClient(api_main._build_app(), base_url="http://127.0.0.1")
+        auth.set_password("test-access")
+        response = client.post("/api/auth/login", json={"password": "test-access"})
+        assert response.status_code == 200
+        yield client
     finally:
         api_main._g_ctx.clear()
         api_main._g_ctx.update(saved)
@@ -72,7 +88,7 @@ def test_redact_masks_bearer_tokens_and_signed_urls():
 # 访问保护
 # =====================================================================
 
-def test_public_first_password_setup_requires_bootstrap_token(api_client, monkeypatch):
+def test_public_first_password_setup_requires_bootstrap_token(unconfigured_api_client, monkeypatch):
     monkeypatch.setenv("ITERWAVE_BOOTSTRAP_TOKEN", "bootstrap-secret")
     public_client = TestClient(api_main._build_app(), base_url="https://eduplay.cloud")
     assert public_client.post(
@@ -127,40 +143,41 @@ def test_login_rate_limit():
     assert auth.login("secret123", "5.6.7.8")
 
 
-def test_prefixed_api_routes_are_normalized(api_client, monkeypatch):
+def test_prefixed_api_routes_are_normalized(unconfigured_api_client, monkeypatch):
     monkeypatch.setenv("APP_BASE_PATH", "/iterwave/")
-    response = api_client.get("/iterwave/api/topics")
+    response = unconfigured_api_client.get("/iterwave/api/topics")
     assert response.status_code == 403
     assert response.json()["code"] == "setup_required"
 
 
-def test_middleware_requires_login_only_after_password_set(api_client):
-    blocked = api_client.get("/api/topics")
+def test_middleware_requires_login_only_after_password_set(unconfigured_api_client):
+    blocked = unconfigured_api_client.get("/api/topics")
     assert blocked.status_code == 403
     assert blocked.json()["code"] == "setup_required"
 
-    assert api_client.post("/api/auth/password", json={"password": "secret123"}).status_code == 200
-    assert api_client.get("/api/auth/status").json()["needs_login"] is True
-    assert api_client.get("/api/topics").status_code == 401
-    assert api_client.get("/api/topics").json()["code"] == "auth_required"
+    assert unconfigured_api_client.post("/api/auth/password", json={"password": "secret123"}).status_code == 200
+    assert unconfigured_api_client.get("/api/auth/status").json()["needs_login"] is True
+    assert unconfigured_api_client.get("/api/topics").status_code == 401
+    assert unconfigured_api_client.get("/api/topics").json()["code"] == "auth_required"
 
-    assert api_client.post("/api/auth/login", json={"password": "nope"}).status_code == 401
-    r = api_client.post("/api/auth/login", json={"password": "secret123"})
+    assert unconfigured_api_client.post("/api/auth/login", json={"password": "nope"}).status_code == 401
+    r = unconfigured_api_client.post("/api/auth/login", json={"password": "secret123"})
     assert r.status_code == 200 and r.json()["authenticated"] is True
     # TestClient 自动保存 Set-Cookie，会话生效
-    assert api_client.get("/api/topics").status_code == 200
+    assert unconfigured_api_client.get("/api/topics").status_code == 200
 
     # 脚本口令（X-Access-Token）也能过
-    api_client.cookies.clear()
-    assert api_client.get("/api/topics", headers={"X-Access-Token": "secret123"}).status_code == 200
-    assert api_client.get("/api/topics", headers={"Authorization": "Bearer secret123"}).status_code == 200
+    unconfigured_api_client.cookies.clear()
+    assert unconfigured_api_client.get("/api/topics", headers={"X-Access-Token": "secret123"}).status_code == 200
+    assert unconfigured_api_client.get("/api/topics", headers={"Authorization": "Bearer secret123"}).status_code == 200
 
     # 登出后会话失效
-    api_client.post("/api/auth/logout")
-    assert api_client.get("/api/topics").status_code == 401
+    unconfigured_api_client.post("/api/auth/logout")
+    assert unconfigured_api_client.get("/api/topics").status_code == 401
 
 
 def test_script_token_auth_cannot_bypass_login_rate_limit(api_client):
+    api_client.cookies.clear()
     auth.set_password("secret123")
     for _ in range(auth.LOGIN_MAX_FAILURES):
         response = api_client.get("/api/topics", headers={"X-Access-Token": "wrong"})
