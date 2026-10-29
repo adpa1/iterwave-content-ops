@@ -157,6 +157,10 @@ export interface Draft {
   scheduled_publish_at?: string | null;
   /** 用户补填的平台笔记链接（被动评论轮询靠它定位笔记） */
   platform_note_url?: string | null;
+  guard_outcome?: "pass" | "warn" | "fail" | "error" | null;
+  guard_reason?: string | null;
+  /** 当前文案是否可按正常路径确认发布；不通过时必须显式填写质检例外原因。 */
+  guard_confirmation_allowed?: boolean;
 }
 
 /** POST /api/rounds/{id}/run 的执行报告（RoundExecutor.run 返回） */
@@ -1027,10 +1031,16 @@ export const api = {
     return fetchJson<Draft[]>(`/api/drafts?${p}`);
   },
   /** noteUrl：已发布笔记链接（可选；不填则该篇跳过被动评论轮询） */
-  confirmPublish: (draftId: string, noteUrl?: string) =>
+  confirmPublish: (draftId: string, noteUrl?: string, qualityOverrideReason?: string) =>
     fetchJson<{ draft_id: string; status: string; note_url?: string | null }>(
       `/api/drafts/${draftId}/publish_confirm`,
-      { method: "POST", body: JSON.stringify({ note_url: noteUrl ?? null }) },
+      {
+        method: "POST",
+        body: JSON.stringify({
+          note_url: noteUrl ?? null,
+          quality_override_reason: qualityOverrideReason?.trim() || null,
+        }),
+      },
     ),
   /** 「✕ 不发了」：draft_pending / draft_saved → cancelled */
   cancelDraft: (draftId: string) =>
