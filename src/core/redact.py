@@ -22,6 +22,8 @@ _URL_USERINFO_PATTERN = re.compile(r"(?i)(https?://)[^/@\s]+@")
 _URL_SECRET_PARAM_PATTERN = re.compile(
     r"(?i)([?&][^=&#\s]*(?:access[_-]?token|refresh[_-]?token|token|secret|password|signature|sig|credential|api[_-]?key|auth)[^=&#\s]*=)[^&#\s]+"
 )
+# 对外日志只保留 URL 的 scheme/host/非默认端口；路径、查询参数、userinfo 一律隐藏。
+_URL_PATTERN = re.compile(r"(?i)https?://[^\s<>'\"]+")
 # 手机号（11 位 1[3-9]...）
 _PHONE_PATTERN = re.compile(r"(?<!\d)(1[3-9]\d)(\d{4})(\d{4})(?!\d)")
 # 微信号
@@ -47,6 +49,32 @@ def redact(text: str) -> str:
     text = _URL_USERINFO_PATTERN.sub(r"\1***@", text)
     text = _URL_SECRET_PARAM_PATTERN.sub(r"\1***", text)
     text = _SECRET_PATTERN.sub(_repl_secret, text)
+
+    def _repl_url(m: re.Match) -> str:
+        raw = m.group(0)
+        # 标点通常属于后面的句子；URL 的路径会被整体删除，因此可安全剥离尾标点。
+        tail = ""
+        while raw and raw[-1] in ".,;:!?)]}":
+            tail = raw[-1] + tail
+            raw = raw[:-1]
+        try:
+            from urllib.parse import urlsplit
+
+            parsed = urlsplit(raw)
+            scheme = parsed.scheme.lower()
+            host = parsed.hostname
+            if not host:
+                return f"{scheme}://…{tail}"
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            port = parsed.port
+            default_port = 443 if scheme == "https" else 80
+            authority = host if port is None or port == default_port else f"{host}:{port}"
+            return f"{scheme}://{authority}/…{tail}"
+        except ValueError:
+            return "远程地址已隐藏" + tail
+
+    text = _URL_PATTERN.sub(_repl_url, text)
 
     def _repl_phone(m: re.Match) -> str:
         num = m.group(0)

@@ -16,20 +16,16 @@ import binascii
 import csv
 import hashlib
 import io
-import ipaddress
 import json
 import logging
 import re
-import socket
 import sqlite3
 import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urljoin, urlsplit
-
-import httpx
+from urllib.parse import urlsplit
 
 from .redact import redact, redact_path
 from .scoring.topic_eval import TopicItem
@@ -37,6 +33,7 @@ from .scoring.topic_eval import TopicItem
 logger = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_TOPIC_ROWS = 100_000
 # XLSX 本质是 ZIP。压缩文件小于 20MB 不代表展开后的 XML 安全；限制总展开体积与条目数，防止 ZIP bomb。
 MAX_XLSX_EXPANDED_BYTES = 40 * 1024 * 1024
 MAX_XLSX_ENTRIES = 1000
@@ -80,10 +77,17 @@ def data_dir(cfg) -> Path:
     return p
 
 
+def _make_private_dir(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        logger.warning("无法收紧选题库目录权限：%s", path.name)
+    return path
+
+
 def kb_dir(cfg) -> Path:
-    p = data_dir(cfg) / "kb"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    return _make_private_dir(data_dir(cfg) / "kb")
 
 
 def registry_file(cfg) -> Path:
@@ -91,15 +95,11 @@ def registry_file(cfg) -> Path:
 
 
 def upload_dir(cfg) -> Path:
-    p = kb_dir(cfg) / "uploads"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    return _make_private_dir(kb_dir(cfg) / "uploads")
 
 
 def cache_dir(cfg) -> Path:
-    p = kb_dir(cfg) / "cache"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    return _make_private_dir(kb_dir(cfg) / "cache")
 
 
 def _resolve_server_path(cfg, raw: str) -> Path:
@@ -165,11 +165,16 @@ def load_registry(cfg) -> list[dict]:
 
 
 def save_registry(cfg, sources: list[dict]) -> None:
+    """来源登记含 URL/请求头密钥，目录与文件均限制为当前用户可读。"""
     path = registry_file(cfg)
     path.write_text(
         json.dumps({"version": 1, "sources": sources}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    try:
+        path.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧选题库登记文件权限：%s", path.name)
 
 
 def _new_id() -> str:
@@ -194,39 +199,14 @@ def _guess_ext(source: dict) -> str:
 
 
 def _validate_remote_url(url: str):
-    """仅允许访问解析到公网地址的 HTTP(S) 来源，防止选题源变成 SSRF 入口。"""
+    """仅允许公网 HTTP(S) 来源。实际出站请求必须通过 safe_http 固定到已验证 IP。"""
+    from .safe_http import validate_public_url
+
     try:
-        parsed = urlsplit(url)
-        scheme = parsed.scheme.lower()
-        host = parsed.hostname
-        port = parsed.port
+        return validate_public_url(url)
     except ValueError as exc:
-        raise ValueError("远程地址格式不合法") from exc
-
-    if not isinstance(url, str) or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
-        raise ValueError("远程地址不能包含空白或控制字符")
-    if scheme not in ("http", "https") or not host:
-        raise ValueError("远程地址必须是完整的 http(s) URL")
-    if parsed.username is not None or parsed.password is not None:
-        raise ValueError("远程地址不能在 URL 中包含用户名或密码")
-
-    host = host.rstrip(".").lower()
-    if host == "localhost" or host.endswith(".localhost"):
-        raise ValueError("远程来源不能指向本机或内网地址")
-
-    try:
-        addresses = {ipaddress.ip_address(host)}
-    except ValueError:
-        try:
-            records = socket.getaddrinfo(host, port or (443 if scheme == "https" else 80),
-                                         type=socket.SOCK_STREAM)
-            addresses = {ipaddress.ip_address(record[4][0].split("%", 1)[0]) for record in records}
-        except (OSError, ValueError) as exc:
-            raise ValueError("远程来源域名无法解析") from exc
-
-    if not addresses or any(not address.is_global for address in addresses):
-        raise ValueError("远程来源不能解析到本机、内网或保留 IP 地址")
-    return parsed
+        # 不把可能含签名参数的原始 URL 写入错误消息。
+        raise ValueError(str(exc)) from exc
 
 
 def _url_origin(parsed) -> tuple[str, str, int]:
@@ -440,8 +420,13 @@ def parse_sqlite(path: Path, table_name: Optional[str]) -> tuple[list[str], list
                 except sqlite3.Error:
                     continue
             table = max(counts)[1] if counts else tables[0]
-        columns = [r[1] for r in conn.execute(f"PRAGMA table_info([{table}])").fetchall()]
-        rows = [dict(r) for r in conn.execute(f"SELECT * FROM [{table}]").fetchall()]
+        # 表名来自文件内部，但仍按 SQL 标识符转义，避免恶意表名破坏查询。
+        quoted_table = '"' + table.replace('"', '""') + '"'
+        row_count = int(conn.execute(f"SELECT COUNT(*) FROM {quoted_table}").fetchone()[0])
+        if row_count > MAX_TOPIC_ROWS:
+            raise ValueError(f"SQLite 选题库超过行上限（{MAX_TOPIC_ROWS:,} 行）")
+        columns = [r[1] for r in conn.execute(f"PRAGMA table_info({quoted_table})").fetchall()]
+        rows = [dict(r) for r in conn.execute(f"SELECT * FROM {quoted_table}").fetchall()]
         return columns, rows
     finally:
         conn.close()
@@ -471,46 +456,21 @@ def read_table(path: Path, fmt: str, table_name: Optional[str] = None) -> tuple[
 # ----------------------------------------------------------------------
 
 def fetch_remote(source: dict, timeout: int = 20) -> tuple[list[str], list[dict]]:
+    """通过固定到已验证公网 IP 的连接抓取远程来源。"""
+    from .safe_http import fetch_public_bytes
+
     url = (source.get("url") or "").strip()
     headers = {str(k): str(v) for k, v in (source.get("headers") or {}).items() if k and v}
     headers.setdefault("User-Agent", "iterwave/0.1 (+local)")
 
-    # 手动处理重定向：每一跳都重新检查目标，且禁止跨域跳转以避免鉴权头泄漏。
-    current_url = url
-    raw = b""
-    content_type = ""
-    redirect_statuses = {301, 302, 303, 307, 308}
-    for _ in range(6):
-        parsed = _validate_remote_url(current_url)
-        with httpx.stream(
-            "GET", current_url, headers=headers, timeout=timeout, follow_redirects=False
-        ) as resp:
-            if resp.status_code in redirect_statuses:
-                location = resp.headers.get("location")
-                if not location:
-                    raise ValueError("远程来源返回了不完整的重定向")
-                next_url = urljoin(current_url, location)
-                next_parsed = _validate_remote_url(next_url)
-                if _url_origin(parsed) != _url_origin(next_parsed):
-                    raise ValueError("远程来源不允许跨域重定向，请直接填写最终地址")
-                current_url = next_url
-                continue
-
-            resp.raise_for_status()
-            size = 0
-            chunks: list[bytes] = []
-            for chunk in resp.iter_bytes():
-                size += len(chunk)
-                if size > MAX_UPLOAD_BYTES:
-                    raise ValueError("远程选题库超过 20MB 上限")
-                chunks.append(chunk)
-            raw = b"".join(chunks)
-            content_type = resp.headers.get("content-type", "")
-            break
-    else:
-        raise ValueError("远程来源重定向次数过多")
-
-    fmt = detect_format(current_url, source.get("format") or "auto", content_type)
+    raw, content_type, final_url = fetch_public_bytes(
+        url,
+        headers=headers,
+        timeout=timeout,
+        max_bytes=MAX_UPLOAD_BYTES,
+        max_redirects=5,
+    )
+    fmt = detect_format(final_url, source.get("format") or "auto", content_type)
     text = raw.decode("utf-8", errors="replace")
     if fmt == "json":
         return parse_json(text)
@@ -519,7 +479,6 @@ def fetch_remote(source: dict, timeout: int = 20) -> tuple[list[str], list[dict]
     if fmt == "jsonl":
         return parse_jsonl(text)
     return parse_csv(text)
-
 
 def sync_remote(cfg, source: dict) -> dict:
     """抓取远程来源 → 写缓存文件 → 更新同步状态（每天由定时任务调用）。"""
@@ -611,11 +570,15 @@ def _topic_from_row(row: dict, mapping: dict[str, str], fallback_dim: str) -> Op
 
 def read_source(cfg, source: dict) -> dict:
     """读取单个来源，返回 {items, status, rows, columns, mapping, error}，不抛出。"""
+    source_name = source.get("name") or source.get("id")
+    is_remote = source.get("kind") == "remote"
+    display_path = _redact_remote_url(source.get("url") or "") if is_remote else redact_path(_source_path(cfg, source))
+    if is_remote and str(source_name or "").lower().startswith(("http://", "https://")):
+        source_name = _redact_remote_url(str(source_name))
     base = {
-        "id": source.get("id"), "name": source.get("name") or source.get("id"),
+        "id": source.get("id"), "name": source_name,
         "kind": source.get("kind"), "format": source.get("format") or "auto",
-        "display_path": source.get("url") if source.get("kind") == "remote"
-        else redact_path(_source_path(cfg, source)),
+        "display_path": display_path,
         "items": [], "status": "ok", "rows": 0, "columns": [], "mapping": {},
         "error": None,
     }
@@ -740,8 +703,13 @@ def _validate_name(name: str) -> str:
 
 
 def _decode_upload(filename: str, content_b64: str) -> tuple[str, bytes]:
+    encoded = content_b64.split(",", 1)[-1]
+    # 先限制编码字符串长度，避免在 base64 解码前为超大输入分配额外内存。
+    max_encoded_chars = 4 * ((MAX_UPLOAD_BYTES + 2) // 3)
+    if len(encoded) > max_encoded_chars:
+        raise ValueError("上传文件超过 20MB 上限")
     try:
-        data = base64.b64decode(content_b64.split(",", 1)[-1], validate=False)
+        data = base64.b64decode(encoded, validate=False)
     except (binascii.Error, ValueError) as exc:
         raise ValueError(f"文件内容不是合法 base64：{exc}") from exc
     if len(data) > MAX_UPLOAD_BYTES:
@@ -763,6 +731,10 @@ def add_upload(cfg, *, filename: str, content_b64: str, name: str = "",
         raise ValueError("文件不是有效的 .xlsx")
     dest = upload_dir(cfg) / f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{safe}"
     dest.write_bytes(data)
+    try:
+        dest.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧上传文件权限：%s", dest.name)
     columns, rows = read_table(dest, fmt)
     mapping, missing = detect_mapping(columns, field_mapping or {})
     if "title" in missing:
