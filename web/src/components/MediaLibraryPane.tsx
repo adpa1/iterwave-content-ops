@@ -280,6 +280,9 @@ export default function MediaLibraryPane() {
             <div className="panel-sub" style={{ marginTop: 8 }}>
               本月已请求 {generationSettings.used_this_month} 次 / 配额 {generationSettings.monthly_quota} 次。服务地址：{generationSettings.api_base_url} · 密钥环境变量：{generationSettings.api_key_env}
             </div>
+            <div className="panel-sub" style={{ marginTop: 4 }}>
+              视觉初筛依据分辨率、构图、亮度、对比度、清晰度和颜色多样性给出可解释分数；它不判断图片是否符合文案语义，也不替代人工审核。
+            </div>
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
               <button className="btn sm" onClick={() => void saveGenerationSettings()} disabled={isPending("media:generation-settings")}>
                 {isPending("media:generation-settings") ? "保存中…" : "保存 AI 配图设置"}
@@ -336,6 +339,10 @@ export default function MediaLibraryPane() {
                   <div style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{item.title}</div>
                   <div className="panel-sub">{item.width} × {item.height} · {formatBytes(item.byte_size)}</div>
                   <div className="panel-sub" style={{ overflowWrap: "anywhere" }}>{item.original_filename}</div>
+                  <div className="panel-sub">
+                    视觉初筛：{item.quality_score == null ? "未评分" : `${item.quality_score}/100`}
+                    {item.quality_details?.reasons?.length ? ` · ${item.quality_details.reasons.slice(0, 2).join("；")}` : ""}
+                  </div>
                   {item.tags.length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 }}>{item.tags.map((tag) => <span className="tag gray" key={tag}>{tag}</span>)}</div>}
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 10 }}>
                     <a href={item.file_url} target="_blank" rel="noreferrer">查看原图</a>
