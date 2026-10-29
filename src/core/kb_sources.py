@@ -696,8 +696,8 @@ def _redact_remote_url(url: str) -> str:
         port = parsed.port
         default_port = 443 if scheme == "https" else 80
         authority = host if port is None or port == default_port else f"{host}:{port}"
-        # 路径也可能携带 token，故不直接暴露原始 path。
-        return f"{scheme}://{authority}/…" if parsed.path not in ("", "/") else f"{scheme}://{authority}"
+        # 路径、查询参数和片段都可能带 token；固定用占位符，不直接暴露原始路径。
+        return f"{scheme}://{authority}/…"
     except (TypeError, ValueError):
         return "远程地址"
 
