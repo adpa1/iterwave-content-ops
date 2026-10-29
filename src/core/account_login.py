@@ -35,6 +35,8 @@ import threading
 import time
 from pathlib import Path
 
+from .redact import redact
+
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -360,7 +362,7 @@ def export_storage_state(platform: str, timeout: int = 90) -> bool:
         logger.warning("导出 %s 登录态超时", platform)
         return False
     if r.returncode != 0:
-        logger.warning("导出 %s 登录态失败：%s", platform, (r.stderr or r.stdout)[-300:])
+        logger.warning("导出 %s 登录态失败：%s", platform, redact((r.stderr or r.stdout)[-300:]))
         return False
     logger.info("✅ %s 登录态已导出到 %s", platform, out)
     return True
