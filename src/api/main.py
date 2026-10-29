@@ -2559,8 +2559,7 @@ def _register_routes(app: FastAPI) -> None:
             raw_url = str(row.get("url") or "")
             row["url"] = kb_sources._redact_remote_url(raw_url) if raw_url else ""
             raw_name = str(row.get("name") or "")
-            if raw_name.startswith(("http://", "https://")):
-                row["name"] = kb_sources._redact_remote_url(raw_name)
+            row["name"] = redact(raw_name) if raw_name else raw_name
             public.append(row)
         return public
 
@@ -2573,10 +2572,7 @@ def _register_routes(app: FastAPI) -> None:
             for old in current or []:
                 old_name = str(old.get("name") or "")
                 incoming_name = str(row.get("name") or "")
-                same_name = old_name == incoming_name or (
-                    old_name.startswith(("http://", "https://"))
-                    and kb_sources._redact_remote_url(old_name) == incoming_name
-                )
+                same_name = old_name == incoming_name or redact(old_name) == incoming_name
                 same_key = (
                     same_name
                     and str(old.get("type") or "aggregate") == str(row.get("type") or "aggregate")
