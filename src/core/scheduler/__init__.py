@@ -284,8 +284,9 @@ class SchedulerEngine:
             return
 
         rows = self.conn.execute(
-            "SELECT d.id, d.platform, d.draft_id, d.saved_at, c.round_id AS round_id, "
-            "COALESCE(d.saved_platform_title, c.title) AS poll_title, "
+            "SELECT d.id, d.platform, d.draft_id, d.saved_at, d.saved_content_hash, "
+            "c.round_id AS round_id, COALESCE(d.saved_platform_title, c.title) AS poll_title, "
+            "c.title AS local_title, c.body, c.tags, c.image_paths, "
             "c.review_rejected AS review_rejected, "
             "c.review_rejection_reason AS review_rejection_reason "
             "FROM drafts d JOIN contents c ON d.content_id = c.id "
@@ -349,10 +350,52 @@ class SchedulerEngine:
                         self.conn.commit()
                     except Exception:  # noqa: BLE001 — 实际发布已发生，审计失败不能中断采集
                         logger.exception("[APS] 发布驳回例外审计写入失败 draft=%s", row["id"])
+                # 即使自动识别到了真实发布，也记录平台实际版本与当前本地版本是否一致。
+                # 这不阻断已发生的发布事实或采集，但让复盘知道指标对应哪一版内容。
+                try:
+                    from ...core.content_version import content_version_hash, parse_json_list
+                    images = parse_json_list(row["image_paths"])
+                    payload_images = [str(images[0])] if images and images[0] else []
+                    current_hash = content_version_hash(
+                        row["local_title"], row["body"], parse_json_list(row["tags"]), payload_images,
+                    )
+                    saved_hash = row["saved_content_hash"]
+                    sync_state = (
+                        "unknown" if not saved_hash
+                        else "matched" if saved_hash == current_hash
+                        else "stale"
+                    )
+                    if sync_state != "matched":
+                        self.conn.execute(
+                            "INSERT INTO user_override (round_id, override_field, original_value, "
+                            "override_value, reason, overridden_by, overridden_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                row["round_id"], "platform_content_sync_observed",
+                                json.dumps({
+                                    "state": sync_state,
+                                    "saved_content_hash": saved_hash,
+                                    "current_content_hash": current_hash,
+                                    "platform_title": row["poll_title"],
+                                    "local_title": row["local_title"],
+                                }, ensure_ascii=False)[:500],
+                                json.dumps({
+                                    "status": "user_published",
+                                    "via": "platform_polling",
+                                }, ensure_ascii=False),
+                                f"系统已在平台侧确认作品发布；平台内容版本状态为 {sync_state}，保留真实发布并继续采集",
+                                "publish-polling",
+                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            ),
+                        )
+                        self.conn.commit()
+                except Exception:  # noqa: BLE001 — 已确认发布不应因审计问题中断采集
+                    logger.exception("[APS] 平台版本观察审计写入失败 draft=%s", row["id"])
+
                 if getattr(self, "notifier", None):
                     self.notifier.emit(
                         "publish_confirmed",
-                        f"{platform.display_name} 已确认发布：{(row['title'] or '')[:30]}",
+                        f"{platform.display_name} 已确认发布：{(row['poll_title'] or '')[:30]}",
                         platform=platform.value,
                     )
 
