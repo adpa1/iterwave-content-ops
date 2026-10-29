@@ -237,6 +237,20 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
         raise
 
 
+async def _wait_for_tenant_background_jobs(timeout_seconds: float = 120.0) -> None:
+    """等待不受 APScheduler 直接管理的热点采集/研判线程完成，避免跨账号组共享运行状态。"""
+    from src.core import hot_topic_service
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        collecting = hot_topic_service.status().get("running", False)
+        researching = hot_topic_service.research_status().get("running", False)
+        if not collecting and not researching:
+            return
+        if time.monotonic() >= deadline:
+            raise HTTPException(409, "热点采集或研判后台任务仍在执行，已取消账号组切换")
+        await asyncio.sleep(0.05)
+
+
 async def _switch_tenant_runtime(tenant_id: str) -> dict:
     """安全切换完整运行时；任何失败都尝试恢复原账号组。调用方必须持有切换闸门。"""
     registry = _g_ctx.get("tenant_registry")
@@ -280,6 +294,8 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
             old_stopped = True
             if old_conn is not None:
                 old_conn.close()
+            # 热点服务另有独立后台线程，APScheduler 结束不代表该线程已退出。
+            await _wait_for_tenant_background_jobs(timeout_seconds=120.0)
 
         from src.core import account_login, login_manager
         # 旧账号组的扫码登录子进程和登录态导出线程必须先退出，避免继续读写旧/新目录。
@@ -340,6 +356,8 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
             raise TenantRuntimeRollbackError(
                 f"切换失败且旧账号组恢复失败（{type(rollback_exc).__name__}）；为避免串租，系统已阻止新业务请求"
             ) from rollback_exc
+        if isinstance(exc, HTTPException):
+            raise exc
         raise HTTPException(500, f"切换失败，已恢复账号组「{old_tenant_id}」：{type(exc).__name__}") from exc
 
 
