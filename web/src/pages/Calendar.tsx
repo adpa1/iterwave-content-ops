@@ -202,7 +202,7 @@ export default function Calendar() {
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">✎</span>排期编辑 · {selected.title}</div>
-                <div className="panel-sub">草稿 {selected.id} · 只写 scheduled_publish_at，不触碰发布动作</div>
+                <div className="panel-sub">仅保存计划发布时间，不会自动触发平台发布</div>
               </div>
               <div className="head-actions" style={{ display: "flex", gap: 8 }}>
                 <input
@@ -252,12 +252,12 @@ export default function Calendar() {
           <div className="table-wrap">
             <table>
               <thead>
-                <tr><th>草稿</th><th>标题</th><th>平台</th><th>状态</th><th>排期时间</th><th>操作</th></tr>
+                <tr><th>类型</th><th>标题</th><th>平台</th><th>状态</th><th>排期时间</th><th>操作</th></tr>
               </thead>
               <tbody>
                 {unscheduled.map((d) => (
                   <tr key={d.id}>
-                    <td style={{ fontSize: 11, color: "var(--subtle)" }}>{d.id}</td>
+                    <td style={{ fontSize: 11, color: "var(--subtle)" }}>草稿</td>
                     <td>{d.title ?? <span style={{ color: "var(--subtle)" }}>—</span>}</td>
                     <td>
                       <span className="tag" style={{ background: platformColors[d.platform], color: "#fff" }}>
