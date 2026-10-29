@@ -222,7 +222,8 @@ class SchedulerEngine:
         rows = self.conn.execute(
             "SELECT d.id FROM drafts d WHERE d.status IN ('user_published', 'data_fetching') "
             "AND d.user_confirmed_at IS NOT NULL AND d.user_confirmed_at <= ? "
-            "AND NOT EXISTS (SELECT 1 FROM metrics m WHERE m.draft_id = d.id)",
+            "AND NOT EXISTS (SELECT 1 FROM metrics m WHERE m.draft_id = d.id "
+            "AND m.fetch_status IN ('success', 'partial'))",
             (cutoff,),
         ).fetchall()
         n = 0
@@ -338,7 +339,7 @@ class SchedulerEngine:
         """
         import json  # noqa: F401 — 保留供后续 raw 扩展
 
-        from ...adapters.base import Platform
+        from ...adapters.base import FetchStatus, MetricsSnapshot, Platform
 
         if self.conn is None:
             logger.warning("[APS] data_fetch 跳过：依赖未注入")
@@ -356,13 +357,20 @@ class SchedulerEngine:
         platform = Platform(row["platform"])
         adapter = self.adapters.get(platform)
         if adapter is None:
-            return
-
-        if self.sm_draft:
-            self.sm_draft.transition(draft_id, "data_fetching", reason="定时采集开始")
-
-        async with self.platform_locks[platform]:
-            snap = await adapter.fetch_metrics(row["draft_id"], row["title"] or "")
+            # 禁用/未构造适配器是可恢复的采集失败，不能静默返回并丢掉一次性任务。
+            # 走统一失败落库与重试分支；如果之后适配器恢复，下一次尝试仍可成功。
+            reason = f"{platform.display_name} 数据采集适配器未启用或不可用"
+            logger.error("[APS] data_fetch 适配器缺失 draft=%s platform=%s", draft_id, platform.value)
+            snap = MetricsSnapshot(
+                platform=platform,
+                fetch_status=FetchStatus.FAILED,
+                error_msg=reason,
+            )
+        else:
+            if self.sm_draft:
+                self.sm_draft.transition(draft_id, "data_fetching", reason="定时采集开始")
+            async with self.platform_locks[platform]:
+                snap = await adapter.fetch_metrics(row["draft_id"], row["title"] or "")
 
         # 落库 metrics（R3：解析不到的字段保持 NULL，绝不补 0）
         # R16 幂等：draft_id + platform + 采集日期当天只覆盖一次（当天已有记录 → UPDATE 而非 INSERT）
