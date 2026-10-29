@@ -56,9 +56,17 @@ def delete_contents(cfg, conn, ids: list[str]) -> dict:
         if row is None:
             not_found.append(cid)
             continue
-        drafts = conn.execute("SELECT id, status FROM drafts WHERE content_id = ?", (cid,)).fetchall()
-        if any(d[1] in LOCKED_DRAFT_STATUSES for d in drafts):
-            blocked.append({"id": cid, "reason": "已发布（有数据），不能删除；可在内容资产里归档查看"})
+        drafts = conn.execute(
+            "SELECT id, status, user_confirmed_at FROM drafts WHERE content_id = ?", (cid,)
+        ).fetchall()
+        if any(
+            d["status"] in LOCKED_DRAFT_STATUSES or d["user_confirmed_at"] is not None
+            for d in drafts
+        ):
+            blocked.append({
+                "id": cid,
+                "reason": "该内容已确认发布或已有发布历史，不能删除；可在内容资产里归档查看",
+            })
             continue
         platform_left += sum(1 for d in drafts if d[1] == "draft_saved")
         draft_ids = [d[0] for d in drafts]
@@ -83,11 +91,12 @@ def delete_round(cfg, conn, round_id: int) -> dict:
         raise DeleteBlocked(f"第 {row[1]} 轮正在 {row[2]}，不能删除；等它结束或先取消")
     locked = conn.execute(
         "SELECT COUNT(*) FROM drafts d JOIN contents c ON d.content_id = c.id "
-        f"WHERE c.round_id = ? AND d.status IN ({','.join('?' * len(LOCKED_DRAFT_STATUSES))})",
+        f"WHERE c.round_id = ? AND (d.user_confirmed_at IS NOT NULL "
+        f"OR d.status IN ({','.join('?' * len(LOCKED_DRAFT_STATUSES))}))",
         (round_id, *LOCKED_DRAFT_STATUSES),
     ).fetchone()[0]
     if locked:
-        raise DeleteBlocked(f"第 {row[1]} 轮有 {locked} 篇已发布内容（有数据），不能整轮删除")
+        raise DeleteBlocked(f"第 {row[1]} 轮有 {locked} 篇已发布或存在发布历史的内容，不能整轮删除")
     cids = [r[0] for r in conn.execute("SELECT id FROM contents WHERE round_id = ?", (round_id,))]
     res = delete_contents(cfg, conn, cids) if cids else {"deleted": [], "platform_drafts_left": 0, "files_removed": 0}
     for table in ("ops_logs", "platform_insights", "user_override", "autogrow_runs"):
