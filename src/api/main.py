@@ -1683,7 +1683,7 @@ def _register_routes(app: FastAPI) -> None:
                     if "platform_accounts" in tables:
                         row["registered_accounts"] = int(conn.execute("SELECT COUNT(*) FROM platform_accounts").fetchone()[0])
                         row["registered_accounts_active"] = int(conn.execute("SELECT COUNT(*) FROM platform_accounts WHERE status = 'active'").fetchone()[0])
-                        for item in conn.execute("SELECT platform, COUNT(*) AS n FROM platform_accounts WHERE status = 'active' GROUP BY platform").fetchall():
+                        for item in conn.execute("SELECT platform, COUNT(*) AS n FROM platform_accounts GROUP BY platform").fetchall():
                             platform = item["platform"]
                             row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0, "registered_accounts": 0})["registered_accounts"] = int(item["n"])
                     row["db_available"] = True
