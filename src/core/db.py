@@ -159,6 +159,18 @@ class Database:
         """执行单个迁移脚本并记录版本。"""
         sql = mig.path.read_text(encoding="utf-8")
         logger.info("执行迁移 %d — %s（%s）", mig.version, mig.name, mig.path)
+        # 020 版本曾被两个不同迁移文件重复占用；旧数据库可能已执行过热点趋势列，
+        # 将该迁移升至 027 后，按列存在情况跳过已完成的 ALTER，兼容旧的部分迁移状态。
+        if mig.name == "hot_topic_trend":
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(hot_topics)").fetchall()}
+            filtered = []
+            for line in sql.splitlines():
+                if line.startswith("ALTER TABLE hot_topics ADD COLUMN "):
+                    column = line.split("ADD COLUMN", 1)[1].strip().split()[0]
+                    if column in existing:
+                        continue
+                filtered.append(line)
+            sql = "\\n".join(filtered)
 
         # SQLite 不支持单次多条语句的多结果集执行，用 executescript
         conn.executescript(sql)
