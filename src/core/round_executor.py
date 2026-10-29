@@ -299,6 +299,12 @@ class RoundExecutor:
             step for step in previous.get("steps", [])
             if isinstance(step, dict) and step.get("step") != "dry_run"
         ]
+        # 汇总步骤名沿用编排诊断使用的 save_drafts，保证恢复后不再显示为 skipped。
+        previous["steps"].append({
+            "step": "save_drafts",
+            "saved": int(previous.get("drafts_saved") or 0) + report["drafts_saved"],
+            "failed": int(previous.get("drafts_failed") or 0) + report["drafts_failed"],
+        })
         previous["steps"].append({
             "step": "resume_save_drafts",
             "attempted": report["drafts_attempted"],
