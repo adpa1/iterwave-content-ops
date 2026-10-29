@@ -2,7 +2,7 @@
 
 口径：
 - 未设置口令：仅允许读取认证状态和设置首次口令；其它业务 API 返回 setup_required
-- 本机直连可首次设置口令；公网域名 / 反向代理首次设置必须提供服务端 ITERWAVE_BOOTSTRAP_TOKEN
+- 本机直连仅在显式设置 ITERWAVE_ALLOW_LOCAL_BOOTSTRAP=1 时可免引导设置；其它首次设置必须提供服务端 ITERWAVE_BOOTSTRAP_TOKEN
 - 设置口令后：``/api/*`` 全部校验；页面未登录时只能看到登录页
 - 脚本调用：请求头 ``X-Access-Token: <口令>`` 或 ``Authorization: Bearer <口令>``
 - 登录和脚本令牌失败共用按 IP 限速（10 分钟内最多 5 次，超出 429）
@@ -14,7 +14,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import logging
+import os
 import secrets
 import time
 from typing import Optional
@@ -28,6 +30,31 @@ COOKIE_NAME = "iterwave_session"
 SESSION_TTL_SECONDS = 30 * 24 * 3600
 LOGIN_MAX_FAILURES = 5
 LOGIN_WINDOW_SECONDS = 10 * 60
+
+
+def is_trusted_local_setup(request) -> bool:
+    """仅限直连本机开发环境的首次设置旁路。
+
+    该开关不能安全地用于反向代理/公网部署：代理后端可能表现为 loopback，
+    而 Host 由请求方控制。生产或代理部署应使用 ITERWAVE_BOOTSTRAP_TOKEN。
+    """
+    if os.getenv("ITERWAVE_ALLOW_LOCAL_BOOTSTRAP", "").strip().lower() not in ("1", "true", "yes"):
+        return False
+    if any(request.headers.get(name) for name in (
+        "forwarded", "x-forwarded-for", "x-real-ip", "x-forwarded-proto", "x-forwarded-host"
+    )):
+        return False
+    peer = request.client.host if request.client else ""
+    host = (request.url.hostname or "").strip("[]").lower()
+    try:
+        peer_local = ipaddress.ip_address(peer).is_loopback
+    except ValueError:
+        peer_local = peer.lower() == "localhost"
+    try:
+        host_local = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        host_local = host == "localhost"
+    return peer_local and host_local
 
 # 内存会话（重启即失效，对本地单进程足够；不落盘避免多一份密钥）
 _sessions: dict[str, float] = {}

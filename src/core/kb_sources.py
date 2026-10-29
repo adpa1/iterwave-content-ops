@@ -18,8 +18,11 @@ import hashlib
 import io
 import json
 import logging
+import os
 import re
 import sqlite3
+import tempfile
+import threading
 import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime
@@ -31,12 +34,15 @@ from .redact import redact, redact_path
 from .scoring.topic_eval import TopicItem
 
 logger = logging.getLogger(__name__)
+_REGISTRY_LOCK = threading.RLock()
+_SOURCE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_TOPIC_ROWS = 100_000
 # XLSX 本质是 ZIP。压缩文件小于 20MB 不代表展开后的 XML 安全；限制总展开体积与条目数，防止 ZIP bomb。
 MAX_XLSX_EXPANDED_BYTES = 40 * 1024 * 1024
 MAX_XLSX_ENTRIES = 1000
+MAX_XLSX_COLUMNS = 512
 DEFAULT_DIMENSION = "综合"
 SUPPORTED_FORMATS = ("auto", "csv", "json", "jsonl", "xlsx", "sqlite", "rss")
 KINDS = ("file", "server", "remote")
@@ -153,6 +159,11 @@ def load_registry(cfg) -> list[dict]:
         _ensure_empty_file(Path(source["path"]), source["format"])
         save_registry(cfg, [source])
         return [source]
+    # 来源登记可能包含远程请求头凭据；读取旧文件时也立即收紧权限。
+    try:
+        path.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧选题库登记文件权限：%s", path.name)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
@@ -167,14 +178,40 @@ def load_registry(cfg) -> list[dict]:
 def save_registry(cfg, sources: list[dict]) -> None:
     """来源登记含 URL/请求头密钥，目录与文件均限制为当前用户可读。"""
     path = registry_file(cfg)
-    path.write_text(
-        json.dumps({"version": 1, "sources": sources}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    try:
-        path.chmod(0o600)
-    except OSError:
-        logger.warning("无法收紧选题库登记文件权限：%s", path.name)
+    payload = json.dumps({"version": 1, "sources": sources}, ensure_ascii=False, indent=2) + "\n"
+    with _REGISTRY_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", newline="",
+                prefix=f".{path.name}.", suffix=".tmp",
+                dir=path.parent, delete=False,
+            ) as tmp:
+                tmp_path = Path(tmp.name)
+                try:
+                    os.fchmod(tmp.fileno(), 0o600)
+                except (AttributeError, OSError):
+                    os.chmod(tmp_path, 0o600)
+                tmp.write(payload)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            os.replace(tmp_path, path)
+            try:
+                path.chmod(0o600)
+            except OSError:
+                logger.warning("无法收紧选题库登记文件权限：%s", path.name)
+            try:
+                dir_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except OSError:
+                pass
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
 
 
 def _new_id() -> str:
@@ -184,8 +221,11 @@ def _new_id() -> str:
 
 
 def _source_path(cfg, source: dict) -> Path:
+    source_id = str(source.get("id") or "")
+    if not _SOURCE_ID_RE.fullmatch(source_id):
+        raise ValueError("选题库来源 ID 格式不合法")
     if source.get("kind") == "remote":
-        cached = cache_dir(cfg) / f"{source['id']}.{_guess_ext(source)}"
+        cached = cache_dir(cfg) / f"{source_id}.{_guess_ext(source)}"
         return cached
     return _resolve_server_path(cfg, source.get("path") or "")
 
@@ -254,12 +294,18 @@ def detect_mapping(columns: list[str], stored: Optional[dict] = None) -> tuple[d
 
 
 def _read_text(path: Path) -> str:
+    # 服务器路径来源也必须有读取上限；不能只限制上传/远程响应，
+    # 否则管理员误选大型本地文件仍会一次性读入内存。
+    with path.open("rb") as stream:
+        raw = stream.read(MAX_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise ValueError(f"选题库文件超过大小上限（{MAX_UPLOAD_BYTES // (1024 * 1024)} MB）")
     for enc in ("utf-8-sig", "utf-8", "gbk"):
         try:
-            return path.read_text(encoding=enc)
+            return raw.decode(enc)
         except UnicodeDecodeError:
             continue
-    return path.read_text(encoding="utf-8", errors="replace")
+    return raw.decode("utf-8", errors="replace")
 
 
 def _rows_to_dicts(rows: list[list[str]]) -> tuple[list[str], list[dict]]:
@@ -273,8 +319,12 @@ def _rows_to_dicts(rows: list[list[str]]) -> tuple[list[str], list[dict]]:
 
 
 def parse_csv(text: str) -> tuple[list[str], list[dict]]:
-    reader = list(csv.reader(io.StringIO(text)))
-    return _rows_to_dicts(reader)
+    rows: list[list[str]] = []
+    for row in csv.reader(io.StringIO(text)):
+        rows.append(row)
+        if len(rows) > MAX_TOPIC_ROWS + 1:
+            raise ValueError(f"选题库超过行上限（{MAX_TOPIC_ROWS:,} 行）")
+    return _rows_to_dicts(rows)
 
 
 def parse_json(text: str) -> tuple[list[str], list[dict]]:
@@ -289,6 +339,8 @@ def parse_json(text: str) -> tuple[list[str], list[dict]]:
             rows = [payload]
     if not isinstance(rows, list):
         raise ValueError("JSON 顶层必须是数组，或包含 items/data/rows/topics 数组")
+    if len(rows) > MAX_TOPIC_ROWS:
+        raise ValueError(f"选题库超过行上限（{MAX_TOPIC_ROWS:,} 行）")
     rows = [r for r in rows if isinstance(r, dict)]
     columns: list[str] = []
     for r in rows:
@@ -309,6 +361,8 @@ def parse_jsonl(text: str) -> tuple[list[str], list[dict]]:
         if not isinstance(obj, dict):
             continue
         rows.append(obj)
+        if len(rows) > MAX_TOPIC_ROWS:
+            raise ValueError(f"选题库超过行上限（{MAX_TOPIC_ROWS:,} 行）")
         for k in obj.keys():
             if k not in columns:
                 columns.append(k)
@@ -324,10 +378,17 @@ def _xlsx_col_index(cell_ref: str) -> int:
     letters = re.match(r"[A-Z]+", cell_ref or "")
     if not letters:
         return 0
+    label = letters.group()
+    # 选题数据不需要超宽表格；拒绝异常坐标，避免分配巨大列表。
+    if len(label) > 3:
+        raise ValueError("Excel 单元格列坐标不合法")
     idx = 0
-    for ch in letters.group():
+    for ch in label:
         idx = idx * 26 + (ord(ch) - 64)
-    return idx - 1
+    idx -= 1
+    if idx < 0 or idx >= MAX_XLSX_COLUMNS:
+        raise ValueError(f"Excel 列数超过 {MAX_XLSX_COLUMNS} 列上限")
+    return idx
 
 
 def parse_xlsx(path: Path) -> tuple[list[str], list[dict]]:
@@ -349,7 +410,9 @@ def parse_xlsx(path: Path) -> tuple[list[str], list[dict]]:
             raise ValueError("Excel 文件没有工作表")
         root = ET.fromstring(zf.read(sheets[0]))
         raw_rows: list[list[str]] = []
-        for row in root.iter(f"{_XLSX_NS['main']}row"):
+        for row_index, row in enumerate(root.iter(f"{_XLSX_NS['main']}row"), start=1):
+            if row_index > MAX_TOPIC_ROWS + 1:
+                raise ValueError(f"Excel 选题库超过行上限（{MAX_TOPIC_ROWS:,} 行）")
             cells: dict[int, str] = {}
             for c in row.findall(f"{_XLSX_NS['main']}c"):
                 idx = _xlsx_col_index(c.get("r") or "")
@@ -399,6 +462,8 @@ def parse_rss(text: str) -> tuple[list[str], list[dict]]:
                 "title": title, "link": link, "summary": summary,
                 "date": date, "source": feed_title,
             })
+            if len(rows) > MAX_TOPIC_ROWS:
+                raise ValueError(f"选题库超过行上限（{MAX_TOPIC_ROWS:,} 行）")
     return ["title", "link", "summary", "date", "source"], rows
 
 
@@ -416,7 +481,8 @@ def parse_sqlite(path: Path, table_name: Optional[str]) -> tuple[list[str], list
             counts = []
             for t in tables:
                 try:
-                    counts.append((conn.execute(f"SELECT COUNT(*) FROM [{t}]").fetchone()[0], t))
+                    quoted_name = '"' + t.replace('"', '""') + '"'
+                    counts.append((conn.execute(f"SELECT COUNT(*) FROM {quoted_name}").fetchone()[0], t))
                 except sqlite3.Error:
                     continue
             table = max(counts)[1] if counts else tables[0]
@@ -482,9 +548,12 @@ def fetch_remote(source: dict, timeout: int = 20) -> tuple[list[str], list[dict]
 
 def sync_remote(cfg, source: dict) -> dict:
     """抓取远程来源 → 写缓存文件 → 更新同步状态（每天由定时任务调用）。"""
+    source_id = str(source.get("id") or "")
+    if not _SOURCE_ID_RE.fullmatch(source_id):
+        raise ValueError("选题库来源 ID 格式不合法")
     columns, rows = fetch_remote(source)
     fmt = detect_format(str(source.get("url") or ""), source.get("format") or "auto")
-    cache = cache_dir(cfg) / f"{source['id']}.{_guess_ext({**source, 'format': fmt})}"
+    cache = cache_dir(cfg) / f"{source_id}.{_guess_ext({**source, 'format': fmt})}"
     if fmt == "json":
         cache.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
     elif fmt == "jsonl":
@@ -572,7 +641,14 @@ def read_source(cfg, source: dict) -> dict:
     """读取单个来源，返回 {items, status, rows, columns, mapping, error}，不抛出。"""
     source_name = source.get("name") or source.get("id")
     is_remote = source.get("kind") == "remote"
-    display_path = _redact_remote_url(source.get("url") or "") if is_remote else redact_path(_source_path(cfg, source))
+    # 路径解析可能因损坏的来源登记或非法 ID 失败，不能在错误处理边界之外抛出。
+    if is_remote:
+        display_path = _redact_remote_url(source.get("url") or "")
+    else:
+        try:
+            display_path = redact_path(_source_path(cfg, source))
+        except Exception:
+            display_path = ""
     if is_remote and str(source_name or "").lower().startswith(("http://", "https://")):
         source_name = _redact_remote_url(str(source_name))
     base = {
@@ -872,6 +948,8 @@ def preview_source(cfg, source_id: str, limit: int = 5) -> dict:
 
 
 def delete_source(cfg, source_id: str) -> dict:
+    if not isinstance(source_id, str) or not _SOURCE_ID_RE.fullmatch(source_id):
+        raise ValueError("选题库来源 ID 格式不合法")
     sources = load_registry(cfg)
     target = next((s for s in sources if s["id"] == source_id), None)
     if target is None:

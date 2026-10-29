@@ -73,7 +73,7 @@ from src.core.ops.engine import OperationsEngine
 from src.core import auth
 from src.core import kb_sources
 from src.core import industry_presets
-from src.core.env_store import read_env, write_env
+from src.core.env_store import env_file, read_env, write_env
 from src.core.redact import redact, redact_path
 from src.core.notify import Notifier, set_active as set_active_notifier, macos_available
 from src.core.hot_topics import HotTopicCollector
@@ -312,16 +312,9 @@ def _build_app() -> FastAPI:
                         status_code=413,
                     )
         if path.startswith("/api/") and path not in ("/api/auth/status", "/api/auth/login"):
-            # 本机直连（localhost / 127.0.0.1 / ::1）且无反向代理头 → 跳过首次设置和登录要求。
-            # 公网部署通过 Host 头或反代转发请求时仍然强制认证（R23 安全）。
-            host = (request.url.hostname or "").strip("[]").lower()
-            client_host = (request.client.host if request.client else "").strip("[]").lower()
-            local_hosts = ("localhost", "127.0.0.1", "::1")
-            forwarded = any(
-                request.headers.get(name)
-                for name in ("x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host")
-            )
-            local_direct = host in local_hosts and client_host in local_hosts and not forwarded
+            # 未设置口令时，仅显式启用本机引导且确认无代理头的 loopback 请求可跳过初始化认证。
+            # 其它访问必须通过首次设置引导口令；设置口令后所有请求仍需认证。
+            local_direct = auth.is_trusted_local_setup(request)
 
             if not auth.password_configured() and path != "/api/auth/password":
                 # 未设密码 + 本机直连 → 放行（方便本地开发）；公网部署 → 拦截 403
@@ -330,8 +323,8 @@ def _build_app() -> FastAPI:
                         {"detail": "请先完成访问口令设置", "code": "setup_required"},
                         status_code=403,
                     )
-            # 本机直连且未设密码时保留开发便利。
-            # 公网首次设口令交给该端点校验引导令牌，不能先要求已有登录态。
+            # 仅显式启用本机引导时，未设密码的 loopback 请求可跳过初始化认证。
+            # 其它首次设置交给该端点校验服务器引导令牌，不能先要求已有登录态。
             if not auth.password_configured() and local_direct:
                 pass
             elif not auth.password_configured() and path == "/api/auth/password":
@@ -1477,18 +1470,12 @@ def _register_routes(app: FastAPI) -> None:
     # --- 访问保护（口令 / 会话 / 脚本令牌）---
     @app.get("/api/auth/status")
     def auth_status(request: Request):
-        host = (request.url.hostname or "").strip("[]").lower()
-        client_host = (request.client.host if request.client else "").strip("[]").lower()
-        local_hosts = ("localhost", "127.0.0.1", "::1")
-        forwarded = any(
-            request.headers.get(name)
-            for name in ("x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host")
-        )
-        local_direct = host in local_hosts and client_host in local_hosts and not forwarded
+        # 状态接口必须与中间件和首次设密接口使用同一信任判定；
+        # 否则未显式启用本机初始化旁路时，前端会误判已认证并跳过设置页。
+        local_direct = auth.is_trusted_local_setup(request)
 
         ip = request.client.host if request.client else "unknown"
         st = auth.status(request.cookies.get(auth.COOKIE_NAME), request.headers, ip=ip)
-        # 本机直连 + 未设密码 → 前端跳过 InitialSetupScreen / LoginScreen
         if local_direct and not auth.password_configured():
             st["configured"] = True
             st["authenticated"] = True
@@ -1519,15 +1506,7 @@ def _register_routes(app: FastAPI) -> None:
         # 首次设置前仅初始化路由可用；仍需防止公网访客抢先设置口令并锁定管理员。
         # 本机直连允许首次设置；公网域名/反向代理部署必须通过服务端环境变量提供的一次性引导口令。
         if not auth.password_configured():
-            host = (request.url.hostname or "").strip("[]").lower()
-            client_host = (request.client.host if request.client else "").strip("[]").lower()
-            local_hosts = ("localhost", "127.0.0.1", "::1")
-            forwarded = any(
-                request.headers.get(name)
-                for name in ("x-forwarded-for", "x-real-ip", "forwarded")
-            )
-            # Host 头可由客户端伪造；仅凭 Host=localhost 不应允许公网访客跳过引导口令。
-            local_direct = host in local_hosts and client_host in local_hosts and not forwarded
+            local_direct = auth.is_trusted_local_setup(request)
             bootstrap = os.getenv("ITERWAVE_BOOTSTRAP_TOKEN", "")
             provided = str((payload or {}).get("bootstrap_token") or "")
             if not local_direct:
@@ -3572,30 +3551,10 @@ def _register_routes(app: FastAPI) -> None:
         cfg = _g()["cfg"]
         key_name = cfg.llm.api_key_env
         value = req.api_key.strip()
-        lines: list[str] = []
-        if DEFAULT_ENV_PATH.exists():
-            lines = DEFAULT_ENV_PATH.read_text(encoding="utf-8").splitlines()
-        out: list[str] = []
-        replaced = False
-        for line in lines:
-            if line.strip().startswith(f"{key_name}="):
-                if value:
-                    out.append(f"{key_name}={value}")
-                    replaced = True
-                continue  # 空值 = 删除该行
-            out.append(line)
-        if value and not replaced:
-            out.append(f"{key_name}={value}")
-        DEFAULT_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-        DEFAULT_ENV_PATH.write_text("\n".join(out) + "\n", encoding="utf-8")
-        DEFAULT_ENV_PATH.chmod(0o600)
-        if value:
-            os.environ[key_name] = value
-        else:
-            os.environ.pop(key_name, None)
+        write_env(key_name, value)
         # R23：只回报状态，绝不回报 Key 本身
         return {"ok": True, "has_key": bool(os.environ.get(key_name)),
-                "env_file": str(DEFAULT_ENV_PATH)}
+                "env_file": str(env_file())}
 
     # --- 内容资产（G-13：外部参考 / 个人观点 / 内容模板）---
     @app.get("/api/assets")
