@@ -1085,9 +1085,9 @@ export const api = {
   login: (password: string) =>
     fetchJson<AuthStatus>("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
   authLogout: () => fetchJson<{ authenticated: boolean }>("/api/auth/logout", { method: "POST" }),
-  setPassword: (password: string) =>
+  setPassword: (password: string, bootstrapToken?: string) =>
     fetchJson<{ configured: boolean; message: string }>("/api/auth/password", {
-      method: "POST", body: JSON.stringify({ password }),
+      method: "POST", body: JSON.stringify({ password, bootstrap_token: bootstrapToken || "" }),
     }),
   // === 选题库三来源 ===
   kbSources: () => fetchJson<{ items: KbSource[]; max_upload_mb: number; supported: string[] }>("/api/kb/sources"),
