@@ -294,12 +294,18 @@ def detect_mapping(columns: list[str], stored: Optional[dict] = None) -> tuple[d
 
 
 def _read_text(path: Path) -> str:
+    # 服务器路径来源也必须有读取上限；不能只限制上传/远程响应，
+    # 否则管理员误选大型本地文件仍会一次性读入内存。
+    with path.open("rb") as stream:
+        raw = stream.read(MAX_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise ValueError(f"选题库文件超过大小上限（{MAX_UPLOAD_BYTES // (1024 * 1024)} MB）")
     for enc in ("utf-8-sig", "utf-8", "gbk"):
         try:
-            return path.read_text(encoding=enc)
+            return raw.decode(enc)
         except UnicodeDecodeError:
             continue
-    return path.read_text(encoding="utf-8", errors="replace")
+    return raw.decode("utf-8", errors="replace")
 
 
 def _rows_to_dicts(rows: list[list[str]]) -> tuple[list[str], list[dict]]:
