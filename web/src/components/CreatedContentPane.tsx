@@ -93,7 +93,7 @@ export default function CreatedContentPane() {
                   onChange={() => setSelected(allChecked ? new Set() : new Set(deletable.map((d) => d.content_id)))} />
               </th>
               <th>标题</th><th style={{ width: 70 }}>平台</th><th style={{ width: 60 }}>轮次</th>
-              <th style={{ width: 110 }}>状态</th><th style={{ width: 140 }}>排期 / 存草稿</th><th style={{ width: 70 }}>操作</th>
+              <th style={{ width: 110 }}>状态</th><th style={{ width: 110 }}>配图状态</th><th style={{ width: 140 }}>排期 / 存草稿</th><th style={{ width: 70 }}>操作</th>
             </tr></thead>
             <tbody>
               {drafts.map((d) => {
@@ -110,6 +110,13 @@ export default function CreatedContentPane() {
                     <td>{platformMeta(d.platform).label}</td>
                     <td>{d.round_id ? `#${d.round_id}` : "—"}</td>
                     <td><span className={`tag ${st.cls}`}>{st.text}</span></td>
+                    <td>
+                      {d.visual_status === "media_asset"
+                        ? <span className="tag green">已选素材图</span>
+                        : d.visual_status === "generated"
+                          ? <span className="tag blue">AI 配图</span>
+                          : <span className="tag orange" title={d.visual_reason || "尚未选用正式视觉素材"}>模板降级</span>}
+                    </td>
                     <td style={{ fontSize: 11, color: "var(--muted)" }}>{d.scheduled_publish_at ?? d.saved_at ?? "—"}</td>
                     <td>
                       <button className="btn sm" disabled={locked} title={locked ? "已发布（有数据），不能删除" : "删除这篇内容"}
