@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
+import tempfile
 import threading
 from pathlib import Path
 
@@ -42,11 +44,33 @@ def set_env_secret(name: str, value: str, env_path: Path | None = None) -> None:
             out.append(line)
         if value and not found:
             out.append(f"{name}={_quote(value)}")
-        p.write_text("\n".join(out) + ("\n" if out else ""), encoding="utf-8")
+        content = "\n".join(out) + ("\n" if out else "")
+
+        # 在写入任何密钥前先创建 0600 临时文件，再原子替换正式文件。
+        tmp_path: Path | None = None
         try:
-            os.chmod(p, 0o600)
-        except OSError:
-            pass
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", newline="",
+                dir=p.parent, prefix=f".{p.name}.", suffix=f".{secrets.token_hex(4)}.tmp",
+                delete=False,
+            ) as tmp:
+                tmp_path = Path(tmp.name)
+                try:
+                    os.fchmod(tmp.fileno(), 0o600)
+                except (AttributeError, OSError):
+                    os.chmod(tmp_path, 0o600)
+                tmp.write(content)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            os.replace(tmp_path, p)
+            try:
+                p.chmod(0o600)
+            except OSError:
+                pass
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+
         if value:
             os.environ[name] = value
         else:
