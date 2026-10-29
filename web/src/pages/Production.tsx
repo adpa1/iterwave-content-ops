@@ -9,12 +9,13 @@ import DemoBadge from "../components/DemoBadge";
 import EmptyHint from "../components/EmptyHint";
 
 const ROUND_STATUSES = ["created", "producing", "awaiting_publish", "collecting_metrics", "analyzing", "completed", "partial_completed", "failed", "cancelled"];
+// 业务推进状态不能从 UI 手工跳转；这里只展示安全取消入口。
 const ROUND_TARGETABLE: Record<string, string[]> = {
-  created: ["producing", "cancelled"],
-  producing: ["awaiting_publish", "failed", "cancelled"],
-  awaiting_publish: ["collecting_metrics", "cancelled"],
-  collecting_metrics: ["analyzing", "cancelled"],
-  analyzing: ["completed", "partial_completed", "failed"],
+  created: ["cancelled"],
+  producing: ["cancelled"],
+  awaiting_publish: ["cancelled"],
+  collecting_metrics: ["cancelled"],
+  analyzing: [],
 };
 
 const STATUS_CLS: Record<string, string> = {
@@ -1248,7 +1249,7 @@ export default function Production() {
                 </div>
 
                 <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  <span style={{ fontSize: 11, color: "var(--muted)", marginRight: 4 }}>可迁移到：</span>
+                  <span style={{ fontSize: 11, color: "var(--muted)", marginRight: 4 }}>人工操作：</span>
                   {(ROUND_TARGETABLE[roundDetail.status] || []).map((t) => (
                     <button
                       key={t}
