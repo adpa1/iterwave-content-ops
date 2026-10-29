@@ -176,11 +176,11 @@ export default function MediaLibraryPane() {
             <select value={selectedContentId} onChange={(event) => setSelectedContentId(event.target.value)} style={{ minWidth: 260, maxWidth: "100%" }}>
               {targets.map((target) => (
                 <option value={target.id} key={target.id}>
-                  {target.title} · {target.platform} · {target.draft_status} · #{target.id}
+                  {target.title} · {target.platform} · {target.draft_status} · {target.visual_status === "media_asset" ? "已有素材图" : target.visual_status === "generated" ? "AI 配图" : "模板降级图"} · #{target.id}
                 </option>
               ))}
             </select>
-            <span className="panel-sub">选择一篇尚未发布的内容，再点击素材卡片中的「配给此内容」。</span>
+            <span className="panel-sub">选择一篇尚未发布的内容，再点击素材卡片中的「配给此内容」。模板渐变图会明确标记为降级，正式配图需人工选择或后续 AI 配图。</span>
           </div>
         )}
         {error && <div className="panel-sub" style={{ color: "var(--red)" }}>{error}</div>}
