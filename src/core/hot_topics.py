@@ -506,10 +506,10 @@ class HotTopicCollector:
             prev = failed.get(platform)
             if prev is None or (row["discovered_at"] or "") > (prev["discovered_at"] or ""):
                 failed[platform] = {
-                    "platform": platform,
-                    "source": source,
+                    "platform": redact(platform),
+                    "source": redact(source),
                     "status": "failed",
-                    "message": row["title"],
+                    "message": redact(row["title"] or ""),
                     "discovered_at": row["discovered_at"],
                 }
 
@@ -527,14 +527,14 @@ class HotTopicCollector:
             if row["duplicate_of"]:
                 # 去重规则 2：跨平台重复只挂到主条目上展示，不单独出卡
                 also_on.setdefault(row["duplicate_of"], []).append({
-                    "platform": platform, "title": row["title"], "url": row["raw_url"],
+                    "platform": redact(platform), "title": row["title"], "url": row["raw_url"],
                     "heat": row["heat_score"], "heat_unit": row["heat_unit"],
                 })
                 continue
 
             sources.setdefault(platform, {
-                "platform": platform,
-                "source": source,
+                "platform": redact(platform),
+                "source": redact(source),
                 "status": row["evidence_status"],
                 "message": None,
                 "discovered_at": row["discovered_at"],
@@ -557,7 +557,7 @@ class HotTopicCollector:
             items.append({
                 "id": row["id"],
                 "title": title,
-                "source": source,
+                "source": redact(source),
                 "discovered_at": row["discovered_at"],
                 "last_seen_at": row["last_seen_at"],
                 "seen_count": row["seen_count"],
