@@ -373,9 +373,9 @@ def test_upload_rejects_oversized_base64_before_decode(monkeypatch):
 def test_upload_rejects_malformed_base64_and_normalizes_filename():
     with pytest.raises(ValueError, match="合法 base64"):
         kb_sources._decode_upload("tiny.csv", "Z G==")
-    filename, data = kb_sources._decode_upload(r"..\\tiny.csv", base64.b64encode(b"title\\n").decode())
+    filename, data = kb_sources._decode_upload(r"..\tiny.csv", base64.b64encode(b"title").decode())
     assert filename == "tiny.csv"
-    assert data == b"title\\n"
+    assert data == b"title"
 
 
 def test_sqlite_topic_rows_are_bounded(tmp_path, monkeypatch):
@@ -696,7 +696,9 @@ def test_media_upload_stream_limit_matches_declared_limit(api_client, tmp_path):
         json={"filename": "invalid.png", "data_base64": base64.b64encode(b"x" * (6 * 1024 * 1024)).decode("ascii")},
     )
     assert response.status_code == 422
-\n\ndef test_sqlite_backup_files_are_private(tmp_path):
+
+
+def test_sqlite_backup_files_are_private(tmp_path):
     from src.core.db import Database
 
     db_path = tmp_path / "source.sqlite3"
