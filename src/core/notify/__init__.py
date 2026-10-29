@@ -57,7 +57,8 @@ from ..redact import redact as _redact  # noqa: F401 — 对外兼容 _redact �
 
 
 def _as_escape(text: str) -> str:
-    """转义 AppleScript 字符串字面量（反斜杠 + 双引号）。"""
+    """转义 AppleScript 字符串字面量，避免通知文本中的换行逃逸出字符串。"""
+    text = str(text or "").replace("\\r", " ").replace("\\n", " ").replace("\\t", " ")
     return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
@@ -268,13 +269,28 @@ class Notifier:
             logger.info("%s webhook 未设置（.env 缺少 %s），跳过", channel, url_env)
             return False
 
+        # UI 设置会限制目标域名；发送前仍按服务端配置校验，防止手工改 .env 后变成 SSRF。
+        from ..safe_http import SafeFetchError, validate_public_url
+        allowed_hosts = {
+            "wecom": {"qyapi.weixin.qq.com"},
+            "feishu": {"open.feishu.cn", "open.larksuite.com"},
+        }
+        try:
+            parsed = validate_public_url(url)
+            if parsed.scheme.lower() != "https" or (parsed.hostname or "").lower() not in allowed_hosts.get(channel, set()):
+                logger.warning("%s webhook 目标主机不在允许列表，已拒绝", channel)
+                return False
+        except (SafeFetchError, ValueError) as exc:
+            logger.warning("%s webhook 目标校验失败：%s", channel, exc)
+            return False
+
         text = f"【{title}】{body}"
         if channel == "wecom":
             payload = {"msgtype": "text", "text": {"content": text}}
         else:  # feishu
             payload = {"msg_type": "text", "content": {"text": text}}
 
-        resp = httpx.post(url, json=payload, timeout=5)
+        resp = httpx.post(url, json=payload, timeout=5, follow_redirects=False)
         if resp.status_code >= 300:
             logger.warning("%s webhook 返回 %s（URL 已脱敏不打印）",
                            channel, resp.status_code)
