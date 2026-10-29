@@ -582,7 +582,7 @@ def test_manual_rejection_blocks_normal_publish_until_resubmitted_or_overridden(
         json={"note_url": "https://www.xiaohongshu.com/explore/rejected"},
     )
     assert normal_confirm.status_code == 409
-    assert "人工审核已驳回" in normal_confirm.json()["detail"]
+    assert "已被人工驳回" in normal_confirm.json()["detail"]
     assert conn.execute(
         "SELECT status FROM drafts WHERE id = ?", (draft_id,)
     ).fetchone()[0] == "draft_saved"
