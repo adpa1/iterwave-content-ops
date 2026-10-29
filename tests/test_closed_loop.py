@@ -54,9 +54,22 @@ def test_publish_polling_matches_using_saved_platform_title_after_local_edit(
     content_id = conn.execute(
         "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
     ).fetchone()[0]
+    from src.core.content_version import content_version_hash, parse_json_list
     conn.execute(
-        "UPDATE drafts SET saved_platform_title = ? WHERE id = ?",
-        ("平台存稿时的标题", draft_id),
+        "UPDATE contents SET title = ? WHERE id = ?",
+        ("平台存稿时的标题", content_id),
+    )
+    content = conn.execute(
+        "SELECT title, body, tags, image_paths FROM contents WHERE id = ?", (content_id,)
+    ).fetchone()
+    images = parse_json_list(content["image_paths"])
+    payload_images = [str(images[0])] if images and images[0] else []
+    saved_hash = content_version_hash(
+        content["title"], content["body"], parse_json_list(content["tags"]), payload_images,
+    )
+    conn.execute(
+        "UPDATE drafts SET saved_platform_title = ?, saved_content_hash = ? WHERE id = ?",
+        ("平台存稿时的标题", saved_hash, draft_id),
     )
     conn.execute(
         "UPDATE contents SET title = ? WHERE id = ?",
@@ -75,6 +88,13 @@ def test_publish_polling_matches_using_saved_platform_title_after_local_edit(
     assert conn.execute(
         "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
     ).fetchone()[0] == "collecting_metrics"
+    audit = conn.execute(
+        "SELECT override_field, original_value FROM user_override "
+        "WHERE round_id = ? AND override_field = 'platform_content_sync_observed' "
+        "ORDER BY id DESC LIMIT 1", (round_id,)
+    ).fetchone()
+    assert audit is not None
+    assert json.loads(audit["original_value"])["state"] == "stale"
 
 
 def test_round_review_waits_until_remaining_saved_drafts_expire(cfg, conn, seed):
