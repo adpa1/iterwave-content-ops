@@ -459,7 +459,7 @@ function PublishPane() {
         setDrafts((prev) => prev.map((d) => (d.id === id ? { ...d, status: res.status } : d)));
         showToast(
           overrideReason
-            ? "✓ 已登记发布；质检例外原因已留痕"
+            ? "✓ 已登记发布；例外原因已留痕"
             : "✓ 已标记 user_published",
           "success",
         );
@@ -510,7 +510,14 @@ function PublishPane() {
                     这是干跑/待存内容。请在「内容生产 → 内容编辑与审核」复制文案，手动发布到平台后再回来登记；系统不会自动发布。
                   </div>
                 )}
-                {d.status === "draft_saved" && d.guard_confirmation_allowed !== true && (
+                {d.review_rejected && (d.status === "draft_pending" || d.status === "draft_saved") && (
+                  <div className="note" style={{ marginTop: 6, color: "var(--red)" }}>
+                    人工审核已驳回：{d.review_rejection_reason || "未提供原因"}。正常发布流程已阻断；
+                    请在内容生产页修改并重新提交审核。若该篇事实上已在平台发布，必须填写例外原因才能登记真实发布。
+                  </div>
+                )}
+                {(d.status === "draft_pending" || d.status === "draft_saved") &&
+                  d.guard_confirmation_allowed !== true && !d.review_rejected && (
                   <div className="note" style={{ marginTop: 6, color: "var(--orange)" }}>
                     当前质检状态：{d.guard_outcome ?? "未检查"}{d.guard_reason ? ` · ${d.guard_reason}` : ""}。
                     尚未发布时请先回到内容审核页复检；若已在平台真实发布，需填写例外原因才能登记采集。
@@ -531,7 +538,9 @@ function PublishPane() {
                       <input
                         value={qualityOverrideReasons[d.id] ?? ""}
                         onChange={(e) => setQualityOverrideReasons((prev) => ({ ...prev, [d.id]: e.target.value }))}
-                        placeholder="若已发布但质检未过，填写例外原因（必填）"
+                        placeholder={d.review_rejected
+                          ? "若已发布但被驳回，填写例外原因（必填）"
+                          : "若已发布但质检未过，填写例外原因（必填）"}
                         style={{ width: 260, fontSize: 12 }}
                         disabled={pending !== null}
                         aria-label={`${d.title ?? d.id} 的发布质检例外原因`}

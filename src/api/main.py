@@ -667,6 +667,17 @@ class RejectContentRequest(BaseModel):
         return v
 
 
+class ResubmitContentRequest(BaseModel):
+    reason: str
+
+    @field_validator("reason")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not str(v).strip():
+            raise ValueError("重新提交审核的理由不能为空")
+        return v
+
+
 def _parse_schedule_time(raw: str) -> str:
     """把 YYYY-MM-DD / YYYY-MM-DDTHH:MM[:SS] / YYYY-MM-DD HH:MM 归一为本地时区 ISO 串。
 
@@ -1133,11 +1144,18 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(404, f"轮次 {round_id} 不存在")
         # 附带 drafts 列表
         drafts = conn.execute(
-            "SELECT * FROM drafts WHERE content_id IN (SELECT id FROM contents WHERE round_id = ?)",
+            "SELECT d.*, c.review_rejected AS review_rejected, "
+            "c.review_rejection_reason AS review_rejection_reason "
+            "FROM drafts d JOIN contents c ON c.id = d.content_id WHERE c.round_id = ?",
             (round_id,),
         ).fetchall()
         result = dict(row)
-        result["drafts"] = [dict(d) for d in drafts]
+        round_drafts = []
+        for draft in drafts:
+            item = dict(draft)
+            item["review_rejected"] = bool(item.get("review_rejected"))
+            round_drafts.append(item)
+        result["drafts"] = round_drafts
         return result
 
     @app.post("/api/rounds/{round_id}/run")
@@ -1265,7 +1283,9 @@ def _register_routes(app: FastAPI) -> None:
         conn = _g()["conn"]
         sql = (
             "SELECT d.*, c.title, c.round_id, c.topic_id, c.platform as cfg_platform, "
-            "c.guard_outcome AS guard_outcome, c.guard_reason AS guard_reason "
+            "c.guard_outcome AS guard_outcome, c.guard_reason AS guard_reason, "
+            "c.review_rejected AS review_rejected, "
+            "c.review_rejection_reason AS review_rejection_reason "
             "FROM drafts d LEFT JOIN contents c ON d.content_id = c.id"
         )
         where: list[str] = []
@@ -1286,8 +1306,10 @@ def _register_routes(app: FastAPI) -> None:
         for item in rows:
             result = dict(item)
             outcome = result.get("guard_outcome")
+            result["review_rejected"] = bool(result.get("review_rejected"))
             result["guard_confirmation_allowed"] = (
-                outcome == "pass" or (outcome == "warn" and not llm_available)
+                not result["review_rejected"]
+                and (outcome == "pass" or (outcome == "warn" and not llm_available))
             )
             items.append(result)
         return items
@@ -1301,7 +1323,8 @@ def _register_routes(app: FastAPI) -> None:
         """
         conn = _g()["conn"]
         row = conn.execute(
-            "SELECT d.platform, d.status, c.round_id, c.guard_outcome, c.guard_reason "
+            "SELECT d.platform, d.status, d.error_msg, c.round_id, c.guard_outcome, c.guard_reason, "
+            "c.review_rejected, c.review_rejection_reason "
             "FROM drafts d JOIN contents c ON c.id = d.content_id WHERE d.id = ?",
             (draft_id,),
         ).fetchone()
@@ -1344,13 +1367,26 @@ def _register_routes(app: FastAPI) -> None:
         guard_accepted = guard_outcome == "pass" or (
             guard_outcome == "warn" and not llm_available
         )
+        review_rejected = bool(row["review_rejected"])
+        review_rejection_reason = row["review_rejection_reason"] or ""
         override_reason = (req.quality_override_reason or "").strip() if req else ""
-        if not guard_accepted and not override_reason:
-            reason = row["guard_reason"] or "当前文案尚未通过目标检查"
+        requires_override = (not guard_accepted) or review_rejected
+        if requires_override and not override_reason:
+            blockers = []
+            if review_rejected:
+                blockers.append(
+                    f"该内容已被人工驳回：{review_rejection_reason or '未提供驳回原因'}"
+                )
+            if not guard_accepted:
+                blockers.append(
+                    f"当前质检状态为 {guard_outcome or '未检查'}："
+                    f"{row['guard_reason'] or '当前文案尚未通过目标检查'}"
+                )
             raise HTTPException(
                 409,
-                f"当前质检状态为 {guard_outcome or '未检查'}：{reason}。"
-                "如果尚未发布，请先重新过目标检查；如果已在平台真实发布并需登记，请填写质检例外原因后重试",
+                "；".join(blockers)
+                + "。未发布时请先修改并重新提交审核；如果已在平台真实发布，"
+                "需填写例外原因才能登记真实发布与数据采集",
             )
 
         sched = _g().get("scheduler")
@@ -1378,15 +1414,18 @@ def _register_routes(app: FastAPI) -> None:
                 _g()["sm_round"].on_first_publish_confirmed(round_id)
         # 质检例外只用于登记已发生的外部发布；保留理由，方便复盘追溯。
         quality_override_recorded = False
-        if not guard_accepted and override_reason:
+        if requires_override and override_reason:
             try:
                 conn.execute(
                     "INSERT INTO user_override (round_id, override_field, original_value, "
                     "override_value, reason, overridden_by, overridden_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
-                        row["round_id"], "publish_quality_override",
+                        row["round_id"],
+                        "publish_review_rejection_override" if review_rejected else "publish_quality_override",
                         json.dumps({
+                            "review_rejected": review_rejected,
+                            "review_rejection_reason": review_rejection_reason,
                             "guard_outcome": guard_outcome,
                             "guard_reason": row["guard_reason"],
                         }, ensure_ascii=False)[:500],
@@ -1661,8 +1700,11 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.delete("/api/contents/{content_id}")
     def delete_content(content_id: str):
+        conn = _g()["conn"]
+        row = _content_row(conn, content_id)
+        _ensure_content_round_idle(row, "删除内容")
         from src.core.content_admin import delete_contents
-        res = delete_contents(_g()["cfg"], _g()["conn"], [content_id])
+        res = delete_contents(_g()["cfg"], conn, [content_id])
         if res["not_found"]:
             raise HTTPException(404, f"内容 {content_id} 不存在")
         if res["blocked"]:
@@ -1687,6 +1729,14 @@ def _register_routes(app: FastAPI) -> None:
         if not row:
             raise HTTPException(404, f"内容 {content_id} 不存在")
         return row
+
+    def _ensure_content_round_idle(row, operation: str) -> None:
+        round_id = row["round_id"]
+        if round_id is not None and round_id in _running_rounds:
+            raise HTTPException(
+                409,
+                f"轮次 {round_id} 正在执行生产/存草稿操作，暂不能{operation}；请等待本轮结束",
+            )
 
     @app.get("/api/contents")
     def list_contents(
@@ -1747,6 +1797,7 @@ def _register_routes(app: FastAPI) -> None:
         """人工编辑未发布文案 → 写 user_override 留痕；已发布内容保持不可变。"""
         conn = _g()["conn"]
         row = _content_row(conn, content_id)
+        _ensure_content_round_idle(row, "编辑内容")
         published = conn.execute(
             "SELECT status FROM drafts WHERE content_id = ? "
             "AND (user_confirmed_at IS NOT NULL "
@@ -1809,6 +1860,7 @@ def _register_routes(app: FastAPI) -> None:
         conn = _g()["conn"]
         guard = _g()["guard"]
         row = _content_row(conn, content_id)
+        _ensure_content_round_idle(row, "重新检查内容")
         try:
             tags = json.loads(row["tags"]) if row["tags"] else []
         except (TypeError, ValueError):
@@ -1836,11 +1888,31 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/contents/{content_id}/reject")
     def reject_content(content_id: str, req: RejectContentRequest):
-        """人工驳回：把理由写到该内容对应草稿的 error_msg，并留痕 user_override。"""
+        """人工驳回与 G2 自动质检分开留痕；驳回后禁止正常存草稿/确认发布。"""
         conn = _g()["conn"]
         row = _content_row(conn, content_id)
-        message = f"[已驳回] {req.reason.strip()}"
-
+        _ensure_content_round_idle(row, "驳回内容")
+        published = conn.execute(
+            "SELECT COUNT(*) FROM drafts WHERE content_id = ? "
+            "AND (user_confirmed_at IS NOT NULL "
+            "OR status IN ('user_published','data_fetching','published'))",
+            (content_id,),
+        ).fetchone()[0]
+        if published:
+            raise HTTPException(409, "该内容已有发布历史，不能再按待发布内容驳回；请在复盘中处理")
+        eligible = conn.execute(
+            "SELECT id, status FROM drafts WHERE content_id = ? "
+            "AND status IN ('draft_pending','draft_saved')",
+            (content_id,),
+        ).fetchall()
+        if not eligible:
+            raise HTTPException(409, "当前内容没有可驳回的待存内容或平台草稿")
+        reason = req.reason.strip()
+        message = f"[已驳回] {reason}"
+        conn.execute(
+            "UPDATE contents SET review_rejected = 1, review_rejection_reason = ? WHERE id = ?",
+            (reason, content_id),
+        )
         cur = conn.execute(
             "UPDATE drafts SET error_msg = ? "
             "WHERE content_id = ? AND status IN ('draft_pending','draft_saved')",
@@ -1853,16 +1925,69 @@ def _register_routes(app: FastAPI) -> None:
             (
                 row["round_id"], "review_reject",
                 json.dumps({"title": row["title"]}, ensure_ascii=False)[:500],
-                "rejected", req.reason.strip(), "web-ui",
+                "rejected", reason, "web-ui",
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             ),
         )
         conn.commit()
+        platform_drafts_left = sum(1 for draft in eligible if draft["status"] == "draft_saved")
         return {
             "id": content_id,
             "affected_drafts": cur.rowcount,
+            "review_rejected": True,
+            "platform_drafts_left": platform_drafts_left,
             "message": message,
         }
+
+    @app.post("/api/contents/{content_id}/resubmit")
+    def resubmit_rejected_content(content_id: str, req: ResubmitContentRequest):
+        """人工驳回后的内容必须先重新过当前 G2，再显式提交审核解除拦截。"""
+        conn = _g()["conn"]
+        row = _content_row(conn, content_id)
+        _ensure_content_round_idle(row, "重新提交内容")
+        if not bool(row["review_rejected"]):
+            raise HTTPException(409, "该内容当前没有人工驳回状态")
+        if conn.execute(
+            "SELECT COUNT(*) FROM drafts WHERE content_id = ? "
+            "AND (user_confirmed_at IS NOT NULL "
+            "OR status IN ('user_published','data_fetching','published'))",
+            (content_id,),
+        ).fetchone()[0]:
+            raise HTTPException(409, "该内容已有发布历史，不能重新提交待发布审核")
+        from src.core.content_pipeline import _llm_available
+        outcome = row["guard_outcome"]
+        passes = outcome == "pass" or (
+            outcome == "warn" and not _llm_available(_g()["cfg"])
+        )
+        if not passes:
+            raise HTTPException(
+                409,
+                f"当前质检状态为 {outcome or '未检查'}，须先修改文案并重新检查通过后才能重新提交审核",
+            )
+        reason = req.reason.strip()
+        conn.execute(
+            "UPDATE contents SET review_rejected = 0, review_rejection_reason = NULL WHERE id = ?",
+            (content_id,),
+        )
+        conn.execute(
+            "UPDATE drafts SET error_msg = NULL WHERE content_id = ? "
+            "AND status IN ('draft_pending','draft_saved') "
+            "AND error_msg LIKE '[已驳回]%'",
+            (content_id,),
+        )
+        conn.execute(
+            "INSERT INTO user_override (round_id, override_field, original_value, "
+            "override_value, reason, overridden_by, overridden_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["round_id"], "review_resubmit",
+                json.dumps({"review_rejection_reason": row["review_rejection_reason"]}, ensure_ascii=False)[:500],
+                "resubmitted", reason, "web-ui",
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        conn.commit()
+        return {"id": content_id, "review_rejected": False, "message": "已重新提交审核"}
 
     # --- G-09 生产线阶段计数（G → G2 → H → I）---
     @app.get("/api/rounds/{round_id}/pipeline")

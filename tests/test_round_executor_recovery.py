@@ -178,6 +178,53 @@ def test_resume_merges_draft_ids_instead_of_losing_prior_successes(cfg, conn, se
     assert len(saved_ids) == len(set(saved_ids))
 
 
+def test_resume_never_saves_manually_rejected_content(cfg, conn, seed):
+    round_id = seed.round(status="producing")
+    rejected_id = seed.draft(
+        round_id, platform="xhs", draft_status="draft_pending",
+        fetch_status=None, topic_id="rejected-topic",
+    )
+    accepted_id = seed.draft(
+        round_id, platform="douyin", draft_status="draft_pending",
+        fetch_status=None, topic_id="approved-topic",
+    )
+    rejected_content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (rejected_id,)
+    ).fetchone()[0]
+    accepted_content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (accepted_id,)
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE contents SET review_rejected = 1, review_rejection_reason = ? WHERE id = ?",
+        ("观点不符合定位", rejected_content_id),
+    )
+    conn.execute(
+        "UPDATE contents SET title = ?, body = ?, tags = ? WHERE id = ?",
+        ("审核通过标题", "审核通过正文", json.dumps(["test"]), accepted_content_id),
+    )
+    conn.commit()
+
+    adapter = _SuccessfulDraftAdapter()
+    result = asyncio.run(
+        _executor(cfg, conn, {
+            Platform.XHS: adapter,
+            Platform.DOUYIN: adapter,
+        }).save_pending_drafts(round_id)
+    )
+
+    assert result["drafts_attempted"] == 1
+    assert result["drafts_saved"] == 1
+    assert result["pending_drafts"] == 1
+    assert result["final_status"] == "producing"
+    assert [payload.title for payload in adapter.payloads] == ["审核通过标题"]
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (rejected_id,)
+    ).fetchone()[0] == "draft_pending"
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (accepted_id,)
+    ).fetchone()[0] == "draft_saved"
+
+
 def test_resume_requires_enabled_save_draft_step(cfg, conn, seed):
     round_id = seed.round(status="producing")
     seed.draft(round_id, platform="xhs", draft_status="draft_pending", fetch_status=None)

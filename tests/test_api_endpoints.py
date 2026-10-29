@@ -541,6 +541,180 @@ def test_dry_run_content_can_be_manually_published_and_confirmation_is_idempoten
     ).fetchone()[0] == confirmed_at_before
 
 
+def test_manual_rejection_blocks_normal_publish_until_resubmitted_or_overridden(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="awaiting_publish")
+    draft_id = seed.draft(
+        round_id, platform="xhs", draft_status="draft_saved", fetch_status=None,
+    )
+    content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE contents SET guard_outcome = 'pass', guard_reason = 'G2 通过' WHERE id = ?",
+        (content_id,),
+    )
+    conn.commit()
+
+    rejected = tc.post(
+        f"/api/contents/{content_id}/reject",
+        json={"reason": "观点不符合账号定位"},
+    )
+    assert rejected.status_code == 200
+    assert rejected.json()["review_rejected"] is True
+    content = conn.execute(
+        "SELECT review_rejected, review_rejection_reason FROM contents WHERE id = ?",
+        (content_id,),
+    ).fetchone()
+    assert content["review_rejected"] == 1
+    assert content["review_rejection_reason"] == "观点不符合账号定位"
+    assert conn.execute(
+        "SELECT error_msg FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0].startswith("[已驳回]")
+
+    listed = tc.get("/api/drafts").json()
+    draft = next(item for item in listed if item["id"] == draft_id)
+    assert draft["review_rejected"] is True
+    assert draft["guard_confirmation_allowed"] is False
+
+    normal_confirm = tc.post(
+        f"/api/drafts/{draft_id}/publish_confirm",
+        json={"note_url": "https://www.xiaohongshu.com/explore/rejected"},
+    )
+    assert normal_confirm.status_code == 409
+    assert "已被人工驳回" in normal_confirm.json()["detail"]
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "draft_saved"
+
+    # 只有明确说明“外部平台已真实发布”的例外原因，才能登记真实发布与采集。
+    override = tc.post(
+        f"/api/drafts/{draft_id}/publish_confirm",
+        json={
+            "note_url": "https://www.xiaohongshu.com/explore/rejected",
+            "quality_override_reason": "平台实际已发布，保留真实运营记录",
+        },
+    )
+    assert override.status_code == 200
+    assert override.json()["status"] == "user_published"
+    audit = conn.execute(
+        "SELECT override_field, reason FROM user_override "
+        "WHERE round_id = ? ORDER BY id DESC LIMIT 1", (round_id,)
+    ).fetchone()
+    assert audit["override_field"] == "publish_review_rejection_override"
+    assert audit["reason"] == "平台实际已发布，保留真实运营记录"
+
+
+def test_rejected_content_must_pass_g2_before_resubmission(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="producing")
+    draft_id = seed.draft(
+        round_id, platform="xhs", draft_status="draft_pending", fetch_status=None,
+    )
+    content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    rejected = tc.post(
+        f"/api/contents/{content_id}/reject",
+        json={"reason": "需要重新论证"},
+    )
+    assert rejected.status_code == 200
+
+    blocked = tc.post(
+        f"/api/contents/{content_id}/resubmit",
+        json={"reason": "我已修改"},
+    )
+    assert blocked.status_code == 409
+    assert "须先修改文案并重新检查通过" in blocked.json()["detail"]
+    assert conn.execute(
+        "SELECT review_rejected FROM contents WHERE id = ?", (content_id,)
+    ).fetchone()[0] == 1
+
+    conn.execute(
+        "UPDATE contents SET guard_outcome = 'pass', guard_reason = '重新检查通过' WHERE id = ?",
+        (content_id,),
+    )
+    conn.commit()
+    resubmitted = tc.post(
+        f"/api/contents/{content_id}/resubmit",
+        json={"reason": "已修改并通过目标检查"},
+    )
+    assert resubmitted.status_code == 200
+    row = conn.execute(
+        "SELECT review_rejected, review_rejection_reason FROM contents WHERE id = ?",
+        (content_id,),
+    ).fetchone()
+    assert row["review_rejected"] == 0
+    assert row["review_rejection_reason"] is None
+    assert conn.execute(
+        "SELECT error_msg FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] is None
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "draft_pending"
+    audit = conn.execute(
+        "SELECT override_field, reason FROM user_override "
+        "WHERE round_id = ? ORDER BY id DESC LIMIT 1", (round_id,)
+    ).fetchone()
+    assert audit["override_field"] == "review_resubmit"
+    assert audit["reason"] == "已修改并通过目标检查"
+
+
+def test_content_mutations_are_rejected_while_round_is_running(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="producing")
+    draft_id = seed.draft(
+        round_id, platform="xhs", draft_status="draft_pending", fetch_status=None,
+    )
+    content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    api_main._running_rounds.add(round_id)
+    try:
+        edit = tc.patch(
+            f"/api/contents/{content_id}",
+            json={"title": "并发修改", "reason": "回归测试"},
+        )
+        reject = tc.post(
+            f"/api/contents/{content_id}/reject",
+            json={"reason": "并发驳回"},
+        )
+        delete = tc.delete(f"/api/contents/{content_id}")
+    finally:
+        api_main._running_rounds.discard(round_id)
+
+    assert edit.status_code == 409
+    assert reject.status_code == 409
+    assert delete.status_code == 409
+    row = conn.execute(
+        "SELECT title, review_rejected FROM contents WHERE id = ?", (content_id,)
+    ).fetchone()
+    assert row["title"] == "T"
+    assert row["review_rejected"] == 0
+    assert conn.execute(
+        "SELECT 1 FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone() is not None
+
+
+def test_published_content_cannot_be_manually_rejected(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="collecting_metrics")
+    draft_id = seed.draft(
+        round_id, platform="xhs", draft_status="user_published", fetch_status=None,
+    )
+    content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    response = tc.post(
+        f"/api/contents/{content_id}/reject",
+        json={"reason": "不应覆盖已发布历史"},
+    )
+    assert response.status_code == 409
+    assert conn.execute(
+        "SELECT review_rejected FROM contents WHERE id = ?", (content_id,)
+    ).fetchone()[0] == 0
+
+
 # ---------------------------------------------------------------- R-5 KPI 窗口
 def test_ops_kpi_days_param(client):
     tc, _, seed = client
