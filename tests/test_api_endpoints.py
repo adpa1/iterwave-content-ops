@@ -150,6 +150,26 @@ def test_editing_content_invalidates_previous_guard_result(client):
     assert row["guard_reason"] is None
 
 
+def test_published_content_cannot_be_mutated_in_place(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="collecting_metrics")
+    draft_id = seed.draft(round_id, platform="xhs", draft_status="user_published", fetch_status=None)
+    content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+
+    response = tc.patch(
+        f"/api/contents/{content_id}",
+        json={"title": "不应覆盖已发布版本", "reason": "回归测试"},
+    )
+    assert response.status_code == 409
+    row = conn.execute(
+        "SELECT title, body FROM contents WHERE id = ?", (content_id,)
+    ).fetchone()
+    assert row["title"] == "T"
+    assert row["body"] == "B"
+
+
 # ---------------------------------------------------------------- R-5 KPI 窗口
 def test_ops_kpi_days_param(client):
     tc, _, seed = client
