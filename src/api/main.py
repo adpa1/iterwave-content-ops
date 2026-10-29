@@ -278,6 +278,8 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
                 old_conn.close()
 
         from src.core import account_login, login_manager
+        # 旧账号组的扫码登录子进程和登录态导出线程必须先退出，避免继续读写旧/新目录。
+        account_login.stop_all_logins(timeout_seconds=10.0)
         new_data_dir = new_context["cfg"].resolve_path(new_context["cfg"].paths.data_dir)
         account_login.configure_data_dir(new_data_dir)
         login_manager.configure_data_dir(new_data_dir)
