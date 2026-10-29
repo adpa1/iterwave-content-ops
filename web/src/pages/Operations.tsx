@@ -426,6 +426,7 @@ function PublishPane() {
   const [noteUrls, setNoteUrls] = useState<Record<string, string>>({});
   // 实际发布已发生但质检失败/失效时，要求显式说明例外原因，保留数据闭环与审计记录。
   const [qualityOverrideReasons, setQualityOverrideReasons] = useState<Record<string, string>>({});
+  const [platformSyncReasons, setPlatformSyncReasons] = useState<Record<string, string>>({});
 
   const fetchDrafts = async () => {
     try {
@@ -450,17 +451,23 @@ function PublishPane() {
       // G-11：同一草稿的确认按钮在请求中禁用，重复点击被 withPending 拦截
       const noteUrl = (noteUrls[id] ?? "").trim();
       const overrideReason = (qualityOverrideReasons[id] ?? "").trim();
+      const platformSyncOverrideReason = (platformSyncReasons[id] ?? "").trim();
       const res = await withPending(
         `publish:${id}`,
-        () => api.confirmPublish(id, noteUrl || undefined, overrideReason || undefined),
+        () => api.confirmPublish(
+          id, noteUrl || undefined, overrideReason || undefined,
+          platformSyncOverrideReason || undefined,
+        ),
       );
       if (res) {
         // 行内即时更新，无需等整表刷新
         setDrafts((prev) => prev.map((d) => (d.id === id ? { ...d, status: res.status } : d)));
         showToast(
-          overrideReason
-            ? "✓ 已登记发布；例外原因已留痕"
-            : "✓ 已标记 user_published",
+          platformSyncOverrideReason
+            ? "✓ 已登记发布；平台版本差异原因已留痕"
+            : overrideReason
+              ? "✓ 已登记发布；质检/审核例外原因已留痕"
+              : "✓ 已标记 user_published",
           "success",
         );
         await fetchDrafts();
@@ -468,6 +475,33 @@ function PublishPane() {
     } catch (e: any) {
       setError(e?.message ?? "确认发布失败");
       showToast(`确认失败: ${e?.message ?? "未知错误"}`, "error");
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const confirmPlatformSync = async (id: string) => {
+    if (pending) return;
+    const reason = (platformSyncReasons[id] ?? "").trim();
+    if (!reason) {
+      showToast("请先填写平台版本同步说明", "error");
+      return;
+    }
+    setPending(id);
+    setError(null);
+    try {
+      const result = await withPending(
+        `platform-sync:${id}`,
+        () => api.confirmPlatformSync(id, reason),
+      );
+      if (result) {
+        showToast(result.message, "success");
+        setPlatformSyncReasons((prev) => ({ ...prev, [id]: "" }));
+        await fetchDrafts();
+      }
+    } catch (e: any) {
+      setError(e?.message ?? "确认平台版本同步失败");
+      showToast(`确认平台版本同步失败：${e?.message ?? "未知错误"}`, "error");
     } finally {
       setPending(null);
     }
@@ -523,6 +557,14 @@ function PublishPane() {
                     尚未发布时请先回到内容审核页复检；若已在平台真实发布，需填写例外原因才能登记采集。
                   </div>
                 )}
+                {d.status === "draft_saved" && d.platform_content_sync !== "matched" && (
+                  <div className="note" style={{ marginTop: 6, color: "var(--orange)" }}>
+                    {d.platform_content_sync === "stale"
+                      ? "本地文案与上次存入平台的版本不同。发布前请先在平台端同步标题、正文、标签和卡片。"
+                      : "该历史平台草稿没有可验证的版本指纹，需要人工核对平台端内容。"}
+                    {" "}若已发布的确是平台旧版本，需填写版本例外原因才能登记并进入数据采集。
+                  </div>
+                )}
               </div>
               <div className="task-actions" style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
                 {(d.status === "draft_pending" || d.status === "draft_saved") && (
@@ -546,16 +588,49 @@ function PublishPane() {
                         aria-label={`${d.title ?? d.id} 的发布质检例外原因`}
                       />
                     )}
+                    {d.status === "draft_saved" && d.platform_content_sync !== "matched" && (
+                      <>
+                        <input
+                          value={platformSyncReasons[d.id] ?? ""}
+                          onChange={(e) => setPlatformSyncReasons((prev) => ({ ...prev, [d.id]: e.target.value }))}
+                          placeholder="版本不一致/未知：若已发布需说明原因（必填）"
+                          style={{ width: 260, fontSize: 12 }}
+                          disabled={pending !== null}
+                          aria-label={`${d.title ?? d.id} 的平台版本例外原因`}
+                        />
+                        <button
+                          className="btn sm"
+                          disabled={
+                            pending !== null ||
+                            !d.guard_confirmation_allowed ||
+                            !(platformSyncReasons[d.id] ?? "").trim()
+                          }
+                          onClick={() => confirmPlatformSync(d.id)}
+                          title="仅在你已手动把平台草稿更新为当前本地版本后点击"
+                        >
+                          已在平台同步当前版本
+                        </button>
+                      </>
+                    )}
                     <button
                       className="btn sm success"
-                      disabled={pending !== null || (d.guard_confirmation_allowed !== true && !(qualityOverrideReasons[d.id] ?? "").trim())}
+                      disabled={
+                        pending !== null ||
+                        (d.guard_confirmation_allowed !== true && !(qualityOverrideReasons[d.id] ?? "").trim()) ||
+                        (d.status === "draft_saved" && d.platform_content_sync !== "matched" &&
+                          !(platformSyncReasons[d.id] ?? "").trim())
+                      }
                       onClick={() => confirm(d.id)}
                     >
                       {pending === d.id
                         ? "提交中…"
-                        : d.guard_confirmation_allowed === true
-                          ? d.status === "draft_pending" ? "✓ 我已手动发布" : "✓ 我已发布"
-                          : "⚠ 已发布，仍登记"}
+                        : d.status === "draft_pending"
+                          ? (d.guard_confirmation_allowed === true ? "✓ 我已手动发布" : "⚠ 已发布，仍登记")
+                          : d.platform_content_sync !== "matched"
+                            ? "⚠ 已发布，版本不一致仍登记"
+                            : d.guard_confirmation_allowed === true
+                              ? "✓ 我已发布"
+                              : "⚠ 已发布，仍登记"}
                     </button>
                   </>
                 )}
