@@ -241,6 +241,8 @@ def test_webhook_rejects_non_official_hosts_without_network(monkeypatch) -> None
     notifier = object.__new__(Notifier)
 
     assert notifier._send_webhook("wecom", "TEST_WECOM_WEBHOOK", "title", "body") is False
+    monkeypatch.setenv("TEST_WECOM_WEBHOOK", "https://qyapi.weixin.qq.com:8443/hook")
+    assert notifier._send_webhook("wecom", "TEST_WECOM_WEBHOOK", "title", "body") is False
     assert called is False
 
 
