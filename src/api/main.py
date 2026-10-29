@@ -1128,6 +1128,24 @@ def _register_routes(app: FastAPI) -> None:
     def generate_media_asset(req: MediaGenerationRequest):
         return _generate_media_asset(req)
 
+    @app.post("/api/media/generate-for-content/{content_id}", status_code=201)
+    def generate_media_for_content(content_id: str, usage_role: str = Query("cover", pattern="^(cover|illustration|background)$")):
+        """根据现有内容生成候选配图；生成结果进入待审核状态，不自动分配。"""
+        row = _g()["conn"].execute("SELECT id, title, body, platform FROM contents WHERE id = ?", (content_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "目标内容不存在")
+        title = str(row["title"] or "内容配图")
+        body = str(row["body"] or "")
+        role_label = {"cover": "封面主视觉", "illustration": "正文插图", "background": "背景图"}[usage_role]
+        prompt = (f"为当前平台内容生成一张{role_label}。主题：{title}。正文摘要：{body[:900]}。" +
+                  "画面与主题直接相关，构图清晰，适合移动端阅读；不要生成文字、二维码、水印或虚构品牌标识。" +
+                  "优先真实摄影或高质量编辑插画风格，避免与内容无关的装饰。")[:1900]
+        return _generate_media_asset(MediaGenerationRequest(
+            prompt=prompt, title=f"{title} - AI配图候选",
+            alt_text=f"为内容「{title}」生成的{role_label}候选图",
+            tags=[str(row["platform"]), role_label, "内容生成配图"],
+        ))
+
     @app.post("/api/media/{asset_id}/edit", status_code=201)
     def edit_media_asset(asset_id: int, req: MediaGenerationRequest):
         return _generate_media_asset(req, source_asset_id=asset_id)
