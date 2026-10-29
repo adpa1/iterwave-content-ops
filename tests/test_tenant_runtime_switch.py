@@ -126,6 +126,8 @@ def test_runtime_switch_supports_a_to_b_to_a(monkeypatch):
 def test_runtime_switch_rolls_back_if_target_scheduler_fails(monkeypatch):
     registry = FakeRegistry()
     old = make_context(registry, "A")
+    old_scheduler = old["scheduler"]
+    old_conn = old["conn"]
     target = make_context(registry, "B", fail_start=True)
     rollback = make_context(registry, "A")
     built = {"count": 0}
@@ -153,8 +155,8 @@ def test_runtime_switch_rolls_back_if_target_scheduler_fails(monkeypatch):
         assert api_main._g_ctx["runtime_tenant_id"] == "A"
         assert api_main._g_ctx["conn"] is rollback["conn"] if isinstance(rollback, dict) else True
         assert rollback["scheduler"].started
-        assert old["scheduler"].drained
-        assert old["conn"].closed
+        assert old_scheduler.drained
+        assert old_conn.closed
 
     try:
         asyncio.run(run())
