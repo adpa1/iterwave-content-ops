@@ -2264,7 +2264,22 @@ def _register_routes(app: FastAPI) -> None:
                     logger.exception("重排定时任务失败 %s", job_id)
                     rescheduled.append({"job_id": job_id, "error": str(e)})
         result["rescheduled"] = rescheduled
-        return {**result, "config": current_config_view(g2["cfg"], g2["conn"])["editable"]}
+        # 配置变更响应也不能回显带凭据的 URL；持久化和运行内存仍保留原值。
+        from src.core.config_store import _redact_override_value
+        safe_result = dict(result)
+        safe_result["changed"] = [
+            {
+                **change,
+                "old": _redact_override_value(change["key"], change.get("old")),
+                "new": _redact_override_value(change["key"], change.get("new")),
+            }
+            for change in result.get("changed", [])
+        ]
+        safe_result["applied"] = {
+            key: _redact_override_value(key, value)
+            for key, value in result.get("applied", {}).items()
+        }
+        return {**safe_result, "config": current_config_view(g2["cfg"], g2["conn"])["editable"]}
 
     @app.post("/api/config/llm_key")
     def save_llm_api_key(req: LlmKeyRequest):
