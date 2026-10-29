@@ -1572,12 +1572,12 @@ def _register_routes(app: FastAPI) -> None:
         from datetime import timedelta
         since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
         tenant_rows = []
-        totals = {"tenants": 0, "available_tenants": 0, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0}
-        platform_totals = {p: {"contents": 0, "drafts": 0} for p in ("xhs", "douyin", "kuaishou", "wechat_channels")}
+        totals = {"tenants": 0, "available_tenants": 0, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0, "registered_accounts": 0, "registered_accounts_active": 0}
+        platform_totals = {p: {"contents": 0, "drafts": 0, "registered_accounts": 0} for p in ("xhs", "douyin", "kuaishou", "wechat_channels")}
         for tenant in registry.list():
             tenant_id = tenant["id"]
             paths = registry.paths(tenant_id, name=str(tenant.get("name") or tenant_id))
-            row = {"tenant_id": tenant_id, "tenant_name": tenant["name"], "created_at": tenant.get("created_at"), "db_available": False, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0, "platforms": {}}
+            row = {"tenant_id": tenant_id, "tenant_name": tenant["name"], "created_at": tenant.get("created_at"), "db_available": False, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0, "registered_accounts": 0, "registered_accounts_active": 0, "platforms": {}}
             db_file = paths.db_file
             if db_file.exists():
                 conn = None
@@ -1613,6 +1613,12 @@ def _register_routes(app: FastAPI) -> None:
                         row["media_active"] = int(conn.execute("SELECT COUNT(*) FROM media_assets WHERE status = 'active'").fetchone()[0])
                     if "media_asset_usages" in tables:
                         row["media_usage"] = int(conn.execute("SELECT COUNT(*) FROM media_asset_usages").fetchone()[0])
+                    if "platform_accounts" in tables:
+                        row["registered_accounts"] = int(conn.execute("SELECT COUNT(*) FROM platform_accounts").fetchone()[0])
+                        row["registered_accounts_active"] = int(conn.execute("SELECT COUNT(*) FROM platform_accounts WHERE status = 'active'").fetchone()[0])
+                        for item in conn.execute("SELECT platform, COUNT(*) AS n FROM platform_accounts WHERE status = 'active' GROUP BY platform").fetchall():
+                            platform = item["platform"]
+                            row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0, "registered_accounts": 0})["registered_accounts"] = int(item["n"])
                     row["db_available"] = True
                 except (sqlite3.Error, OSError) as exc:
                     logger.warning("global monitor skipped tenant=%s: %s", tenant_id, exc)
@@ -1620,9 +1626,12 @@ def _register_routes(app: FastAPI) -> None:
                     if conn is not None: conn.close()
             totals["tenants"] += 1
             if row["db_available"]: totals["available_tenants"] += 1
-            for key in ("contents_period", "contents_all", "drafts_all", "drafts_pending", "drafts_saved", "drafts_published", "drafts_failed", "media_active", "media_usage"): totals[key] += row[key]
+            for key in ("contents_period", "contents_all", "drafts_all", "drafts_pending", "drafts_saved", "drafts_published", "drafts_failed", "media_active", "media_usage", "registered_accounts", "registered_accounts_active"): totals[key] += row[key]
+            for platform, values in row["platforms"].items():
+                if platform in platform_totals:
+                    platform_totals[platform]["registered_accounts"] += int(values.get("registered_accounts", 0))
             tenant_rows.append(row)
-        return {"days": days, "since": since, "totals": totals, "platform_totals": platform_totals, "tenants": tenant_rows, "account_count_note": "当前数据模型未保存可去重的平台账号身份；此处不将平台数或快照数冒充账号数。"}
+        return {"days": days, "since": since, "totals": totals, "platform_totals": platform_totals, "tenants": tenant_rows, "account_count_note": "账号数量来自用户登记的平台账号标识，按账号组和平台去重；未登记的账号不会自动推断计入。"}
 
     # --- 访问保护（口令 / 会话 / 脚本令牌）---
     @app.get("/api/auth/status")
