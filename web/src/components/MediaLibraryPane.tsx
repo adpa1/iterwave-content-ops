@@ -30,7 +30,6 @@ export default function MediaLibraryPane() {
   const [generationSettings, setGenerationSettings] = useState<MediaGenerationSettings | null>(null);
   const [generationPrompt, setGenerationPrompt] = useState("");
   const [query, setQuery] = useState("");
-  const [filename, setFilename] = useState("");
   const [title, setTitle] = useState("");
   const [altText, setAltText] = useState("");
   const [tagsText, setTagsText] = useState("");
@@ -49,10 +48,12 @@ export default function MediaLibraryPane() {
       setItems(result.items);
       setTargets(targetResult.items);
       setGenerationSettings(settingsResult);
-      setSelectedContentId((current) => (
-        current && targetResult.items.some((item) => item.id === current)
-          ? current : targetResult.items[0]?.id ?? ""
-      ));
+      const requestedContentId = new URLSearchParams(window.location.search).get("focusContent");
+      setSelectedContentId((current) => {
+        if (requestedContentId && targetResult.items.some((item) => item.id === requestedContentId)) return requestedContentId;
+        return current && targetResult.items.some((item) => item.id === current)
+          ? current : targetResult.items[0]?.id ?? "";
+      });
     } catch (e) {
       const message = e instanceof Error ? e.message : "图片素材加载失败";
       setError(message);
@@ -65,7 +66,6 @@ export default function MediaLibraryPane() {
 
   const chooseFiles = (next: File[]) => {
     setFiles(next);
-    setFilename(next.length === 1 ? next[0].name : "");
     if (next.length === 1 && !title.trim()) setTitle(next[0].name.replace(/\.[^.]+$/, ""));
     if (next.length > 1) setTitle("");
   };
@@ -103,7 +103,6 @@ export default function MediaLibraryPane() {
         failed ? "info" : "success",
       );
       setFiles([]);
-      setFilename("");
       setTitle("");
       setAltText("");
       setTagsText("");
@@ -251,7 +250,7 @@ export default function MediaLibraryPane() {
         </div>
         {files.length > 0 && <div className="panel-sub" style={{ marginTop: 8 }}>已选 {files.length} 张：{files.slice(0, 4).map((item) => `${item.name}（${formatBytes(item.size)}）`).join("、")}{files.length > 4 ? ` 等共 ${files.length} 张` : ""} · 单张不超过 12MB</div>}
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
-          <button className="btn sm" onClick={() => { setFiles([]); setTitle(""); setAltText(""); setTagsText(""); setFilename(""); const input = document.getElementById("media-upload-input") as HTMLInputElement | null; if (input) input.value = ""; }}>清空</button>
+          <button className="btn sm" onClick={() => { setFiles([]); setTitle(""); setAltText(""); setTagsText(""); const input = document.getElementById("media-upload-input") as HTMLInputElement | null; if (input) input.value = ""; }}>清空</button>
           <button className="btn primary sm" onClick={() => void upload()} disabled={!files.length || isPending("media:upload")}>
             {isPending("media:upload") ? `导入中 ${files.length} 张…` : `导入 ${files.length || ""} 张图片到素材库`}
           </button>
