@@ -39,10 +39,9 @@ from apscheduler.triggers.date import DateTrigger
 
 logger = logging.getLogger(__name__)
 
-# APScheduler 的 SQLAlchemyJobStore 会 pickle 任务。绑定方法会连带 pickle
-# 整个 SchedulerEngine（含 scheduler 实例 → 不可序列化），所以统一用模块级
-# 函数做薄包装，运行时通过这个全局变量拿回引擎。
-_ACTIVE_ENGINE: "SchedulerEngine | None" = None
+# SQLAlchemyJobStore 需要模块级可 pickle 的包装函数。以数据库绝对路径作为稳定引擎键，
+# 防止不同账号组的持久化任务通过可变的“当前活动引擎”指针串租。
+_ENGINES: dict[str, "SchedulerEngine"] = {}
 
 
 class SchedulerEngine:
@@ -50,7 +49,8 @@ class SchedulerEngine:
 
     def __init__(self, cfg, db_path: Path):
         self.cfg = cfg
-        self.db_path = db_path
+        self.db_path = Path(db_path).resolve()
+        self.engine_key = str(self.db_path)
         # SQLiteJobStore 需要 SQLAlchemy URL
         self.scheduler = AsyncIOScheduler(
             jobstores={
@@ -105,21 +105,48 @@ class SchedulerEngine:
 
     # ------------------------------------------------------------------
     def start(self) -> None:
-        """启动调度器，注册所有任务。"""
-        global _ACTIVE_ENGINE
-        _ACTIVE_ENGINE = self          # 供模块级可 pickle 的 job 包装函数取用
-        self._register_all_jobs()
-        self.scheduler.start()
+        """启动调度器并绑定持久化任务；先暂停，完成旧任务迁移后再执行。"""
+        current = _ENGINES.get(self.engine_key)
+        if current is not None and current is not self:
+            raise RuntimeError(f"该数据库已有活动调度器：{self.engine_key}")
+        _ENGINES[self.engine_key] = self
+        try:
+            self.scheduler.start(paused=True)
+            self._register_all_jobs()
+            self._bind_persisted_data_fetch_jobs()
+            self.scheduler.resume()
+        except Exception:
+            if _ENGINES.get(self.engine_key) is self:
+                _ENGINES.pop(self.engine_key, None)
+            try:
+                self.scheduler.shutdown(wait=False)
+            except SchedulerNotRunningError:
+                pass
+            raise
         logger.info("✅ APScheduler 启动，本地时区（R5），已注册 %d 类任务",
-                     len(self.scheduler.get_jobs()))
+                    len(self.scheduler.get_jobs()))
+
+    def _bind_persisted_data_fetch_jobs(self) -> None:
+        """给旧版本留下的一次性采集任务补上稳定引擎键，避免落入其他账号组。"""
+        for job in self.scheduler.get_jobs():
+            if not job.id.startswith("data_fetch_"):
+                continue
+            kwargs = dict(job.kwargs or {})
+            if kwargs.get("engine_key") == self.engine_key:
+                continue
+            kwargs["engine_key"] = self.engine_key
+            self.scheduler.modify_job(job.id, kwargs=kwargs)
 
     def shutdown(self) -> None:
-        """停止调度器。未 start() 过时静默返回（避免应用关闭报错）。"""
+        """停止调度器并解除本引擎注册；未启动时也可安全调用。"""
         try:
             self.scheduler.shutdown(wait=False)
             logger.info("⏹️ APScheduler 已关闭")
         except SchedulerNotRunningError:
             logger.debug("APScheduler 未启动，无需关闭")
+        finally:
+            if _ENGINES.get(self.engine_key) is self:
+                _ENGINES.pop(self.engine_key, None)
 
     # ------------------------------------------------------------------
     def _register_all_jobs(self) -> None:
@@ -155,6 +182,7 @@ class SchedulerEngine:
             JOB_RUNNERS[job_id],
             self._trigger_for(job_id),
             id=job_id,
+            args=[self.engine_key],
             replace_existing=True,
             max_instances=1,
             coalesce=True,
@@ -245,7 +273,7 @@ class SchedulerEngine:
             _run_data_fetch,
             DateTrigger(run_date=run_at),
             id=f"data_fetch_{draft_id}_a{attempt}",
-            kwargs={"draft_id": draft_id, "attempt": attempt},
+            kwargs={"engine_key": self.engine_key, "draft_id": draft_id, "attempt": attempt},
             replace_existing=True,
         )
         logger.info("📅 注册 data_fetch: draft=%s attempt=%d run_at=%s",
@@ -1254,64 +1282,87 @@ class SchedulerEngine:
 # 模块级可 pickle 的 job 包装（APScheduler SQLAlchemyJobStore 要求）
 # =====================================================================
 
-async def _run_publish_polling() -> None:
-    if _ACTIVE_ENGINE is not None:
-        await _ACTIVE_ENGINE._job_publish_polling()
+def _engine_for(engine_key: str | None) -> "SchedulerEngine | None":
+    """只按任务持久化的账号组引擎键分派；缺键任务安全跳过，不回退到其他账号组。"""
+    if not engine_key:
+        logger.error("[APS] 任务缺少 engine_key，拒绝执行以避免跨账号组操作")
+        return None
+    engine = _ENGINES.get(engine_key)
+    if engine is None:
+        logger.warning("[APS] 任务对应的引擎未运行，跳过 job engine_key=%s", engine_key)
+    return engine
 
 
-async def _run_data_fetch(draft_id: str, attempt: int = 1) -> None:
-    if _ACTIVE_ENGINE is not None:
-        await _ACTIVE_ENGINE._job_data_fetch(draft_id, attempt)
+async def _run_publish_polling(engine_key: str | None = None) -> None:
+    engine = _engine_for(engine_key)
+    if engine is not None:
+        await engine._job_publish_polling()
 
 
-async def _run_hot_topics_refresh() -> None:
-    if _ACTIVE_ENGINE is not None:
-        await _ACTIVE_ENGINE._job_hot_topics_refresh()
+async def _run_data_fetch(engine_key: str | None = None, draft_id: str = "", attempt: int = 1) -> None:
+    engine = _engine_for(engine_key)
+    if engine is not None and draft_id:
+        await engine._job_data_fetch(draft_id, attempt)
 
 
-async def _run_daily_ops() -> None:
-    if _ACTIVE_ENGINE is not None:
-        await _ACTIVE_ENGINE._job_daily_ops()
+async def _run_hot_topics_refresh(engine_key: str | None = None) -> None:
+    engine = _engine_for(engine_key)
+    if engine is not None:
+        await engine._job_hot_topics_refresh()
 
 
-async def _run_comment_polling() -> None:
-    if _ACTIVE_ENGINE is not None:
-        await _ACTIVE_ENGINE._job_comment_polling()
+async def _run_daily_ops(engine_key: str | None = None) -> None:
+    engine = _engine_for(engine_key)
+    if engine is not None:
+        await engine._job_daily_ops()
 
 
-async def _run_cb_recovery() -> None:
-    if _ACTIVE_ENGINE is not None:
-        await _ACTIVE_ENGINE._job_cb_recovery()
+async def _run_comment_polling(engine_key: str | None = None) -> None:
+    engine = _engine_for(engine_key)
+    if engine is not None:
+        await engine._job_comment_polling()
 
 
-async def _run_kb_scan() -> None:
-    if _ACTIVE_ENGINE is not None:
-        await _ACTIVE_ENGINE._job_kb_scan()
+async def _run_cb_recovery(engine_key: str | None = None) -> None:
+    engine = _engine_for(engine_key)
+    if engine is not None:
+        await engine._job_cb_recovery()
 
 
-async def _run_kb_sync() -> None:
-    if _ACTIVE_ENGINE is not None:
-        await _ACTIVE_ENGINE._job_kb_sync()
+async def _run_kb_scan(engine_key: str | None = None) -> None:
+    engine = _engine_for(engine_key)
+    if engine is not None:
+        await engine._job_kb_scan()
 
 
-async def _run_data_retention_cleanup() -> None:
-    if _ACTIVE_ENGINE is not None:
-        await _ACTIVE_ENGINE._job_data_retention_cleanup()
+async def _run_kb_sync(engine_key: str | None = None) -> None:
+    engine = _engine_for(engine_key)
+    if engine is not None:
+        await engine._job_kb_sync()
 
 
-async def _run_round_timeout_sweeper() -> None:
-    if _ACTIVE_ENGINE is not None:
-        await _ACTIVE_ENGINE._job_round_timeout_sweeper()
+async def _run_data_retention_cleanup(engine_key: str | None = None) -> None:
+    engine = _engine_for(engine_key)
+    if engine is not None:
+        await engine._job_data_retention_cleanup()
 
 
-async def _run_round_review() -> None:
-    if _ACTIVE_ENGINE is not None:
-        await _ACTIVE_ENGINE._job_round_review()
+async def _run_round_timeout_sweeper(engine_key: str | None = None) -> None:
+    engine = _engine_for(engine_key)
+    if engine is not None:
+        await engine._job_round_timeout_sweeper()
 
 
-async def _run_autogrow_next_round() -> None:
-    if _ACTIVE_ENGINE is not None:
-        await _ACTIVE_ENGINE._job_autogrow_next_round()
+async def _run_round_review(engine_key: str | None = None) -> None:
+    engine = _engine_for(engine_key)
+    if engine is not None:
+        await engine._job_round_review()
+
+
+async def _run_autogrow_next_round(engine_key: str | None = None) -> None:
+    engine = _engine_for(engine_key)
+    if engine is not None:
+        await engine._job_autogrow_next_round()
 
 
 # 任务 id → 可 pickle 的模块级执行函数（SQLAlchemyJobStore 要求）
