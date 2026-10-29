@@ -56,6 +56,67 @@ def test_retry_job_id_includes_attempt(cfg) -> None:
     assert {"data_fetch_d1_a1", "data_fetch_d1_a2"} <= ids
 
 
+def test_missing_metrics_adapter_records_failure_and_retries(cfg, conn, seed) -> None:
+    from datetime import timedelta
+    from src.adapters.base import FetchStatus
+    from src.core.state_machine import DraftStateMachine
+
+    round_id = seed.round(status="collecting_metrics")
+    draft_id = seed.draft(round_id, draft_status="user_published", fetch_status=None)
+    conn.execute(
+        "UPDATE drafts SET user_confirmed_at = ? WHERE id = ?",
+        ((datetime.now() - timedelta(hours=48)).isoformat(), draft_id),
+    )
+    conn.commit()
+    eng = SchedulerEngine(cfg, Path(cfg.paths.db_file))
+    eng.wire(conn=conn, adapters={}, sm_draft=DraftStateMachine(conn))
+
+    # attempt 1：缺少适配器也要形成 failed metrics，且注册 attempt 2。
+    asyncio.run(eng._job_data_fetch(draft_id, attempt=1))
+    metrics = conn.execute(
+        "SELECT fetch_status, raw_response FROM metrics WHERE draft_id = ?", (draft_id,)
+    ).fetchone()
+    assert metrics["fetch_status"] == FetchStatus.FAILED.value
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "user_published"
+    assert f"data_fetch_{draft_id}_a2" in {j.id for j in eng.scheduler.get_jobs()}
+
+    # attempt 2 继续重试；attempt 3 耗尽后明确结束，不再静默挂在 collecting。
+    asyncio.run(eng._job_data_fetch(draft_id, attempt=2))
+    assert f"data_fetch_{draft_id}_a3" in {j.id for j in eng.scheduler.get_jobs()}
+    asyncio.run(eng._job_data_fetch(draft_id, attempt=3))
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "failed"
+    error = conn.execute(
+        "SELECT error_msg FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    assert "适配器未启用" in error
+
+
+def test_backfill_requeues_when_only_failed_metrics_exist(cfg, conn, seed) -> None:
+    """只存在 failed 采集记录不代表闭环完成；任务丢失后必须允许补登记。"""
+    from datetime import timedelta
+
+    round_id = seed.round(status="collecting_metrics")
+    draft_id = seed.draft(round_id, draft_status="data_fetching", fetch_status=None)
+    old = (datetime.now() - timedelta(hours=48)).isoformat()
+    conn.execute("UPDATE drafts SET user_confirmed_at = ? WHERE id = ?", (old, draft_id))
+    conn.execute(
+        "INSERT INTO metrics (draft_id, content_id, platform, fetch_status, fetched_at, attempt) "
+        "SELECT ?, id, 'xhs', 'failed', ?, 1 FROM contents WHERE round_id = ? LIMIT 1",
+        (draft_id, datetime.now().isoformat(), round_id),
+    )
+    conn.commit()
+
+    eng = SchedulerEngine(cfg, Path(cfg.paths.db_file))
+    eng.wire(conn=conn, adapters={})
+    assert eng.backfill_data_fetch() == 1
+    assert f"data_fetch_{draft_id}_a1" in {j.id for j in eng.scheduler.get_jobs()}
+    assert eng.backfill_data_fetch() == 0
+
+
 def test_data_fetch_failure_schedules_retry(cfg, conn, seed) -> None:
     """采集失败 → 注册下一次 attempt（此前单次失败直接放弃，重试策略形同虚设）。"""
     from src.adapters.base import FetchStatus, MetricsSnapshot
