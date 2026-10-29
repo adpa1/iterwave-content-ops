@@ -87,6 +87,16 @@ def test_dry_run_pending_drafts_can_be_saved_without_regenerating(cfg, conn, see
     assert conn.execute(
         "SELECT status FROM drafts WHERE id = ?", (draft_id,)
     ).fetchone()[0] == "draft_saved"
+    from src.core.content_version import content_version_hash
+    saved_hash = conn.execute(
+        "SELECT saved_content_hash FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    assert saved_hash == content_version_hash(
+        adapter.payloads[0].title,
+        adapter.payloads[0].body,
+        adapter.payloads[0].tags,
+        adapter.payloads[0].image_paths,
+    )
     assert conn.execute(
         "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
     ).fetchone()[0] == "awaiting_publish"
