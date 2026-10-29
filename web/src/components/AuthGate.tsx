@@ -3,8 +3,8 @@ import { api, AUTH_EVENT, type AuthStatus } from "../api";
 
 /**
  * 访问口令门：
- * - 设置了口令且未登录 → 全屏登录页（所有业务页面都不渲染，避免一堆 401 红条）
- * - 未设置口令 → 正常使用，顶部常驻警告条，可直接设置口令
+ * - 已设置口令且未登录 → 全屏登录页
+ * - 尚未设置口令 → 全屏首次安全设置，业务页面与 API 在设置完成前保持关闭
  */
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [st, setSt] = useState<AuthStatus | null>(null);
@@ -41,7 +41,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     return <LoginScreen onDone={check} />;
   }
   if (!st.required) {
-    return <OpenModeBanner onDone={check} />;
+    return <InitialSetupScreen onDone={check} />;
   }
   return <>{children}</>;
 }
@@ -84,7 +84,7 @@ function LoginScreen({ onDone }: { onDone: () => void }) {
   );
 }
 
-function OpenModeBanner({ onDone }: { onDone: () => void }) {
+function InitialSetupScreen({ onDone }: { onDone: () => void }) {
   const [token, setToken] = useState("");
   const [token2, setToken2] = useState("");
   const [bootstrapToken, setBootstrapToken] = useState("");
