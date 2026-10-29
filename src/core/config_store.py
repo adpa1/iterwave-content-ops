@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from src.core.config import DEFAULT_JOB_SCHEDULES, JOB_DESCRIPTIONS, Config, validate_cron
-from src.core.redact import redact_path
+from src.core.redact import redact, redact_path
 
 logger = logging.getLogger(__name__)
 
@@ -585,6 +585,19 @@ def llm_channel(base_url: str) -> str:
     return "custom"
 
 
+def _redact_public_value(value: Any) -> Any:
+    """配置审计/诊断视图中的字符串统一脱敏，避免 URL 凭据从覆盖文件或审计字段泄漏。"""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {str(k): _redact_public_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_public_value(v) for v in value]
+    if isinstance(value, tuple):
+        return [_redact_public_value(v) for v in value]
+    return value
+
+
 def current_config_view(cfg: Config, conn) -> dict[str, Any]:
     """Settings 页展示 + 编辑所需的白名单字段当前值。"""
     enabled = cfg.platforms.enabled_keys()
@@ -689,9 +702,13 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             },
         },
         "overrides_file": redact_path(overrides_path(cfg)),
-        "overrides": load_overrides(cfg),
+        "overrides": _redact_public_value(load_overrides(cfg)),
         "audit": [
-            dict(r)
+            {
+                **dict(r),
+                "old_value": _redact_public_value(r["old_value"]),
+                "new_value": _redact_public_value(r["new_value"]),
+            }
             for r in conn.execute(
                 "SELECT id, key, old_value, new_value, changed_at "
                 "FROM config_changes ORDER BY id DESC LIMIT 20"
