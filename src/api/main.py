@@ -1174,8 +1174,8 @@ def _register_routes(app: FastAPI) -> None:
             with Image.open(io.BytesIO(raw)) as image:
                 image_format = (image.format or "").upper()
                 width, height = image.size
-        except (UnidentifiedImageError, OSError, ValueError) as exc:
-            raise HTTPException(422, "上传内容不是有效的图片文件") from exc
+        except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as exc:
+            raise HTTPException(422, "上传内容不是有效的图片文件或超过安全像素限制") from exc
         format_map = {
             "JPEG": ("image/jpeg", ".jpg"),
             "PNG": ("image/png", ".png"),
