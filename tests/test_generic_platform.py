@@ -50,6 +50,7 @@ def unconfigured_env(cfg, conn, tmp_path, monkeypatch):
     envf = tmp_path / ".env"
     monkeypatch.setattr("src.core.secrets_env.DEFAULT_ENV_PATH", envf)
     monkeypatch.delenv("ITERWAVE_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("ITERWAVE_ALLOW_LOCAL_BOOTSTRAP", "1")
     saved = dict(api_main._g_ctx)
     api_main._g_ctx.clear()
     api_main._g_ctx.update({"cfg": cfg, "conn": conn, "sm_draft": DraftStateMachine(conn),
