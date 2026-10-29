@@ -162,6 +162,11 @@ def _build_app() -> FastAPI:
                 prefix = f"{active_tenant_id}__"
                 if not item.account_key.startswith(prefix):
                     item.account_key = f"{prefix}{item.account_key}"
+        # 登录二维码、持久化浏览器 profile、storage_state 必须共用当前账号组数据根目录。
+        from src.core import account_login, login_manager
+        runtime_data_dir = cfg.resolve_path(cfg.paths.data_dir)
+        account_login.configure_data_dir(runtime_data_dir)
+        login_manager.configure_data_dir(runtime_data_dir)
         db = Database(cfg)
         db.initialize()
         # 线程安全包装：路由线程池 / 调度器 / 执行器共用这一个连接
