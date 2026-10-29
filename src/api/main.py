@@ -2495,18 +2495,50 @@ def _register_routes(app: FastAPI) -> None:
         }
 
     # --- 热点源（综合热榜可关，可加 RSS / JSON 行业源）---
+    def _public_hot_sources(items: list[dict]) -> list[dict]:
+        # URL 可能带签名/访问令牌；前端只需显示主机与脱敏占位符。
+        public = []
+        for item in items or []:
+            row = dict(item)
+            row["url"] = kb_sources._redact_remote_url(str(row.get("url") or ""))
+            public.append(row)
+        return public
+
+    def _restore_masked_hot_source_urls(items: list[dict], current: list[dict]) -> list[dict]:
+        # 列表操作会把脱敏后 URL 一起提交；按来源标识恢复服务器保存的原始 URL。
+        # 新增项的 URL 不匹配已有项的脱敏值，因此仍会正常保存。
+        restored = []
+        for incoming in items or []:
+            row = dict(incoming)
+            for old in current or []:
+                same_key = (
+                    str(old.get("name") or "") == str(row.get("name") or "")
+                    and str(old.get("type") or "aggregate") == str(row.get("type") or "aggregate")
+                    and str(old.get("platform") or "") == str(row.get("platform") or "")
+                    and tuple(old.get("platforms") or []) == tuple(row.get("platforms") or [])
+                )
+                if same_key and str(row.get("url") or "") == kb_sources._redact_remote_url(str(old.get("url") or "")):
+                    row["url"] = old.get("url") or ""
+                    break
+            restored.append(row)
+        return restored
+
     @app.get("/api/hot_topics/sources")
     def hot_sources_list():
-        return {"items": _g()["cfg"].hot_topics.sources}
+        return {"items": _public_hot_sources(_g()["cfg"].hot_topics.sources)}
 
     @app.put("/api/hot_topics/sources")
     def hot_sources_update(req: dict):
+        cfg = _g()["cfg"]
         items = (req or {}).get("items")
+        if not isinstance(items, list):
+            raise HTTPException(422, "热点源必须是数组")
+        items = _restore_masked_hot_source_urls(items, cfg.hot_topics.sources)
         try:
-            patch_config(_g()["cfg"], _g()["conn"], {"hot_topics.sources": items})
+            patch_config(cfg, _g()["conn"], {"hot_topics.sources": items})
         except (ConfigNotAllowedError, ConfigPatchError) as e:
             raise HTTPException(422, str(e)) from e
-        return {"items": _g()["cfg"].hot_topics.sources}
+        return {"items": _public_hot_sources(cfg.hot_topics.sources)}
 
     # ============================================================
     # Dashboard 补齐（对比报告 3.1 🔴 后端真缺失）
