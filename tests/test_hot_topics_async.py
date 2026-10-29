@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from src.api import main as api_main
 from src.core import hot_topic_service
 from src.core.hot_topic_matcher import HotTopicMatcher, MATCH_THRESHOLD, dimension_match_of
-from src.core.hot_topics import HotTopicCollector
+from src.core.hot_topics import HotTopicCollector, _fetch_public_text
 
 
 def _insert(conn, tid, title, *, batch="2026-10-28T10:00:00", source="60s.viki.moe/weibo", heat=999999):
@@ -34,6 +34,20 @@ def client(cfg, conn):
     finally:
         api_main._g_ctx.clear()
         api_main._g_ctx.update(saved)
+
+
+def test_hot_source_fetch_rejects_private_destinations(monkeypatch):
+    with pytest.raises(ValueError, match="内网|本机|保留"):
+        _fetch_public_text("http://127.0.0.1/internal", headers={}, timeout=1)
+
+    monkeypatch.setattr(
+        "src.core.kb_sources.socket.getaddrinfo",
+        lambda host, port, **kwargs: [
+            (__import__("socket").AF_INET, __import__("socket").SOCK_STREAM, 6, "", ("192.168.1.10", port))
+        ],
+    )
+    with pytest.raises(ValueError, match="内网|本机|保留"):
+        _fetch_public_text("https://private-feed.example/rss", headers={}, timeout=1)
 
 
 def test_get_does_not_collect(client, monkeypatch):
