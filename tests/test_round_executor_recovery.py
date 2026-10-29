@@ -203,6 +203,34 @@ def test_resume_requires_enabled_save_draft_step(cfg, conn, seed):
     ).fetchone()[0] == "draft_pending"
 
 
+def test_empty_topic_selection_persists_failed_run_report(cfg, conn, seed, monkeypatch):
+    round_id = seed.round(status="created")
+    executor = _executor(cfg, conn)
+    executor._resolve_platforms = lambda values: [Platform.XHS]
+    executor._select_topics = lambda topic_count, report: []
+    monkeypatch.setattr(
+        "src.core.plan_version.PlanVersionManager.load_plan",
+        lambda self: ({"topic_count_per_platform": 1, "enabled_platforms": ["xhs"]}, "sig", None, "test"),
+    )
+    monkeypatch.setattr(executor, "_resolve_feedback", lambda *_args, **_kwargs: None)
+
+    report = asyncio.run(executor.run(round_id))
+    assert report["final_status"] == "failed"
+    assert report["finished_at"]
+    stored_raw = conn.execute(
+        "SELECT run_report FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0]
+    assert stored_raw
+    stored = json.loads(stored_raw)
+    assert stored["final_status"] == "failed"
+    assert "选题库无可用选题" in stored["errors"]
+    task = conn.execute(
+        "SELECT status FROM task_runs WHERE task_type = 'round_pipeline' AND biz_id = ? "
+        "ORDER BY id DESC LIMIT 1", (str(round_id),)
+    ).fetchone()
+    assert task is not None and task["status"] == "failed"
+
+
 def test_feedback_resolution_exception_marks_round_and_task_failed(cfg, conn, seed, monkeypatch):
     round_id = seed.round(status="created")
     executor = _executor(cfg, conn)
