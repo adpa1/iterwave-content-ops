@@ -147,6 +147,37 @@ def test_parse_feed_and_scrub():
     assert display_path("/srv/elsewhere/kb.db").endswith("kb.db")
 
 
+def test_public_first_setup_requires_bootstrap_token(unconfigured_env, monkeypatch):
+    client, _, _ = unconfigured_env
+    monkeypatch.setenv("ITERWAVE_BOOTSTRAP_TOKEN", "bootstrap-secret")
+    public = TestClient(
+        client.app,
+        base_url="https://eduplay.cloud",
+        client=("198.51.100.10", 54000),
+    )
+    assert public.post("/api/auth/setup", json={"token": "secret-12345"}).status_code == 403
+    assert public.post(
+        "/api/auth/setup",
+        json={"token": "secret-12345", "bootstrap_token": "wrong"},
+    ).status_code == 403
+    r = public.post(
+        "/api/auth/setup",
+        json={"token": "secret-12345", "bootstrap_token": "bootstrap-secret"},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_bearer_auth_failures_are_rate_limited(unconfigured_env, monkeypatch):
+    client, _, _ = unconfigured_env
+    monkeypatch.setenv("ITERWAVE_ACCESS_TOKEN", "secret-12345")
+    for _ in range(10):
+        assert client.get(
+            "/api/verticals", headers={"Authorization": "Bearer wrong"}
+        ).status_code == 401
+    blocked = client.get("/api/verticals", headers={"Authorization": "Bearer wrong"})
+    assert blocked.status_code == 429
+
+
 def test_access_token_flow(unconfigured_env):
     client, _, envf = unconfigured_env
     assert client.get("/api/auth/status").json() == {"required": False, "authed": True}
