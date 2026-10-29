@@ -532,9 +532,10 @@ class PlatformStyleUpdate(BaseModel):
 
 
 class PublishConfirmRequest(BaseModel):
-    """发布确认的可选补充：已发布笔记链接（被动评论轮询用它定位笔记）。"""
+    """发布确认补充：笔记链接；质检未通过但已真实发布时可提供例外登记原因。"""
 
     note_url: Optional[str] = Field(None, max_length=500)
+    quality_override_reason: Optional[str] = Field(None, max_length=500)
 
 
 class TransitionRequest(BaseModel):
@@ -1262,8 +1263,11 @@ def _register_routes(app: FastAPI) -> None:
         platform: Optional[str] = Query(None),
     ):
         conn = _g()["conn"]
-        sql = "SELECT d.*, c.title, c.round_id, c.topic_id, c.platform as cfg_platform FROM drafts d "
-        sql += "LEFT JOIN contents c ON d.content_id = c.id"
+        sql = (
+            "SELECT d.*, c.title, c.round_id, c.topic_id, c.platform as cfg_platform, "
+            "c.guard_outcome AS guard_outcome, c.guard_reason AS guard_reason "
+            "FROM drafts d LEFT JOIN contents c ON d.content_id = c.id"
+        )
         where: list[str] = []
         params: list = []
         if status:
@@ -1276,7 +1280,17 @@ def _register_routes(app: FastAPI) -> None:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY d.created_at DESC LIMIT 100"
         rows = conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+        from src.core.content_pipeline import _llm_available
+        llm_available = _llm_available(_g()["cfg"])
+        items = []
+        for item in rows:
+            result = dict(item)
+            outcome = result.get("guard_outcome")
+            result["guard_confirmation_allowed"] = (
+                outcome == "pass" or (outcome == "warn" and not llm_available)
+            )
+            items.append(result)
+        return items
 
     @app.post("/api/drafts/{draft_id}/publish_confirm")
     def confirm_publish(draft_id: str, req: Optional[PublishConfirmRequest] = None):
@@ -1287,26 +1301,28 @@ def _register_routes(app: FastAPI) -> None:
         """
         conn = _g()["conn"]
         row = conn.execute(
-            "SELECT d.platform, d.status, c.guard_outcome, c.guard_reason "
+            "SELECT d.platform, d.status, c.round_id, c.guard_outcome, c.guard_reason "
             "FROM drafts d JOIN contents c ON c.id = d.content_id WHERE d.id = ?",
             (draft_id,),
         ).fetchone()
         if row is None:
             raise HTTPException(404, f"草稿 {draft_id} 不存在")
 
-        # 编辑内容会使 guard_outcome 失效；禁止跳过复检直接把这版内容登记为已发布。
-        # 只有 PASS 可通过；模板降级模式下与生产流程一致，允许 WARN 但保留告警。
+        # 发布确认记录的是用户已经在外部平台完成的动作：正常路径须有当前质检结果；
+        # 若发布事实上已发生但质检失效/失败，允许显式登记原因以保留真实发布与采集闭环。
+        from src.core.content_pipeline import _llm_available
         guard_outcome = row["guard_outcome"]
-        guard_accepted = guard_outcome == "pass"
-        if guard_outcome == "warn":
-            from src.core.content_pipeline import _llm_available
-            guard_accepted = not _llm_available(_g()["cfg"])
-        if not guard_accepted:
+        llm_available = _llm_available(_g()["cfg"])
+        guard_accepted = guard_outcome == "pass" or (
+            guard_outcome == "warn" and not llm_available
+        )
+        override_reason = (req.quality_override_reason or "").strip() if req else ""
+        if not guard_accepted and not override_reason:
             reason = row["guard_reason"] or "当前文案尚未通过目标检查"
             raise HTTPException(
                 409,
-                f"不能确认发布：当前文案质检状态为 {guard_outcome or '未检查'}。"
-                f"{reason}。请到「内容编辑与审核」重新过目标检查后再确认",
+                f"当前质检状态为 {guard_outcome or '未检查'}：{reason}。"
+                "如果尚未发布，请先重新过目标检查；如果已在平台真实发布并需登记，请填写质检例外原因后重试",
             )
 
         note_url = (req.note_url or "").strip() if req else ""
@@ -1335,10 +1351,37 @@ def _register_routes(app: FastAPI) -> None:
             round_id = _find_round_for_draft(conn, draft_id)
             if round_id:
                 _g()["sm_round"].on_first_publish_confirmed(round_id)
+        # 质检例外只用于登记已发生的外部发布；保留理由，方便复盘追溯。
+        quality_override_recorded = False
+        if not guard_accepted and override_reason:
+            try:
+                conn.execute(
+                    "INSERT INTO user_override (round_id, override_field, original_value, "
+                    "override_value, reason, overridden_by, overridden_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        row["round_id"], "publish_quality_override",
+                        json.dumps({
+                            "guard_outcome": guard_outcome,
+                            "guard_reason": row["guard_reason"],
+                        }, ensure_ascii=False)[:500],
+                        json.dumps({"status": "user_published"}, ensure_ascii=False),
+                        override_reason, "publish-confirm-ui",
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    ),
+                )
+                conn.commit()
+                quality_override_recorded = True
+            except Exception:  # noqa: BLE001 — 采集链路优先，审计写失败留日志
+                logger.exception("发布质检例外审计写入失败 draft=%s", draft_id)
+
         # G-15 场景：发布确认留痕（用户手动确认，非系统自动发布）
+        message = f"草稿 {draft_id} 已由用户确认发布，进入数据采集"
+        if quality_override_recorded:
+            message += f"（质检例外登记：{override_reason[:80]}）"
         _g()["notifier"].emit(
             "publish_confirmed",
-            f"草稿 {draft_id} 已由用户确认发布，进入数据采集",
+            message,
             platform=dict(row)["platform"] if row else None,
         )
         return {"draft_id": draft_id, "status": "user_published", "note_url": note_url or None}
