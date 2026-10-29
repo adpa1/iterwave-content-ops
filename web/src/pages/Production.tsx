@@ -483,6 +483,8 @@ export default function Production() {
 
   const canRun = !!roundDetail && roundDetail.status === "created" && !running && (usePlan || selPlatforms.length > 0);
   const selectedContent = contents.find((c) => c.id === selectedContentId) ?? null;
+  const selectedContentIsImmutable = !!selectedContent &&
+    ["user_published", "data_fetching", "published"].includes(selectedContent.draft_status ?? "");
 
   // ---------------------------------------------------------------- 渲染
   return (
@@ -1051,19 +1053,30 @@ export default function Production() {
                   )}
                 </div>
 
+                {selectedContentIsImmutable ? (
+                  <div className="note" style={{ marginBottom: 10, borderLeft: "4px solid var(--orange)", paddingLeft: 8 }}>
+                    该内容已确认发布或进入数据采集。为保留真实发布版本与历史数据，此处只读；如需修改，请新建一篇修订内容。
+                  </div>
+                ) : selectedContent.draft_status === "draft_saved" ? (
+                  <div className="note" style={{ marginBottom: 10, borderLeft: "4px solid var(--orange)", paddingLeft: 8 }}>
+                    该内容已存入平台草稿。这里的修改只更新本地记录，不会自动同步到平台；保存后请复制文案并在平台端更新草稿，再重新过目标检查。
+                  </div>
+                ) : null}
+
                 <label style={{ fontSize: 12, color: "var(--muted)" }}>标题</label>
-                <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
+                <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} disabled={selectedContentIsImmutable} style={{ width: "100%", marginBottom: 8 }} />
 
                 <label style={{ fontSize: 12, color: "var(--muted)" }}>正文</label>
                 <textarea
                   value={editBody}
                   onChange={(e) => setEditBody(e.target.value)}
+                  disabled={selectedContentIsImmutable}
                   rows={10}
                   style={{ width: "100%", marginBottom: 8, fontFamily: "inherit", resize: "vertical" }}
                 />
 
                 <label style={{ fontSize: 12, color: "var(--muted)" }}>标签（空格或逗号分隔）</label>
-                <input value={editTags} onChange={(e) => setEditTags(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+                <input value={editTags} onChange={(e) => setEditTags(e.target.value)} disabled={selectedContentIsImmutable} style={{ width: "100%", marginBottom: 10 }} />
 
                 {/* G-36：复制文案 + 下载卡片，补齐小红书本地草稿的发布闭环 */}
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
@@ -1091,10 +1104,10 @@ export default function Production() {
                 )}
 
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-                  <button className="btn primary" onClick={handleSaveContent} disabled={isPending("save-content")}>
+                  <button className="btn primary" onClick={handleSaveContent} disabled={selectedContentIsImmutable || isPending("save-content")}>
                     {isPending("save-content") ? "提交中…" : "✓ 保存修改"}
                   </button>
-                  <button className="btn" onClick={handleRecheck} disabled={isPending("recheck-content")}>
+                  <button className="btn" onClick={handleRecheck} disabled={selectedContentIsImmutable || isPending("recheck-content")}>
                     {isPending("recheck-content") ? "重检中…" : "⌕ 重新过目标检查"}
                   </button>
                   <button className="btn danger" style={{ marginLeft: "auto" }} onClick={handleDeleteContent}
@@ -1123,11 +1136,11 @@ export default function Production() {
                   <div className="panel-title" style={{ fontSize: 12, marginBottom: 6 }}>驳回（记录理由，不自动改草稿状态）</div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <input
-                      value={rejectReason} placeholder="例如：观点与账号定位不符"
+                      value={rejectReason} placeholder="例如：观点与账号定位不符" disabled={selectedContentIsImmutable}
                       onChange={(e) => setRejectReason(e.target.value)}
                       style={{ flex: 1 }}
                     />
-                    <button className="btn" onClick={handleReject} disabled={isPending("reject-content")}>
+                    <button className="btn" onClick={handleReject} disabled={selectedContentIsImmutable || isPending("reject-content")}>
                       {isPending("reject-content") ? "提交中…" : "✕ 驳回"}
                     </button>
                   </div>
