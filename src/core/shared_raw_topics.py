@@ -68,7 +68,9 @@ def publish_from_tenant(conn) -> int:
         )
         shared.executemany(
             f"INSERT INTO raw_hot_topics ({', '.join(RAW_FIELDS)}) "
-            f"VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {updates}",
+            f"VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {updates} "
+            "WHERE COALESCE(excluded.last_seen_at, excluded.discovered_at, '') >= "
+            "COALESCE(raw_hot_topics.last_seen_at, raw_hot_topics.discovered_at, '')",
             [tuple(row[field] for field in RAW_FIELDS) for row in rows],
         )
         shared.commit()
