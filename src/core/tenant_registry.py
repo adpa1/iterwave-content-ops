@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +44,34 @@ class TenantPaths:
             key: str(value) if isinstance(value, Path) else value
             for key, value in asdict(self).items()
         }
+
+
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    """使用同目录唯一临时文件原子更新私有 JSON 状态文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="",
+            prefix=f".{path.name}.", suffix=".tmp",
+            dir=path.parent, delete=False,
+        ) as stream:
+            temp_path = Path(stream.name)
+            try:
+                os.fchmod(stream.fileno(), 0o600)
+            except (AttributeError, OSError):
+                temp_path.chmod(0o600)
+            stream.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, path)
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 class TenantRegistry:
@@ -139,16 +168,8 @@ class TenantRegistry:
         tenant_id = self._validate_id(tenant_id)
         item = self.get(tenant_id)  # 不存在时 fail-closed，不回退 default
         self.paths(tenant_id, name=str(item.get("name") or tenant_id), create=True)
-        temp = self.active_file.with_suffix(".tmp")
-        temp.write_text(
-            json.dumps({"tenant_id": tenant_id}, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        try:
-            temp.chmod(0o600)
-        except OSError:
-            pass
-        os.replace(temp, self.active_file)
+        with self._lock:
+            _atomic_write_json(self.active_file, {"tenant_id": tenant_id})
         return {"id": tenant_id, "name": item.get("name") or tenant_id}
 
     def active_id(self) -> str:
@@ -254,14 +275,4 @@ class TenantRegistry:
         return data
 
     def _write_registry(self, data: dict[str, Any]) -> None:
-        temp = self.registry_file.with_suffix(".tmp")
-        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        try:
-            temp.chmod(0o600)
-        except OSError:
-            pass
-        os.replace(temp, self.registry_file)
-        try:
-            self.registry_file.chmod(0o600)
-        except OSError:
-            pass
+        _atomic_write_json(self.registry_file, data)

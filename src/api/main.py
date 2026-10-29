@@ -188,6 +188,8 @@ def _build_app() -> FastAPI:
                 prefix = f"{active_tenant_id}__"
                 if not item.account_key.startswith(prefix):
                     item.account_key = f"{prefix}{item.account_key}"
+            # 租户选题库路径是隔离边界；不能让历史 config_overrides.json 把它指回共享或其他租户目录。
+            cfg.topic_kb.path = str(tenant_paths.kb_dir / "topics.csv")
         # 登录二维码、持久化浏览器 profile、storage_state 必须共用当前账号组数据根目录。
         from src.core import account_login, login_manager
         runtime_data_dir = cfg.resolve_path(cfg.paths.data_dir)

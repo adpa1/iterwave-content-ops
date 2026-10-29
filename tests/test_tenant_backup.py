@@ -60,3 +60,33 @@ def test_tenant_backup_restores_database_media_and_overrides(tmp_path: Path) -> 
     assert card_path.read_bytes() == b"card-original"
     assert json.loads((data_dir / "config_overrides.json").read_text(encoding="utf-8")) == {"quota": 10}
     assert Path(result["rollback_db"]).is_file()
+
+
+def test_restore_rejects_duplicate_zip_members(tmp_path: Path) -> None:
+    import zipfile
+    import pytest
+    from src.core.tenant_backup import BackupError
+
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    archive_path = backup_dir / "iterwave_brand_a_duplicate.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("manifest.json", "{}")
+    with pytest.raises(BackupError, match="重复文件条目"):
+        restore_backup(archive_path, tmp_path / "easel.db", tmp_path / "data", backup_dir, "brand_a")
+
+
+def test_restore_rejects_non_object_manifest(tmp_path: Path) -> None:
+    import zipfile
+    import pytest
+    from src.core.tenant_backup import BackupError
+
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    archive_path = backup_dir / "iterwave_brand_a_bad_manifest.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("manifest.json", "[]")
+        archive.writestr("easel.db", b"not a database")
+    with pytest.raises(BackupError, match="清单格式无效"):
+        restore_backup(archive_path, tmp_path / "easel.db", tmp_path / "data", backup_dir, "brand_a")
