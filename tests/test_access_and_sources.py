@@ -124,6 +124,19 @@ def test_middleware_requires_login_only_after_password_set(api_client):
     assert api_client.get("/api/topics").status_code == 401
 
 
+def test_script_token_auth_cannot_bypass_login_rate_limit(api_client):
+    auth.set_password("secret123")
+    for _ in range(auth.LOGIN_MAX_FAILURES):
+        response = api_client.get("/api/topics", headers={"X-Access-Token": "wrong"})
+        assert response.status_code == 401
+    blocked = api_client.get("/api/topics", headers={"X-Access-Token": "wrong"})
+    assert blocked.status_code == 429
+    assert blocked.json()["code"] == "auth_rate_limited"
+
+    # 同一 IP 被限速时不能再靠脚本头猜口令；另一 IP 的正确口令仍然可校验。
+    assert auth.is_authenticated(None, {"x-access-token": "secret123"}, ip="192.0.2.20") is True
+
+
 def test_login_rate_limit_over_http(api_client):
     api_client.post("/api/auth/password", json={"password": "secret123"})
     for _ in range(auth.LOGIN_MAX_FAILURES):
