@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -29,6 +30,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import httpx
+
+from .safe_http import SafeFetchError, fetch_public_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +67,8 @@ def _friendly_error(exc: Exception) -> str:
         return "数据源响应超时"
     if isinstance(exc, httpx.HTTPError):
         return "无法连接数据源"
+    if isinstance(exc, SafeFetchError):
+        return str(exc)[:100]
     msg = str(exc)
     if "RSS" in msg or "解析" in msg:
         return msg[:80]
@@ -260,10 +265,13 @@ class HotTopicCollector:
         """自定义 RSS / Atom 源。没有热度数字（heat_score = NULL，不参与热度门）。"""
         from .kb_sources import parse_feed
         url = self.feeds[platform]
-        resp = httpx.get(url, timeout=_FETCH_TIMEOUT_SECONDS, follow_redirects=True,
-                         headers={"User-Agent": "iterwave/0.1"})
-        resp.raise_for_status()
-        rows = parse_feed(resp.content, default_dimension="", source=platform)
+        body, _content_type, _final_url = fetch_public_bytes(
+            url,
+            timeout=_FETCH_TIMEOUT_SECONDS,
+            max_bytes=20 * 1024 * 1024,
+            headers={"User-Agent": "iterwave/0.1"},
+        )
+        rows = parse_feed(body, default_dimension="", source=platform)
         window_h = self.hcfg.filters.get("time_window_hours")
         now = datetime.now()
         out: list[dict] = []
@@ -285,12 +293,16 @@ class HotTopicCollector:
     def _fetch_platform(self, platform: str) -> list[dict]:
         path = _PLATFORM_PATH.get(platform, platform)
         url = f"{self.base_url}/v2/{path}"
-        resp = httpx.get(
-            url, timeout=_FETCH_TIMEOUT_SECONDS,
+        body, _content_type, _final_url = fetch_public_bytes(
+            url,
+            timeout=_FETCH_TIMEOUT_SECONDS,
+            max_bytes=10 * 1024 * 1024,
             headers={"User-Agent": "iterwave/0.1 (+local)"},
         )
-        resp.raise_for_status()
-        payload = resp.json()
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("数据格式无法识别") from exc
         if payload.get("code") not in (200, None):
             raise RuntimeError(f"接口返回 code={payload.get('code')} {payload.get('message', '')}")
 
