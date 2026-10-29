@@ -430,6 +430,11 @@ export interface TenantListResponse {
   restart_required: boolean;
   items: TenantItem[];
 }
+export interface TenantBackupItem {
+  backup_name: string;
+  size_bytes: number;
+  created_at: string;
+}
 export interface MediaGenerationSettings {
   enabled: boolean;
   monthly_quota: number;
@@ -1185,6 +1190,15 @@ export const api = {
     fetchJson<{ tenant: TenantItem; restart_required: boolean }>("/api/tenants", {
       method: "POST", body: JSON.stringify(data),
     }),
+  createTenantBackup: () =>
+    fetchJson<{ backup_name: string; size_bytes: number; created_at: string; includes: string[]; excludes: string[] }>(
+      "/api/tenant-backup", { method: "POST" },
+    ),
+  tenantBackups: () => fetchJson<{ items: TenantBackupItem[] }>("/api/tenant-backups"),
+  stageTenantBackupRestore: (backup_name: string, confirm: boolean) =>
+    fetchJson<{ staged: boolean; restart_required: boolean; backup_name: string; message: string }>(
+      "/api/tenant-backup/restore", { method: "POST", body: JSON.stringify({ backup_name, confirm }) },
+    ),
   selectTenant: (tenant_id: string) =>
     fetchJson<{ selected: { id: string; name: string }; runtime_tenant_id: string; restart_required: boolean; message: string }>(
       "/api/tenants/select", { method: "POST", body: JSON.stringify({ tenant_id }) },
