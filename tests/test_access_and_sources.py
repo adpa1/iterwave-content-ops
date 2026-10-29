@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from src.api import main as api_main
 from src.core import auth, config_store, env_store, kb_sources
+from src.core.notify import _as_escape
 from src.core.redact import redact
 
 
@@ -46,6 +47,13 @@ def api_client(cfg, conn):
     finally:
         api_main._g_ctx.clear()
         api_main._g_ctx.update(saved)
+
+
+def test_applescript_notification_text_cannot_inject_new_lines():
+    escaped = _as_escape('notice"\\n do shell script "whoami"\\r\\t')
+    assert "\\n" not in escaped and "\\r" not in escaped
+    assert "\\t" not in escaped
+    assert '\\\"' in escaped
 
 
 def test_redact_masks_bearer_tokens_and_signed_urls():
