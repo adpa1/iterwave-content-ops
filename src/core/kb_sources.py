@@ -647,9 +647,10 @@ def _topic_from_row(row: dict, mapping: dict[str, str], fallback_dim: str) -> Op
 def read_source(cfg, source: dict) -> dict:
     """读取单个来源，返回 {items, status, rows, columns, mapping, error}，不抛出。"""
     base = {
-        "id": source.get("id"), "name": source.get("name") or source.get("id"),
+        "id": source.get("id"),
+        "name": redact(str(source.get("name") or source.get("id") or "")),
         "kind": source.get("kind"), "format": source.get("format") or "auto",
-        "display_path": source.get("url") if source.get("kind") == "remote"
+        "display_path": _redact_remote_url(source.get("url") or "") if source.get("kind") == "remote"
         else redact_path(_source_path(cfg, source)),
         "items": [], "status": "ok", "rows": 0, "columns": [], "mapping": {},
         "error": None,
