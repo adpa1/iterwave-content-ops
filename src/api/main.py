@@ -1180,10 +1180,79 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/rounds/{round_id}/transition")
     def round_transition(round_id: int, req: TransitionRequest):
-        ok, msg = _g()["sm_round"].can_transition(round_id, req.target_status)
+        conn = _g()["conn"]
+        sm_round = _g()["sm_round"]
+        ok, msg = sm_round.can_transition(round_id, req.target_status)
         if not ok:
             raise HTTPException(400, msg)
-        _g()["sm_round"].transition(round_id, req.target_status, reason=req.reason)
+
+        current_row = conn.execute(
+            "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+        ).fetchone()
+        if current_row and current_row["status"] != req.target_status:
+            # 正常状态只能由对应业务事件推进：运行执行器、用户发布确认、
+            # 数据采集与复盘任务。通用状态接口只提供安全取消，不允许跳过业务校验。
+            if req.target_status != "cancelled":
+                raise HTTPException(
+                    409,
+                    "该状态由业务流程自动推进，不支持手工修改。请使用运行本轮、发布确认或等待系统采集与复盘",
+                )
+
+        if req.target_status == "cancelled":
+            current = conn.execute(
+                "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+            ).fetchone()
+            # 状态机同状态幂等；重复取消不再跑副作用。
+            if current and current["status"] != "cancelled":
+                # 不能在异步生产仍运行时取消：执行器可能继续调用平台存草稿，
+                # 但轮次已是终态，后续的发布/复盘会失去状态入口。
+                if round_id in _running_rounds:
+                    raise HTTPException(
+                        409,
+                        "本轮仍在执行，不能中途取消。请等待本次执行结束后再处理草稿",
+                    )
+
+                publish_history = conn.execute(
+                    "SELECT COUNT(*) FROM drafts d JOIN contents c ON c.id = d.content_id "
+                    "WHERE c.round_id = ? AND (d.user_confirmed_at IS NOT NULL "
+                    "OR d.status IN ('user_published', 'data_fetching', 'published'))",
+                    (round_id,),
+                ).fetchone()[0]
+                if publish_history:
+                    raise HTTPException(
+                        409,
+                        f"本轮有 {publish_history} 篇已确认发布或存在发布历史的内容，"
+                        "取消轮次会中断数据采集与复盘。请让采集和复盘流程正常收口",
+                    )
+
+                saved_count = conn.execute(
+                    "SELECT COUNT(*) FROM drafts d JOIN contents c ON c.id = d.content_id "
+                    "WHERE c.round_id = ? AND d.status = 'draft_saved'",
+                    (round_id,),
+                ).fetchone()[0]
+                if saved_count:
+                    raise HTTPException(
+                        409,
+                        f"本轮仍有 {saved_count} 篇已存入平台的草稿。请先在本系统逐篇取消这些草稿，"
+                        "并按提示到平台端手动清理；确认没有可发布草稿后再取消轮次",
+                    )
+
+                # 未执行平台副作用的本地 pending 草稿随轮次一并取消，避免留下
+                # cancelled 轮次里仍可恢复存平台的 draft_pending 记录。
+                pending = conn.execute(
+                    "SELECT d.id FROM drafts d JOIN contents c ON c.id = d.content_id "
+                    "WHERE c.round_id = ? AND d.status = 'draft_pending'",
+                    (round_id,),
+                ).fetchall()
+                for item in pending:
+                    if not _g()["sm_draft"].transition(
+                        item["id"], "cancelled", reason="所属轮次已取消",
+                    ):
+                        raise HTTPException(
+                            409, f"草稿 {item['id']} 未能取消，轮次状态未变更",
+                        )
+
+        sm_round.transition(round_id, req.target_status, reason=req.reason)
         return {"round_id": round_id, "new_status": req.target_status}
 
     # --- 草稿 ---
