@@ -99,7 +99,7 @@ export default function TenantManagerPane() {
           <div className="panel" style={{ borderColor: "var(--orange)", marginBottom: 12 }}>
             <strong>账号组切换待生效</strong>
             <div className="panel-sub">
-              当前运行实例仍使用「{data.runtime_tenant_id}」，已选择「{data.selected_tenant_id}」。
+              当前运行实例仍使用「{data.items.find((item) => item.id === data.runtime_tenant_id)?.name ?? "当前账号组"}」，已选择「{data.items.find((item) => item.id === data.selected_tenant_id)?.name ?? "所选账号组"}」。
               为避免后台任务在切换过程中写入错误空间，需要手动重启后端服务，切换才会生效。
             </div>
           </div>
