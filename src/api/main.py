@@ -226,6 +226,12 @@ def _build_app() -> FastAPI:
     async def access_guard_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
         if path.startswith("/api/") and path not in ("/api/auth/status", "/api/auth/login"):
+            # 未完成首次访问保护配置时，只允许设置口令；业务 API 默认关闭，避免公网匿名访问。
+            if not auth.password_configured() and path != "/api/auth/password":
+                return JSONResponse(
+                    {"detail": "请先完成访问口令设置", "code": "setup_required"},
+                    status_code=403,
+                )
             cookie_token = request.cookies.get(auth.COOKIE_NAME)
             client_ip = request.client.host if request.client else "unknown"
             has_token_header = bool(request.headers.get("x-access-token")) or (
