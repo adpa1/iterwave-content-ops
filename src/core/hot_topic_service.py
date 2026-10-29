@@ -47,14 +47,35 @@ def run_once(cfg, conn=None, *, trigger: str = "manual") -> dict:
     try:
         from .hot_topics import HotTopicCollector
         from .hot_topic_matcher import HotTopicMatcher
+        from .shared_raw_topics import (
+            import_to_tenant, publish_from_tenant, shared_snapshot_fresh,
+        )
+        collector = HotTopicCollector(cfg, conn)
+        # 先把当前账号组的原始字段发布到共享快照；SQL 只允许新数据覆盖旧数据。
+        publish_from_tenant(conn)
+        reused_shared = False
         if cfg.hot_topics.enabled is not False:
-            report = HotTopicCollector(cfg, conn).refresh()
+            interval = collector.refresh_interval_minutes() or 24 * 60
+            if trigger != "manual" and shared_snapshot_fresh(interval):
+                # 新账号组复用原始采集，不复用其他账号组的匹配分、排序或分析结果。
+                sync_result = import_to_tenant(conn)
+                report = {"shared_snapshot_reused": True, "tenant_sync": sync_result}
+                reused_shared = True
+            else:
+                report = collector.refresh()
+                publish_from_tenant(conn)
+        else:
+            sync_result = import_to_tenant(conn)
+            report = {"collection_disabled": True, "tenant_sync": sync_result}
         try:
             match = HotTopicMatcher(cfg, conn).run()
         except Exception as exc:  # noqa: BLE001 — 匹配失败不回滚采集结果
             logger.exception("热点标签匹配失败")
             match = {"error": str(exc)}
-        logger.info("🔥 热点后台刷新完成（%s）：采集 %s · 匹配 %s", trigger, report, match)
+        logger.info(
+            "🔥 热点后台刷新完成（%s）：共享复用=%s · 采集/同步 %s · 本组匹配 %s",
+            trigger, reused_shared, report, match,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("热点后台刷新失败")
         error = str(exc)
