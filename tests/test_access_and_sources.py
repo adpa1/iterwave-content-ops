@@ -67,11 +67,10 @@ def api_client(cfg, conn):
 
 
 def test_applescript_notification_text_cannot_inject_new_lines():
-    escaped = _as_escape('notice"\\n do shell script "whoami"\\r\\t')
-    assert "\\n" not in escaped and "\\r" not in escaped
-    assert "\\t" not in escaped
-    assert '\\\"' in escaped
-
+    escaped = _as_escape('notice"\n do shell script "whoami"\r\t')
+    assert "\n" not in escaped and "\r" not in escaped
+    assert "\t" not in escaped
+    assert '\\"' in escaped
 
 def test_redact_masks_bearer_tokens_and_signed_urls():
     raw = (
