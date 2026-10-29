@@ -77,6 +77,19 @@ def test_process_exit_without_terminal_state_is_error(tmp_login):
     assert st["state"] == "error" and "退出码 3" in st["message"]
 
 
+def test_login_status_redacts_signed_urls(tmp_login):
+    al._files("xhs")["status"].write_text(json.dumps({
+        "state": "error",
+        "message": "login failed https://example.com/private/path?access_token=LOGINSECRET",
+        "qr": "",
+        "ts": 1,
+    }))
+    status = al.get_login_status("xhs")
+    assert "LOGINSECRET" not in status["message"]
+    assert "/private/path" not in status["message"]
+    assert "https://example.com/…" in status["message"]
+
+
 def test_qr_only_returned_in_qr_states(tmp_login):
     al._files("xhs")["qr"].write_bytes(b"\x89PNG fake")
     _write_status("qr_ready")

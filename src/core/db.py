@@ -53,6 +53,11 @@ class Database:
             detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
             check_same_thread=False,  # 异步环境可能多线程访问
         )
+        # 数据库包含用户内容、运营日志等私有数据；限制同机其他用户直接读取。
+        try:
+            self.db_path.chmod(0o600)
+        except OSError:
+            logger.warning("无法收紧数据库文件权限：%s", self.db_path.name)
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.execute("PRAGMA journal_mode = WAL;")    # 读写并发
         conn.execute("PRAGMA synchronous = NORMAL;")    # WAL 下足够安全
@@ -151,6 +156,10 @@ class Database:
     def _backup(self) -> Path:
         """把当前 db 文件复制到 backups/easel_YYYYMMDD_HHMMSS.db。"""
         self.backup_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.backup_dir.chmod(0o700)
+        except OSError:
+            logger.warning("无法收紧数据库备份目录权限：%s", self.backup_dir.name)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         dest = self.backup_dir / f"easel_{ts}.db"
         # WAL 模式下要连 journal 和 shm 一起备份

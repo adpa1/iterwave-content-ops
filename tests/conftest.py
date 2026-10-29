@@ -115,3 +115,28 @@ class Seed:
 @pytest.fixture()
 def seed(conn) -> Seed:
     return Seed(conn)
+
+
+@pytest.fixture()
+def test_auth(monkeypatch, tmp_path):
+    """API 端点测试使用隔离的访问口令，并由测试客户端登录，避免依赖开发机 .env。"""
+    import os
+    from src.core import auth
+
+    monkeypatch.setenv("ITERWAVE_ENV_FILE", str(tmp_path / ".env"))
+    monkeypatch.delenv(auth.PASSWORD_ENV, raising=False)
+    auth._sessions.clear()
+    auth._failures.clear()
+    auth.set_password("test-access")
+
+    def authorize(client):
+        response = client.post("/api/auth/login", json={"password": "test-access"})
+        assert response.status_code == 200
+        return client
+
+    yield authorize
+    auth._sessions.clear()
+    auth._failures.clear()
+    os.environ.pop(auth.PASSWORD_ENV, None)
+
+

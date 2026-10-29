@@ -1,10 +1,11 @@
 """访问保护 — 访问口令 + 会话 Cookie + 脚本令牌（P0 安全）。
 
 口径：
-- 未设置口令：全站可访问，但前端顶部持续显示警告（提醒公网部署必须设置）
-- 设置口令后：``/api/*`` 全部校验；页面本身可加载，但未登录只能看到登录页
+- 未设置口令：仅允许读取认证状态和设置首次口令；其它业务 API 返回 setup_required
+- 本机直连可首次设置口令；公网域名 / 反向代理首次设置必须提供服务端 ITERWAVE_BOOTSTRAP_TOKEN
+- 设置口令后：``/api/*`` 全部校验；页面未登录时只能看到登录页
 - 脚本调用：请求头 ``X-Access-Token: <口令>`` 或 ``Authorization: Bearer <口令>``
-- 登录失败按 IP 限速（10 分钟内最多 5 次，超出 429）
+- 登录和脚本令牌失败共用按 IP 限速（10 分钟内最多 5 次，超出 429）
 - 口令以 PBKDF2-HMAC-SHA256 哈希存 config/.env（chmod 600），永不回传明文
 """
 
@@ -166,21 +167,31 @@ def request_token(cookie_token: Optional[str], headers) -> Optional[str]:
     return cookie_token or header_token or None
 
 
-def is_authenticated(cookie_token: Optional[str], headers) -> bool:
+def is_authenticated(cookie_token: Optional[str], headers, ip: Optional[str] = None) -> bool:
     if not password_configured():
+        # 未完成首次设置时不宣称请求已认证；中间件只开放明确的初始化路由。
+        return False
+    # Cookie 只接受服务端签发的会话 token；无效 Cookie 不再触发 PBKDF2 口令校验。
+    if _session_valid(cookie_token):
         return True
-    candidate = request_token(cookie_token, headers)
+
+    # 脚本口令只能从明确的认证请求头传入，并且与登录接口共用失败计数/限速。
+    candidate = request_token(None, headers)
     if not candidate:
         return False
-    if _session_valid(candidate):
+    client_ip = ip or "unknown"
+    if is_rate_limited(client_ip):
+        return False
+    if verify_password(candidate):
+        clear_failures(client_ip)
         return True
-    # 脚本直接带口令（常量时间比较）
-    return verify_password(candidate)
+    record_failure(client_ip)
+    return False
 
 
-def status(cookie_token: Optional[str], headers) -> dict:
+def status(cookie_token: Optional[str], headers, ip: Optional[str] = None) -> dict:
     configured = password_configured()
-    authenticated = is_authenticated(cookie_token, headers)
+    authenticated = is_authenticated(cookie_token, headers, ip=ip)
     return {
         "configured": configured,
         "authenticated": authenticated,
@@ -189,12 +200,12 @@ def status(cookie_token: Optional[str], headers) -> dict:
     }
 
 
-def session_cookie_header(token: str) -> str:
-    """HttpOnly + SameSite=Lax；本地 HTTP 不加 Secure，避免 http:// 下丢 Cookie。"""
-    return (
-        f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; "
-        f"Max-Age={SESSION_TTL_SECONDS}"
-    )
+def session_cookie_header(token: str, *, secure: bool = False) -> str:
+    """生成会话 Cookie；HTTPS 部署附加 Secure，纯 HTTP 本地开发仍可登录。"""
+    attrs = f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax"
+    if secure:
+        attrs += "; Secure"
+    return f"{attrs}; Max-Age={SESSION_TTL_SECONDS}"
 
 
 def clear_cookie_header() -> str:

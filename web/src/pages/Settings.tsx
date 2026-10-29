@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { navigate, useUrlTab } from "../nav";
 import { useApp } from "../AppContext";
 import EmptyHint from "../components/EmptyHint";
-import { AccessTokenEditor, AdvancedEditor, KbEditor, LlmEditor, NotifyChannelsEditor, PlatformStyleEditor, PlatformToggles, TimeoutEditor } from "../components/ConfigEditors";
+import { AdvancedEditor, KbEditor, LlmEditor, PlatformStyleEditor, PlatformToggles, TimeoutEditor } from "../components/ConfigEditors";
 import { api, type SystemStatus, type SystemConfigView } from "../api";
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -21,9 +21,7 @@ const SCORING_MODE_LABELS: Record<string, string> = {
 const SETTINGS_TABS = [
   { k: "runtime", l: "运行与配额" },
   { k: "style", l: "平台文案风格" },
-  { k: "kb", l: "选题库" },
-  { k: "model", l: "模型" },
-  { k: "notify", l: "通知与访问" },
+  { k: "model", l: "知识库与模型" },
   { k: "platform", l: "平台与账号" },
   { k: "rhythm", l: "节奏与评分权重" },
   { k: "system", l: "运行状态" },
@@ -263,7 +261,7 @@ export default function Settings() {
               <span className="tag red">维度匹配：强制开启</span>
               <span className="tag red">可发布性检查：强制开启</span>
               <span style={{ color: "var(--muted)" }}>
-                这两道安全检查始终开启，不能关闭。
+                这两道门没有关闭入口；直接调 API 关闭会被后端拒绝（400）。
               </span>
             </div>
 
@@ -311,13 +309,14 @@ export default function Settings() {
       </div>
       )}
 
-      {/* 本地知识库（G-13 / 原型 step 3）：可编辑 */}
-      {tab === "kb" && (
+      {/* 本地知识库：可编辑 */}
+      {tab === "model" && (
+      <div className="grid two">
         <div className="panel">
           <div className="panel-head">
             <div>
-              <div className="panel-title"><span className="icon">▣</span>选题库</div>
-              <div className="panel-sub">上传文件、远程地址或服务器路径三选一，保存后下一轮选题立即生效</div>
+              <div className="panel-title"><span className="icon">▣</span>连接本地知识库</div>
+              <div className="panel-sub">数据源 + 字段映射 + 同步扫描策略（可在线改，无需重启）</div>
             </div>
           </div>
           {!cfgView ? (
@@ -326,35 +325,8 @@ export default function Settings() {
             <KbEditor view={cfgView} onSaved={loadConfig} />
           )}
         </div>
-      )}
 
-      {tab === "notify" && (
-        <div className="grid two">
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <div className="panel-title"><span className="icon">♧</span>通知</div>
-                <div className="panel-sub">草稿生成、需要你发布、登录失效时提醒你</div>
-              </div>
-            </div>
-            <NotifyChannelsEditor />
-          </div>
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <div className="panel-title"><span className="icon">⚿</span>访问口令</div>
-                <div className="panel-sub">设置后打开页面需要先输入口令</div>
-              </div>
-            </div>
-            <AccessTokenEditor />
-          </div>
-        </div>
-      )}
-
-      {tab === "model" && (
-      <div className="grid two">
-
-        {/* 主模型与备用（原型 step 4）：可编辑；Key 只写 .env */}
+        {/* 主模型与备用：可编辑；Key 只写 .env */}
         <div className="panel">
           <div className="panel-head">
             <div>
@@ -374,7 +346,7 @@ export default function Settings() {
 
       {tab === "platform" && (
       <div className="grid two">
-        {/* 平台账号与连接（原型 step 2）：启用开关可编辑 */}
+        {/* 平台账号与连接：启用开关可编辑 */}
         <div className="panel">
           <div className="panel-head">
             <div>
@@ -415,6 +387,10 @@ export default function Settings() {
           <button type="button" className="btn sm" style={{ marginTop: 12 }} onClick={() => navigate("accounts")}>去扫码登录 →</button>
         </div>
       </div>
+      )}
+
+      {tab === "platform" && cfgView && (
+        <AccessNotifyPanel view={cfgView} onSaved={loadConfig} />
       )}
 
       {tab === "rhythm" && (
@@ -551,3 +527,131 @@ function configKeyLabel(key: string): string {
 function _str(v: number | null | undefined): string {
   return v == null ? "" : String(v);
 }
+
+/** 通知与访问：改口令 / 退出登录 / 企微飞书 Webhook（URL 只存 .env，不回显） */
+function AccessNotifyPanel({ view, onSaved }: { view: SystemConfigView; onSaved: () => void }) {
+  const { auth, refreshAuth, showToast } = useApp();
+  const [password, setPassword] = useState("");
+  const [bootstrapToken, setBootstrapToken] = useState("");
+  const [wecom, setWecom] = useState("");
+  const [feishu, setFeishu] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const channels = view.readonly.notification_channels || {};
+  const macEnabled = Boolean(channels.macos?.enabled);
+  const macAvailable = channels.macos?.available !== false;
+
+  const changePassword = async () => {
+    if (password.trim().length < 6) {
+      showToast("访问口令至少 6 个字符", "error");
+      return;
+    }
+    setBusy("password");
+    try {
+      await api.setPassword(password, bootstrapToken);
+      setPassword("");
+      setBootstrapToken("");
+      showToast("访问口令已更新，请重新登录", "success");
+      await refreshAuth();
+    } catch (e) {
+      showToast((e as Error).message, "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const logout = async () => {
+    await api.authLogout();
+    await refreshAuth();
+  };
+
+  const saveChannel = async (channel: "wecom" | "feishu") => {
+    const url = channel === "wecom" ? wecom : feishu;
+    if (!url.trim()) {
+      showToast("请填写 Webhook 地址", "error");
+      return;
+    }
+    setBusy(channel);
+    try {
+      await api.saveWebhook(channel, url.trim());
+      (channel === "wecom" ? setWecom : setFeishu)("");
+      showToast(`${channel === "wecom" ? "企微" : "飞书"} Webhook 已保存到 .env`, "success");
+      onSaved();
+    } catch (e) {
+      showToast((e as Error).message, "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="panel-head">
+        <div>
+          <div className="panel-title"><span className="icon">◈</span>通知与访问</div>
+          <div className="panel-sub">访问口令保护页面和接口；Webhook 地址只写入 .env，保存后不再回显</div>
+        </div>
+      </div>
+
+      <div className="grid two">
+        <div>
+          <div className="field-label">访问口令</div>
+          <div className="note" style={{ marginBottom: 8 }}>
+            {auth?.configured
+              ? "已设置口令，接口需要登录后才能调用"
+              : "首次设置仅允许本机直连；公网域名或反向代理部署需先在服务器配置 ITERWAVE_BOOTSTRAP_TOKEN，再在此输入引导口令。"}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input
+              className="field" type="password" placeholder="新口令（至少 6 位）"
+              value={password} onChange={(e) => setPassword(e.target.value)}
+            />
+            {!auth?.configured && (
+              <input
+                className="field" type="password" placeholder="首次设置引导口令（公网部署）"
+                value={bootstrapToken} onChange={(e) => setBootstrapToken(e.target.value)}
+              />
+            )}
+            <button className="btn sm" type="button" disabled={busy === "password"} onClick={changePassword}>
+              {auth?.configured ? "修改口令" : "设置口令"}
+            </button>
+            {auth?.configured && (
+              <button className="btn sm soft" type="button" onClick={logout}>退出登录</button>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <div className="field-label">消息通知</div>
+          <div className="note" style={{ marginBottom: 8 }}>
+            {macAvailable
+              ? `macOS 通知${macEnabled ? "已开启" : "未开启"}；跨平台部署请用 Webhook`
+              : "当前系统不支持 macOS 通知，请使用企微或飞书 Webhook"}
+          </div>
+          {(["wecom", "feishu"] as const).map((channel) => {
+            const info = channels[channel];
+            const value = channel === "wecom" ? wecom : feishu;
+            const setValue = channel === "wecom" ? setWecom : setFeishu;
+            return (
+              <div key={channel} style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                <input
+                  className="field" style={{ flex: 1, minWidth: 160 }}
+                  placeholder={channel === "wecom" ? "企微机器人 Webhook" : "飞书机器人 Webhook"}
+                  value={value} onChange={(e) => setValue(e.target.value)}
+                />
+                <button className="btn sm soft" type="button"
+                  disabled={busy === channel} onClick={() => saveChannel(channel)}>
+                  {info?.has_webhook_url ? "更新" : "保存"}
+                </button>
+                <span className={info?.has_webhook_url ? "pill ok" : "pill"}>
+                  {info?.has_webhook_url ? "已配置" : "未配置"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+

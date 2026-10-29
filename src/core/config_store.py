@@ -17,17 +17,24 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from src.core.config import DEFAULT_JOB_SCHEDULES, JOB_DESCRIPTIONS, Config, validate_cron
+from src.core.redact import redact, redact_path
 
 logger = logging.getLogger(__name__)
 
+# 综合热榜覆盖的平台（新增来源时不指定即默认全选）
+AGGREGATE_PLATFORMS = ("weibo", "douyin", "zhihu", "toutiao", "bilibili")
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-OVERRIDES_FILE = PROJECT_ROOT / "data" / "config_overrides.json"
+
+# 默认跟随 cfg.paths.data_dir（不写死绝对路径）；测试可 monkeypatch 本变量指向临时文件
+OVERRIDES_FILE: Optional[Path] = None
 
 # R22：这两道门是安全底线，任何入口都不能关
 HARD_LOCKED_KEYS = {
@@ -37,7 +44,7 @@ HARD_LOCKED_KEYS = {
 
 QUOTA_FIELDS = ("passive_replies", "active_comments", "follows")
 PLATFORM_KEYS = ("xhs", "douyin", "kuaishou", "wechat_channels")
-KB_TYPES = ("auto", "sqlite", "csv", "jsonl", "json", "xlsx")
+KB_TYPES = ("auto", "sqlite", "csv", "json", "jsonl", "xlsx", "rss")
 KB_MAPPING_FIELDS = ("source", "title", "summary", "link", "date", "dimension")
 # 三模式评分权重（R11）：改动后每个模式权重和必须仍 = 100
 SCORING_MODES = ("cold_start", "sample_accumulating", "stable_operation")
@@ -52,10 +59,11 @@ RHYTHM_INTERVAL_FIELDS = (
 
 # 字符串白名单：路径 → (最小长度, 最大长度)
 STRING_RULES: dict[str, tuple[int, int]] = {
-    "topic_kb.path": (0, 512),
-    "topic_kb.table_name": (0, 64),
-    "topic_kb.default_dimension": (0, 30),
-    "paths.font_file": (0, 512),
+    "topic_kb.path": (1, 512),
+    "topic_kb.table_name": (1, 64),
+    "topic_kb.default_dimension": (1, 20),
+    "render.font_path": (0, 512),
+    "render.card_tag_fallback": (1, 20),
     "llm.provider": (1, 32),
     "llm.model": (1, 128),
     "llm.fallback_model": (0, 128),
@@ -110,7 +118,6 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "rhythm.windows.draft_save.end_hour": (int, 0, 23),
     # 热点采集总开关
     "hot_topics.enabled": (bool, None, None),
-    "hot_topics.general_lists_enabled": (bool, None, None),
     # LLM 调用参数（base_url 走单独 URL 校验）
     "llm.temperature": (float, 0.0, 2.0),
     "llm.timeout_seconds": (int, 5, 300),
@@ -261,54 +268,37 @@ def _validate(key: str, value: Any) -> Any:
             raise ConfigPatchError(f"{key} 必须是合法环境变量名（大写字母/数字/下划线，1-64）")
         return v
 
-    if key == "hot_topics.custom_feeds":
-        if not isinstance(value, list) or len(value) > 30:
-            raise ConfigPatchError("自定义热点源必须是列表，最多 30 个")
-        out = []
-        names = set()
-        for f in value:
-            if not isinstance(f, dict):
-                raise ConfigPatchError("每个热点源需要 名称 和 地址")
-            name = str(f.get("name") or "").strip()
-            url = str(f.get("url") or "").strip()
-            if not name or len(name) > 20:
-                raise ConfigPatchError("热点源名称 1-20 字")
-            if name in names:
-                raise ConfigPatchError(f"热点源名称重复：{name}")
-            if not re.match(r"^https?://[^\s]{3,1000}$", url):
-                raise ConfigPatchError(f"「{name}」的地址必须以 http:// 或 https:// 开头")
-            names.add(name)
-            out.append({"name": name, "url": url})
-        return out
-
-    if key == "topic_kb.source_type":
-        from .config import KB_SOURCE_TYPES
-        if value not in KB_SOURCE_TYPES:
-            raise ConfigPatchError("选题库来源只能是 本地路径 / 上传文件 / 远程地址")
-        return value
-    if key == "topic_kb.remote_format":
-        from .config import KB_REMOTE_FORMATS
-        if value not in KB_REMOTE_FORMATS:
-            raise ConfigPatchError(f"远程格式只能是 {' / '.join(KB_REMOTE_FORMATS)}")
-        return value
-    if key == "topic_kb.remote_url":
-        if not isinstance(value, str):
-            raise ConfigPatchError("远程地址必须是文字")
-        v = value.strip()
-        if v and not re.match(r"^https?://[^\s]{3,1000}$", v):
-            raise ConfigPatchError("远程地址必须以 http:// 或 https:// 开头")
-        return v
-    if key == "topic_kb.remote_header":
-        if not isinstance(value, str):
-            raise ConfigPatchError("请求头名必须是文字")
-        v = value.strip()
-        if v and not re.fullmatch(r"[A-Za-z0-9\-]{1,64}", v):
-            raise ConfigPatchError("请求头名只能是字母、数字和连字符")
-        return v
-    if key == "topic_kb.remote_token_env":
-        if not isinstance(value, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", value.strip()):
-            raise ConfigPatchError("环境变量名只能是大写字母、数字和下划线")
-        return value.strip()
+    if key == "hot_topics.sources":
+        if not isinstance(value, list) or len(value) > 20:
+            raise ConfigPatchError("热点源必须是数组（最多 20 条）")
+        cleaned: list[dict] = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise ConfigPatchError("热点源每一条必须是对象")
+            stype = item.get("type", "aggregate")
+            if stype not in ("aggregate", "rss", "json"):
+                raise ConfigPatchError("热点源 type 只能是 aggregate / rss / json")
+            url = str(item.get("url") or "").strip()
+            if stype != "aggregate" and not url.startswith(("https://", "http://")):
+                raise ConfigPatchError("自定义热点源 url 必须是 http(s) 地址")
+            if stype == "aggregate" and url and not url.startswith(("https://", "http://")):
+                raise ConfigPatchError("综合热榜 url 必须是 http(s) 地址")
+            name = str(item.get("name") or "").strip()
+            if not name or len(name) > 60:
+                raise ConfigPatchError("热点源名称必填且不超过 60 字")
+            row: dict = {"name": name, "type": stype, "url": url,
+                         "enabled": bool(item.get("enabled", True))}
+            if stype == "aggregate":
+                platforms = item.get("platforms")
+                if not isinstance(platforms, list) or not platforms:
+                    single = str(item.get("platform") or "").strip()
+                    platforms = [single] if single else list(AGGREGATE_PLATFORMS)
+                row["platforms"] = [str(p).strip() for p in platforms if str(p).strip()][:10] \
+                    or list(AGGREGATE_PLATFORMS)
+            else:
+                row["platform"] = str(item.get("platform") or name)[:40]
+            cleaned.append(row)
+        return cleaned
 
     if key == "topic_kb.type":
         if not isinstance(value, str) or value not in KB_TYPES:
@@ -513,24 +503,37 @@ def _set_value(cfg: Config, key: str, value: Any) -> None:
         setattr(node, last, value)
 
 
-def load_overrides() -> dict[str, Any]:
+def overrides_path(cfg: Config) -> Path:
+    """覆盖值落在数据目录（跟着 cfg.paths.data_dir 走，不写死绝对路径）。"""
+    if OVERRIDES_FILE is not None:
+        return Path(OVERRIDES_FILE)
+    return Path(cfg.paths.data_dir) / "config_overrides.json"
+
+
+def load_overrides(cfg: Config) -> dict[str, Any]:
     """读取持久化的覆盖值；文件不存在 / 损坏 → 空（不猜测、不补默认）。"""
-    if not OVERRIDES_FILE.exists():
+    path = overrides_path(cfg)
+    if not path.exists():
         return {}
     try:
-        data = json.loads(OVERRIDES_FILE.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError) as e:
         logger.error("config_overrides.json 读取失败，本次不套用覆盖值: %s", e)
         return {}
 
 
-def _save_overrides(overrides: dict[str, Any]) -> None:
-    OVERRIDES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    OVERRIDES_FILE.write_text(
+def _save_overrides(cfg: Config, overrides: dict[str, Any]) -> None:
+    path = overrides_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps(overrides, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    try:
+        path.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧运行时配置覆盖文件权限：%s", path.name)
 
 
 def apply_overrides(cfg: Config, overrides: dict[str, Any]) -> list[str]:
@@ -582,17 +585,17 @@ def llm_channel(base_url: str) -> str:
     return "custom"
 
 
-def _kb_display(cfg: Config) -> str:
-    from .kb_sources import display_path, resolve_kb_path
-    return display_path(resolve_kb_path(cfg))
-
-
-def _kb_source(cfg: Config) -> dict[str, Any]:
-    from .kb_sources import remote_meta, source_summary
-    out = source_summary(cfg)
-    if out.get("source_type") == "remote":
-        out["remote_meta"] = remote_meta(cfg)
-    return out
+def _redact_public_value(value: Any) -> Any:
+    """配置审计/诊断视图中的字符串统一脱敏，避免 URL 凭据从覆盖文件或审计字段泄漏。"""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {str(k): _redact_public_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_public_value(v) for v in value]
+    if isinstance(value, tuple):
+        return [_redact_public_value(v) for v in value]
+    return value
 
 
 def current_config_view(cfg: Config, conn) -> dict[str, Any]:
@@ -632,8 +635,6 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
                 "time_filter_enabled": cfg.hot_topics.filters.get(
                     "time_filter_enabled", True
                 ),
-                "general_lists_enabled": getattr(cfg.hot_topics, "general_lists_enabled", True),
-                "custom_feeds": list(getattr(cfg.hot_topics, "custom_feeds", []) or []),
             },
         },
         # R22 两道硬锁：只展示、不可改；前端无关闭入口
@@ -648,13 +649,14 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             "redline_keywords_count": len(cfg.ultimate_goal.redline_keywords),
             "positioning": cfg.ultimate_goal.positioning,
             "goal_mode": cfg.ultimate_goal.goal_mode,
-            # —— 本地知识库（Settings 页「连接本地知识库」panel）——
-            # 路径只给相对/脱敏形式，不把服务器目录结构暴露到页面
-            "kb_path": _kb_display(cfg),
-            "kb_source": _kb_source(cfg),
+            # —— 本地知识库（Settings 页只读展示；路径脱敏，来源在 Assets 页管理）——
+            "kb_path": redact_path(cfg.topic_kb.path),
             "kb_type": cfg.topic_kb.type,
             "kb_table": cfg.topic_kb.table_name,
             "kb_field_mapping": cfg.topic_kb.field_mapping,
+            "kb_default_dimension": cfg.topic_kb.default_dimension,
+            "render_font_path": redact_path(cfg.render.font_path or ""),
+            "render_card_tag_fallback": cfg.render.card_tag_fallback,
             # —— LLM（Settings 页「主模型与备用」panel）——
             "llm_provider": cfg.llm.provider,
             "llm_model": cfg.llm.model,
@@ -690,16 +692,23 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
                     "enabled": bool(ch.enabled),
                     "webhook_url_env": ch.webhook_url_env,
                     "has_webhook_url": bool(
-                        ch.webhook_url_env and __import__("os").environ.get(ch.webhook_url_env)
+                        ch.webhook_url_env and os.environ.get(ch.webhook_url_env)
                     ),
+                    "available": True if name != "macos" else __import__(
+                        "src.core.notify", fromlist=["macos_available"]
+                    ).macos_available(),
                 }
                 for name, ch in cfg.notifications.channels.items()
             },
         },
-        "overrides_file": str(OVERRIDES_FILE),
-        "overrides": load_overrides(),
+        "overrides_file": redact_path(overrides_path(cfg)),
+        "overrides": _redact_public_value(load_overrides(cfg)),
         "audit": [
-            dict(r)
+            {
+                **dict(r),
+                "old_value": _redact_public_value(r["old_value"]),
+                "new_value": _redact_public_value(r["new_value"]),
+            }
             for r in conn.execute(
                 "SELECT id, key, old_value, new_value, changed_at "
                 "FROM config_changes ORDER BY id DESC LIMIT 20"
@@ -769,7 +778,7 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
             )
 
     changes: list[dict[str, Any]] = []
-    overrides = load_overrides()
+    overrides = load_overrides(cfg)
     for key, value in normalized.items():
         old = _jsonable(_get_value(cfg, key))
         if old == value:
@@ -793,7 +802,7 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
         changes.append({"key": key, "old": old, "new": value})
 
     if changes:
-        _save_overrides(overrides)
+        _save_overrides(cfg, overrides)
         conn.commit()
         logger.info("⚙️ 配置已修改 %d 项：%s", len(changes), [c["key"] for c in changes])
     return {"changed": changes, "applied": normalized, "noop": len(changes) == 0}

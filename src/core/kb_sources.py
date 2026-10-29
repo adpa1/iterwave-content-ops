@@ -1,379 +1,991 @@
-"""选题库来源：本地路径 / 页面上传 / 远程地址。
+"""选题库三种来源 — 上传 / 远程地址 / 服务器路径（P0 闭环）。
 
-与部署位置无关：
-- 相对路径一律相对项目根目录解析（不依赖启动目录、不假设 macOS）
-- 上传文件存到 <data_dir>/kb/uploads/
-- 远程地址同步到 <data_dir>/kb/remote_cache.<ext>，KbReader 读缓存
-
-对外展示路径时一律走 display_path()：项目内显示相对路径，项目外只显示文件名，
-不把服务器目录结构（用户名、私有目录）暴露到页面或接口。
+设计：
+- 来源登记在 ``<data_dir>/kb/sources.json``（含每源字段映射、同步状态）
+- 上传文件存 ``<data_dir>/kb/uploads/``，最大 20MB，支持 CSV / Excel / JSON / JSONL / SQLite
+- 远程来源支持 CSV / JSON / RSS，可带鉴权请求头；读取缓存到 ``<data_dir>/kb/cache/``
+- 服务器路径相对数据目录或绝对路径均可
+- 首次运行自动在数据目录创建空库（带表头的 CSV），没有任何来源也能手动加选题
+- 所有对外返回的路径都经 ``redact_path`` 脱敏（R23）
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import csv
+import hashlib
 import io
+import ipaddress
 import json
 import logging
-import os
 import re
+import socket
+import sqlite3
 import xml.etree.ElementTree as ET
+import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
+from urllib.parse import urljoin, urlsplit
+
+import httpx
+
+from .redact import redact, redact_path
+from .scoring.topic_eval import TopicItem
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-
-UPLOAD_EXTS = {".csv", ".jsonl", ".ndjson", ".json", ".db", ".sqlite", ".sqlite3", ".xlsx"}
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
-MAX_REMOTE_BYTES = 20 * 1024 * 1024
-REMOTE_TIMEOUT = 30
+MAX_TOPIC_ROWS = 100_000
+# XLSX 本质是 ZIP。压缩文件小于 20MB 不代表展开后的 XML 安全；限制总展开体积与条目数，防止 ZIP bomb。
+MAX_XLSX_EXPANDED_BYTES = 40 * 1024 * 1024
+MAX_XLSX_ENTRIES = 1000
+DEFAULT_DIMENSION = "综合"
+SUPPORTED_FORMATS = ("auto", "csv", "json", "jsonl", "xlsx", "sqlite", "rss")
+KINDS = ("file", "server", "remote")
+
+# 通用字段 → 常见中英文列名（自动识别用）
+FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "source": ("source", "来源", "平台", "platform", "channel", "渠道"),
+    "title": ("title", "标题", "主题", "题目", "话题", "name", "名称", "content", "内容"),
+    "summary": ("summary", "摘要", "简介", "描述", "description", "desc", "abstract", "body"),
+    "link": ("link", "链接", "url", "地址", "原文链接", "href"),
+    "date": ("date", "日期", "时间", "发布时间", "pub_date", "pubdate", "published_at", "publish_time", "created_at"),
+    "dimension": ("dimension", "维度", "方向", "分类", "category", "标签", "tag", "topic", "栏目"),
+}
+SUPPORTED_FIELDS = tuple(FIELD_ALIASES.keys())
+
+_EXT_FORMAT = {
+    ".csv": "csv",
+    ".json": "json",
+    ".jsonl": "jsonl",
+    ".ndjson": "jsonl",
+    ".xlsx": "xlsx",
+    ".xlsm": "xlsx",
+    ".db": "sqlite",
+    ".sqlite": "sqlite",
+    ".sqlite3": "sqlite",
+    ".xml": "rss",
+}
 
 
-class KbSourceError(ValueError):
-    """选题库来源错误（消息可直接展示给用户，不含服务器路径）。"""
-
-
-# ---------------------------------------------------------------------------
-# 路径
-# ---------------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# 基础路径
+# ----------------------------------------------------------------------
 
 def data_dir(cfg) -> Path:
-    d = Path(cfg.paths.data_dir)
-    return d if d.is_absolute() else PROJECT_ROOT / d
+    p = Path(cfg.paths.data_dir)
+    if not p.is_absolute():
+        p = cfg.resolve_path(str(p))
+    return p
 
 
 def kb_dir(cfg) -> Path:
-    d = data_dir(cfg) / "kb"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def remote_cache_path(cfg) -> Path:
-    fmt = _remote_format(cfg.topic_kb)
-    ext = {"csv": ".csv", "json": ".json", "jsonl": ".jsonl", "rss": ".jsonl"}.get(fmt, ".json")
-    return kb_dir(cfg) / f"remote_cache{ext}"
-
-
-def resolve_kb_path(cfg) -> Optional[Path]:
-    """当前生效的选题库文件路径；未配置返回 None。"""
-    kb = cfg.topic_kb
-    st = getattr(kb, "source_type", "local") or "local"
-    if st == "remote":
-        if not (kb.remote_url or "").strip():
-            return None
-        return current_remote_cache(cfg) or remote_cache_path(cfg)
-    raw = (kb.path or "").strip()
-    if not raw:
-        return None
-    p = Path(os.path.expanduser(raw))
-    return p if p.is_absolute() else PROJECT_ROOT / p
-
-
-def display_path(p: Optional[Path | str]) -> str:
-    """页面展示用路径：项目内 → 相对路径；项目外 → 只显示文件名。"""
-    if not p:
-        return ""
-    p = Path(p)
+    p = data_dir(cfg) / "kb"
+    p.mkdir(parents=True, exist_ok=True)
     try:
-        return str(p.resolve().relative_to(PROJECT_ROOT.resolve()))
-    except (ValueError, OSError):
-        return f"…/{p.name}"
+        p.chmod(0o700)
+    except OSError:
+        logger.debug("无法收紧选题库目录权限：%s", p.name)
+    return p
 
 
-_ABS_PATH_RE = re.compile(r"(/(?:Users|home|root|var|opt|srv|mnt|data|tmp)/[^\s:'\"，。]+)|([A-Za-z]:\\[^\s:'\"，。]+)")
+def registry_file(cfg) -> Path:
+    return kb_dir(cfg) / "sources.json"
 
 
-def scrub_paths(text: str) -> str:
-    """把错误信息里的服务器绝对路径替换为文件名。"""
-    if not text:
-        return text
-    return _ABS_PATH_RE.sub(lambda m: display_path(m.group(0)), str(text))
+def upload_dir(cfg) -> Path:
+    p = kb_dir(cfg) / "uploads"
+    p.mkdir(parents=True, exist_ok=True)
+    try:
+        p.chmod(0o700)
+    except OSError:
+        logger.debug("无法收紧上传目录权限：%s", p.name)
+    return p
 
 
-def source_summary(cfg) -> dict[str, Any]:
-    """供页面展示的选题库来源摘要（不含绝对路径、不含密钥）。"""
-    kb = cfg.topic_kb
-    st = getattr(kb, "source_type", "local") or "local"
-    p = resolve_kb_path(cfg)
-    out: dict[str, Any] = {
-        "source_type": st,
-        "configured": p is not None,
-        "display_path": display_path(p) if p else "",
-        "exists": bool(p and p.exists()),
-        "remote_url": _mask_url(kb.remote_url) if st == "remote" else "",
-        "remote_format": kb.remote_format,
-        "remote_header": kb.remote_header,
-        "remote_token_set": bool(kb.remote_token_env and os.environ.get(kb.remote_token_env)),
-        "default_dimension": kb.default_dimension,
+def cache_dir(cfg) -> Path:
+    p = kb_dir(cfg) / "cache"
+    p.mkdir(parents=True, exist_ok=True)
+    try:
+        p.chmod(0o700)
+    except OSError:
+        logger.debug("无法收紧缓存目录权限：%s", p.name)
+    return p
+
+
+def _resolve_server_path(cfg, raw: str) -> Path:
+    """服务器路径：绝对路径原样；相对路径相对数据目录（也兼容以 data/ 开头的老写法）。"""
+    p = Path(raw).expanduser()
+    if p.is_absolute():
+        return p
+    if raw.startswith("data/") or raw.startswith("data\\"):
+        return cfg.resolve_path(raw)
+    return data_dir(cfg) / raw
+
+
+# ----------------------------------------------------------------------
+# 来源登记
+# ----------------------------------------------------------------------
+
+def _default_source(cfg) -> dict:
+    raw_path = cfg.topic_kb.path or "kb/topics.csv"
+    path = _resolve_server_path(cfg, raw_path)
+    return {
+        "id": "default",
+        "kind": "server",
+        "name": "默认选题库",
+        "enabled": True,
+        "path": str(path),
+        "format": cfg.topic_kb.type if cfg.topic_kb.type in SUPPORTED_FORMATS else "auto",
+        "field_mapping": dict(cfg.topic_kb.field_mapping or {}),
+        "table_name": cfg.topic_kb.table_name,
+        "headers": {},
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "last_sync_at": None,
+        "last_error": None,
+        "rows": None,
     }
-    if p and p.exists():
-        st_ = p.stat()
-        out["size_bytes"] = st_.st_size
-        out["updated_at"] = datetime.fromtimestamp(st_.st_mtime).isoformat(timespec="seconds")
-    return out
 
 
-def _mask_url(url: str) -> str:
-    """隐藏 URL 里的查询参数值（可能带 token）。"""
-    if not url:
-        return ""
-    return re.sub(r"([?&][^=&#]+)=[^&#]*", r"\1=***", url)
+def _ensure_empty_file(path: Path, fmt: str) -> None:
+    """默认空库：给一个带表头的空 CSV，自检可读且不报错。"""
+    if path.exists() or fmt not in ("auto", "csv"):
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        csv.writer(f).writerow(["source", "title", "summary", "link", "date", "dimension"])
 
 
-# ---------------------------------------------------------------------------
-# 上传
-# ---------------------------------------------------------------------------
-
-def save_upload(cfg, filename: str, content: bytes) -> Path:
-    name = Path(filename or "").name
-    ext = Path(name).suffix.lower()
-    if ext not in UPLOAD_EXTS:
-        raise KbSourceError(
-            f"不支持的文件类型 {ext or '（无后缀）'}，支持 CSV、Excel(.xlsx)、JSON、JSONL、SQLite(.db)"
-        )
-    if not content:
-        raise KbSourceError("文件是空的")
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise KbSourceError("文件超过 20MB，请拆分后上传，或改用远程地址")
-    safe = re.sub(r"[^\w.\-\u4e00-\u9fff]+", "_", Path(name).stem)[:60] or "topics"
-    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    dest_dir = kb_dir(cfg) / "uploads"
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{safe}_{stamp}{ext}"
-    dest.write_bytes(content)
-    logger.info("📥 选题库上传: %s (%d bytes)", dest.name, len(content))
-    return dest
-
-
-def project_relative(p: Path) -> str:
+def load_registry(cfg) -> list[dict]:
+    """读取来源登记；不存在时初始化默认来源 + 空库。"""
+    path = registry_file(cfg)
+    if not path.exists():
+        source = _default_source(cfg)
+        _ensure_empty_file(Path(source["path"]), source["format"])
+        save_registry(cfg, [source])
+        return [source]
     try:
-        return str(p.resolve().relative_to(PROJECT_ROOT.resolve()))
-    except ValueError:
-        return str(p)
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.error("选题库来源登记读取失败：%s", exc)
+        return []
+    sources = data.get("sources") if isinstance(data, dict) else data
+    if not isinstance(sources, list):
+        return []
+    return [s for s in sources if isinstance(s, dict) and s.get("id")]
 
 
-# ---------------------------------------------------------------------------
-# 远程同步
-# ---------------------------------------------------------------------------
+def save_registry(cfg, sources: list[dict]) -> None:
+    path = registry_file(cfg)
+    path.write_text(
+        json.dumps({"version": 1, "sources": sources}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    try:
+        path.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧选题来源登记文件权限：%s", path.name)
 
-def _remote_format(kb) -> str:
-    fmt = (kb.remote_format or "auto").lower()
+
+def _new_id() -> str:
+    return "kb-" + datetime.now().strftime("%Y%m%d%H%M%S") + "-" + hashlib.sha1(
+        str(datetime.now().timestamp()).encode()
+    ).hexdigest()[:6]
+
+
+def _source_path(cfg, source: dict) -> Path:
+    if source.get("kind") == "remote":
+        cached = cache_dir(cfg) / f"{source['id']}.{_guess_ext(source)}"
+        return cached
+    return _resolve_server_path(cfg, source.get("path") or "")
+
+
+def _guess_ext(source: dict) -> str:
+    fmt = source.get("format") or "auto"
     if fmt != "auto":
-        return fmt
-    url = (kb.remote_url or "").lower().split("?")[0]
-    for ext, f in ((".csv", "csv"), (".jsonl", "jsonl"), (".ndjson", "jsonl"),
-                   (".json", "json"), (".xml", "rss"), (".rss", "rss"), ("/feed", "rss"),
-                   ("/rss", "rss"), (".atom", "rss")):
-        if url.endswith(ext):
-            return f
-    return "auto"
+        return {"csv": "csv", "json": "json", "jsonl": "jsonl", "xlsx": "xlsx", "sqlite": "db", "rss": "xml"}[fmt]
+    suffix = Path(str(source.get("path") or source.get("url") or "")).suffix.lower()
+    return suffix.lstrip(".") or "csv"
 
 
-def _sniff_format(body: bytes, content_type: str) -> str:
-    ct = (content_type or "").lower()
-    head = body.lstrip()[:200].lower()
-    if "xml" in ct or "rss" in ct or head.startswith(b"<?xml") or b"<rss" in head or b"<feed" in head:
-        return "rss"
-    if "csv" in ct:
-        return "csv"
-    if head.startswith(b"[") or head.startswith(b"{"):
+def _validate_remote_url(url: str):
+    """仅允许访问解析到公网地址的 HTTP(S) 来源，防止选题源变成 SSRF 入口。"""
+    if not isinstance(url, str):
+        raise ValueError("远程地址必须是字符串")
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
+        raise ValueError("远程地址不能包含空白或控制字符")
+    try:
+        parsed = urlsplit(url)
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("远程地址格式不合法") from exc
+    if scheme not in ("http", "https") or not host:
+        raise ValueError("远程地址必须是完整的 http(s) URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("远程地址不能在 URL 中包含用户名或密码")
+
+    host = host.rstrip(".").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        raise ValueError("远程来源不能指向本机或内网地址")
+
+    try:
+        addresses = {ipaddress.ip_address(host)}
+    except ValueError:
         try:
-            json.loads(body.decode("utf-8"))
-            return "json"
-        except Exception:
-            return "jsonl"
-    return "csv"
+            records = socket.getaddrinfo(host, port or (443 if scheme == "https" else 80),
+                                         type=socket.SOCK_STREAM)
+            addresses = {ipaddress.ip_address(record[4][0].split("%", 1)[0]) for record in records}
+        except (OSError, ValueError) as exc:
+            raise ValueError("远程来源域名无法解析") from exc
+
+    if not addresses or any(not address.is_global for address in addresses):
+        raise ValueError("远程来源不能解析到本机、内网或保留 IP 地址")
+    return parsed
 
 
-def sync_remote(cfg) -> dict[str, Any]:
-    """下载远程选题库到本地缓存。返回 {ok, format, rows, message}。"""
-    import httpx
-
-    kb = cfg.topic_kb
-    url = (kb.remote_url or "").strip()
-    if not url:
-        raise KbSourceError("还没有填写远程地址")
-    if not re.match(r"^https?://", url):
-        raise KbSourceError("远程地址必须以 http:// 或 https:// 开头")
-    headers = {"User-Agent": "IterWave/1.0"}
-    if kb.remote_header and kb.remote_token_env:
-        token = os.environ.get(kb.remote_token_env)
-        if token:
-            headers[kb.remote_header] = token
-    try:
-        with httpx.Client(timeout=REMOTE_TIMEOUT, follow_redirects=True) as client:
-            resp = client.get(url, headers=headers)
-    except httpx.HTTPError as exc:
-        raise KbSourceError(f"无法访问远程地址：{type(exc).__name__}") from exc
-    if resp.status_code in (401, 403):
-        raise KbSourceError("远程地址拒绝访问，请检查鉴权设置")
-    if resp.status_code >= 400:
-        raise KbSourceError(f"远程地址返回错误（{resp.status_code}）")
-    body = resp.content
-    if len(body) > MAX_REMOTE_BYTES:
-        raise KbSourceError("远程文件超过 20MB")
-
-    fmt = _remote_format(kb)
-    if fmt == "auto":
-        fmt = _sniff_format(body, resp.headers.get("content-type", ""))
-
-    rows = 0
-    if fmt == "rss":
-        items = parse_feed(body, default_dimension=kb.default_dimension, source=url)
-        dest = kb_dir(cfg) / "remote_cache.jsonl"
-        with open(dest, "w", encoding="utf-8") as f:
-            for it in items:
-                f.write(json.dumps(it, ensure_ascii=False) + "\n")
-        rows = len(items)
-    else:
-        ext = {"csv": ".csv", "json": ".json", "jsonl": ".jsonl"}[fmt]
-        dest = kb_dir(cfg) / f"remote_cache{ext}"
-        dest.write_bytes(body)
-        rows = _count_rows(dest, fmt)
-    # 清掉其它格式的旧缓存，避免读到过期文件
-    for old in kb_dir(cfg).glob("remote_cache.*"):
-        if old != dest:
-            old.unlink(missing_ok=True)
-    # remote_format=auto 时记住探测结果，读取时按真实格式解析
-    _write_meta(cfg, {"format": fmt, "synced_at": datetime.now().isoformat(timespec="seconds"),
-                      "rows": rows})
-    logger.info("🌐 远程选题库同步完成: %s 条（%s）", rows, fmt)
-    return {"ok": True, "format": fmt, "rows": rows,
-            "synced_at": datetime.now().isoformat(timespec="seconds")}
+def _url_origin(parsed) -> tuple[str, str, int]:
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    port = parsed.port or (443 if scheme == "https" else 80)
+    return scheme, host, port
 
 
-def _meta_path(cfg) -> Path:
-    return kb_dir(cfg) / "remote_meta.json"
+# ----------------------------------------------------------------------
+# 格式解析
+# ----------------------------------------------------------------------
+
+def detect_format(name: str, explicit: str = "auto", content_type: str = "") -> str:
+    if explicit and explicit != "auto":
+        return explicit
+    if "rss" in content_type or "xml" in content_type or "atom" in content_type:
+        return "rss"
+    if "json" in content_type:
+        return "json"
+    if "csv" in content_type:
+        return "csv"
+    suffix = Path(name.split("?")[0]).suffix.lower()
+    return _EXT_FORMAT.get(suffix, "csv")
 
 
-def _write_meta(cfg, meta: dict) -> None:
-    _meta_path(cfg).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+def detect_mapping(columns: list[str], stored: Optional[dict] = None) -> tuple[dict[str, str], list[str]]:
+    """自动识别中英文列名；stored 里显式指定的映射优先。返回 (映射, 未匹配字段)。"""
+    columns_l = {c.strip().lower(): c for c in columns if c}
+    mapping: dict[str, str] = {}
+    for field, aliases in FIELD_ALIASES.items():
+        raw = (stored or {}).get(field)
+        if raw and raw in columns:
+            mapping[field] = raw
+            continue
+        if raw and raw.lower() in columns_l:
+            mapping[field] = columns_l[raw.lower()]
+            continue
+        for alias in aliases:
+            if alias.lower() in columns_l:
+                mapping[field] = columns_l[alias.lower()]
+                break
+    missing = [f for f in SUPPORTED_FIELDS if f not in mapping]
+    return mapping, missing
 
 
-def remote_meta(cfg) -> dict:
-    p = _meta_path(cfg)
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+def _read_text(path: Path) -> str:
+    for enc in ("utf-8-sig", "utf-8", "gbk"):
+        try:
+            return path.read_text(encoding=enc)
+        except UnicodeDecodeError:
+            continue
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
-def current_remote_cache(cfg) -> Optional[Path]:
-    caches = sorted(kb_dir(cfg).glob("remote_cache.*"))
-    caches = [c for c in caches if c.suffix in (".csv", ".json", ".jsonl")]
-    return caches[0] if caches else None
+def _rows_to_dicts(rows: list[list[str]]) -> tuple[list[str], list[dict]]:
+    if not rows:
+        return [], []
+    header = [str(c).strip() for c in rows[0]]
+    out = []
+    for row in rows[1:]:
+        out.append({header[i]: (row[i] if i < len(row) else "") for i in range(len(header))})
+    return header, out
 
 
-def _count_rows(p: Path, fmt: str) -> int:
-    try:
-        if fmt == "csv":
-            with open(p, encoding="utf-8-sig") as f:
-                return max(0, sum(1 for _ in csv.reader(f)) - 1)
-        if fmt == "jsonl":
-            with open(p, encoding="utf-8") as f:
-                return sum(1 for line in f if line.strip())
-        data = json.loads(p.read_text(encoding="utf-8"))
-        return len(extract_json_rows(data))
-    except Exception:
+def parse_csv(text: str) -> tuple[list[str], list[dict]]:
+    reader = list(csv.reader(io.StringIO(text)))
+    return _rows_to_dicts(reader)
+
+
+def parse_json(text: str) -> tuple[list[str], list[dict]]:
+    payload = json.loads(text)
+    rows = payload
+    if isinstance(payload, dict):
+        for key in ("items", "data", "rows", "topics", "results"):
+            if isinstance(payload.get(key), list):
+                rows = payload[key]
+                break
+        else:
+            rows = [payload]
+    if not isinstance(rows, list):
+        raise ValueError("JSON 顶层必须是数组，或包含 items/data/rows/topics 数组")
+    rows = [r for r in rows if isinstance(r, dict)]
+    columns: list[str] = []
+    for r in rows:
+        for k in r.keys():
+            if k not in columns:
+                columns.append(k)
+    return columns, rows
+
+
+def parse_jsonl(text: str) -> tuple[list[str], list[dict]]:
+    rows: list[dict] = []
+    columns: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        obj = json.loads(line)
+        if not isinstance(obj, dict):
+            continue
+        rows.append(obj)
+        for k in obj.keys():
+            if k not in columns:
+                columns.append(k)
+    return columns, rows
+
+
+_XLSX_NS = {
+    "main": "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}",
+}
+
+
+def _xlsx_col_index(cell_ref: str) -> int:
+    letters = re.match(r"[A-Z]+", cell_ref or "")
+    if not letters:
         return 0
+    idx = 0
+    for ch in letters.group():
+        idx = idx * 26 + (ord(ch) - 64)
+    return idx - 1
 
 
-def extract_json_rows(data: Any) -> list[dict]:
-    """JSON 里找出行列表：数组本身，或 {items|data|list|records|rows: [...]}。"""
-    if isinstance(data, list):
-        return [r for r in data if isinstance(r, dict)]
-    if isinstance(data, dict):
-        for key in ("items", "data", "list", "records", "rows", "topics", "results"):
-            v = data.get(key)
-            if isinstance(v, list):
-                return [r for r in v if isinstance(r, dict)]
-            if isinstance(v, dict):
-                inner = extract_json_rows(v)
-                if inner:
-                    return inner
-    return []
+def parse_xlsx(path: Path) -> tuple[list[str], list[dict]]:
+    """stdlib 解析 .xlsx（首个工作表），避免额外依赖。"""
+    with zipfile.ZipFile(path) as zf:
+        infos = zf.infolist()
+        if len(infos) > MAX_XLSX_ENTRIES:
+            raise ValueError("Excel 文件包含过多压缩条目")
+        expanded_size = sum(info.file_size for info in infos)
+        if expanded_size > MAX_XLSX_EXPANDED_BYTES:
+            raise ValueError("Excel 展开后超过 40MB 上限")
+        shared: list[str] = []
+        if "xl/sharedStrings.xml" in zf.namelist():
+            root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+            for si in root.findall(f"{_XLSX_NS['main']}si"):
+                shared.append("".join(t.text or "" for t in si.iter(f"{_XLSX_NS['main']}t")))
+        sheets = sorted(n for n in zf.namelist() if n.startswith("xl/worksheets/sheet"))
+        if not sheets:
+            raise ValueError("Excel 文件没有工作表")
+        root = ET.fromstring(zf.read(sheets[0]))
+        raw_rows: list[list[str]] = []
+        for row in root.iter(f"{_XLSX_NS['main']}row"):
+            cells: dict[int, str] = {}
+            for c in row.findall(f"{_XLSX_NS['main']}c"):
+                idx = _xlsx_col_index(c.get("r") or "")
+                ctype = c.get("t")
+                if ctype == "s":
+                    v = c.find(f"{_XLSX_NS['main']}v")
+                    text = shared[int(v.text)] if v is not None and v.text and int(v.text) < len(shared) else ""
+                elif ctype == "inlineStr":
+                    text = "".join(t.text or "" for t in c.iter(f"{_XLSX_NS['main']}t"))
+                else:
+                    v = c.find(f"{_XLSX_NS['main']}v")
+                    text = v.text if v is not None and v.text else ""
+                cells[idx] = text.strip()
+            if cells:
+                width = max(cells.keys()) + 1
+                raw_rows.append([cells.get(i, "") for i in range(width)])
+    return _rows_to_dicts(raw_rows)
 
 
-# ---------------------------------------------------------------------------
-# RSS / Atom
-# ---------------------------------------------------------------------------
-
-def _strip_tags(s: str) -> str:
-    return re.sub(r"<[^>]+>", "", s or "").strip()
-
-
-def parse_feed(body: bytes | str, *, default_dimension: str = "综合", source: str = "") -> list[dict]:
-    """把 RSS 2.0 / Atom 解析成选题行（通用字段名）。"""
-    if isinstance(body, bytes):
-        text = body.decode("utf-8", errors="replace")
-    else:
-        text = body
-    try:
-        root = ET.fromstring(text)
-    except ET.ParseError as exc:
-        raise KbSourceError("RSS 内容解析失败，请确认地址是 RSS/Atom 订阅") from exc
-
-    def local(tag: str) -> str:
-        return tag.split("}", 1)[-1]
-
-    out: list[dict] = []
+def parse_rss(text: str) -> tuple[list[str], list[dict]]:
+    """RSS 2.0 / Atom → 统一字段（title/link/summary/date/source）。"""
+    root = ET.fromstring(text)
+    rows: list[dict] = []
     feed_title = ""
-    for el in root.iter():
-        if local(el.tag) == "title" and not feed_title:
-            feed_title = (el.text or "").strip()
+    for tag in ("channel", "{http://www.w3.org/2005/Atom}feed"):
+        node = root.find(tag)
+        if node is not None:
+            t = node.find("title") if node.tag == "channel" else node.find("{http://www.w3.org/2005/Atom}title")
+            feed_title = (t.text or "").strip() if t is not None else ""
             break
-    for el in root.iter():
-        name = local(el.tag)
-        if name not in ("item", "entry"):
+    items = root.findall(".//item") or root.findall(".//{http://www.w3.org/2005/Atom}entry")
+    for item in items:
+        def _text(tag: str) -> str:
+            node = item.find(tag)
+            return (node.text or "").strip() if node is not None and node.text else ""
+        title = _text("title") or _text("{http://www.w3.org/2005/Atom}title")
+        link = _text("link")
+        if not link:
+            link_node = item.find("{http://www.w3.org/2005/Atom}link")
+            link = link_node.get("href") if link_node is not None else ""
+        summary = _text("description") or _text("{http://www.w3.org/2005/Atom}summary") \
+            or _text("{http://www.w3.org/2005/Atom}content")
+        date = _text("pubDate") or _text("{http://www.w3.org/2005/Atom}updated") \
+            or _text("{http://www.w3.org/2005/Atom}published")
+        if title:
+            rows.append({
+                "title": title, "link": link, "summary": summary,
+                "date": date, "source": feed_title,
+            })
+    return ["title", "link", "summary", "date", "source"], rows
+
+
+def _quote_sqlite_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def parse_sqlite(path: Path, table_name: Optional[str]) -> tuple[list[str], list[dict]]:
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    try:
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()]
+        if not tables:
+            raise ValueError("SQLite 文件没有表")
+        table = table_name if table_name in tables else None
+        if table is None:
+            counts = []
+            for t in tables:
+                try:
+                    quoted = _quote_sqlite_identifier(t)
+                    counts.append((conn.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0], t))
+                except sqlite3.Error:
+                    continue
+            table = max(counts)[1] if counts else tables[0]
+        quoted = _quote_sqlite_identifier(table)
+        row_count = int(conn.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0])
+        if row_count > MAX_TOPIC_ROWS:
+            raise ValueError(f"SQLite 选题库超过 {MAX_TOPIC_ROWS:,} 行上限")
+        columns = [r[1] for r in conn.execute(f"PRAGMA table_info({quoted})").fetchall()]
+        rows = [dict(r) for r in conn.execute(f"SELECT * FROM {quoted}").fetchall()]
+        return columns, rows
+    finally:
+        conn.close()
+
+
+def read_table(path: Path, fmt: str, table_name: Optional[str] = None) -> tuple[list[str], list[dict]]:
+    if not path.exists():
+        raise FileNotFoundError(f"文件不存在：{redact_path(path)}")
+    if path.stat().st_size > MAX_UPLOAD_BYTES:
+        raise ValueError("选题库文件超过 20MB 上限")
+    if fmt == "xlsx":
+        columns, rows = parse_xlsx(path)
+    elif fmt == "sqlite":
+        columns, rows = parse_sqlite(path, table_name)
+    else:
+        text = _read_text(path)
+        if fmt == "json":
+            columns, rows = parse_json(text)
+        elif fmt == "jsonl":
+            columns, rows = parse_jsonl(text)
+        elif fmt == "rss":
+            columns, rows = parse_rss(text)
+        else:
+            columns, rows = parse_csv(text)
+    if len(rows) > MAX_TOPIC_ROWS:
+        raise ValueError(f"选题库超过 {MAX_TOPIC_ROWS:,} 行上限")
+    return columns, rows
+
+
+# ----------------------------------------------------------------------
+# 远程来源
+# ----------------------------------------------------------------------
+
+def fetch_remote(source: dict, timeout: int = 20) -> tuple[list[str], list[dict]]:
+    url = (source.get("url") or "").strip()
+    headers = {str(k): str(v) for k, v in (source.get("headers") or {}).items() if k and v}
+    headers.setdefault("User-Agent", "iterwave/0.1 (+local)")
+
+    # 手动处理重定向：每一跳都重新检查目标，且禁止跨域跳转以避免鉴权头泄漏。
+    current_url = url
+    raw = b""
+    content_type = ""
+    redirect_statuses = {301, 302, 303, 307, 308}
+    for _ in range(6):
+        parsed = _validate_remote_url(current_url)
+        with httpx.stream(
+            "GET", current_url, headers=headers, timeout=timeout, follow_redirects=False
+        ) as resp:
+            if resp.status_code in redirect_statuses:
+                location = resp.headers.get("location")
+                if not location:
+                    raise ValueError("远程来源返回了不完整的重定向")
+                next_url = urljoin(current_url, location)
+                next_parsed = _validate_remote_url(next_url)
+                if _url_origin(parsed) != _url_origin(next_parsed):
+                    raise ValueError("远程来源不允许跨域重定向，请直接填写最终地址")
+                current_url = next_url
+                continue
+
+            resp.raise_for_status()
+            size = 0
+            chunks: list[bytes] = []
+            for chunk in resp.iter_bytes():
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise ValueError("远程选题库超过 20MB 上限")
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+            content_type = resp.headers.get("content-type", "")
+            break
+    else:
+        raise ValueError("远程来源重定向次数过多")
+
+    fmt = detect_format(current_url, source.get("format") or "auto", content_type)
+    text = raw.decode("utf-8", errors="replace")
+    if fmt == "json":
+        return parse_json(text)
+    if fmt == "rss":
+        return parse_rss(text)
+    if fmt == "jsonl":
+        return parse_jsonl(text)
+    return parse_csv(text)
+
+
+def sync_remote(cfg, source: dict) -> dict:
+    """抓取远程来源 → 写缓存文件 → 更新同步状态（每天由定时任务调用）。"""
+    columns, rows = fetch_remote(source)
+    fmt = detect_format(str(source.get("url") or ""), source.get("format") or "auto")
+    cache = cache_dir(cfg) / f"{source['id']}.{_guess_ext({**source, 'format': fmt})}"
+    if fmt == "json":
+        cache.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    elif fmt == "jsonl":
+        cache.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+    elif fmt == "rss":
+        cache.write_text(_rows_to_rss(columns, rows), encoding="utf-8")
+    elif fmt == "csv":
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+        cache.write_text(buf.getvalue(), encoding="utf-8-sig")
+    else:
+        raise ValueError("远程来源不支持写入缓存（仅 CSV / JSON / JSONL / RSS）")
+    try:
+        cache.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧远程缓存文件权限：%s", cache.name)
+    return {
+        "last_sync_at": datetime.now().isoformat(timespec="seconds"),
+        "last_error": None,
+        "rows": len(rows),
+        "columns": columns,
+        "cache_path": str(cache),
+    }
+
+
+def _rows_to_rss(columns: list[str], rows: list[dict]) -> str:
+    """把 RSS 解析结果回写成简单 RSS，便于缓存后离线读取。"""
+    esc = lambda s: (str(s) or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    items = "\n".join(
+        "<item><title>{}</title><link>{}</link><description>{}</description><pubDate>{}</pubDate></item>".format(
+            esc(r.get("title")), esc(r.get("link")), esc(r.get("summary")), esc(r.get("date")))
+        for r in rows
+    )
+    return f"<?xml version=\"1.0\" encoding=\"utf-8\"?><rss version=\"2.0\"><channel><title>cache</title>{items}</channel></rss>"
+
+
+def sync_all_remote(cfg) -> dict:
+    """同步全部启用的远程来源，返回逐源结果（失败不抛出）。"""
+    results: dict[str, str] = {}
+    sources = load_registry(cfg)
+    for source in sources:
+        if source.get("kind") != "remote" or not source.get("enabled", True):
             continue
-        row: dict[str, str] = {}
-        cats: list[str] = []
-        for child in el:
-            cn = local(child.tag)
-            if cn == "title":
-                row["title"] = _strip_tags(child.text or "")
-            elif cn in ("description", "summary", "content") and "summary" not in row:
-                row["summary"] = _strip_tags(child.text or "")[:500]
-            elif cn == "link":
-                row["link"] = (child.text or "").strip() or child.attrib.get("href", "")
-            elif cn in ("pubDate", "published", "updated", "date") and "date" not in row:
-                row["date"] = (child.text or "").strip()
-            elif cn == "category":
-                c = (child.text or child.attrib.get("term", "")).strip()
-                if c:
-                    cats.append(c)
-        if not row.get("title"):
-            continue
-        row["dimension"] = cats[0] if cats else default_dimension
-        row["source"] = feed_title or source
-        out.append(row)
+        try:
+            info = sync_remote(cfg, source)
+            source.update({k: v for k, v in info.items() if k != "cache_path"})
+            results[source["id"]] = "ok"
+        except Exception as exc:  # noqa: BLE001 — 单源失败不影响其它来源
+            safe_error = redact(str(exc)[:200])
+            source["last_error"] = safe_error
+            source["last_sync_at"] = datetime.now().isoformat(timespec="seconds")
+            results[source["id"]] = "failed"
+            logger.warning("选题库远程同步失败 %s: %s", redact(str(source.get("name") or "")), safe_error)
+    save_registry(cfg, sources)
+    return results
+
+
+# ----------------------------------------------------------------------
+# 读取 / 合并
+# ----------------------------------------------------------------------
+
+def _topic_from_row(row: dict, mapping: dict[str, str], fallback_dim: str) -> Optional[TopicItem]:
+    def field(name: str) -> str:
+        raw = mapping.get(name)
+        if not raw:
+            return ""
+        value = row.get(raw)
+        return "" if value is None else str(value).strip()
+
+    title = field("title")
+    if not title:
+        return None
+    dimension = field("dimension") or fallback_dim or DEFAULT_DIMENSION
+    link = field("link")
+    source = field("source") or "kb"
+    topic_id = link or source
+    if not topic_id:
+        topic_id = "kb-" + hashlib.sha1(f"{dimension}|{title}".encode("utf-8")).hexdigest()[:12]
+    return TopicItem(
+        id=topic_id, title=title, dimension=dimension,
+        summary=field("summary"), link=link, source=source,
+        date=field("date") or None,
+    )
+
+
+def read_source(cfg, source: dict) -> dict:
+    """读取单个来源，返回 {items, status, rows, columns, mapping, error}，不抛出。"""
+    base = {
+        "id": source.get("id"),
+        "name": redact(str(source.get("name") or source.get("id") or "")),
+        "kind": source.get("kind"), "format": source.get("format") or "auto",
+        "display_path": _redact_remote_url(source.get("url") or "") if source.get("kind") == "remote"
+        else redact_path(_source_path(cfg, source)),
+        "items": [], "status": "ok", "rows": 0, "columns": [], "mapping": {},
+        "error": None,
+    }
+    if not source.get("enabled", True):
+        base["status"] = "disabled"
+        return base
+    try:
+        path = _source_path(cfg, source)
+        fmt = detect_format(str(source.get("path") or source.get("url") or path.name),
+                            source.get("format") or "auto")
+        if source.get("kind") == "remote" and not path.exists():
+            info = sync_remote(cfg, source)
+            source.update({k: v for k, v in info.items() if k != "cache_path"})
+        columns, rows = read_table(path, fmt, source.get("table_name"))
+        mapping, missing = detect_mapping(columns, source.get("field_mapping") or {})
+        if "title" in missing:
+            base.update(status="error", error=f"未找到标题列（现有列：{', '.join(columns[:8])}）")
+            return base
+        fallback = str(source.get("default_dimension") or DEFAULT_DIMENSION)
+        items = [it for r in rows if (it := _topic_from_row(r, mapping, fallback)) is not None]
+        base.update(items=items, rows=len(rows), columns=columns, mapping=mapping)
+        if not items:
+            base["status"] = "empty"
+        return base
+    except Exception as exc:  # noqa: BLE001 — 单源失败不影响其它来源
+        safe_error = redact(str(exc)[:240])
+        base.update(status="error", error=safe_error)
+        logger.warning("选题库来源读取失败 %s: %s", redact(str(source.get("name") or "")), safe_error)
+        return base
+
+
+def read_all(cfg) -> tuple[list[TopicItem], dict]:
+    """合并全部启用的来源（按 id 去重），返回 (选题, 报告)。"""
+    sources = load_registry(cfg)
+    report: dict = {
+        "sources": [], "kb_count": 0, "errors": 0, "empty": 0,
+        "file_type": None, "kb_error": None, "path": None,
+    }
+    items: list[TopicItem] = []
+    seen: set[str] = set()
+    for source in sources:
+        res = read_source(cfg, source)
+        report["sources"].append({
+            "id": res["id"], "name": res["name"], "kind": res["kind"],
+            "format": res["format"], "display_path": res["display_path"],
+            "status": res["status"], "rows": res["rows"], "error": res["error"],
+        })
+        if res["status"] == "error":
+            report["errors"] += 1
+            if report["kb_error"] is None:
+                report["kb_error"] = f"{res['name']}：{res['error']}"
+        elif res["status"] == "empty":
+            report["empty"] += 1
+        for it in res["items"]:
+            if it.id in seen:
+                continue
+            seen.add(it.id)
+            it.source = it.source or f"kb:{source.get('name') or source['id']}"
+            items.append(it)
+        if report["file_type"] is None and res["format"] != "auto":
+            report["file_type"] = res["format"]
+        if report["path"] is None and res["display_path"]:
+            report["path"] = res["display_path"]
+    report["kb_count"] = len(items)
+    return items, report
+
+
+# ----------------------------------------------------------------------
+# 来源管理（API 用）
+# ----------------------------------------------------------------------
+
+def _redact_remote_url(url: str) -> str:
+    """用于界面/API 展示的远程地址：绝不返回 userinfo、查询参数或片段。"""
+    try:
+        parsed = urlsplit(str(url or ""))
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname or ""
+        if not scheme or not host:
+            return "远程地址"
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        port = parsed.port
+        default_port = 443 if scheme == "https" else 80
+        authority = host if port is None or port == default_port else f"{host}:{port}"
+        # 路径、查询参数和片段都可能带 token；固定用占位符，不直接暴露原始路径。
+        return f"{scheme}://{authority}/…"
+    except (TypeError, ValueError):
+        return "远程地址"
+
+
+def _public_source(cfg, source: dict) -> dict:
+    """对外视图：路径脱敏、远程 URL 不回传凭据，请求头只回键名。"""
+    out = {
+        k: v for k, v in source.items()
+        if k not in ("headers", "path", "cache_path", "url")
+    }
+    if source.get("kind") == "remote":
+        out["display_path"] = _redact_remote_url(source.get("url") or "")
+    else:
+        out["display_path"] = redact_path(_source_path(cfg, source))
+    if out.get("name"):
+        out["name"] = redact(str(out["name"]))
+    if out.get("last_error"):
+        out["last_error"] = redact(str(out["last_error"]))
+    out["header_keys"] = sorted((source.get("headers") or {}).keys())
     return out
 
 
-# ---------------------------------------------------------------------------
-# Excel
-# ---------------------------------------------------------------------------
+def list_sources(cfg) -> dict:
+    return {"items": [_public_source(cfg, s) for s in load_registry(cfg)],
+            "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
+            "supported": list(SUPPORTED_FORMATS)}
 
-def read_xlsx_rows(p: Path) -> tuple[list[str], list[dict]]:
+
+def _validate_name(name: str) -> str:
+    name = (name or "").strip()
+    if len(name) > 60:
+        raise ValueError("来源名称最长 60 字")
+    return name or "选题库来源"
+
+
+def _decode_upload(filename: str, content_b64: str) -> tuple[str, bytes]:
+    encoded = str(content_b64 or "").split(",", 1)[-1]
+    max_encoded_chars = ((MAX_UPLOAD_BYTES + 2) // 3) * 4
+    if len(encoded) > max_encoded_chars:
+        raise ValueError("上传文件超过 20MB 上限")
     try:
-        from openpyxl import load_workbook
-    except ImportError as exc:  # pragma: no cover
-        raise KbSourceError("服务器缺少 Excel 解析组件（openpyxl），请改用 CSV") from exc
-    wb = load_workbook(io.BytesIO(p.read_bytes()), read_only=True, data_only=True)
-    ws = wb.worksheets[0]
-    rows_iter = ws.iter_rows(values_only=True)
-    header = next(rows_iter, None)
-    if not header:
-        return [], []
-    cols = [str(h).strip() if h is not None else f"列{i + 1}" for i, h in enumerate(header)]
-    rows = []
-    for r in rows_iter:
-        if r is None or all(v is None or str(v).strip() == "" for v in r):
-            continue
-        rows.append({cols[i]: ("" if v is None else str(v)) for i, v in enumerate(r) if i < len(cols)})
-    return cols, rows
+        data = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError(f"文件内容不是合法 base64：{exc}") from exc
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise ValueError("上传文件超过 20MB 上限")
+    safe = Path(filename or "upload.csv").name
+    if not safe or safe.startswith("."):
+        raise ValueError("文件名不合法")
+    return safe, data
+
+
+def add_upload(cfg, *, filename: str, content_b64: str, name: str = "",
+               field_mapping: Optional[dict] = None) -> dict:
+    safe, data = _decode_upload(filename, content_b64)
+    ext = Path(safe).suffix.lower()
+    if ext not in _EXT_FORMAT:
+        raise ValueError("只支持 CSV / Excel / JSON / JSONL / SQLite 文件")
+    fmt = _EXT_FORMAT[ext]
+    if fmt == "xlsx" and not zipfile.is_zipfile(io.BytesIO(data)):
+        raise ValueError("文件不是有效的 .xlsx")
+    dest = upload_dir(cfg) / f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{safe}"
+    dest.write_bytes(data)
+    try:
+        dest.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧上传文件权限：%s", dest.name)
+    columns, rows = read_table(dest, fmt)
+    mapping, missing = detect_mapping(columns, field_mapping or {})
+    if "title" in missing:
+        dest.unlink(missing_ok=True)
+        raise ValueError(f"找不到标题列（现有列：{', '.join(columns[:8])}）")
+    sources = load_registry(cfg)
+    source = {
+        "id": _new_id(), "kind": "file", "name": _validate_name(name or safe),
+        "enabled": True, "path": str(dest), "format": fmt,
+        "field_mapping": mapping, "headers": {},
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "last_sync_at": None, "last_error": None, "rows": len(rows),
+    }
+    sources.append(source)
+    save_registry(cfg, sources)
+    return _public_source(cfg, source)
+
+
+def add_server(cfg, *, path: str, name: str = "", fmt: str = "auto",
+               field_mapping: Optional[dict] = None) -> dict:
+    path = (path or "").strip()
+    if not path:
+        raise ValueError("服务器路径不能为空")
+    target = _resolve_server_path(cfg, path)
+    if not target.exists():
+        raise FileNotFoundError(f"路径不存在：{redact_path(target)}")
+    fmt = detect_format(target.name, fmt)
+    columns, rows = read_table(target, fmt)
+    mapping, missing = detect_mapping(columns, field_mapping or {})
+    if "title" in missing:
+        raise ValueError(f"找不到标题列（现有列：{', '.join(columns[:8])}）")
+    sources = load_registry(cfg)
+    source = {
+        "id": _new_id(), "kind": "server", "name": _validate_name(name or target.name),
+        "enabled": True, "path": str(target), "format": fmt,
+        "field_mapping": mapping, "headers": {},
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "last_sync_at": None, "last_error": None, "rows": len(rows),
+    }
+    sources.append(source)
+    save_registry(cfg, sources)
+    return _public_source(cfg, source)
+
+
+def add_remote(cfg, *, url: str, name: str = "", fmt: str = "auto",
+               headers: Optional[dict] = None, field_mapping: Optional[dict] = None) -> dict:
+    url = (url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("远程地址必须是 http(s) URL")
+    source = {
+        "id": _new_id(), "kind": "remote", "name": _validate_name(name or _redact_remote_url(url)),
+        "enabled": True, "url": url, "format": detect_format(url, fmt),
+        "headers": {str(k): str(v) for k, v in (headers or {}).items() if k and v},
+        "field_mapping": dict(field_mapping or {}),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "last_sync_at": None, "last_error": None, "rows": None,
+    }
+    info = sync_remote(cfg, source)
+    source.update({k: v for k, v in info.items() if k != "cache_path"})
+    # 依据缓存内容探测列名，补齐映射
+    path = cache_dir(cfg) / f"{source['id']}.{_guess_ext(source)}"
+    try:
+        columns, rows = read_table(path, source["format"])
+        mapping, missing = detect_mapping(columns, field_mapping or {})
+        if "title" in missing:
+            raise ValueError(f"远程数据找不到标题列（现有列：{', '.join(columns[:8])}）")
+        source["field_mapping"] = mapping
+        source["rows"] = len(rows)
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    sources = load_registry(cfg)
+    sources.append(source)
+    save_registry(cfg, sources)
+    return _public_source(cfg, source)
+
+
+def add_default_empty(cfg) -> dict:
+    """手动添加第一个来源时没有文件 → 建一个带表头的空 CSV。"""
+    source = _default_source(cfg)
+    _ensure_empty_file(Path(source["path"]), "csv")
+    save_registry(cfg, [source])
+    return _public_source(cfg, source)
+
+
+def update_source(cfg, source_id: str, updates: dict) -> dict:
+    sources = load_registry(cfg)
+    found = next((s for s in sources if s["id"] == source_id), None)
+    if found is None:
+        raise KeyError(source_id)
+    if "enabled" in updates:
+        found["enabled"] = bool(updates["enabled"])
+    if "name" in updates:
+        found["name"] = _validate_name(str(updates["name"]))
+    if "field_mapping" in updates:
+        mapping = {str(k): str(v) for k, v in (updates["field_mapping"] or {}).items() if k in SUPPORTED_FIELDS and v}
+        columns = read_table(_source_path(cfg, found), detect_format(
+            str(found.get("path") or found.get("url") or ""), found.get("format") or "auto"), found.get("table_name"))[0]
+        mapping = {k: v for k, v in mapping.items() if v in columns}
+        if "title" in mapping:
+            found["field_mapping"] = mapping
+    if "headers" in updates and found.get("kind") == "remote":
+        found["headers"] = {str(k): str(v) for k, v in (updates["headers"] or {}).items() if k and v}
+        found["last_sync_at"] = None   # 下次读取重新同步
+    if "url" in updates and found.get("kind") == "remote":
+        url = str(updates["url"]).strip()
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("远程地址必须是 http(s) URL")
+        found["url"] = url
+        found["last_sync_at"] = None
+    save_registry(cfg, sources)
+    return _public_source(cfg, found)
+
+
+def preview_source(cfg, source_id: str, limit: int = 5) -> dict:
+    """字段映射下拉 + 5 行预览：返回列名、自动映射、前 N 行。"""
+    sources = load_registry(cfg)
+    source = next((s for s in sources if s["id"] == source_id), None)
+    if source is None:
+        raise KeyError(source_id)
+    path = _source_path(cfg, source)
+    fmt = detect_format(str(source.get("path") or source.get("url") or path.name),
+                        source.get("format") or "auto")
+    if source.get("kind") == "remote" and not path.exists():
+        sync_remote(cfg, source)
+    columns, rows = read_table(path, fmt, source.get("table_name"))
+    mapping, missing = detect_mapping(columns, source.get("field_mapping") or {})
+    sample = [{k: (str(r.get(k)) if r.get(k) is not None else "") for k in columns}
+              for r in rows[:max(1, min(limit, 20))]]
+    return {
+        "id": source_id, "format": fmt, "columns": columns,
+        "mapping": mapping, "missing": missing, "rows": len(rows),
+        "sample": sample, "display_path": _public_source(cfg, source)["display_path"],
+    }
+
+
+def delete_source(cfg, source_id: str) -> dict:
+    sources = load_registry(cfg)
+    target = next((s for s in sources if s["id"] == source_id), None)
+    if target is None:
+        raise KeyError(source_id)
+    if target.get("kind") == "file":
+        _source_path(cfg, target).unlink(missing_ok=True)
+    for p in (cache_dir(cfg)).glob(f"{source_id}.*"):
+        p.unlink(missing_ok=True)
+    save_registry(cfg, [s for s in sources if s["id"] != source_id])
+    return {"deleted": source_id, "remaining": len(sources) - 1}
+
+
+def read_all_for_check(cfg) -> dict:
+    """自检用：真实读一遍所有来源，返回整体状态与逐源结果。"""
+    sources = load_registry(cfg)
+    if not sources:
+        return {"status": "warn", "message": "没有配置任何选题库来源，只能使用热点转入 / 手动选题",
+                "sources": [], "total": 0}
+    items, report = read_all(cfg)
+    errors = [s for s in report["sources"] if s["status"] == "error"]
+    if errors:
+        return {"status": "block",
+                "message": f"{errors[0]['name']} 读取失败：{errors[0]['error']}",
+                "sources": report["sources"], "total": len(items)}
+    if not items:
+        return {"status": "warn",
+                "message": "来源可读但没有任何选题，可上传数据或手动添加选题",
+                "sources": report["sources"], "total": 0}
+    return {"status": "pass",
+            "message": f"{len(report['sources'])} 个来源 · {len(items)} 条选题",
+            "sources": report["sources"], "total": len(items)}
+
+
+def legacy_inspect(cfg) -> dict:
+    """兼容旧 /api/kb/inspect：用第一个服务器路径来源做 schema 检查。"""
+    source = next((s for s in load_registry(cfg) if s.get("kind") == "server"), None)
+    if source is None:
+        return {"path": "", "file_type": None, "columns": [], "missing_fields": [],
+                "stats": {}, "ok": False, "error": "没有服务器路径来源"}
+    res = read_source(cfg, source)
+    return {
+        "path": res["display_path"], "file_type": res["format"],
+        "columns": res["columns"], "mapping": res["mapping"],
+        "missing_fields": [], "stats": {"total": res["rows"]},
+        "ok": res["status"] == "ok", "error": res["error"],
+    }
