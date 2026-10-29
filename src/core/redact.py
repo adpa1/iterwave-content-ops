@@ -8,10 +8,19 @@ R23 脱敏工具 —— 独立模块避免循环依赖。
 from __future__ import annotations
 
 import re
+from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_HOME = Path.home()
 
 # cookie / token / api_key 类
 _SECRET_PATTERN = re.compile(
-    r"(?i)\b(cookie|token|authorization|api[_-]?key)\b\s*[:=]\s*([^\s,;]+)"
+    r"(?i)\b(cookie|token|authorization|api[_-]?key)\b\s*[:=]\s*(?:bearer\s+)?([^\s,;]+)"
+)
+# URL userinfo（https://user:password@host）与常见签名/令牌查询参数
+_URL_USERINFO_PATTERN = re.compile(r"(?i)(https?://)[^/@\s]+@")
+_URL_SECRET_PARAM_PATTERN = re.compile(
+    r"(?i)([?&][^=&#\s]*(?:access[_-]?token|refresh[_-]?token|token|secret|password|signature|sig|credential|api[_-]?key|auth)[^=&#\s]*=)[^&#\s]+"
 )
 # 手机号（11 位 1[3-9]...）
 _PHONE_PATTERN = re.compile(r"(?<!\d)(1[3-9]\d)(\d{4})(\d{4})(?!\d)")
@@ -35,6 +44,8 @@ def redact(text: str) -> str:
         if len(value) <= 4:
             return f"{key}=***"
         return f"{key}={value[:4]}***"
+    text = _URL_USERINFO_PATTERN.sub(r"\1***@", text)
+    text = _URL_SECRET_PARAM_PATTERN.sub(r"\1***", text)
     text = _SECRET_PATTERN.sub(_repl_secret, text)
 
     def _repl_phone(m: re.Match) -> str:
@@ -49,3 +60,32 @@ def redact(text: str) -> str:
     text = _WX_PATTERN.sub(_repl_wx, text)
 
     return text
+
+
+def redact_path(path: str | Path | None) -> str:
+    """R23 路径脱敏：接口与页面不再暴露服务器绝对路径。
+
+    - 项目内路径 → 相对路径（data/kb/topics.csv）
+    - 用户目录内 → ~/…/文件名
+    - 其它绝对路径 → …/文件名
+    - Windows 盘符 / 相对路径原样返回
+    """
+    if not path:
+        return ""
+    raw = str(path)
+    if not raw:
+        return ""
+    p = Path(raw)
+    if not p.is_absolute():
+        return raw
+    try:
+        return str(p.relative_to(_PROJECT_ROOT))
+    except ValueError:
+        pass
+    try:
+        p.relative_to(_HOME)
+    except ValueError:
+        return f"…/{p.name}"
+    parent = p.parent.name
+    return f"~/…/{parent}/{p.name}" if parent else f"~/…/{p.name}"
+
