@@ -418,6 +418,8 @@ export interface SystemConfigView {
       heat_filter_enabled: boolean | null;
       time_window_hours: number | null;
       time_filter_enabled: boolean | null;
+      general_lists_enabled?: boolean;
+      custom_feeds?: { name: string; url: string }[];
     };
   };
   /** R22 两道硬锁：只读，后端拒绝关闭 */
@@ -431,6 +433,7 @@ export interface SystemConfigView {
     goal_mode?: string;
     // KB 配置
     kb_path: string;
+    kb_source?: KbSource;
     kb_type: string;
     kb_table: string;
     kb_field_mapping: Record<string, string>;
@@ -476,16 +479,36 @@ export interface SystemConfigView {
 }
 
 /** G-13 选题库 schema 检查 */
+export interface KbSource {
+  source_type: "local" | "upload" | "remote";
+  configured: boolean;
+  display_path: string;
+  exists: boolean;
+  remote_url: string;
+  remote_format: string;
+  remote_header: string;
+  remote_token_set: boolean;
+  default_dimension: string;
+  size_bytes?: number;
+  updated_at?: string;
+  remote_meta?: { format?: string; synced_at?: string; rows?: number };
+}
+
 export interface KbInspect {
+  configured?: boolean;
   path: string;
-  file_type: string;
+  source_type?: string;
+  file_type: string | null;
   table?: string;
   field_mapping: Record<string, string>;
   columns: string[];
   missing_fields: string[];
-  stats: { total?: number; unique_dimensions?: number };
+  preview?: Record<string, string>[];
+  stats: { total?: number; total_rows?: number; unique_dimensions?: number };
   ok: boolean;
+  message?: string;
   error?: string;
+  source?: KbSource;
 }
 
 // ===== G-09 母计划 / 内容编辑 / 生产线 =====
@@ -873,13 +896,21 @@ export interface RhythmConfig {
 }
 
 // ===== fetch wrapper =====
-const API = ""; // vite proxy handles prefix
+// 部署在子路径（如 /iterwave/）时由 vite 的 base 决定；本地开发为 ""（vite proxy 转发 /api）
+export const API = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
+
+/** 接口返回 401（需要登录）时触发，App 显示登录页 */
+export const AUTH_EVENT = "iterwave:auth-required";
 
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(API + path, {
     headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
     ...options,
   });
+  if (res.status === 401 && !path.startsWith("/api/auth/")) {
+    window.dispatchEvent(new Event(AUTH_EVENT));
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`${res.status} ${text || res.statusText}`);
@@ -888,7 +919,27 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 // ===== API Functions =====
+export interface NotifyChannelState { available: boolean; enabled: boolean; configured: boolean }
+export interface NotifyChannels {
+  macos: NotifyChannelState; wecom: NotifyChannelState; feishu: NotifyChannelState; any_ready: boolean;
+}
+
+export interface Vertical {
+  id: string; name: string; positioning_example: string;
+  persona_keywords: string[]; forbidden_directions: string[]; redline_keywords: string[];
+  dimensions: string[]; compliance_note: string;
+}
+
+export interface AuthStatus { required: boolean; authed: boolean }
+
 export const api = {
+  verticals: () => fetchJson<{ items: Vertical[] }>("/api/verticals"),
+  authStatus: () => fetchJson<AuthStatus>("/api/auth/status"),
+  login: (token: string) =>
+    fetchJson<{ ok: boolean }>("/api/auth/login", { method: "POST", body: JSON.stringify({ token }) }),
+  authLogout: () => fetchJson<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
+  setupAuth: (token: string, old_token?: string) =>
+    fetchJson<{ ok: boolean }>("/api/auth/setup", { method: "POST", body: JSON.stringify({ token, old_token }) }),
   status: () => fetchJson<SystemStatus>("/api/status"),
   goals: () => fetchJson<Goal[]>("/api/goals"),
   /** 总体目标进度（后端统一计算等权平均，前端只展示） */
@@ -1010,6 +1061,23 @@ export const api = {
   createAsset: (data: { asset_type: AssetType; title: string; body?: string; source_url?: string; platform?: Platform }) =>
     fetchJson<AssetItem>("/api/assets", { method: "POST", body: JSON.stringify(data) }),
   kbInspect: () => fetchJson<KbInspect>("/api/kb/inspect"),
+  kbUpload: async (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(API + "/api/kb/upload", { method: "POST", body: fd, credentials: "same-origin" });
+    if (res.status === 401) window.dispatchEvent(new Event(AUTH_EVENT));
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      let msg = t;
+      try { msg = JSON.parse(t).detail || t; } catch { /* 原文 */ }
+      throw new Error(msg || res.statusText);
+    }
+    return res.json() as Promise<{ saved: boolean; filename: string; inspect: KbInspect }>;
+  },
+  kbSync: () => fetchJson<{ ok: boolean; format: string; rows: number; synced_at: string; inspect: KbInspect }>(
+    "/api/kb/sync", { method: "POST" }),
+  kbRemoteToken: (value: string) =>
+    fetchJson<{ saved: boolean; set: boolean }>("/api/kb/remote_token", { method: "POST", body: JSON.stringify({ value }) }),
   // === G-13 / G-24 运行时配置 ===
   config: () => fetchJson<SystemConfigView>("/api/config"),
   patchConfig: (updates: Record<string, unknown>) =>
@@ -1021,6 +1089,9 @@ export const api = {
     fetchJson<{ ok: boolean; has_key: boolean; env_file: string }>("/api/config/llm_key", {
       method: "POST", body: JSON.stringify({ api_key: apiKey }),
     }),
+  notifyChannels: () => fetchJson<NotifyChannels>("/api/notify/channels"),
+  setNotifyWebhook: (channel: "wecom" | "feishu", url: string) =>
+    fetchJson<NotifyChannels>("/api/notify/webhook", { method: "POST", body: JSON.stringify({ channel, url }) }),
   notifyRules: () => fetchJson<NotifyRule[]>("/api/notify_rules"),
   createNotifyRule: (data: Partial<NotifyRule>) =>
     fetchJson<{ id: number; message: string }>("/api/notify_rules", {
@@ -1054,7 +1125,7 @@ export const api = {
     }),
   /** 通知通道自检（不落 notifications 表，不泄露 webhook） */
   notifyTest: () =>
-    fetchJson<{ results: Record<string, "ok" | "failed" | "disabled"> }>("/api/notify/test", {
+    fetchJson<{ results: Record<string, "ok" | "failed" | "disabled" | "unavailable"> }>("/api/notify/test", {
       method: "POST",
     }),
   opsLogs: (platform?: Platform, action_type?: string, status?: string, limit = 100) => {
@@ -1133,7 +1204,7 @@ export const api = {
     return fetchJson<{ round_id: number; items: ContentItem[] }>(`/api/contents?${p}`);
   },
   /** G-36：已生成卡片图的下载地址（后端校验文件在 output 目录内） */
-  contentImageUrl: (id: string, index: number) => `/api/contents/${id}/images/${index}`,
+  contentImageUrl: (id: string, index: number) => `${API}/api/contents/${id}/images/${index}`,
   updateContent: (id: string, data: { title?: string; body?: string; tags?: string[]; reason?: string }) =>
     fetchJson<{ id: string; changed: boolean; title: string; body: string; tags: string[] }>(
       `/api/contents/${id}`, { method: "PATCH", body: JSON.stringify(data) },

@@ -55,6 +55,37 @@ def _topic_id(platform: str, title: str) -> str:
     return topic_id(platform, title)
 
 
+def _friendly_error(exc: Exception) -> str:
+    """采集错误转成用户能看懂的一句话（不带上游 URL / 英文堆栈）。"""
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return f"数据源暂时不可用（{code}）" if code >= 500 else f"数据源拒绝访问（{code}）"
+    if isinstance(exc, httpx.TimeoutException):
+        return "数据源响应超时"
+    if isinstance(exc, httpx.HTTPError):
+        return "无法连接数据源"
+    msg = str(exc)
+    if "RSS" in msg or "解析" in msg:
+        return msg[:80]
+    return "数据格式无法识别"
+
+
+def _parse_feed_date(raw) -> Optional[datetime]:
+    if not raw:
+        return None
+    from email.utils import parsedate_to_datetime
+    try:
+        dt = parsedate_to_datetime(str(raw))
+    except (TypeError, ValueError):
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    return dt
+
+
 def _parse_heat(value, desc: Optional[str]) -> Optional[float]:
     """热度数字：优先 hot_value；知乎只有「17807 万热度」这类文案 → 解析成数字。"""
     if value is not None:
@@ -99,6 +130,20 @@ class HotTopicCollector:
         self.base_url = (self.source.get("url") or "https://60s.viki.moe").rstrip("/")
         self.platforms = list(self.source.get("platforms") or ["weibo", "douyin"])
         self.source_name = self.source.get("name") or "60s.viki.moe"
+        if not getattr(self.hcfg, "general_lists_enabled", True):
+            self.platforms = []
+        # 自定义行业源：平台名用 feed:<名称>，与综合热榜共用落库 / 去重 / 匹配流程
+        self.feeds: dict[str, str] = {}
+        for f in getattr(self.hcfg, "custom_feeds", None) or []:
+            name = str(f.get("name") or "").strip()
+            url = str(f.get("url") or "").strip()
+            if name and url:
+                self.feeds[f"feed:{name}"] = url
+
+    def _source_for(self, platform: str) -> str:
+        if platform.startswith("feed:"):
+            return f"custom/{platform}"
+        return f"{self.source_name}/{platform}"
 
     # ------------------------------------------------------------------
     # 对外入口
@@ -158,10 +203,12 @@ class HotTopicCollector:
         """并发抓取所有配置平台 → 落库。返回各平台采集结果。"""
         report: dict[str, str] = {}
         # 顺序抓 5 个平台 × 15s 超时会把接口拖到 1 分钟以上，改并发
-        with ThreadPoolExecutor(max_workers=max(1, len(self.platforms))) as pool:
+        targets = list(self.platforms) + list(self.feeds)
+        with ThreadPoolExecutor(max_workers=max(1, len(targets))) as pool:
             futures = {
-                platform: pool.submit(self._fetch_platform, platform)
-                for platform in self.platforms
+                platform: pool.submit(
+                    self._fetch_feed if platform in self.feeds else self._fetch_platform, platform)
+                for platform in targets
             }
             results: dict[str, list[dict] | Exception] = {}
             for platform, fut in futures.items():
@@ -173,7 +220,7 @@ class HotTopicCollector:
         for platform, result in results.items():
             if isinstance(result, Exception):
                 logger.warning("热点采集失败 %s: %s", platform, result)
-                self._record_failure(platform, str(result))
+                self._record_failure(platform, _friendly_error(result))
                 report[platform] = "failed"
                 continue
             if not result:
@@ -208,6 +255,32 @@ class HotTopicCollector:
     # ------------------------------------------------------------------
     # 抓取
     # ------------------------------------------------------------------
+
+    def _fetch_feed(self, platform: str) -> list[dict]:
+        """自定义 RSS / Atom 源。没有热度数字（heat_score = NULL，不参与热度门）。"""
+        from .kb_sources import parse_feed
+        url = self.feeds[platform]
+        resp = httpx.get(url, timeout=_FETCH_TIMEOUT_SECONDS, follow_redirects=True,
+                         headers={"User-Agent": "iterwave/0.1"})
+        resp.raise_for_status()
+        rows = parse_feed(resp.content, default_dimension="", source=platform)
+        window_h = self.hcfg.filters.get("time_window_hours")
+        now = datetime.now()
+        out: list[dict] = []
+        for r in rows[:_MAX_ITEMS_PER_PLATFORM]:
+            time_sensitive: Optional[int] = None
+            event_at = _parse_feed_date(r.get("date"))
+            if event_at is not None and window_h:
+                time_sensitive = 1 if (now - event_at) <= timedelta(hours=float(window_h)) else 0
+            out.append({
+                "id": _topic_id(platform, r["title"]),
+                "title": r["title"],
+                "raw_url": r.get("link") or None,
+                "heat_score": None,
+                "heat_unit": None,
+                "time_sensitive": time_sensitive,
+            })
+        return out
 
     def _fetch_platform(self, platform: str) -> list[dict]:
         path = _PLATFORM_PATH.get(platform, platform)
@@ -255,7 +328,7 @@ class HotTopicCollector:
         from .hot_topic_dedup import backfill, normalize_title
         backfill(self.conn)   # 旧数据先补归一化字段并合并，保证新 id 不与旧行重复
         now = datetime.now().isoformat(timespec="seconds")
-        source = f"{self.source_name}/{platform}"
+        source = self._source_for(platform)
         seen_in_batch: set[str] = set()
         for r in rows:
             if r["id"] in seen_in_batch:
@@ -285,7 +358,7 @@ class HotTopicCollector:
 
     def _record_failure(self, platform: str, reason: str) -> None:
         """采集失败：落一行 failed 占位（heat_score = NULL，不显示数字）。"""
-        source = f"{self.source_name}/{platform}"
+        source = self._source_for(platform)
         try:
             self.conn.execute(
                 "INSERT INTO hot_topics (id, source, raw_url, discovered_at, last_seen_at, evidence_status, "
@@ -298,7 +371,7 @@ class HotTopicCollector:
                     f"hot-failed-{platform}", source,
                     datetime.now().isoformat(timespec="seconds"),
                     datetime.now().isoformat(timespec="seconds"),
-                    f"{platform} 热点采集失败：{reason[:100]}",
+                    f"采集失败：{reason[:100]}",
                 ),
             )
             self.conn.commit()

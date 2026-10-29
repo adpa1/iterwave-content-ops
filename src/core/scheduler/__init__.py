@@ -775,6 +775,14 @@ class SchedulerEngine:
         # 1. 统计当前 topic_index 数量
         before = self.conn.execute("SELECT COUNT(*) FROM topic_index").fetchone()[0]
 
+        # 1.5 远程选题库：先同步到本地缓存
+        if getattr(self.cfg.topic_kb, "source_type", "local") == "remote" and self.cfg.topic_kb.remote_url:
+            try:
+                from ..kb_sources import sync_remote
+                await asyncio.to_thread(sync_remote, self.cfg)
+            except Exception as exc:  # noqa: BLE001 — 同步失败继续用上次缓存
+                logger.warning("[APS] kb_scan 远程同步失败，继续使用上次缓存: %s", exc)
+
         # 2. 如果有 kb_reader，读题库；否则直接走 scoring 读取（scoring 会自动调 kb_reader）
         if self.kb_reader is not None:
             try:

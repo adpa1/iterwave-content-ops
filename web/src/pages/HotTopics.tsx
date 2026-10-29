@@ -283,7 +283,7 @@ export default function HotTopics() {
                 <tr key={s.platform}>
                   <td>{platformLabel(s.platform)}</td>
                   <td><span className={`tag ${s.status === "failed" ? "red" : s.status === "demo" ? "orange" : "green"}`}>{s.status === "failed" ? "采集失败" : s.status === "demo" ? "演示数据" : "正常"}</span></td>
-                  <td className="metric-foot">{s.status === "failed" ? (s.message || "公益接口可能限流，下次定时采集会自动重试") : "—"}</td>
+                  <td className="metric-foot">{s.status === "failed" ? `${s.message || "采集失败"}，下次定时采集会自动重试` : "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -291,6 +291,8 @@ export default function HotTopics() {
         </div>
         {hot?.storage && <div className="metric-foot" style={{ marginTop: 10 }}>库内 {hot.storage.rows} 条，上限 {hot.storage.max_rows} 条</div>}
       </div>
+
+      {cfgView && <FeedEditor view={cfgView} onSaved={async () => { await loadConfig(); }} />}
       </>
       )}
 
@@ -402,5 +404,74 @@ export default function HotTopics() {
       </>
       )}
     </>
+  );
+}
+
+
+/** 行业热点源：综合热榜（微博/抖音/知乎/头条/B站）开关 + 自定义 RSS 源 */
+function FeedEditor({ view, onSaved }: { view: SystemConfigView; onSaved: () => void }) {
+  const { showToast, withPending, isPending } = useApp();
+  const ed = view.editable.hot_topics;
+  const [general, setGeneral] = useState(ed.general_lists_enabled ?? true);
+  const [feeds, setFeeds] = useState<{ name: string; url: string }[]>(ed.custom_feeds ?? []);
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const add = () => {
+    if (!name.trim() || !url.trim()) { showToast("请填写名称和 RSS 地址", "error"); return; }
+    if (!/^https?:\/\//.test(url.trim())) { showToast("地址必须以 http:// 或 https:// 开头", "error"); return; }
+    if (feeds.some((f) => f.name === name.trim())) { showToast("名称重复", "error"); return; }
+    setFeeds([...feeds, { name: name.trim(), url: url.trim() }]);
+    setName(""); setUrl("");
+  };
+  const save = async () => {
+    const updates: Record<string, unknown> = {};
+    if (general !== (ed.general_lists_enabled ?? true)) updates["hot_topics.general_lists_enabled"] = general;
+    if (JSON.stringify(feeds) !== JSON.stringify(ed.custom_feeds ?? [])) updates["hot_topics.custom_feeds"] = feeds;
+    if (!Object.keys(updates).length) { showToast("没有改动", "info"); return; }
+    try {
+      const r = await withPending("hot:feeds", () => api.patchConfig(updates));
+      if (!r) return;
+      showToast("✓ 热点源已保存，下次采集生效（也可点「立即采集」）", "success");
+      onSaved();
+    } catch (e: any) {
+      showToast(`保存失败：${String(e?.message ?? e).replace(/^\d+\s*/, "")}`, "error");
+    }
+  };
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <div>
+          <div className="panel-title"><span className="icon">＋</span>热点来源</div>
+          <div className="panel-sub">综合热榜适合泛内容；财经、Web3、行业号建议加上本行业的 RSS 订阅源</div>
+        </div>
+      </div>
+      <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, marginBottom: 12 }}>
+        <input type="checkbox" checked={general} onChange={(e) => setGeneral(e.target.checked)} />
+        采集综合热榜（微博、抖音、知乎、头条、B 站）
+      </label>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th style={{ width: 160 }}>名称</th><th>RSS 地址</th><th style={{ width: 70 }}></th></tr></thead>
+          <tbody>
+            {feeds.length === 0 && <tr><td colSpan={3} className="metric-foot">还没有自定义来源</td></tr>}
+            {feeds.map((f) => (
+              <tr key={f.name}>
+                <td>{f.name}</td>
+                <td className="metric-foot" style={{ wordBreak: "break-all" }}>{f.url}</td>
+                <td><button className="btn sm ghost" onClick={() => setFeeds(feeds.filter((x) => x.name !== f.name))}>移除</button></td>
+              </tr>
+            ))}
+            <tr>
+              <td><input className="field" placeholder="如：行业快讯" value={name} onChange={(e) => setName(e.target.value)} /></td>
+              <td><input className="field" placeholder="https://…/rss" value={url} onChange={(e) => setUrl(e.target.value)} /></td>
+              <td><button className="btn sm" onClick={add}>添加</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <button className="btn primary sm" onClick={save} disabled={isPending("hot:feeds")}>保存热点来源</button>
+      </div>
+    </div>
   );
 }

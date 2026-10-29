@@ -54,6 +54,8 @@ FETCH_STATUSES = ("pending", "success", "partial", "failed", "parse_error")
 
 class PathsConfig(BaseModel):
     data_dir: str = "data"
+    # 中文字体文件（出图用）；留空 = 自动在系统字体里找（macOS / Linux / Windows 常见路径）
+    font_file: str = ""
     db_file: str = "data/easel.db"
     backup_dir: str = "backups"
     output_dir: str = "data/outputs"
@@ -61,11 +63,32 @@ class PathsConfig(BaseModel):
     log_dir: str = "data/logs"
 
 
+KB_SOURCE_TYPES = ("local", "upload", "remote")
+KB_REMOTE_FORMATS = ("auto", "csv", "json", "jsonl", "rss")
+
+
 class TopicKbConfig(BaseModel):
-    path: str
+    """选题库来源。
+
+    source_type:
+      - local  : 服务器上的文件；相对路径相对项目根目录解析，绝对路径原样使用
+      - upload : 通过页面上传的文件（保存在 data/kb/uploads/，path 指向它）
+      - remote : 远程地址（CSV / JSON / JSONL / RSS），定时同步到 data/kb/remote_cache.*
+    path 为空且非 remote 时视为「未配置选题库」，只用热点转入与手动录入的选题。
+    """
+    source_type: str = "local"
+    path: str = ""
     type: str = "auto"
-    table_name: str = "topics"
+    table_name: str = ""
     field_mapping: dict[str, str] = Field(default_factory=dict)
+    # 远程来源
+    remote_url: str = ""
+    remote_format: str = "auto"
+    # 远程鉴权：请求头名 + 存放值的环境变量名（值只存 .env，不进配置文件/前端）
+    remote_header: str = ""
+    remote_token_env: str = "KB_REMOTE_TOKEN"
+    # 行里没有维度（如 RSS）时使用的默认维度
+    default_dimension: str = "综合"
 
 
 class PlatformConfig(BaseModel):
@@ -284,6 +307,10 @@ class HotTopicsConfig(BaseModel):
     # 已废弃：采集频率改由 scheduler.jobs.hot_topics_refresh 配置（写了也不再生效，启动时告警）
     refresh_interval_minutes: Optional[int] = None
     sources: list[dict] = Field(default_factory=list)
+    # 自定义行业热点源（RSS / Atom）：[{name, url}]，与综合热榜一起采集，可在热点雷达页增删
+    custom_feeds: list[dict] = Field(default_factory=list)
+    # 是否采集综合热榜（微博/抖音/知乎/头条/B站）；纯行业账号可以关掉，只用自定义源
+    general_lists_enabled: bool = True
     filters: dict[str, object] = Field(default_factory=dict)
     # 保留：last_seen_at 早于 N 天的热点删除；max_rows 为总量硬上限（超出按 last_seen_at 从旧到新删）
     retention_days: int = Field(7, ge=1, le=365)
@@ -325,9 +352,26 @@ class JobScheduleConfig(BaseModel):
         return self
 
     def describe(self) -> str:
+        """人话描述：每 30 分钟 / 每小时 / 每天 8:00 / 每周一 9:00；复杂 cron 原样显示。"""
         if self.cron:
-            return f"cron {self.cron}"
-        return f"每 {self.interval_minutes} 分钟"
+            parts = self.cron.split()
+            if len(parts) == 5:
+                mi, h, dom, mon, dow = parts
+                if mi.isdigit() and h.isdigit() and mon == "*":
+                    t = f"{int(h)}:{int(mi):02d}"
+                    if dom == "*" and dow == "*":
+                        return f"每天 {t}"
+                    if dom == "*" and dow.isdigit():
+                        return f"每周{'日一二三四五六'[int(dow) % 7]} {t}"
+                    if dom.isdigit() and dow == "*":
+                        return f"每月 {int(dom)} 日 {t}"
+            return f"定时：{self.cron}"
+        m = self.interval_minutes or 0
+        if m and m % 1440 == 0:
+            return f"每 {m // 1440} 天"
+        if m and m % 60 == 0:
+            return "每小时" if m == 60 else f"每 {m // 60} 小时"
+        return f"每 {m} 分钟"
 
 
 def validate_cron(expr: str) -> str:
@@ -421,7 +465,7 @@ class LlmConfig(BaseModel):
 
 class Config(BaseModel):
     paths: PathsConfig = Field(default_factory=PathsConfig)
-    topic_kb: TopicKbConfig
+    topic_kb: TopicKbConfig = Field(default_factory=TopicKbConfig)
     platforms: PlatformsConfig
     scoring: ScoringConfig
     ultimate_goal: UltimateGoalConfig

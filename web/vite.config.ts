@@ -1,7 +1,9 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+// 部署在子路径时：VITE_BASE=/iterwave/ npm run build（默认根路径 /）
 export default defineConfig({
+  base: process.env.VITE_BASE || "/",
   plugins: [react()],
   server: {
     port: 5173,

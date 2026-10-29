@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { navigate, useUrlTab } from "../nav";
 import { useApp } from "../AppContext";
 import EmptyHint from "../components/EmptyHint";
-import { AdvancedEditor, KbEditor, LlmEditor, PlatformStyleEditor, PlatformToggles, TimeoutEditor } from "../components/ConfigEditors";
+import { AccessTokenEditor, AdvancedEditor, KbEditor, LlmEditor, NotifyChannelsEditor, PlatformStyleEditor, PlatformToggles, TimeoutEditor } from "../components/ConfigEditors";
 import { api, type SystemStatus, type SystemConfigView } from "../api";
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -21,7 +21,9 @@ const SCORING_MODE_LABELS: Record<string, string> = {
 const SETTINGS_TABS = [
   { k: "runtime", l: "运行与配额" },
   { k: "style", l: "平台文案风格" },
-  { k: "model", l: "知识库与模型" },
+  { k: "kb", l: "选题库" },
+  { k: "model", l: "模型" },
+  { k: "notify", l: "通知与访问" },
   { k: "platform", l: "平台与账号" },
   { k: "rhythm", l: "节奏与评分权重" },
   { k: "system", l: "运行状态" },
@@ -261,7 +263,7 @@ export default function Settings() {
               <span className="tag red">维度匹配：强制开启</span>
               <span className="tag red">可发布性检查：强制开启</span>
               <span style={{ color: "var(--muted)" }}>
-                这两道门没有关闭入口；直接调 API 关闭会被后端拒绝（400）。
+                这两道安全检查始终开启，不能关闭。
               </span>
             </div>
 
@@ -310,13 +312,12 @@ export default function Settings() {
       )}
 
       {/* 本地知识库（G-13 / 原型 step 3）：可编辑 */}
-      {tab === "model" && (
-      <div className="grid two">
+      {tab === "kb" && (
         <div className="panel">
           <div className="panel-head">
             <div>
-              <div className="panel-title"><span className="icon">▣</span>连接本地知识库</div>
-              <div className="panel-sub">数据源 + 字段映射 + 同步扫描策略（可在线改，无需重启）</div>
+              <div className="panel-title"><span className="icon">▣</span>选题库</div>
+              <div className="panel-sub">上传文件、远程地址或服务器路径三选一，保存后下一轮选题立即生效</div>
             </div>
           </div>
           {!cfgView ? (
@@ -325,6 +326,33 @@ export default function Settings() {
             <KbEditor view={cfgView} onSaved={loadConfig} />
           )}
         </div>
+      )}
+
+      {tab === "notify" && (
+        <div className="grid two">
+          <div className="panel">
+            <div className="panel-head">
+              <div>
+                <div className="panel-title"><span className="icon">♧</span>通知</div>
+                <div className="panel-sub">草稿生成、需要你发布、登录失效时提醒你</div>
+              </div>
+            </div>
+            <NotifyChannelsEditor />
+          </div>
+          <div className="panel">
+            <div className="panel-head">
+              <div>
+                <div className="panel-title"><span className="icon">⚿</span>访问口令</div>
+                <div className="panel-sub">设置后打开页面需要先输入口令</div>
+              </div>
+            </div>
+            <AccessTokenEditor />
+          </div>
+        </div>
+      )}
+
+      {tab === "model" && (
+      <div className="grid two">
 
         {/* 主模型与备用（原型 step 4）：可编辑；Key 只写 .env */}
         <div className="panel">

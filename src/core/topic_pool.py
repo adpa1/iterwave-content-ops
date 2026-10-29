@@ -47,8 +47,11 @@ def load_pool(cfg, conn, *, include_excluded: bool = False) -> tuple[list[TopicI
             it.source = it.source or "kb"
             items.append(it)
         report["kb_count"] = len(items)
+        report["kb_configured"] = kb_report.get("configured", True)
     except Exception as exc:  # noqa: BLE001 — KB 不可读也要让其它来源可用，并把原因暴露给前端
-        report["kb_error"] = str(exc)
+        from .kb_sources import scrub_paths
+        report["kb_error"] = scrub_paths(str(exc))
+        report["kb_configured"] = True
 
     rows = conn.execute(
         "SELECT id, title, dimension, source, date, summary, link FROM topic_index "

@@ -46,7 +46,7 @@ from typing import Callable, Optional
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -213,6 +213,8 @@ def _build_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+    from src.api.auth import install_auth
+    install_auth(app)
     _register_routes(app)
 
     # === 挂载 React 前端静态文件 (同 origin, 单进程) ===
@@ -1963,6 +1965,44 @@ def _register_routes(app: FastAPI) -> None:
         paused = bool((req or {}).get("paused"))
         return set_ops_paused(_g()["conn"], paused, by="web-ui")
 
+    # --- 行业模板（画像 / 维度 / 合规红线的起点，不自动覆盖配置）---
+    @app.get("/api/verticals")
+    def verticals():
+        from src.core.verticals import list_verticals
+        return {"items": list_verticals()}
+
+    # --- 通知通道状态 + Webhook 配置（URL 只写 .env，不回显）---
+    @app.get("/api/notify/channels")
+    def notify_channels():
+        notifier = _g().get("notifier")
+        if notifier is None:
+            raise HTTPException(503, "通知器未初始化")
+        return notifier.channels_status()
+
+    @app.post("/api/notify/webhook")
+    def notify_set_webhook(req: dict):
+        import re as _re
+        from src.core.config_store import patch_config
+        from src.core.secrets_env import set_env_secret
+        g = _g()
+        channel = str((req or {}).get("channel") or "")
+        url = str((req or {}).get("url") or "").strip()
+        hosts = {"wecom": ("qyapi.weixin.qq.com",), "feishu": ("open.feishu.cn", "open.larksuite.com")}
+        if channel not in hosts:
+            raise HTTPException(400, "通道只能是企业微信或飞书")
+        if url:
+            m = _re.match(r"^https://([^/]+)/", url)
+            if not m or m.group(1) not in hosts[channel]:
+                raise HTTPException(400, f"Webhook 地址应以 https://{hosts[channel][0]}/ 开头")
+        ccfg = g["cfg"].notifications.channels.get(channel)
+        env = (ccfg.webhook_url_env if ccfg and ccfg.webhook_url_env else f"{channel.upper()}_WEBHOOK_URL")
+        set_env_secret(env, url)
+        updates = {f"notifications.channels.{channel}.enabled": bool(url)}
+        if ccfg is None or not ccfg.webhook_url_env:
+            updates[f"notifications.channels.{channel}.webhook_url_env"] = env
+        patch_config(g["cfg"], g["conn"], updates)
+        return g["notifier"].channels_status()
+
     # --- 通知通道自检（不落 notifications 表）---
     @app.post("/api/notify/test")
     def notify_test():
@@ -2272,11 +2312,74 @@ def _register_routes(app: FastAPI) -> None:
     # --- 选题库 schema 检查（G-13 字段映射 tab）---
     @app.get("/api/kb/inspect")
     def kb_inspect():
+        """选题库检查：来源摘要 + 列名 + 自动识别的字段对应 + 前 5 行预览。
+
+        读不到时返回 200 + ok=false + 可读原因（不再 500，前端不必到处弹红条）。
+        """
+        from src.core.kb_sources import scrub_paths, source_summary
         cfg = _g()["cfg"]
         try:
-            return KbReader(cfg).inspect()
-        except (FileNotFoundError, ValueError) as e:
-            raise HTTPException(500, f"选题库检查失败：{e}")
+            rep = KbReader(cfg).inspect()
+        except Exception as e:  # noqa: BLE001
+            rep = {"configured": True, "ok": False, "columns": [], "preview": [],
+                   "field_mapping": {}, "missing_fields": [], "stats": {},
+                   "message": scrub_paths(str(e))}
+        rep["source"] = source_summary(cfg)
+        return rep
+
+    @app.post("/api/kb/upload")
+    async def kb_upload(file: UploadFile = File(...)):
+        """上传选题库文件（CSV / Excel / JSON / JSONL / SQLite，≤20MB）并切换为「上传文件」来源。"""
+        from src.core.config_store import patch_config
+        from src.core.kb_sources import KbSourceError, project_relative, save_upload
+        g = _g()
+        content = await file.read()
+        try:
+            dest = save_upload(g["cfg"], file.filename or "", content)
+        except KbSourceError as e:
+            raise HTTPException(400, str(e))
+        patch_config(g["cfg"], g["conn"], {
+            "topic_kb.source_type": "upload",
+            "topic_kb.path": project_relative(dest),
+            "topic_kb.type": "auto",
+            "topic_kb.table_name": "",
+            "topic_kb.field_mapping": {},
+        })
+        try:
+            rep = KbReader(g["cfg"]).inspect()
+        except Exception as e:  # noqa: BLE001
+            from src.core.kb_sources import scrub_paths
+            rep = {"ok": False, "message": scrub_paths(str(e))}
+        return {"saved": True, "filename": dest.name, "inspect": rep}
+
+    @app.post("/api/kb/sync")
+    def kb_sync():
+        """立即同步远程选题库到本地缓存。"""
+        from src.core.kb_sources import KbSourceError, sync_remote
+        cfg = _g()["cfg"]
+        if cfg.topic_kb.source_type != "remote":
+            raise HTTPException(400, "当前选题库来源不是远程地址")
+        try:
+            res = sync_remote(cfg)
+        except KbSourceError as e:
+            raise HTTPException(400, str(e))
+        try:
+            res["inspect"] = KbReader(cfg).inspect()
+        except Exception as e:  # noqa: BLE001
+            from src.core.kb_sources import scrub_paths
+            res["inspect"] = {"ok": False, "message": scrub_paths(str(e))}
+        return res
+
+    @app.post("/api/kb/remote_token")
+    def kb_remote_token(req: dict):
+        """保存远程鉴权值到 .env（只写不读，页面不回显）。"""
+        from src.core.secrets_env import set_env_secret
+        cfg = _g()["cfg"]
+        value = str((req or {}).get("value") or "").strip()
+        if len(value) > 2000:
+            raise HTTPException(400, "鉴权值过长")
+        set_env_secret(cfg.topic_kb.remote_token_env, value)
+        return {"saved": True, "set": bool(value)}
 
     # ============================================================
     # Dashboard 补齐（对比报告 3.1 🔴 后端真缺失）

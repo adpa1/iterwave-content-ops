@@ -37,7 +37,7 @@ HARD_LOCKED_KEYS = {
 
 QUOTA_FIELDS = ("passive_replies", "active_comments", "follows")
 PLATFORM_KEYS = ("xhs", "douyin", "kuaishou", "wechat_channels")
-KB_TYPES = ("auto", "sqlite", "csv", "jsonl")
+KB_TYPES = ("auto", "sqlite", "csv", "jsonl", "json", "xlsx")
 KB_MAPPING_FIELDS = ("source", "title", "summary", "link", "date", "dimension")
 # 三模式评分权重（R11）：改动后每个模式权重和必须仍 = 100
 SCORING_MODES = ("cold_start", "sample_accumulating", "stable_operation")
@@ -52,8 +52,10 @@ RHYTHM_INTERVAL_FIELDS = (
 
 # 字符串白名单：路径 → (最小长度, 最大长度)
 STRING_RULES: dict[str, tuple[int, int]] = {
-    "topic_kb.path": (1, 512),
-    "topic_kb.table_name": (1, 64),
+    "topic_kb.path": (0, 512),
+    "topic_kb.table_name": (0, 64),
+    "topic_kb.default_dimension": (0, 30),
+    "paths.font_file": (0, 512),
     "llm.provider": (1, 32),
     "llm.model": (1, 128),
     "llm.fallback_model": (0, 128),
@@ -108,6 +110,7 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "rhythm.windows.draft_save.end_hour": (int, 0, 23),
     # 热点采集总开关
     "hot_topics.enabled": (bool, None, None),
+    "hot_topics.general_lists_enabled": (bool, None, None),
     # LLM 调用参数（base_url 走单独 URL 校验）
     "llm.temperature": (float, 0.0, 2.0),
     "llm.timeout_seconds": (int, 5, 300),
@@ -257,6 +260,55 @@ def _validate(key: str, value: Any) -> Any:
         if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", v):
             raise ConfigPatchError(f"{key} 必须是合法环境变量名（大写字母/数字/下划线，1-64）")
         return v
+
+    if key == "hot_topics.custom_feeds":
+        if not isinstance(value, list) or len(value) > 30:
+            raise ConfigPatchError("自定义热点源必须是列表，最多 30 个")
+        out = []
+        names = set()
+        for f in value:
+            if not isinstance(f, dict):
+                raise ConfigPatchError("每个热点源需要 名称 和 地址")
+            name = str(f.get("name") or "").strip()
+            url = str(f.get("url") or "").strip()
+            if not name or len(name) > 20:
+                raise ConfigPatchError("热点源名称 1-20 字")
+            if name in names:
+                raise ConfigPatchError(f"热点源名称重复：{name}")
+            if not re.match(r"^https?://[^\s]{3,1000}$", url):
+                raise ConfigPatchError(f"「{name}」的地址必须以 http:// 或 https:// 开头")
+            names.add(name)
+            out.append({"name": name, "url": url})
+        return out
+
+    if key == "topic_kb.source_type":
+        from .config import KB_SOURCE_TYPES
+        if value not in KB_SOURCE_TYPES:
+            raise ConfigPatchError("选题库来源只能是 本地路径 / 上传文件 / 远程地址")
+        return value
+    if key == "topic_kb.remote_format":
+        from .config import KB_REMOTE_FORMATS
+        if value not in KB_REMOTE_FORMATS:
+            raise ConfigPatchError(f"远程格式只能是 {' / '.join(KB_REMOTE_FORMATS)}")
+        return value
+    if key == "topic_kb.remote_url":
+        if not isinstance(value, str):
+            raise ConfigPatchError("远程地址必须是文字")
+        v = value.strip()
+        if v and not re.match(r"^https?://[^\s]{3,1000}$", v):
+            raise ConfigPatchError("远程地址必须以 http:// 或 https:// 开头")
+        return v
+    if key == "topic_kb.remote_header":
+        if not isinstance(value, str):
+            raise ConfigPatchError("请求头名必须是文字")
+        v = value.strip()
+        if v and not re.fullmatch(r"[A-Za-z0-9\-]{1,64}", v):
+            raise ConfigPatchError("请求头名只能是字母、数字和连字符")
+        return v
+    if key == "topic_kb.remote_token_env":
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", value.strip()):
+            raise ConfigPatchError("环境变量名只能是大写字母、数字和下划线")
+        return value.strip()
 
     if key == "topic_kb.type":
         if not isinstance(value, str) or value not in KB_TYPES:
@@ -530,6 +582,19 @@ def llm_channel(base_url: str) -> str:
     return "custom"
 
 
+def _kb_display(cfg: Config) -> str:
+    from .kb_sources import display_path, resolve_kb_path
+    return display_path(resolve_kb_path(cfg))
+
+
+def _kb_source(cfg: Config) -> dict[str, Any]:
+    from .kb_sources import remote_meta, source_summary
+    out = source_summary(cfg)
+    if out.get("source_type") == "remote":
+        out["remote_meta"] = remote_meta(cfg)
+    return out
+
+
 def current_config_view(cfg: Config, conn) -> dict[str, Any]:
     """Settings 页展示 + 编辑所需的白名单字段当前值。"""
     enabled = cfg.platforms.enabled_keys()
@@ -567,6 +632,8 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
                 "time_filter_enabled": cfg.hot_topics.filters.get(
                     "time_filter_enabled", True
                 ),
+                "general_lists_enabled": getattr(cfg.hot_topics, "general_lists_enabled", True),
+                "custom_feeds": list(getattr(cfg.hot_topics, "custom_feeds", []) or []),
             },
         },
         # R22 两道硬锁：只展示、不可改；前端无关闭入口
@@ -582,7 +649,9 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             "positioning": cfg.ultimate_goal.positioning,
             "goal_mode": cfg.ultimate_goal.goal_mode,
             # —— 本地知识库（Settings 页「连接本地知识库」panel）——
-            "kb_path": str(cfg.topic_kb.path),
+            # 路径只给相对/脱敏形式，不把服务器目录结构暴露到页面
+            "kb_path": _kb_display(cfg),
+            "kb_source": _kb_source(cfg),
             "kb_type": cfg.topic_kb.type,
             "kb_table": cfg.topic_kb.table_name,
             "kb_field_mapping": cfg.topic_kb.field_mapping,

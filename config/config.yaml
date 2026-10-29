@@ -12,19 +12,25 @@ paths:
   output_dir: "data/outputs"                # 图片卡片 / 生图输出
   screenshot_dir: "data/screenshots"        # Playwright 截图（R23 保留 30 天）
   log_dir: "data/logs"                      # 日志目录
+  font_file: ""                             # 出图用中文字体；留空自动查找（Linux 请安装 fonts-noto-cjk）
 
 # ===== 选题库配置（§16.1 字段映射）=====
+# 三种来源，都可以在「系统设置 → 选题库」页面切换，无需改本文件：
+#   local  : 服务器上的文件（相对路径相对项目根目录，绝对路径原样使用）
+#   upload : 页面上传的文件（自动保存到 data/kb/uploads/）
+#   remote : 远程地址（CSV / JSON / JSONL / RSS），定时同步
+# path 留空 = 暂不接选题库，只用「热点转入」和「手动添加」的选题
 topic_kb:
-  path: "/Users/longyi/WorkBuddy/AI 资料/kb.db"
-  type: "auto"                              # auto / sqlite / csv / jsonl
-  table_name: "items"                       # SQLite 读哪张表
-  field_mapping:                            # 通用字段 → 原始字段名（真实 db schema）
-    source: "source"
-    title: "title"
-    summary: "summary"
-    link: "link"
-    date: "pub_date"                        # 实际叫 pub_date
-    dimension: "dim"                        # 实际叫 dim
+  source_type: "local"
+  path: ""
+  type: "auto"                              # auto / sqlite / csv / jsonl / json / xlsx
+  table_name: ""                            # SQLite 读哪张表；留空 = 自动选行数最多的表
+  field_mapping: {}                         # 通用字段 → 原始列名；留空 = 列名与通用字段同名
+  remote_url: ""
+  remote_format: "auto"                     # auto / csv / json / jsonl / rss
+  remote_header: ""                         # 远程鉴权请求头名，如 Authorization
+  remote_token_env: "KB_REMOTE_TOKEN"       # 请求头的值放在 .env 的这个变量里
+  default_dimension: "综合"                 # 行里没有维度时使用
 
 # ===== 四平台运营计划 =====
 # enabled=false 的平台本轮完全跳过（存草稿/拉数据/运营都不跑）
@@ -190,7 +196,7 @@ ops_targets:
 # ===== 消息通知 =====
 notifications:
   channels:
-    # macOS 原生通知（terminal-notifier）
+    # macOS 原生通知（只在 macOS 上部署时可用；Linux 服务器上自动视为不可用）
     macos:
       enabled: true
     # 企业微信 webhook

@@ -181,7 +181,7 @@ export default function Production() {
   const handleCreateRound = async () => {
     try {
       const res = await api.createRound({ topic_count: topicCount });
-      showToast(`✓ Round ${res.round_number} 已创建`);
+      showToast(`✓ 第 ${res.round_number} 轮已创建，点「▶ 运行本轮」开始生成`);
       setReport(null);
       await refresh();
       setCurrentRoundId(res.id);
@@ -404,11 +404,11 @@ export default function Production() {
 
   const handleDeleteRound = async () => {
     if (!roundDetail) return;
-    if (!window.confirm(`删除 Round ${roundDetail.round_number}？本轮所有内容、草稿记录、卡片图片一起删除，不可恢复。`)) return;
+    if (!window.confirm(`删除 第 ${roundDetail.round_number} 轮？本轮所有内容、草稿记录、卡片图片一起删除，不可恢复。`)) return;
     await withPending("delete-round", async () => {
       try {
         const r = await api.deleteRound(roundDetail.id);
-        showToast(`已删除 Round ${r.round_number}（内容 ${r.contents_deleted} 篇${r.platform_drafts_left ? `，请到平台草稿箱清理 ${r.platform_drafts_left} 篇` : ""}）`, "success");
+        showToast(`已删除 第 ${r.round_number} 轮（内容 ${r.contents_deleted} 篇${r.platform_drafts_left ? `，请到平台草稿箱清理 ${r.platform_drafts_left} 篇` : ""}）`, "success");
         setCurrentRoundId(null);
         setRoundDetail(null);
         await refresh();
@@ -435,7 +435,7 @@ export default function Production() {
           <div className="eyebrow">CONTENT OPERATIONS ROOM</div>
           <h1 className="page-title">内容生产</h1>
           <div className="page-desc">
-            按轮次生产内容：选题 → 文案 → 质检 → 存草稿 → 你确认发布 → 复盘。所有草稿只能存草稿，系统永不自动点发布按钮。
+            一轮 = 选题 → 写文案 → 质量检查 → 出图 → 存草稿 → 你去平台发布 → 自动复盘。点「＋ 创建新一轮」再点「▶ 运行本轮」即可；母计划只在你想调整每轮篇数和维度时才需要改。系统只存草稿，从不替你点发布。
           </div>
         </div>
         <div className="head-actions">
@@ -474,7 +474,7 @@ export default function Production() {
             <div style={{ fontFamily: "monospace", fontSize: 11, color: "var(--muted)" }}>
               版本 {plan?.signature ? plan.signature.slice(0, 8) : "—"}
               <span className={`tag ${plan?.source === "plan_settings" ? "green" : "gray"}`} style={{ marginLeft: 8 }}>
-                {plan?.source === "plan_settings" ? "已保存" : plan?.source === "derived" ? "推导值" : "—"}
+                {plan?.source === "plan_settings" ? "已保存" : plan?.source === "derived" ? "默认值" : "—"}
               </span>
             </div>
           </div>
@@ -515,7 +515,7 @@ export default function Production() {
                 <div>
                   <div className="panel-title" style={{ fontSize: 13, marginBottom: 8 }}>维度分配</div>
                   {allocRows.length === 0 && (
-                    <EmptyHint next="点下方「＋ 添加维度」录入维度名与条数（如「AI教育 3」），留空表示不限制">暂无维度分配</EmptyHint>
+                    <EmptyHint next="点下方「＋ 添加维度」录入维度名与条数（如「行业观察 3」），留空表示不限制">暂无维度分配</EmptyHint>
                   )}
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                     {allocRows.map((row, i) => (
@@ -612,14 +612,14 @@ export default function Production() {
                   {isPending("save-plan") ? "提交中…" : "✓ 保存母计划"}
                 </button>
                 <span className="note">
-                  {plan.updated_at ? `上次保存 ${plan.updated_at}` : "尚未在 UI 保存过（当前为推导值）"}
+                  {plan.updated_at ? `上次保存 ${plan.updated_at}` : "还没保存过，当前使用默认值"}
                 </span>
               </div>
 
               {plan.stale_rounds.length > 0 && (
                 <div className="note" style={{ marginTop: 12, color: "var(--orange)" }}>
                   ! 以下活跃轮次的签名与当前母计划不一致（下游已标记为基于旧计划）：
-                  {plan.stale_rounds.map((r) => ` Round ${r.round_number}（${ROUND_STATUS_LABEL[r.status] ?? r.status}）`).join(" · ")}
+                  {plan.stale_rounds.map((r) => ` 第 ${r.round_number} 轮（${ROUND_STATUS_LABEL[r.status] ?? r.status}）`).join(" · ")}
                 </div>
               )}
 
@@ -631,13 +631,13 @@ export default function Production() {
                     <tbody>
                       {plan.history.length === 0 && (
                         <tr><td colSpan={4}>
-                          <EmptyHint className="" next="点上方「保存母计划」后这里会记录版本">暂无签名记录</EmptyHint>
+                          <EmptyHint className="" next="点上方「保存母计划」后这里会记录版本">还没有保存记录</EmptyHint>
                         </td></tr>
                       )}
                       {plan.history.map((h, i) => (
                         <tr key={i}>
                           <td style={{ fontFamily: "monospace", fontSize: 11 }}>{h.plan_signature.slice(0, 16)}…</td>
-                          <td>{h.round_id != null ? `Round ${h.round_id}` : "母计划"}</td>
+                          <td>{h.round_id != null ? `第 ${h.round_id} 轮` : "母计划"}</td>
                           <td>{AUTHOR_LABEL[(h.author ?? "").split(":")[0]] ?? h.author ?? "—"}</td>
                           <td style={{ fontSize: 11 }}>{h.created_at}</td>
                         </tr>
@@ -659,7 +659,7 @@ export default function Production() {
               <div className="panel-title"><span className="icon">⌗</span>平台分项计划</div>
               <div className="panel-sub">
                 {currentRoundId
-                  ? `Round ${roundDetail?.round_number ?? currentRoundId} 的逐平台变体（每选题 × 每平台一篇）`
+                  ? `第 ${roundDetail?.round_number ?? currentRoundId} 轮 的逐平台变体（每选题 × 每平台一篇）`
                   : "选择一轮后展示逐平台变体"}
               </div>
             </div>
@@ -720,19 +720,19 @@ export default function Production() {
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">▶</span>运行本轮</div>
-                <div className="panel-sub">选题 → 文案（G1）→ G2 检查 → 卡片（H）→ 存草稿（I）</div>
+                <div className="panel-sub">选题 → 写文案 → 质量检查 → 出图 → 存草稿</div>
               </div>
               <RoundPicker rounds={rounds} value={currentRoundId} onChange={setCurrentRoundId} />
             </div>
 
             {!roundDetail && (
-              <EmptyHint next="在右上角轮次下拉框选择一轮；没有轮次就先点页面右上角「＋ 创建新一轮」">尚未选择轮次</EmptyHint>
+              <EmptyHint next="还没有轮次：点页面右上角「＋ 创建新一轮」，创建后会自动选中">尚未选择轮次</EmptyHint>
             )}
 
             {roundDetail && (
               <>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <div style={{ fontWeight: 700 }}>Round {roundDetail.round_number}</div>
+                  <div style={{ fontWeight: 700 }}>第 {roundDetail.round_number} 轮</div>
                   <span className={`tag ${STATUS_CLS[roundDetail.status]}`}>{roundDetail.status}</span>
                 </div>
 
@@ -859,12 +859,12 @@ export default function Production() {
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">⎇</span>阶段计数</div>
-                <div className="panel-sub">从 DB 实际落库数据回读（不是前端估算）</div>
+                <div className="panel-sub">按已生成的真实内容统计</div>
               </div>
             </div>
 
             {!pipeline && (
-              <EmptyHint next="在右上角轮次下拉框选择一轮，运行后会从 DB 回读各阶段计数">尚未选择轮次</EmptyHint>
+              <EmptyHint next="还没有轮次：点页面右上角「＋ 创建新一轮」并运行，这里会显示各阶段数量">尚未选择轮次</EmptyHint>
             )}
 
             {pipeline && (
@@ -892,7 +892,7 @@ export default function Production() {
                     <tbody>
                       {pipeline.per_platform.length === 0 && (
                         <tr><td colSpan={7}>
-                          <EmptyHint className="" next="点左侧「▶ 运行本轮」，内容落库后这里会显示各阶段计数">本轮还没有内容落库</EmptyHint>
+                          <EmptyHint className="" next="点左侧「▶ 运行本轮」，生成内容后这里会显示各阶段数量">本轮还没有生成内容</EmptyHint>
                         </td></tr>
                       )}
                       {pipeline.per_platform.map((r) => (
@@ -910,7 +910,7 @@ export default function Production() {
                   </table>
                 </div>
                 <div className="note" style={{ marginTop: 8 }}>
-                  说明：G1 文案数 = 通过目标检查 后落库的数量；被 G2 拦截并丢弃的文案不会出现在这里，只在「G2 累计拦截」计数。
+                  说明：文案数只统计通过质量检查的内容；没通过检查被丢弃的文案不会出现在这里，只计入「质量检查拦截」。
                 </div>
               </>
             )}
@@ -1077,7 +1077,7 @@ export default function Production() {
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">≡</span>轮次列表</div>
-                <div className="panel-sub">Round 1 · Round 2 · ...</div>
+                <div className="panel-sub">每一轮的进度与可执行操作</div>
               </div>
             </div>
             <div className="list">
@@ -1093,7 +1093,7 @@ export default function Production() {
                 >
                   <i className={`task-prio ${STATUS_CLS[r.status]}`} />
                   <div className="task-main">
-                    <div className="task-title">Round {r.round_number}</div>
+                    <div className="task-title">第 {r.round_number} 轮</div>
                     <div className="task-desc">创建于 {new Date(r.created_at).toLocaleString("zh-CN")}</div>
                   </div>
                   <span className={`tag ${STATUS_CLS[r.status]}`}>{r.status}</span>
@@ -1109,7 +1109,7 @@ export default function Production() {
                   <span className="icon">⎇</span>当前轮次
                   {roundDetail && <span className={`tag ${STATUS_CLS[roundDetail.status]}`} style={{ marginLeft: 10 }}>{roundDetail.status}</span>}
                 </div>
-                <div className="panel-sub">合法迁移按钮由后端状态机校验生成</div>
+                <div className="panel-sub">只显示当前阶段可以执行的操作</div>
               </div>
             </div>
 
@@ -1198,6 +1198,11 @@ export default function Production() {
   );
 }
 
+const ROUND_STATUS_TEXT: Record<string, string> = {
+  created: "待运行", producing: "生产中", awaiting_publish: "等你发布", collecting_metrics: "采集数据中",
+  analyzing: "复盘中", completed: "已完成", partial_completed: "部分完成", cancelled: "已取消", failed: "失败",
+};
+
 function RoundPicker({ rounds, value, onChange }: {
   rounds: SpiralRound[];
   value: number | null;
@@ -1211,7 +1216,7 @@ function RoundPicker({ rounds, value, onChange }: {
       style={{ fontSize: 12 }}
     >
       {rounds.map((r) => (
-        <option key={r.id} value={r.id}>Round {r.round_number} · {r.status}</option>
+        <option key={r.id} value={r.id}>第 {r.round_number} 轮 · {ROUND_STATUS_TEXT[r.status] ?? r.status}</option>
       ))}
     </select>
   );

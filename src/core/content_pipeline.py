@@ -344,9 +344,9 @@ def _generate_via_template(
         title = f"关于{topic_title[:16]}，我的几点判断"
         body = (
             f"{snippet}\n\n"
-            f"第一，这件事的价值不在工具本身，而在于它改变了「{dimension}」的工作方式。\n\n"
-            f"第二，短期内最大的阻力是习惯迁移成本，而不是技术门槛。\n\n"
-            f"第三，真正拉开差距的是持续投入，而不是一次性的工具采购。\n\n"
+            f"第一，先看清它对「{dimension}」意味着什么，再决定要不要跟。\n\n"
+            f"第二，信息很多，真正值得记住的往往只有一两点。\n\n"
+            f"第三，拉开差距的是持续关注和行动，而不是一时的热度。\n\n"
             f"欢迎就这个判断一起讨论。"
         )
 
@@ -367,23 +367,86 @@ _PLATFORM_PALETTE: dict[Platform, tuple[tuple[int, int, int], tuple[int, int, in
     Platform.WECHAT_CHANNELS: ((18, 122, 96), (56, 176, 140)),
 }
 
+# 中文字体候选：macOS / Linux（Debian/Ubuntu/CentOS 常见包）/ Windows。
+# 部署到任何地方都能找到；都找不到时再用 fc-match 问系统。
 _FONT_CANDIDATES = (
+    # macOS
     "/System/Library/Fonts/PingFang.ttc",
     "/System/Library/Fonts/STHeiti Medium.ttc",
     "/System/Library/Fonts/Hiragino Sans GB.ttc",
     "/Library/Fonts/Arial Unicode.ttf",
+    # Linux：fonts-noto-cjk / google-noto-sans-cjk / wqy
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+    "/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
+    # Windows
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/simhei.ttf",
 )
+
+_FONT_PATH_CACHE: dict[str, Optional[str]] = {}
+
+
+def find_cjk_font() -> Optional[str]:
+    """返回可用的中文字体路径；找不到返回 None（出图会变成方框）。
+
+    优先级：环境变量 ITERWAVE_FONT → 配置 paths.font_file → 内置候选 → fc-match。
+    """
+    if "path" in _FONT_PATH_CACHE:
+        return _FONT_PATH_CACHE["path"]
+    found: Optional[str] = None
+    explicit = [os.environ.get("ITERWAVE_FONT", "")]
+    try:
+        from .config import get_config
+        explicit.append(getattr(get_config().paths, "font_file", "") or "")
+    except Exception:  # noqa: BLE001 — 测试环境可能没有配置
+        pass
+    for p in [*explicit, *_FONT_CANDIDATES]:
+        if p and Path(p).is_file():
+            found = p
+            break
+    if found is None:
+        try:
+            import subprocess
+            # fc-list :lang=zh 只列真正覆盖中文的字体（fc-match 会退回到不含中文的 DejaVu）
+            out = subprocess.run(
+                ["fc-list", ":lang=zh", "-f", "%{file}\\n"], capture_output=True, text=True, timeout=5,
+            ).stdout.splitlines()
+            for f in out:
+                f = f.strip()
+                if f and Path(f).is_file() and f.lower().endswith((".ttf", ".ttc", ".otf", ".otc")):
+                    found = f
+                    break
+        except (OSError, subprocess.SubprocessError):
+            pass
+    _FONT_PATH_CACHE["path"] = found
+    if found is None:
+        logger.warning("⚠️ 没有找到中文字体，卡片文字会显示为方框。Linux 请安装 fonts-noto-cjk，"
+                       "或在 .env 设置 ITERWAVE_FONT=字体文件路径")
+    return found
+
+
+def reset_font_cache() -> None:
+    _FONT_PATH_CACHE.clear()
 
 
 def _load_font(size: int):
     from PIL import ImageFont
 
-    for path in _FONT_CANDIDATES:
-        if Path(path).exists():
-            try:
-                return ImageFont.truetype(path, size)
-            except OSError:
-                continue
+    path = find_cjk_font()
+    if path:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            logger.warning("字体文件无法加载：%s", Path(path).name)
     return ImageFont.load_default()
 
 
@@ -479,14 +542,16 @@ def make_card(
 
     # 维度标签（胶囊）
     tag_font = _load_font(38)
-    tag_text = f"＃{subtitle}" if subtitle else "＃知识卡片"
-    tag_w = draw.textlength(tag_text, font=tag_font)
-    tag_box = (margin, margin + 40, margin + tag_w + 56, margin + 110)
-    draw.rounded_rectangle(tag_box, radius=35, fill=(255, 255, 255))
-    draw.text(
-        (margin + 28, margin + 56), tag_text,
-        fill=(30, 30, 30), font=tag_font,
-    )
+    # 标签 = 选题维度；没有维度就不画（不写死任何垂类的默认标签）
+    if subtitle:
+        tag_text = f"＃{subtitle}"
+        tag_w = draw.textlength(tag_text, font=tag_font)
+        tag_box = (margin, margin + 40, margin + tag_w + 56, margin + 110)
+        draw.rounded_rectangle(tag_box, radius=35, fill=(255, 255, 255))
+        draw.text(
+            (margin + 28, margin + 56), tag_text,
+            fill=(30, 30, 30), font=tag_font,
+        )
 
     # 主标题（折行，最多 5 行，标题块垂直居中于 360~1180 区间）
     title_font = _load_font(84)

@@ -15,6 +15,7 @@ import Agent from "./pages/Agent";
 import Accounts from "./pages/Accounts";
 import Onboarding from "./pages/Onboarding";
 import Settings from "./pages/Settings";
+import AuthGate from "./components/AuthGate";
 
 function Router() {
   // 初始读 URL param，之后 onChange 同步写 URL（demo 风格）
@@ -72,6 +73,7 @@ function Router() {
         loggedIn={status?.logged_in_platforms || []}
         enabled={status?.enabled_platforms || []}
         activeRounds={status?.active_rounds}
+        loaded={!!status}
       />
       <div className="main">
         <Topbar label={currentNav?.label ?? ""} onNavigate={setPage} />
@@ -164,8 +166,10 @@ class PageBoundary extends Component<{ children: ReactNode }, { err: Error | nul
 
 export default function App() {
   return (
-    <AppProvider>
-      <Router />
-    </AppProvider>
+    <AuthGate>
+      <AppProvider>
+        <Router />
+      </AppProvider>
+    </AuthGate>
   );
 }

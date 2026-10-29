@@ -124,7 +124,7 @@ def test_orchestration_validation(conn):
 
 def test_diagnostics_has_8_items(cfg, conn, kb):
     d = orch.diagnose(cfg, conn)
-    assert [i["no"] for i in d["items"]] == list(range(1, 9))
+    assert [i["no"] for i in d["items"]] == list(range(1, 12))
     assert d["items"][0]["status"] == "pass"
     assert d["overall"] in ("pass", "warn", "block")
 
@@ -247,7 +247,7 @@ def test_http_orchestration_and_diagnostics(client):
     bad = [dict(id=s["id"], enabled=s["id"] != "image_card") for s in v["steps"]]
     assert client.put("/api/orchestration", json={"steps": bad}).status_code == 400
     assert client.post("/api/orchestration/validate", json={"steps": bad}).json()["valid"] is False
-    assert client.post("/api/diagnostics", json={}).json()["items"].__len__() == 8
+    assert client.post("/api/diagnostics", json={}).json()["items"].__len__() == 11
     assert client.get("/api/orchestration/runs").status_code == 200
 
 

@@ -106,6 +106,7 @@ export default function Dashboard() {
   const insightsWithSamples = insightsThisWeek.filter((i) => (i.sample_count ?? 0) > 0);
   const highActions = actions.filter((a) => a.priority === "high");
   const totalDrafts = Object.values(progress).reduce((s, p) => s + (p?.total_drafts ?? 0), 0);
+  const awaitingDrafts = Object.values(progress).reduce((s, p) => s + (p?.status_breakdown?.draft_saved ?? 0), 0);
   const latestRound = rounds[0];
 
   return (
@@ -121,8 +122,14 @@ export default function Dashboard() {
         </div>
         <div className="head-actions">
           <button type="button" className="btn" onClick={load}>↻ 刷新</button>
-          <button type="button" className="btn" onClick={() => go("agent")}>查看 Agent 运行</button>
-          <button type="button" className="btn primary" onClick={() => go("hot")}>✳ 扫描热点</button>
+          <button type="button" className="btn" onClick={() => go("hot")}>✳ 热点雷达</button>
+          {rounds.length === 0 ? (
+            <button type="button" className="btn primary" onClick={() => go("onboarding")}>▶ 开始第一轮</button>
+          ) : awaitingDrafts > 0 ? (
+            <button type="button" className="btn primary" onClick={() => go("operations", "publish")}>去发布（{awaitingDrafts} 篇草稿）</button>
+          ) : (
+            <button type="button" className="btn primary" onClick={() => go("production", "pipeline")}>▶ 内容生产</button>
+          )}
         </div>
       </div>
 
@@ -211,11 +218,11 @@ export default function Dashboard() {
                 <div key={`r${r.id}`} className="task-row">
                   <i className="task-prio" aria-hidden="true" />
                   <div className="task-main">
-                    <div className="task-title">Round {r.round_number} 草稿待确认发布</div>
+                    <div className="task-title">第 {r.round_number} 轮 草稿待确认发布</div>
                     <div className="task-desc">创建于 {new Date(r.created_at).toLocaleString("zh-CN")}</div>
                   </div>
                   <div className="task-actions">
-                    <button type="button" className="btn primary sm" onClick={() => go("production")}>审核</button>
+                    <button type="button" className="btn primary sm" onClick={() => go("operations", "publish")}>去发布</button>
                   </div>
                 </div>
               ))}
@@ -304,8 +311,8 @@ export default function Dashboard() {
               <div className="panel-title"><span className="icon" aria-hidden="true">⎇</span>Agent 当前编排</div>
               <div className="panel-sub">
                 {latestRound
-                  ? `最近一轮：Round ${latestRound.round_number} · ${ROUND_STATUS_LABEL[latestRound.status] ?? latestRound.status}`
-                  : "还没有运行过螺旋轮次"}
+                  ? `最近一轮：第 ${latestRound.round_number} 轮 · ${ROUND_STATUS_LABEL[latestRound.status] ?? latestRound.status}`
+                  : "还没有运行过任何一轮"}
               </div>
             </div>
             <button type="button" className="btn sm" onClick={() => go("agent")}>执行详情 →</button>
@@ -401,14 +408,14 @@ function PlatformLane({ platform, enabled, loggedIn, broken, progress, goal, ins
 
   const state = !enabled
     ? { cls: "gray", text: "未启用" }
-    : broken ? { cls: "red", text: "熔断冷却" }
+    : broken ? { cls: "red", text: "暂停中" }
     : !loggedIn ? { cls: "orange", text: "未登录" }
     : total > 0 ? { cls: "green", text: "运行中" }
     : { cls: "blue", text: "待开始" };
 
   const failed = (breakdown.failed ?? 0) + (breakdown.expired ?? 0);
   const next = !enabled ? "在系统设置中启用该平台"
-    : broken ? "到运营控制台执行熔断恢复验证"
+    : broken ? "平台触发了风控保护，到运营控制台查看恢复进度"
     : !loggedIn ? "扫码登录后才能保存草稿"
     : (breakdown.draft_saved ?? 0) > 0 ? `${breakdown.draft_saved} 篇草稿待你确认发布`
     : total === 0 ? "等待新一轮生产"

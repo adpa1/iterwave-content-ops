@@ -4,6 +4,7 @@ import EmptyHint from "../components/EmptyHint";
 import TopicPoolPane from "../components/TopicPoolPane";
 import CreatedContentPane from "../components/CreatedContentPane";
 import { useApp } from "../AppContext";
+import { platformLabel } from "../platforms";
 import { PersonaEditor } from "../components/ConfigEditors";
 import { navigate, useUrlTab } from "../nav";
 import {
@@ -252,12 +253,12 @@ export default function Assets() {
                     {hot.slice(0, 10).map((h) => (
                       <tr key={h.id}>
                         <td>{h.title}</td>
-                        <td><span className="tag gray">{h.source}</span></td>
-                        <td>{h.discovered_at ?? <span style={{ color: "var(--subtle)" }}>—</span>}</td>
+                        <td><span className="tag gray">{platformLabel((h.source || "").split("/").pop() || "")}</span></td>
+                        <td>{h.discovered_at ? h.discovered_at.replace("T", " ").slice(5, 16) : <span style={{ color: "var(--subtle)" }}>—</span>}</td>
                         <td>{h.heat == null ? <span style={{ color: "var(--subtle)" }}>—</span> : h.heat.toLocaleString()}</td>
                         <td>
                           <span className={`tag ${h.evidence_status === "collected" ? "green" : h.evidence_status === "demo" ? "orange" : "red"}`}>
-                            {h.evidence_status}
+                            {({ collected: "已采集", demo: "演示数据", failed: "采集失败" } as Record<string, string>)[h.evidence_status] ?? h.evidence_status}
                           </span>
                         </td>
                       </tr>
@@ -299,7 +300,7 @@ export default function Assets() {
           <AssetForm
             type="voice"
             titleLabel="观点标题"
-            bodyPlaceholder="例如：AI 教育的价值，不是把答案给得更快，而是帮助孩子更好地思考。"
+            bodyPlaceholder="例如：你对所在领域的一个核心判断，或希望内容反复传达的观点。"
             pending={isPending("asset:voice")}
             onSubmit={addAsset}
           />
@@ -367,50 +368,21 @@ export default function Assets() {
         <div className="panel">
           <div className="panel-head">
             <div>
-              <div className="panel-title"><span className="icon">⚙</span>本地选题库字段映射</div>
-              <div className="panel-sub">
-                检测失败会阻断依赖该数据源的选题扫描，不会用空表或旧快照伪装成同步成功
-              </div>
+              <div className="panel-title"><span className="icon">⚙</span>选题库</div>
+              <div className="panel-sub">上传文件、远程地址、服务器路径和字段对应，都在「系统设置 → 选题库」里设置</div>
             </div>
             <div className="head-actions">
-              <button className="btn sm" onClick={load} disabled={loading}>运行检测</button>
+              <button className="btn sm primary" onClick={() => navigate("settings", "kb")}>去设置选题库</button>
             </div>
           </div>
           {kb && (
-            <>
-              <div className="note" style={{ marginBottom: 12 }}>
-                文件：{kb.path} · 类型 {kb.file_type}
-                {kb.table ? ` · 表 ${kb.table}` : ""} ·
-                {" "}状态：
-                {kb.ok
-                  ? <span className="tag green" style={{ marginLeft: 6 }}>必要字段齐全</span>
-                  : <span className="tag red" style={{ marginLeft: 6 }}>必要字段缺失，数据源不可用</span>}
-              </div>
-              <div className="table-wrap">
-                <table>
-                  <thead><tr><th>通用字段</th><th>原始字段</th><th>是否存在于库中</th></tr></thead>
-                  <tbody>
-                    {Object.entries(kb.field_mapping).map(([k, v]) => {
-                      const missing = kb.missing_fields.includes(k);
-                      return (
-                        <tr key={k}>
-                          <td><span className="tag gray">{k}</span></td>
-                          <td>{v}</td>
-                          <td>{missing ? <span className="tag red">缺失</span> : <span className="tag green">✓</span>}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <div className="note" style={{ marginTop: 12 }}>
-                库内总行数：
-                {kb.stats.total == null ? " —" : ` ${kb.stats.total.toLocaleString()}`}
-                · 唯一维度：
-                {kb.stats.unique_dimensions == null ? " —" : ` ${kb.stats.unique_dimensions}`}
-                {kb.columns.length > 0 && ` · 实际列：${kb.columns.join(", ")}`}
-              </div>
-            </>
+            <div className="note">
+              {!kb.configured
+                ? "还没有接选题库，目前只使用热点转入和手动添加的选题。"
+                : kb.ok
+                  ? `✓ 可用：${kb.stats.total ?? 0} 条选题`
+                  : `✕ ${kb.message || "选题库暂不可用"}`}
+            </div>
           )}
         </div>
       )}
@@ -448,7 +420,7 @@ function AssetForm({
       <div className="panel-head">
         <div>
           <div className="panel-title"><span className="icon">＋</span>新增{titleLabel}</div>
-          <div className="panel-sub">只写入本地 content_assets 表</div>
+          <div className="panel-sub">只保存在本系统，不会发到平台</div>
         </div>
       </div>
       <div className="grid" style={{ gridTemplateColumns: needUrl ? "1fr 1fr 1.4fr auto" : "1fr 2fr auto", gap: 10 }}>
