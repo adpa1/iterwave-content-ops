@@ -1,6 +1,7 @@
 import { Component, useEffect, useState, type ReactNode } from "react";
 import Sidebar, { NAV_ITEMS } from "./Sidebar";
 import { AppProvider, useApp } from "./AppContext";
+import { api } from "./api";
 import { platformMeta } from "./platforms";
 import Dashboard from "./pages/Dashboard";
 import HotTopics from "./pages/HotTopics";
@@ -24,7 +25,7 @@ function Router() {
     return "dashboard";
   };
   const [page, setPageState] = useState<string>(getInitial);
-  const { status } = useApp();
+  const { status, auth } = useApp();
 
   const setPage = (p: string) => {
     setPageState(p);
@@ -63,6 +64,13 @@ function Router() {
 
   const currentNav = NAV_ITEMS.find((n) => n.page === page);
 
+  if (!auth) {
+    return <div className="app-loading">正在检测访问状态…</div>;
+  }
+  if (auth.needs_login) {
+    return <LoginScreen />;
+  }
+
   return (
     <div className="app">
       <Sidebar
@@ -72,13 +80,67 @@ function Router() {
         loggedIn={status?.logged_in_platforms || []}
         enabled={status?.enabled_platforms || []}
         activeRounds={status?.active_rounds}
+        statusLoading={!status}
       />
       <div className="main">
         <Topbar label={currentNav?.label ?? ""} onNavigate={setPage} />
+        {!auth.configured && (
+          <div className="security-warning" role="alert">
+            <b>未设置访问口令</b>
+            <span>接口目前没有访问保护，公网部署前请先设置口令。</span>
+            <button type="button" className="btn sm" onClick={() => setPage("settings")}>去设置</button>
+          </div>
+        )}
         <main className="content" id="main-content">
           <PageBoundary key={page}>{render()}</PageBoundary>
         </main>
       </div>
+    </div>
+  );
+}
+
+// ===== 登录页：设置访问口令后，页面先登录；接口统一校验（P0）=====
+function LoginScreen() {
+  const { refreshAuth, showToast } = useApp();
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!password.trim() || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api.login(password);
+      await refreshAuth();
+    } catch (err) {
+      setError((err as Error).message || "登录失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="login-shell">
+      <form className="login-card" onSubmit={submit}>
+        <div className="login-brand">IterWave</div>
+        <h1>输入访问口令</h1>
+        <p>这台服务器已开启访问保护，登录后才能查看账号和内容数据。</p>
+        <label className="sr-only" htmlFor="accessPassword">访问口令</label>
+        <input
+          id="accessPassword" className="field" type="password" autoFocus
+          value={password} onChange={(e) => setPassword(e.target.value)}
+          placeholder="访问口令" autoComplete="current-password"
+        />
+        {error && <div className="login-error">{error}</div>}
+        <button className="btn" type="submit" disabled={busy}>
+          {busy ? "登录中…" : "登录"}
+        </button>
+        <button type="button" className="btn sm soft" onClick={() => showToast("口令在服务器 config/.env 里设置；也可以在能打开页面时到「设置 → 通知与访问」修改", "info")}>
+          忘记口令？
+        </button>
+      </form>
     </div>
   );
 }

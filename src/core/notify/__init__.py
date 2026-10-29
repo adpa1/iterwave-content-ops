@@ -61,6 +61,14 @@ def _as_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def macos_available() -> bool:
+    """macOS 通知只在 macOS 上可用；Linux/Windows 部署自动跳过（可移植）。"""
+    import shutil
+    import sys
+
+    return sys.platform == "darwin" and shutil.which("osascript") is not None
+
+
 class Notifier:
     """多通道通知器 — 单例，由 lifespan 创建后注入 executor / scheduler。"""
 
@@ -154,6 +162,8 @@ class Notifier:
             ccfg = self.channels.get(channel)
             if ccfg is None or not ccfg.enabled:
                 continue
+            if channel == "macos" and not macos_available():
+                continue
             try:
                 if channel == "macos":
                     ok = self._send_macos(head, body)
@@ -195,6 +205,9 @@ class Notifier:
             ccfg = self.channels.get(channel)
             if ccfg is None or not ccfg.enabled:
                 results[channel] = "disabled"
+                continue
+            if channel == "macos" and not macos_available():
+                results[channel] = "unavailable"
                 continue
             try:
                 ok = (

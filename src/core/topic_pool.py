@@ -16,7 +16,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from .kb_reader import KbReader
+from .kb_sources import read_all
 from .scoring.topic_eval import TopicItem
 
 logger = logging.getLogger(__name__)
@@ -38,8 +38,9 @@ def load_pool(cfg, conn, *, include_excluded: bool = False) -> tuple[list[TopicI
     items: list[TopicItem] = []
     seen: set[str] = set()
     try:
-        kb_items, kb_report = KbReader(cfg).read()
+        kb_items, kb_report = read_all(cfg)
         report["file_type"] = kb_report.get("file_type")
+        report["sources"] = kb_report.get("sources", [])
         for it in kb_items:
             if it.id in seen:
                 continue
@@ -47,6 +48,7 @@ def load_pool(cfg, conn, *, include_excluded: bool = False) -> tuple[list[TopicI
             it.source = it.source or "kb"
             items.append(it)
         report["kb_count"] = len(items)
+        report["kb_error"] = kb_report.get("kb_error")
     except Exception as exc:  # noqa: BLE001 — KB 不可读也要让其它来源可用，并把原因暴露给前端
         report["kb_error"] = str(exc)
 

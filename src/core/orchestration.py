@@ -206,21 +206,17 @@ def _item(no, name, status, message, fix_page=None, fix_tab=None):
 
 def diagnose(cfg, conn, *, cb=None, live_llm: bool = False) -> dict:
     from ..adapters.base import Platform
-    from .kb_reader import KbReader
+    from .kb_sources import read_all_for_check
     from .login_manager import has_login_state
 
     items: list[dict] = []
     enabled = cfg.platforms.enabled_keys()
 
-    # 1 选题库
-    try:
-        kb_items, rep = KbReader(cfg).read()
-        if kb_items:
-            items.append(_item(1, "选题库路径可读", "pass", f"{rep.get('file_type')} · {len(kb_items)} 条"))
-        else:
-            items.append(_item(1, "选题库路径可读", "warn", "可读但没有选题", "assets", "mapping"))
-    except Exception as exc:  # noqa: BLE001
-        items.append(_item(1, "选题库路径可读", "block", f"读取失败：{exc}", "settings", "kb"))
+    # 1 选题库来源（真实读一遍：上传 / 远程 / 服务器路径）
+    kb_check = read_all_for_check(cfg)
+    kb_status = kb_check["status"]
+    items.append(_item(
+        1, "选题库来源可读", kb_status, kb_check["message"], "assets", "mapping"))
 
     # 2 账号画像
     ug = cfg.ultimate_goal
@@ -322,6 +318,44 @@ def diagnose(cfg, conn, *, cb=None, live_llm: bool = False) -> dict:
     lack = [n for n in need if not (vendor / n).exists()]
     items.append(_item(8, "Easel Skills 可用", "block" if lack else "pass",
                        f"缺失：{', '.join(lack)}" if lack else f"{len(need)} 个脚本就绪"))
+
+    # 9 访问口令（P0 安全）
+    from .auth import password_configured
+    if password_configured():
+        items.append(_item(9, "访问保护已开启", "pass", "接口需要登录后才能调用", "settings", "access"))
+    else:
+        items.append(_item(9, "访问保护已开启", "warn",
+                           "未设置访问口令，公网部署时任何人都能操作账号和配置", "settings", "access"))
+
+    # 10 中文字体（跨平台可移植）
+    from .content_pipeline import resolve_font_path
+    font = resolve_font_path()
+    if font:
+        items.append(_item(10, "中文字体可用", "pass", "图片卡片可正常渲染中文", "settings", "appearance"))
+    else:
+        items.append(_item(10, "中文字体可用", "block",
+                           "未找到中文字体，图片卡片会显示方块；请安装 Noto Sans CJK 或在设置里指定字体路径",
+                           "settings", "appearance"))
+
+    # 11 通知通道
+    from .notify import macos_available
+    channels = cfg.notifications.channels
+    deliverable: list[str] = []
+    if macos_available() and getattr(channels.get("macos"), "enabled", False):
+        deliverable.append("macOS 通知")
+    for name, env in (("wecom", "WECOM_WEBHOOK_URL"), ("feishu", "FEISHU_WEBHOOK_URL")):
+        ccfg = channels.get(name)
+        if ccfg and ccfg.enabled and os.getenv(getattr(ccfg, "webhook_url_env", env) or env):
+            deliverable.append("企微" if name == "wecom" else "飞书")
+    if deliverable:
+        items.append(_item(11, "通知通道可用", "pass", f"已启用：{'、'.join(deliverable)}", "settings", "notify"))
+    elif macos_available():
+        items.append(_item(11, "通知通道可用", "warn",
+                           "macOS 通知未开启；草稿保存后不会提醒你发布", "settings", "notify"))
+    else:
+        items.append(_item(11, "通知通道可用", "warn",
+                           "当前系统不支持 macOS 通知；可在设置里填写企微 / 飞书 Webhook",
+                           "settings", "notify"))
 
     worst = "block" if any(i["status"] == "block" for i in items) else (
         "warn" if any(i["status"] == "warn" for i in items) else "pass")

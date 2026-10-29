@@ -212,3 +212,18 @@ details[open] > summary::before { content: "▾ "; }
 .mode-desc { font-size: 11px; color: var(--muted); line-height: 1.6; }
 .persona-card { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: #fff; min-width: 0; }
 .plat-badge { display: inline-flex; width: 20px; height: 20px; border-radius: 6px; color: #fff; font-size: 11px; font-weight: 700; align-items: center; justify-content: center; }
+
+/* ===== 访问保护（P0）：登录页 + 未设口令警告 ===== */
+.app-loading { min-height: 100vh; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; }
+.login-shell { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg, #f4f6fa); padding: 24px; }
+.login-card { width: min(380px, 100%); background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 28px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 18px 50px #1b2b4a14; }
+.login-brand { font-size: 12px; letter-spacing: .18em; color: var(--muted); font-weight: 700; }
+.login-card h1 { font-size: 20px; margin: 0; }
+.login-card p { font-size: 12px; color: var(--muted); line-height: 1.7; margin: 0 0 4px; }
+.login-card .field { width: 100%; padding: 10px 12px; }
+.login-error { font-size: 12px; color: #b42318; background: #fef3f2; border: 1px solid #fecdca; border-radius: 8px; padding: 8px 10px; }
+.security-warning { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 18px; padding: 9px 14px; border: 1px solid #f3c98b; background: #fff8e8; border-radius: 10px; font-size: 12px; color: #7a4c00; }
+.security-warning b { font-weight: 800; }
+.security-warning span { color: #8a6418; }
+.security-warning .btn { margin-left: auto; }
+

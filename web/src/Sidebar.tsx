@@ -36,9 +36,11 @@ interface Props {
   loggedIn: Platform[];
   enabled: Platform[];
   activeRounds?: number;
+  /** 首屏状态未回来前显示「检测中」，避免闪一下「未登录」 */
+  statusLoading?: boolean;
 }
 
-export default function Sidebar({ current, onChange, brokenPlatforms, loggedIn, enabled, activeRounds }: Props) {
+export default function Sidebar({ current, onChange, brokenPlatforms, loggedIn, enabled, activeRounds, statusLoading }: Props) {
   const sections: Record<string, NavItem[]> = {};
   NAV_ITEMS.filter((n) => !n.hidden).forEach((item) => {
     (sections[item.section] = sections[item.section] || []).push(item);
@@ -106,8 +108,8 @@ export default function Sidebar({ current, onChange, brokenPlatforms, loggedIn, 
           const m = platformMeta(p);
           const isBroken = brokenPlatforms.includes(p);
           const isLogged = loggedIn.includes(p);
-          const dot = isBroken ? "warn" : isLogged ? "" : "bad";
-          const label = isBroken ? "熔断冷却" : isLogged ? "已登录" : "未登录";
+          const dot = statusLoading ? "warn" : isBroken ? "warn" : isLogged ? "" : "bad";
+          const label = statusLoading ? "检测中" : isBroken ? "熔断冷却" : isLogged ? "已登录" : "未登录";
           return (
             <button
               type="button"

@@ -434,6 +434,9 @@ export interface SystemConfigView {
     kb_type: string;
     kb_table: string;
     kb_field_mapping: Record<string, string>;
+    kb_default_dimension?: string;
+    render_font_path?: string;
+    render_card_tag_fallback?: string;
     // LLM 配置
     llm_provider: string;
     llm_model: string;
@@ -468,6 +471,7 @@ export interface SystemConfigView {
       enabled: boolean;
       webhook_url_env: string | null;
       has_webhook_url: boolean;
+      available?: boolean;
     }>;
   };
   overrides_file: string;
@@ -475,7 +479,62 @@ export interface SystemConfigView {
   audit: { id: number; key: string; old_value: string | null; new_value: string | null; changed_at: string | null }[];
 }
 
-/** G-13 选题库 schema 检查 */
+/** 访问保护（P0）：未设置口令时全站可访问但显示警告 */
+export interface AuthStatus {
+  configured: boolean;
+  authenticated: boolean;
+  needs_login: boolean;
+}
+
+/** 选题库来源（上传 / 远程 / 服务器路径） */
+export interface KbSource {
+  id: string;
+  name: string;
+  kind: "file" | "server" | "remote";
+  format: string;
+  display_path: string;
+  enabled: boolean;
+  rows?: number | null;
+  field_mapping?: Record<string, string>;
+  header_keys?: string[];
+  url?: string;
+  last_sync_at?: string | null;
+  last_error?: string | null;
+}
+
+export interface KbPreview {
+  id: string;
+  format: string;
+  columns: string[];
+  mapping: Record<string, string>;
+  missing: string[];
+  rows: number;
+  sample: Record<string, string>[];
+  display_path: string;
+}
+
+/** 行业模板：一键填画像 / 维度 / 合规红线 */
+export interface IndustryPreset {
+  key: string;
+  name: string;
+  description: string;
+  positioning: string;
+  persona_keywords: string[];
+  forbidden_directions: string[];
+  extra_redlines: string[];
+  dimensions: string[];
+  platform_notes: Record<string, string>;
+}
+
+export interface HotSource {
+  name: string;
+  type: "aggregate" | "rss" | "json";
+  url: string;
+  platforms?: string[];
+  platform?: string;
+  enabled?: boolean;
+}
+
 export interface KbInspect {
   path: string;
   file_type: string;
@@ -873,7 +932,9 @@ export interface RhythmConfig {
 }
 
 // ===== fetch wrapper =====
-const API = ""; // vite proxy handles prefix
+// vite import.meta.env.BASE_URL 在 base: "/iterwave/" 时为 "/iterwave/"
+// 本地 vite dev 时 BASE_URL 为 "/"，去掉尾部斜杠 → ""，等价于原来的空字符串
+const API = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
 
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(API + path, {
@@ -882,7 +943,16 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${text || res.statusText}`);
+    let detail = text || res.statusText;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed?.detail) detail = String(parsed.detail);
+    } catch {
+      // 非 JSON 错误体，保留原文
+    }
+    const error = new Error(detail) as Error & { status?: number };
+    error.status = res.status;
+    throw error;
   }
   return res.json();
 }
@@ -1010,6 +1080,44 @@ export const api = {
   createAsset: (data: { asset_type: AssetType; title: string; body?: string; source_url?: string; platform?: Platform }) =>
     fetchJson<AssetItem>("/api/assets", { method: "POST", body: JSON.stringify(data) }),
   kbInspect: () => fetchJson<KbInspect>("/api/kb/inspect"),
+  // === 访问保护 ===
+  authStatus: () => fetchJson<AuthStatus>("/api/auth/status"),
+  login: (password: string) =>
+    fetchJson<AuthStatus>("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
+  authLogout: () => fetchJson<{ authenticated: boolean }>("/api/auth/logout", { method: "POST" }),
+  setPassword: (password: string) =>
+    fetchJson<{ configured: boolean; message: string }>("/api/auth/password", {
+      method: "POST", body: JSON.stringify({ password }),
+    }),
+  // === 选题库三来源 ===
+  kbSources: () => fetchJson<{ items: KbSource[]; max_upload_mb: number; supported: string[] }>("/api/kb/sources"),
+  uploadKbSource: (payload: { filename: string; content: string; name?: string }) =>
+    fetchJson<KbSource>("/api/kb/sources/upload", { method: "POST", body: JSON.stringify(payload) }),
+  addKbServerSource: (payload: { path: string; name?: string; format?: string }) =>
+    fetchJson<KbSource>("/api/kb/sources/server", { method: "POST", body: JSON.stringify(payload) }),
+  addKbRemoteSource: (payload: { url: string; name?: string; format?: string; headers?: Record<string, string> }) =>
+    fetchJson<KbSource>("/api/kb/sources/remote", { method: "POST", body: JSON.stringify(payload) }),
+  addKbDefaultSource: () => fetchJson<KbSource>("/api/kb/sources/default", { method: "POST" }),
+  updateKbSource: (id: string, data: Record<string, unknown>) =>
+    fetchJson<KbSource>(`/api/kb/sources/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  deleteKbSource: (id: string) =>
+    fetchJson<{ deleted: string }>(`/api/kb/sources/${id}`, { method: "DELETE" }),
+  syncKbSource: (id: string) =>
+    fetchJson<{ id: string; synced_at: string; rows: number }>(`/api/kb/sources/${id}/sync`, { method: "POST" }),
+  previewKbSource: (id: string) => fetchJson<KbPreview>(`/api/kb/sources/${id}/preview?limit=5`),
+  // === 行业模板 / 热点源 ===
+  presets: () => fetchJson<{ items: IndustryPreset[] }>("/api/presets"),
+  applyPreset: (key: string) =>
+    fetchJson<{ key: string; message: string; dimensions: string[]; platform_notes: Record<string, string> }>(
+      `/api/presets/${key}/apply`, { method: "POST" },
+    ),
+  hotSources: () => fetchJson<{ items: HotSource[] }>("/api/hot_topics/sources"),
+  saveHotSources: (items: HotSource[]) =>
+    fetchJson<{ items: HotSource[] }>("/api/hot_topics/sources", { method: "PUT", body: JSON.stringify({ items }) }),
+  saveWebhook: (channel: "wecom" | "feishu", url: string) =>
+    fetchJson<{ ok: boolean; channel: string; enabled: boolean; has_webhook_url: boolean; env_name: string }>(
+      "/api/notify/webhook", { method: "POST", body: JSON.stringify({ channel, url }) },
+    ),
   // === G-13 / G-24 运行时配置 ===
   config: () => fetchJson<SystemConfigView>("/api/config"),
   patchConfig: (updates: Record<string, unknown>) =>

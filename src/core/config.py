@@ -66,6 +66,14 @@ class TopicKbConfig(BaseModel):
     type: str = "auto"
     table_name: str = "topics"
     field_mapping: dict[str, str] = Field(default_factory=dict)
+    # 没有维度列时归到这个默认维度（不猜测垂类）
+    default_dimension: str = "综合"
+
+
+class RenderConfig(BaseModel):
+    """图片卡片渲染（可移植：字体路径可在配置 / .env 指定）。"""
+    font_path: Optional[str] = None
+    card_tag_fallback: str = "今日分享"
 
 
 class PlatformConfig(BaseModel):
@@ -302,6 +310,7 @@ JOB_DESCRIPTIONS: dict[str, str] = {
     "comment_polling": "评论轮询（被动回复）",
     "cb_recovery": "熔断恢复检查",
     "kb_scan": "选题库增量扫描",
+    "kb_sync": "远程选题库每日同步",
     "data_retention_cleanup": "过期数据清理",
     "round_timeout_sweeper": "轮次阶段超时扫描",
     "round_review": "轮次复盘收口",
@@ -350,6 +359,7 @@ DEFAULT_JOB_SCHEDULES: dict[str, dict] = {
     "comment_polling": {"interval_minutes": 30},
     "cb_recovery": {"interval_minutes": 5},
     "kb_scan": {"cron": "0 6 * * *"},
+    "kb_sync": {"cron": "0 7 * * *"},
     "data_retention_cleanup": {"cron": "10 6 * * *"},
     "round_timeout_sweeper": {"interval_minutes": 60},
     "round_review": {"interval_minutes": 10},
@@ -422,6 +432,7 @@ class LlmConfig(BaseModel):
 class Config(BaseModel):
     paths: PathsConfig = Field(default_factory=PathsConfig)
     topic_kb: TopicKbConfig
+    render: RenderConfig = Field(default_factory=RenderConfig)
     platforms: PlatformsConfig
     scoring: ScoringConfig
     ultimate_goal: UltimateGoalConfig
@@ -476,6 +487,11 @@ def load_config(
 
     # 3. 校验 + 转 Pydantic
     cfg = Config.model_validate(raw)
+
+    # 图片字体：配置 / .env 指定的路径写入环境变量，渲染模块统一读取
+    if cfg.render.font_path:
+        os.environ.setdefault("ITERWAVE_FONT_PATH", cfg.render.font_path)
+    os.environ.setdefault("CARD_TAG_FALLBACK", cfg.render.card_tag_fallback)
 
     # 4. 确保必要目录存在
     for dir_name in (cfg.paths.data_dir, cfg.paths.backup_dir,

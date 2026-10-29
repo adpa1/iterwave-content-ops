@@ -49,6 +49,25 @@ _PLATFORM_PATH = {"bilibili": "bili"}
 _MULTIPLIERS = {"万": 10_000, "亿": 100_000_000}
 
 
+def _parse_feed_ts(value) -> Optional[datetime]:
+    """RSS / JSON 行业源的发布时间：ISO / RFC822 都兼容；解析不到 → None。"""
+    if not value:
+        return None
+    if isinstance(value, (int, float)):
+        return _parse_event_ts({"event_time_at": value})
+    text = str(value).strip()
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(text)
+        return dt.replace(tzinfo=None) if dt else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _topic_id(platform: str, title: str) -> str:
     """去重规则 1：同平台 + 归一化标题 → 同一 id（见 hot_topic_dedup）。"""
     from .hot_topic_dedup import topic_id
@@ -95,7 +114,14 @@ class HotTopicCollector:
         self.cfg = cfg
         self.conn = conn
         self.hcfg = cfg.hot_topics
-        self.source = self.hcfg.sources[0] if self.hcfg.sources else {}
+        configured = [s for s in (self.hcfg.sources or []) if s.get("enabled", True) is not False]
+        # 来源类型：aggregate（综合热榜，默认）/ rss / json（自定义行业源）
+        self.aggregate_sources = [s for s in configured if s.get("type", "aggregate") == "aggregate"]
+        self.custom_sources = [s for s in configured if s.get("type") in ("rss", "json")]
+        if not configured:
+            self.aggregate_sources = [{"name": "60s.viki.moe", "url": "https://60s.viki.moe",
+                                       "platforms": ["weibo", "douyin"]}]
+        self.source = self.aggregate_sources[0] if self.aggregate_sources else {}
         self.base_url = (self.source.get("url") or "https://60s.viki.moe").rstrip("/")
         self.platforms = list(self.source.get("platforms") or ["weibo", "douyin"])
         self.source_name = self.source.get("name") or "60s.viki.moe"
@@ -155,35 +181,43 @@ class HotTopicCollector:
         }
 
     def refresh(self) -> dict:
-        """并发抓取所有配置平台 → 落库。返回各平台采集结果。"""
+        """并发抓取综合热榜平台 + 自定义 RSS/JSON 行业源 → 落库。返回各来源采集结果。"""
         report: dict[str, str] = {}
-        # 顺序抓 5 个平台 × 15s 超时会把接口拖到 1 分钟以上，改并发
-        with ThreadPoolExecutor(max_workers=max(1, len(self.platforms))) as pool:
-            futures = {
-                platform: pool.submit(self._fetch_platform, platform)
-                for platform in self.platforms
-            }
-            results: dict[str, list[dict] | Exception] = {}
-            for platform, fut in futures.items():
-                try:
-                    results[platform] = fut.result()
-                except Exception as exc:  # noqa: BLE001 — 单平台失败不影响其他平台
-                    results[platform] = exc
+        # 综合热榜：顺序抓 5 个平台 × 15s 超时会把接口拖到 1 分钟以上，改并发
+        jobs: list[tuple[str, str, object]] = []   # (报告键, 展示来源, 可调用)
+        for agg in self.aggregate_sources:
+            base = (agg.get("url") or "https://60s.viki.moe").rstrip("/")
+            name = agg.get("name") or "60s.viki.moe"
+            for platform in (agg.get("platforms") or ["weibo", "douyin"]):
+                jobs.append((f"{name}/{platform}", platform,
+                             lambda p=platform, b=base, n=name: self._fetch_platform(p, b, n)))
+        for src in self.custom_sources:
+            label = src.get("platform") or src.get("name") or "行业源"
+            jobs.append((label, label, lambda s=src, l=label: self._fetch_custom(s, l)))
 
-        for platform, result in results.items():
+        with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:
+            futures = {key: (label, pool.submit(fn)) for key, label, fn in jobs}
+            results: dict[str, tuple[str, list[dict] | Exception]] = {}
+            for key, (label, fut) in futures.items():
+                try:
+                    results[key] = (label, fut.result())
+                except Exception as exc:  # noqa: BLE001 — 单来源失败不影响其他来源
+                    results[key] = (label, exc)
+
+        for key, (label, result) in results.items():
             if isinstance(result, Exception):
-                logger.warning("热点采集失败 %s: %s", platform, result)
-                self._record_failure(platform, str(result))
-                report[platform] = "failed"
+                logger.warning("热点采集失败 %s: %s", key, result)
+                self._record_failure(key, label, str(result))
+                report[key] = "failed"
                 continue
             if not result:
-                self._record_failure(platform, "接口返回空列表")
-                report[platform] = "failed"
+                self._record_failure(key, label, "接口返回空列表")
+                report[key] = "failed"
                 continue
 
-            self._upsert(platform, result)
-            report[platform] = "collected"
-            logger.info("🔥 热点采集成功 %s：%d 条", platform, len(result))
+            self._upsert(key, label, result)
+            report[key] = "collected"
+            logger.info("🔥 热点采集成功 %s：%d 条", key, len(result))
 
         self.apply_dedup_and_retention(report)
         return report
@@ -209,9 +243,9 @@ class HotTopicCollector:
     # 抓取
     # ------------------------------------------------------------------
 
-    def _fetch_platform(self, platform: str) -> list[dict]:
+    def _fetch_platform(self, platform: str, base_url: str, source_name: str) -> list[dict]:
         path = _PLATFORM_PATH.get(platform, platform)
-        url = f"{self.base_url}/v2/{path}"
+        url = f"{base_url}/v2/{path}"
         resp = httpx.get(
             url, timeout=_FETCH_TIMEOUT_SECONDS,
             headers={"User-Agent": "iterwave/0.1 (+local)"},
@@ -246,16 +280,80 @@ class HotTopicCollector:
             })
         return out
 
+    def _fetch_custom(self, source: dict, label: str) -> list[dict]:
+        """自定义行业源（RSS / JSON）→ 统一热点结构；无热度字段就不显示数字（R22）。"""
+        url = str(source.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("行业源地址无效")
+        resp = httpx.get(
+            url, timeout=_FETCH_TIMEOUT_SECONDS,
+            headers={**{str(k): str(v) for k, v in (source.get("headers") or {}).items() if k},
+                     "User-Agent": "iterwave/0.1 (+local)"},
+            follow_redirects=True,
+        )
+        resp.raise_for_status()
+        feed_type = source.get("type") or "rss"
+        if feed_type == "rss" or "xml" in resp.headers.get("content-type", ""):
+            from .kb_sources import parse_rss
+            _, raw_rows = parse_rss(resp.text)
+            rows = [{"title": r.get("title"), "link": r.get("link"), "description": r.get("summary"),
+                     "date": r.get("date"), "heat": None} for r in raw_rows]
+        else:
+            payload = resp.json()
+            raw_rows = payload if isinstance(payload, list) else payload.get("items") or payload.get("data") or []
+            rows = []
+            for raw in raw_rows if isinstance(raw_rows, list) else []:
+                if not isinstance(raw, dict):
+                    continue
+                rows.append({
+                    "title": raw.get("title") or raw.get("name") or raw.get("headline"),
+                    "link": raw.get("link") or raw.get("url"),
+                    "description": raw.get("description") or raw.get("summary"),
+                    "date": raw.get("date") or raw.get("time") or raw.get("published_at"),
+                    "heat": raw.get("heat") or raw.get("hot") or raw.get("hot_value"),
+                })
+        window_h = self.hcfg.filters.get("time_window_hours")
+        now = datetime.now()
+        out: list[dict] = []
+        for raw in rows[:_MAX_ITEMS_PER_PLATFORM]:
+            title = (raw.get("title") or "").strip()
+            if not title:
+                continue
+            heat = _parse_heat(raw.get("heat"), raw.get("description"))
+            time_sensitive: Optional[int] = None
+            event_at = _parse_feed_ts(raw.get("date"))
+            if event_at is not None and window_h:
+                time_sensitive = 1 if (now - event_at) <= timedelta(hours=float(window_h)) else 0
+            out.append({
+                "id": _topic_id(label, title),
+                "title": title,
+                "raw_url": raw.get("link"),
+                "heat_score": heat,
+                "heat_unit": "行业源" if heat is None else "热度",
+                "time_sensitive": time_sensitive,
+            })
+        return out
+
     # ------------------------------------------------------------------
     # 落库
     # ------------------------------------------------------------------
 
-    def _upsert(self, platform: str, rows: list[dict]) -> None:
-        """去重规则 1：同一 id 只更新（热度 / 链接 / last_seen_at / seen_count），discovered_at 保持首次发现时间。"""
+    def _upsert(self, source_key: str, source_label_or_rows, rows: Optional[list[dict]] = None) -> None:
+        """去重规则 1：同一 id 只更新（热度 / 链接 / last_seen_at / seen_count），discovered_at 保持首次发现时间。
+
+        兼容旧签名 ``_upsert(platform, rows)``。
+        """
         from .hot_topic_dedup import backfill, normalize_title
+        if rows is None:
+            rows = list(source_label_or_rows or [])
+            source_label = source_key
+            source_key = f"{self.source_name}/{source_key}"
+        else:
+            source_label = str(source_label_or_rows)
         backfill(self.conn)   # 旧数据先补归一化字段并合并，保证新 id 不与旧行重复
         now = datetime.now().isoformat(timespec="seconds")
-        source = f"{self.source_name}/{platform}"
+        platform = source_key.rsplit("/", 1)[-1]
+        source = source_key
         seen_in_batch: set[str] = set()
         for r in rows:
             if r["id"] in seen_in_batch:
@@ -283,9 +381,10 @@ class HotTopicCollector:
         )
         self.conn.commit()
 
-    def _record_failure(self, platform: str, reason: str) -> None:
+    def _record_failure(self, source_key: str, source_label: str, reason: str) -> None:
         """采集失败：落一行 failed 占位（heat_score = NULL，不显示数字）。"""
-        source = f"{self.source_name}/{platform}"
+        source = source_key
+        platform = source_label
         try:
             self.conn.execute(
                 "INSERT INTO hot_topics (id, source, raw_url, discovered_at, last_seen_at, evidence_status, "

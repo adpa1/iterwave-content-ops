@@ -44,12 +44,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Callable, Optional
 
+import httpx
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
+from starlette.middleware.base import RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -64,8 +66,12 @@ from src.core.scheduler import SchedulerEngine
 from src.core.ops.circuit_breaker import CircuitBreakerEngine
 from src.core.ops.rhythm import RhythmController
 from src.core.ops.engine import OperationsEngine
-from src.core.kb_reader import KbReader
-from src.core.notify import Notifier, set_active as set_active_notifier
+from src.core import auth
+from src.core import kb_sources
+from src.core import industry_presets
+from src.core.env_store import read_env, write_env
+from src.core.redact import redact, redact_path
+from src.core.notify import Notifier, set_active as set_active_notifier, macos_available
 from src.core.hot_topics import HotTopicCollector
 from src.core.recovery import RecoveryManager
 from src.core.round_executor import RoundExecutor
@@ -122,7 +128,7 @@ def _build_app() -> FastAPI:
         cfg = load_config()
         # G-13：先套用 Web 端持久化的覆盖值（data/config_overrides.json），
         # 再构造各模块 —— 保证 scheduler/adapter/ops 拿到的是同一份生效配置
-        applied_overrides = apply_overrides(cfg, load_overrides())
+        applied_overrides = apply_overrides(cfg, load_overrides(cfg))
         if applied_overrides:
             logger.info("⚙️ 已套用 %d 项运行时配置覆盖：%s",
                         len(applied_overrides), applied_overrides)
@@ -162,11 +168,10 @@ def _build_app() -> FastAPI:
         })
 
         # 注入调度依赖并启动 APScheduler（8 类任务）
-        kb_reader = KbReader(cfg)
         scheduler.wire(
             conn=conn, adapters=adapters, sm_draft=sm_draft, sm_round=sm_round,
             circuit_breaker=cb, notifier=notifier,
-            ops=ops, kb_reader=kb_reader, spiral=spiral, scoring=scoring,
+            ops=ops, kb_reader=None, spiral=spiral, scoring=scoring,
             goal_progress=_g_ctx["goal_progress"], guard=guard,
         )
         scheduler.start()
@@ -215,6 +220,19 @@ def _build_app() -> FastAPI:
     )
     _register_routes(app)
 
+    # === 访问保护（P0）：口令设置后 /api/* 必须登录；脚本可带 X-Access-Token ===
+    @app.middleware("http")
+    async def access_guard_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        path = request.url.path
+        if path.startswith("/api/") and path not in ("/api/auth/status", "/api/auth/login"):
+            cookie_token = request.cookies.get(auth.COOKIE_NAME)
+            if not auth.is_authenticated(cookie_token, request.headers):
+                return JSONResponse(
+                    {"detail": "需要登录", "code": "auth_required"},
+                    status_code=401,
+                )
+        return await call_next(request)
+
     # === 挂载 React 前端静态文件 (同 origin, 单进程) ===
     dist_dir = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
     if dist_dir.is_dir():
@@ -222,6 +240,12 @@ def _build_app() -> FastAPI:
         assets_dir = dist_dir / "assets"
         if assets_dir.is_dir():
             app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+            # 子路径部署（VITE_BASE=/iterwave/）：同一份产物也能在 /iterwave 下取到资源
+            base_prefix = (os.getenv("APP_BASE_PATH") or os.getenv("VITE_BASE") or "").strip("/")
+            if base_prefix:
+                app.mount(f"/{base_prefix}/assets", StaticFiles(directory=str(assets_dir)),
+                          name="assets_prefixed")
+                logger.info("📦 子路径部署前缀：/%s", base_prefix)
 
         # SPA fallback —— middleware 方式，不拦截 API 路径的尾部斜杠 307 重定向
         # 之前用 catch-all GET /{full_path:path} 会抢先匹配 /api/* 带尾部斜杠的请求，
@@ -684,6 +708,39 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/health")
     def health():
         return {"status": "ok", "version": "0.1.0", "timestamp": datetime.now().isoformat()}
+
+    # --- 访问保护（口令 / 会话 / 脚本令牌）---
+    @app.get("/api/auth/status")
+    def auth_status(request: Request):
+        return auth.status(request.cookies.get(auth.COOKIE_NAME), request.headers)
+
+    @app.post("/api/auth/login")
+    def auth_login(payload: dict, request: Request, response: Response):
+        password = str(payload.get("password") or "")
+        ip = request.client.host if request.client else "unknown"
+        try:
+            token = auth.login(password, ip)
+        except PermissionError as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        response.headers["set-cookie"] = auth.session_cookie_header(token)
+        return auth.status(token, request.headers)
+
+    @app.post("/api/auth/logout")
+    def auth_logout(request: Request, response: Response):
+        auth.logout_session(request.cookies.get(auth.COOKIE_NAME))
+        response.headers["set-cookie"] = auth.clear_cookie_header()
+        return {"authenticated": False, "needs_login": auth.password_configured()}
+
+    @app.post("/api/auth/password")
+    def auth_set_password(payload: dict):
+        try:
+            auth.set_password(str(payload.get("password") or ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"configured": True, "needs_login": True,
+                "message": "访问口令已更新，请用新口令登录"}
 
     # --- 系统概览 ---
     @app.get("/api/status")
@@ -1969,7 +2026,31 @@ def _register_routes(app: FastAPI) -> None:
         notifier = _g().get("notifier")
         if notifier is None:
             raise HTTPException(503, "通知器未初始化")
-        return {"results": notifier.send_test()}
+        return {"results": notifier.send_test(), "macos_available": macos_available()}
+
+    @app.post("/api/notify/webhook")
+    def save_notify_webhook(req: dict):
+        """企微 / 飞书 Webhook URL 写入 .env（R23：永不回传明文），可顺手启用该通道。"""
+        channel = str((req or {}).get("channel") or "").strip()
+        if channel not in ("wecom", "feishu"):
+            raise HTTPException(400, "channel 只能是 wecom / feishu")
+        url = str((req or {}).get("url") or "").strip()
+        if url and not url.startswith(("https://", "http://")):
+            raise HTTPException(422, "Webhook 地址必须是 http(s) URL")
+        cfg = _g()["cfg"]
+        ccfg = cfg.notifications.channels.get(channel)
+        env_name = (getattr(ccfg, "webhook_url_env", None) or
+                    ("WECOM_WEBHOOK_URL" if channel == "wecom" else "FEISHU_WEBHOOK_URL"))
+        if not url and not read_env(env_name):
+            raise HTTPException(422, "Webhook 地址不能为空")
+        write_env(env_name, url)
+        if url and bool((req or {}).get("enabled", True)):
+            try:
+                patch_config(cfg, _g()["conn"], {f"notifications.channels.{channel}.enabled": True})
+            except (ConfigNotAllowedError, ConfigPatchError) as e:
+                raise HTTPException(422, str(e)) from e
+        return {"ok": True, "channel": channel, "enabled": bool(getattr(ccfg, "enabled", False)),
+                "has_webhook_url": bool(read_env(env_name)), "env_name": env_name}
 
     # --- 运营日志（ops_logs）---
     @app.get("/api/ops_logs")
@@ -2269,14 +2350,158 @@ def _register_routes(app: FastAPI) -> None:
                            (cur.lastrowid,)).fetchone()
         return dict(row)
 
-    # --- 选题库 schema 检查（G-13 字段映射 tab）---
-    @app.get("/api/kb/inspect")
-    def kb_inspect():
+    # --- 选题库来源（上传 / 远程 / 服务器路径）---
+    @app.get("/api/kb/sources")
+    def kb_sources_list():
+        return kb_sources.list_sources(_g()["cfg"])
+
+    @app.post("/api/kb/sources/upload")
+    def kb_source_upload(req: dict):
         cfg = _g()["cfg"]
         try:
-            return KbReader(cfg).inspect()
-        except (FileNotFoundError, ValueError) as e:
-            raise HTTPException(500, f"选题库检查失败：{e}")
+            source = kb_sources.add_upload(
+                cfg,
+                filename=str(req.get("filename") or ""),
+                content_b64=str(req.get("content") or ""),
+                name=str(req.get("name") or ""),
+                field_mapping=req.get("field_mapping") or None,
+            )
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        except (FileNotFoundError, OSError) as e:
+            raise HTTPException(400, str(e)) from e
+        return source
+
+    @app.post("/api/kb/sources/server")
+    def kb_source_server(req: dict):
+        cfg = _g()["cfg"]
+        try:
+            return kb_sources.add_server(
+                cfg, path=str(req.get("path") or ""), name=str(req.get("name") or ""),
+                fmt=str(req.get("format") or "auto"),
+                field_mapping=req.get("field_mapping") or None,
+            )
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+
+    @app.post("/api/kb/sources/remote")
+    def kb_source_remote(req: dict):
+        cfg = _g()["cfg"]
+        try:
+            return kb_sources.add_remote(
+                cfg, url=str(req.get("url") or ""), name=str(req.get("name") or ""),
+                fmt=str(req.get("format") or "auto"),
+                headers=req.get("headers") or None,
+                field_mapping=req.get("field_mapping") or None,
+            )
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"远程地址请求失败：{redact(str(e))}") from e
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+
+    @app.post("/api/kb/sources/default")
+    def kb_source_default():
+        return kb_sources.add_default_empty(_g()["cfg"])
+
+    @app.patch("/api/kb/sources/{source_id}")
+    def kb_source_update(source_id: str, req: dict):
+        try:
+            return kb_sources.update_source(_g()["cfg"], source_id, req or {})
+        except KeyError:
+            raise HTTPException(404, "来源不存在")
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+
+    @app.delete("/api/kb/sources/{source_id}")
+    def kb_source_delete(source_id: str):
+        try:
+            return kb_sources.delete_source(_g()["cfg"], source_id)
+        except KeyError:
+            raise HTTPException(404, "来源不存在")
+
+    @app.post("/api/kb/sources/{source_id}/sync")
+    def kb_source_sync(source_id: str):
+        cfg = _g()["cfg"]
+        source = next((s for s in kb_sources.load_registry(cfg) if s["id"] == source_id), None)
+        if source is None:
+            raise HTTPException(404, "来源不存在")
+        if source.get("kind") != "remote":
+            raise HTTPException(400, "只有远程来源需要同步")
+        try:
+            info = kb_sources.sync_remote(cfg, source)
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"远程地址请求失败：{redact(str(e))}") from e
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        sources = kb_sources.load_registry(cfg)
+        for item in sources:
+            if item["id"] == source_id:
+                item.update({k: v for k, v in info.items() if k != "cache_path"})
+        kb_sources.save_registry(cfg, sources)
+        return {"id": source_id, "synced_at": info["last_sync_at"], "rows": info["rows"]}
+
+    @app.get("/api/kb/sources/{source_id}/preview")
+    def kb_source_preview(source_id: str, limit: int = Query(5, ge=1, le=20)):
+        try:
+            return kb_sources.preview_source(_g()["cfg"], source_id, limit=limit)
+        except KeyError:
+            raise HTTPException(404, "来源不存在")
+        except Exception as e:  # noqa: BLE001 — 预览失败返回可读原因
+            raise HTTPException(422, redact(str(e))) from e
+
+    # --- 选题库 schema 检查（兼容旧入口：读第一个服务器路径来源）---
+    @app.get("/api/kb/inspect")
+    def kb_inspect():
+        return kb_sources.legacy_inspect(_g()["cfg"])
+
+    # --- 行业模板（一键填画像 / 维度建议 / 合规红线）---
+    @app.get("/api/presets")
+    def list_presets():
+        return {"items": industry_presets.list_presets()}
+
+    @app.post("/api/presets/{key}/apply")
+    def apply_preset(key: str):
+        preset = industry_presets.get_preset(key)
+        if preset is None:
+            raise HTTPException(404, "行业模板不存在")
+        cfg = _g()["cfg"]
+        updates = {
+            "ultimate_goal.positioning": preset["positioning"],
+            "ultimate_goal.persona_keywords": list(preset["persona_keywords"]),
+            "ultimate_goal.forbidden_directions": list(preset["forbidden_directions"]),
+            "ultimate_goal.redline_keywords": sorted(
+                set(cfg.ultimate_goal.redline_keywords) | set(preset["extra_redlines"])
+            ),
+        }
+        try:
+            patch_config(cfg, _g()["conn"], updates)
+        except (ConfigNotAllowedError, ConfigPatchError) as e:
+            raise HTTPException(422, str(e)) from e
+        return {
+            "key": key, "name": preset["name"],
+            "positioning": preset["positioning"],
+            "persona_keywords": preset["persona_keywords"],
+            "dimensions": preset["dimensions"],
+            "platform_notes": preset["platform_notes"],
+            "extra_redlines": preset["extra_redlines"],
+            "message": "画像与红线已更新；建议维度可在「内容生产」里填入母计划",
+        }
+
+    # --- 热点源（综合热榜可关，可加 RSS / JSON 行业源）---
+    @app.get("/api/hot_topics/sources")
+    def hot_sources_list():
+        return {"items": _g()["cfg"].hot_topics.sources}
+
+    @app.put("/api/hot_topics/sources")
+    def hot_sources_update(req: dict):
+        items = (req or {}).get("items")
+        try:
+            patch_config(_g()["cfg"], _g()["conn"], {"hot_topics.sources": items})
+        except (ConfigNotAllowedError, ConfigPatchError) as e:
+            raise HTTPException(422, str(e)) from e
+        return {"items": _g()["cfg"].hot_topics.sources}
 
     # ============================================================
     # Dashboard 补齐（对比报告 3.1 🔴 后端真缺失）

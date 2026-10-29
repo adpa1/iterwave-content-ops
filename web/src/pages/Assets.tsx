@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import AsyncPanel from "../components/AsyncPanel";
 import EmptyHint from "../components/EmptyHint";
 import TopicPoolPane from "../components/TopicPoolPane";
+import KbSourcesPanel from "../components/KbSourcesPanel";
+import IndustryPresetPicker from "../components/IndustryPresetPicker";
 import CreatedContentPane from "../components/CreatedContentPane";
 import { useApp } from "../AppContext";
 import { PersonaEditor } from "../components/ConfigEditors";
@@ -296,10 +298,12 @@ export default function Assets() {
             </div>
           </div>
 
+          <IndustryPresetPicker onApplied={load} />
+
           <AssetForm
             type="voice"
             titleLabel="观点标题"
-            bodyPlaceholder="例如：AI 教育的价值，不是把答案给得更快，而是帮助孩子更好地思考。"
+            bodyPlaceholder="例如：重要的不是把答案给得更快，而是帮读者把问题想清楚。"
             pending={isPending("asset:voice")}
             onSubmit={addAsset}
           />
@@ -363,57 +367,7 @@ export default function Assets() {
         </>
       )}
 
-      {tab === "mapping" && (
-        <div className="panel">
-          <div className="panel-head">
-            <div>
-              <div className="panel-title"><span className="icon">⚙</span>本地选题库字段映射</div>
-              <div className="panel-sub">
-                检测失败会阻断依赖该数据源的选题扫描，不会用空表或旧快照伪装成同步成功
-              </div>
-            </div>
-            <div className="head-actions">
-              <button className="btn sm" onClick={load} disabled={loading}>运行检测</button>
-            </div>
-          </div>
-          {kb && (
-            <>
-              <div className="note" style={{ marginBottom: 12 }}>
-                文件：{kb.path} · 类型 {kb.file_type}
-                {kb.table ? ` · 表 ${kb.table}` : ""} ·
-                {" "}状态：
-                {kb.ok
-                  ? <span className="tag green" style={{ marginLeft: 6 }}>必要字段齐全</span>
-                  : <span className="tag red" style={{ marginLeft: 6 }}>必要字段缺失，数据源不可用</span>}
-              </div>
-              <div className="table-wrap">
-                <table>
-                  <thead><tr><th>通用字段</th><th>原始字段</th><th>是否存在于库中</th></tr></thead>
-                  <tbody>
-                    {Object.entries(kb.field_mapping).map(([k, v]) => {
-                      const missing = kb.missing_fields.includes(k);
-                      return (
-                        <tr key={k}>
-                          <td><span className="tag gray">{k}</span></td>
-                          <td>{v}</td>
-                          <td>{missing ? <span className="tag red">缺失</span> : <span className="tag green">✓</span>}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <div className="note" style={{ marginTop: 12 }}>
-                库内总行数：
-                {kb.stats.total == null ? " —" : ` ${kb.stats.total.toLocaleString()}`}
-                · 唯一维度：
-                {kb.stats.unique_dimensions == null ? " —" : ` ${kb.stats.unique_dimensions}`}
-                {kb.columns.length > 0 && ` · 实际列：${kb.columns.join(", ")}`}
-              </div>
-            </>
-          )}
-        </div>
-      )}
+      {tab === "mapping" && <KbSourcesPanel />}
     </>
   );
 }

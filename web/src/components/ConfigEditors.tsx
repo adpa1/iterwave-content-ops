@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 import { api, type Platform, type PlatformStyle, type SystemConfigView } from "../api";
 import { useApp } from "../AppContext";
+import { navigate } from "../nav";
 
 const PLATFORM_LABELS: Record<string, string> = {
   xhs: "小红书",
@@ -16,7 +17,7 @@ const PLATFORM_LABELS: Record<string, string> = {
   wechat_channels: "视频号",
 };
 
-export const KB_TYPES = ["auto", "sqlite", "csv", "jsonl"] as const;
+export const KB_TYPES = ["auto", "sqlite", "csv", "json", "jsonl", "xlsx", "rss"] as const;
 export const KB_MAPPING_FIELDS: string[] = ["source", "title", "summary", "link", "date", "dimension"];
 
 /** "a, b，c" → ["a","b","c"] */
@@ -93,11 +94,11 @@ export function PersonaEditor({ view, onSaved }: {
     <div style={{ display: "grid", gap: 14 }}>
       <Field label="定位关键词（逗号分隔，最多 30 条）">
         <input style={inputStyle} value={keywords} onChange={(e) => setKeywords(e.target.value)}
-          placeholder="如：AI 教育, 家长启蒙, 中小学, 工具效率" />
+          placeholder="如：职场成长, 效率方法, 生活方式" />
       </Field>
       <Field label="禁区方向（逗号分隔，最多 30 条）">
         <input style={inputStyle} value={forbidden} onChange={(e) => setForbidden(e.target.value)}
-          placeholder="如：成人内容, 纯娱乐无教育价值" />
+          placeholder="如：纯娱乐无信息增量, 医疗诊断结论" />
       </Field>
       <div style={{ fontSize: 12, color: "var(--muted)" }}>
         红线敏感词库 已内置 <span className="tag blue">{view.readonly.redline_keywords_count} 条</span>
@@ -110,6 +111,9 @@ export function PersonaEditor({ view, onSaved }: {
 
 // =====================================================================
 // 选题库 KB：类型 / 路径 / 数据表
+// 路径来自后端脱敏（项目外绝对路径显示为 ~/…/x 或 …/x），脱敏值不能回写，
+// 所以脱敏状态下只读，统一到「内容资产 → 字段映射检查」的选题库来源管理里维护。
+//
 // =====================================================================
 export function KbEditor({ view, onSaved }: {
   view: SystemConfigView; onSaved?: () => void;
@@ -123,6 +127,8 @@ export function KbEditor({ view, onSaved }: {
   );
   const [inspectMsg, setInspectMsg] = useState<string | null>(null);
   const busy = isPending("cfg:kb");
+  /** 脱敏后的路径（含 …）不可回写，避免把展示值当成真实路径保存 */
+  const pathRedacted = /^~?\u2026|^\u2026|\u2026\//.test(view.readonly.kb_path || "");
 
   /** "title=标题, dimension=分类" → {title:"标题", dimension:"分类"} */
   const parseMapping = (text: string): Record<string, string> | string => {
@@ -140,12 +146,12 @@ export function KbEditor({ view, onSaved }: {
   };
 
   const save = async () => {
-    if (!path.trim()) { showToast("选题库路径不能为空", "error"); return; }
+    if (!pathRedacted && !path.trim()) { showToast("选题库路径不能为空", "error"); return; }
     const mapping = parseMapping(mappingText);
     if (typeof mapping === "string") { showToast(mapping, "error"); return; }
     const updates: Record<string, unknown> = {};
     if (kbType !== view.readonly.kb_type) updates["topic_kb.type"] = kbType;
-    if (path.trim() !== view.readonly.kb_path) updates["topic_kb.path"] = path.trim();
+    if (!pathRedacted && path.trim() !== view.readonly.kb_path) updates["topic_kb.path"] = path.trim();
     if (table.trim() && table.trim() !== view.readonly.kb_table) updates["topic_kb.table_name"] = table.trim();
     if (JSON.stringify(mapping) !== JSON.stringify(view.readonly.kb_field_mapping)) {
       updates["topic_kb.field_mapping"] = mapping;
@@ -182,10 +188,17 @@ export function KbEditor({ view, onSaved }: {
           {KB_TYPES.map((t) => <option key={t} value={t}>{t === "auto" ? "auto（按扩展名自动识别）" : t}</option>)}
         </select>
       </Field>
-      <Field label="文件路径（相对项目根目录或绝对路径）">
+      <Field label={pathRedacted ? "当前选题库路径（已脱敏，只读）" : "文件路径（相对项目根目录或绝对路径）"}>
         <input style={{ ...inputStyle, fontFamily: "monospace" }} value={path}
-          onChange={(e) => setPath(e.target.value)} placeholder="data/topics.db" />
+          readOnly={pathRedacted}
+          onChange={(e) => setPath(e.target.value)} placeholder="kb/topics.csv" />
       </Field>
+      <div className="note" style={{ fontSize: 11 }}>
+        选题库可以来自多个来源（本地上传 / 远程地址 / 服务器路径），统一在
+        <button type="button" className="btn sm" style={{ marginLeft: 6 }}
+          onClick={() => navigate("assets", "mapping")}>内容资产 → 字段映射检查</button>
+        管理，支持自动识别字段与预览。
+      </div>
       <Field label="数据表名（数据库专用）">
         <input style={{ ...inputStyle, width: 240, fontFamily: "monospace" }} value={table}
           onChange={(e) => setTable(e.target.value)} placeholder="topics" />
@@ -212,7 +225,7 @@ export function KbEditor({ view, onSaved }: {
 // =====================================================================
 // 火山方舟两条计费通道：按量付费 /、Agent Plan 专属通道。
 // Agent Plan 只支持套餐内模型（见 https://www.volcengine.com/docs/82379/2366394），
-// 用不支持的模型会返回 404 UnsupportedModel。
+// 用不支持的模型会返回 UnsupportedModel 错误。
 const ARK_CHANNEL_BASE: Record<string, string> = {
   metered: "https://ark.cn-beijing.volces.com/api/v3",
   plan: "https://ark.cn-beijing.volces.com/api/plan/v3",
@@ -313,7 +326,7 @@ export function LlmEditor({ view, onSaved }: {
           <option value="custom">自定义端点</option>
         </select>
       </Field>
-      <Field label="主模型（Agent Plan 套餐只支持套餐内模型，选错会 404）">
+      <Field label="主模型（Agent Plan 套餐只支持套餐内模型，选错会报模型不支持）">
         <input style={{ ...inputStyle, fontFamily: "monospace" }} value={model}
           list="ark-plan-models" onChange={(e) => setModel(e.target.value)}
           placeholder="doubao-seed-2.1-lite" />
@@ -839,7 +852,7 @@ export function PlatformStyleEditor() {
 
   useEffect(() => { load(); }, []);
 
-  /** "治愈, 壁纸" → ["治愈","壁纸"]；标签统一去掉 # 前缀与重复项 */
+  /** "效率, 成长" → ["效率","成长"]；标签统一去掉 # 前缀与重复项 */
   const parseTags = (text: string): string[] => {
     const out: string[] = [];
     for (const raw of text.split(/[,，\n]/)) {
@@ -923,7 +936,7 @@ export function PlatformStyleEditor() {
             </div>
             <div style={{ marginTop: 10 }}>
               <Field label="话题标签（逗号分隔，不带 #；留空 = 只用选题维度标签）">
-                <input style={inputStyle} value={d.hashtags} placeholder="如：治愈, 壁纸, 锁屏"
+                <input style={inputStyle} value={d.hashtags} placeholder="如：效率提升, 职场成长, 实用清单"
                   onChange={(e) => setDrafts((p) => ({ ...p, [s.platform]: { ...p[s.platform], hashtags: e.target.value } }))} />
               </Field>
             </div>

@@ -368,17 +368,46 @@ _PLATFORM_PALETTE: dict[Platform, tuple[tuple[int, int, int], tuple[int, int, in
 }
 
 _FONT_CANDIDATES = (
+    # macOS
     "/System/Library/Fonts/PingFang.ttc",
     "/System/Library/Fonts/STHeiti Medium.ttc",
     "/System/Library/Fonts/Hiragino Sans GB.ttc",
     "/Library/Fonts/Arial Unicode.ttf",
+    # Linux（Debian/Ubuntu、CentOS、Alpine 常见路径）
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/arphic/uming.ttc",
+    "/usr/share/fonts/source-han-sans/SourceHanSansSC-Regular.otf",
+    "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+    # Windows
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/msyhbd.ttc",
+    "C:/Windows/Fonts/simhei.ttf",
+    "C:/Windows/Fonts/simsun.ttc",
 )
+
+
+def font_candidates() -> tuple[str, ...]:
+    """可用字体候选：配置 / .env 指定路径优先，再按平台常见路径。"""
+    env = os.getenv("ITERWAVE_FONT_PATH", "").strip()
+    return ((env,) if env else ()) + _FONT_CANDIDATES
+
+
+def resolve_font_path() -> Optional[str]:
+    """返回第一个真实存在的中文字体文件；都没有则 None（自检会标红）。"""
+    for path in font_candidates():
+        if Path(path).exists():
+            return path
+    return None
 
 
 def _load_font(size: int):
     from PIL import ImageFont
 
-    for path in _FONT_CANDIDATES:
+    for path in font_candidates():
         if Path(path).exists():
             try:
                 return ImageFont.truetype(path, size)
@@ -479,7 +508,8 @@ def make_card(
 
     # 维度标签（胶囊）
     tag_font = _load_font(38)
-    tag_text = f"＃{subtitle}" if subtitle else "＃知识卡片"
+    tag_text = f"＃{subtitle}" if subtitle else f"＃{os.getenv('CARD_TAG_FALLBACK', '今日分享')}"
+
     tag_w = draw.textlength(tag_text, font=tag_font)
     tag_box = (margin, margin + 40, margin + tag_w + 56, margin + 110)
     draw.rounded_rectangle(tag_box, radius=35, fill=(255, 255, 255))

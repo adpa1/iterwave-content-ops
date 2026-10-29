@@ -465,7 +465,6 @@ function PublishPane() {
           <div className="panel-title"><span className="icon">◷</span>发布确认双通道</div>
           <div className="panel-sub">手动点「✓ 我已发布」或等系统每 30 分钟自动检测</div>
           <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
-            <DemoBadge level="accelerated" text="真实轮询周期 30min（原型曾用 2s 演示）" />
             <DemoBadge level="blocked" text="系统永不点击发布按钮，只能由你手动发布" />
           </div>
         </div>
@@ -608,7 +607,7 @@ function TasksPane({ tasks, onResolved }: {
     <div className="panel">
       <div className="panel-head">
         <div>
-          <div className="panel-title"><span className="icon">⌁</span>任务追踪（task_runs）</div>
+          <div className="panel-title"><span className="icon">⌁</span>任务追踪</div>
           <div className="panel-sub">运行 / 中断 / 待核实 — 崩溃恢复的关键表</div>
         </div>
       </div>
@@ -720,7 +719,7 @@ function SchedulerPane({ jobs, onTriggered }: {
       <AutogrowPanel />
       <div className="grid three" style={{ marginBottom: 16 }}>
         <div className="metric">
-          <div className="metric-label">APScheduler 状态</div>
+          <div className="metric-label">定时调度状态</div>
           <div className="metric-val" style={{ color: jobs.running ? "var(--green)" : "var(--red)" }}>
             {jobs.running ? "运行中" : "已停止"}
           </div>

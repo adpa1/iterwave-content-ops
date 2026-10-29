@@ -106,7 +106,18 @@ export default function Dashboard() {
   const insightsWithSamples = insightsThisWeek.filter((i) => (i.sample_count ?? 0) > 0);
   const highActions = actions.filter((a) => a.priority === "high");
   const totalDrafts = Object.values(progress).reduce((s, p) => s + (p?.total_drafts ?? 0), 0);
+  /** 已存草稿、等你手动发布确认的篇数（来自各平台状态分布） */
+  const savedDrafts = Object.values(progress).reduce(
+    (s, p) => s + (p?.status_breakdown?.draft_saved ?? 0), 0,
+  );
   const latestRound = rounds[0];
+
+  /** 首页主按钮随状态切换：有待发布 → 去发布；无轮次 → 开始第一轮；其余 → 内容生产 */
+  const primaryAction = savedDrafts > 0
+    ? { label: `去发布（${savedDrafts} 篇）`, page: "production" }
+    : rounds.length === 0
+      ? { label: "开始第一轮", page: "production" }
+      : { label: "内容生产", page: "production" };
 
   return (
     <AsyncPanel loading={loading} error={error} onRetry={load} loadingText="加载运营总览…">
@@ -121,8 +132,8 @@ export default function Dashboard() {
         </div>
         <div className="head-actions">
           <button type="button" className="btn" onClick={load}>↻ 刷新</button>
-          <button type="button" className="btn" onClick={() => go("agent")}>查看 Agent 运行</button>
-          <button type="button" className="btn primary" onClick={() => go("hot")}>✳ 扫描热点</button>
+          <button type="button" className="btn" onClick={() => go("hot")}>✳ 扫描热点</button>
+          <button type="button" className="btn primary" onClick={() => go(primaryAction.page)}>{primaryAction.label}</button>
         </div>
       </div>
 
@@ -211,7 +222,7 @@ export default function Dashboard() {
                 <div key={`r${r.id}`} className="task-row">
                   <i className="task-prio" aria-hidden="true" />
                   <div className="task-main">
-                    <div className="task-title">Round {r.round_number} 草稿待确认发布</div>
+                    <div className="task-title">第 {r.round_number} 轮草稿待确认发布</div>
                     <div className="task-desc">创建于 {new Date(r.created_at).toLocaleString("zh-CN")}</div>
                   </div>
                   <div className="task-actions">
@@ -304,8 +315,8 @@ export default function Dashboard() {
               <div className="panel-title"><span className="icon" aria-hidden="true">⎇</span>Agent 当前编排</div>
               <div className="panel-sub">
                 {latestRound
-                  ? `最近一轮：Round ${latestRound.round_number} · ${ROUND_STATUS_LABEL[latestRound.status] ?? latestRound.status}`
-                  : "还没有运行过螺旋轮次"}
+                  ? `最近一轮：第 ${latestRound.round_number} 轮 · ${ROUND_STATUS_LABEL[latestRound.status] ?? latestRound.status}`
+                  : "还没有运行过轮次"}
               </div>
             </div>
             <button type="button" className="btn sm" onClick={() => go("agent")}>执行详情 →</button>

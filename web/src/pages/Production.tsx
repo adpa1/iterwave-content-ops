@@ -47,7 +47,7 @@ const TABS = [
 type TabKey = typeof TABS[number]["key"];
 
 const ROUND_STATUS_LABEL: Record<string, string> = {
-  created: "已创建", producing: "生产中", awaiting_publish: "待发布", collecting_metrics: "采集中", analyzing: "复盘中", completed: "已完成", failed: "失败", cancelled: "已取消", paused: "已暂停",
+  created: "已创建", producing: "生产中", awaiting_publish: "待发布", collecting_metrics: "采集中", analyzing: "复盘中", completed: "已完成", partial_completed: "部分完成", failed: "失败", cancelled: "已取消", paused: "已暂停",
 };
 
 const AUTHOR_LABEL: Record<string, string> = {
@@ -181,7 +181,7 @@ export default function Production() {
   const handleCreateRound = async () => {
     try {
       const res = await api.createRound({ topic_count: topicCount });
-      showToast(`✓ Round ${res.round_number} 已创建`);
+      showToast(`✓ 第 ${res.round_number} 轮已创建`);
       setReport(null);
       await refresh();
       setCurrentRoundId(res.id);
@@ -343,7 +343,7 @@ export default function Production() {
         const res = await api.recheckContent(selectedContentId);
         setRecheck(res);
         showToast(
-          res.passes ? `✓ G2 重检通过（${res.result}）` : `✕ G2 重检未通过：${res.reason}`,
+          res.passes ? `✓ 目标检查通过（${res.result}）` : `✕ 目标检查未通过：${res.reason}`,
           res.passes ? "success" : "error",
         );
         await loadRoundData(currentRoundId!);
@@ -404,11 +404,11 @@ export default function Production() {
 
   const handleDeleteRound = async () => {
     if (!roundDetail) return;
-    if (!window.confirm(`删除 Round ${roundDetail.round_number}？本轮所有内容、草稿记录、卡片图片一起删除，不可恢复。`)) return;
+    if (!window.confirm(`删除第 ${roundDetail.round_number} 轮？本轮所有内容、草稿记录、卡片图片一起删除，不可恢复。`)) return;
     await withPending("delete-round", async () => {
       try {
         const r = await api.deleteRound(roundDetail.id);
-        showToast(`已删除 Round ${r.round_number}（内容 ${r.contents_deleted} 篇${r.platform_drafts_left ? `，请到平台草稿箱清理 ${r.platform_drafts_left} 篇` : ""}）`, "success");
+        showToast(`已删除第 ${r.round_number} 轮（内容 ${r.contents_deleted} 篇${r.platform_drafts_left ? `，请到平台草稿箱清理 ${r.platform_drafts_left} 篇` : ""}）`, "success");
         setCurrentRoundId(null);
         setRoundDetail(null);
         await refresh();
@@ -619,7 +619,7 @@ export default function Production() {
               {plan.stale_rounds.length > 0 && (
                 <div className="note" style={{ marginTop: 12, color: "var(--orange)" }}>
                   ! 以下活跃轮次的签名与当前母计划不一致（下游已标记为基于旧计划）：
-                  {plan.stale_rounds.map((r) => ` Round ${r.round_number}（${ROUND_STATUS_LABEL[r.status] ?? r.status}）`).join(" · ")}
+                  {plan.stale_rounds.map((r) => ` 第 ${r.round_number} 轮（${ROUND_STATUS_LABEL[r.status] ?? r.status}）`).join(" · ")}
                 </div>
               )}
 
@@ -637,7 +637,7 @@ export default function Production() {
                       {plan.history.map((h, i) => (
                         <tr key={i}>
                           <td style={{ fontFamily: "monospace", fontSize: 11 }}>{h.plan_signature.slice(0, 16)}…</td>
-                          <td>{h.round_id != null ? `Round ${h.round_id}` : "母计划"}</td>
+                          <td>{h.round_id != null ? `轮次 ${h.round_id}` : "母计划"}</td>
                           <td>{AUTHOR_LABEL[(h.author ?? "").split(":")[0]] ?? h.author ?? "—"}</td>
                           <td style={{ fontSize: 11 }}>{h.created_at}</td>
                         </tr>
@@ -659,7 +659,7 @@ export default function Production() {
               <div className="panel-title"><span className="icon">⌗</span>平台分项计划</div>
               <div className="panel-sub">
                 {currentRoundId
-                  ? `Round ${roundDetail?.round_number ?? currentRoundId} 的逐平台变体（每选题 × 每平台一篇）`
+                  ? `第 ${roundDetail?.round_number ?? currentRoundId} 轮的逐平台变体（每选题 × 每平台一篇）`
                   : "选择一轮后展示逐平台变体"}
               </div>
             </div>
@@ -720,7 +720,7 @@ export default function Production() {
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">▶</span>运行本轮</div>
-                <div className="panel-sub">选题 → 文案（G1）→ G2 检查 → 卡片（H）→ 存草稿（I）</div>
+                <div className="panel-sub">选题 → 文案生成 → 终极目标检查 → 图片卡片 → 保存草稿</div>
               </div>
               <RoundPicker rounds={rounds} value={currentRoundId} onChange={setCurrentRoundId} />
             </div>
@@ -732,8 +732,8 @@ export default function Production() {
             {roundDetail && (
               <>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <div style={{ fontWeight: 700 }}>Round {roundDetail.round_number}</div>
-                  <span className={`tag ${STATUS_CLS[roundDetail.status]}`}>{roundDetail.status}</span>
+                  <div style={{ fontWeight: 700 }}>第 {roundDetail.round_number} 轮</div>
+                  <span className={`tag ${STATUS_CLS[roundDetail.status]}`}>{ROUND_STATUS_LABEL[roundDetail.status] ?? roundDetail.status}</span>
                 </div>
 
                 {noLogin.length > 0 && (
@@ -803,7 +803,7 @@ export default function Production() {
                       <MiniStat label="内容产出" value={report.contents_created} />
                       <MiniStat label="草稿写入" value={report.drafts_created} />
                       <MiniStat label="存草稿成功" value={report.drafts_saved} tone="green" />
-                      <MiniStat label="G2 拦截" value={report.guard_rejected} tone={report.guard_rejected > 0 ? "orange" : undefined} />
+                      <MiniStat label="目标检查拦截" value={report.guard_rejected} tone={report.guard_rejected > 0 ? "orange" : undefined} />
                     </div>
                     {report.retry_counts && Object.keys(report.retry_counts).length > 0 && (
                       <div className="note" style={{ marginBottom: 8 }}>
@@ -821,7 +821,7 @@ export default function Production() {
                               <td style={{ fontSize: 11 }}>
                                 {s.step === "score" && `${(s.selected as unknown[])?.length ?? 0} 条选题入选`}
                                 {s.step === "kb_read" && `${s.count} 条选题库记录`}
-                                {s.step === "produce" && `产出 ${s.contents} 篇内容 · G2 拦截 ${s.guard_rejected} 次`}
+                                {s.step === "produce" && `产出 ${s.contents} 篇内容 · 目标检查拦截 ${s.guard_rejected} 次`}
                                 {s.step === "dry_run" && `${s.note}`}
                                 {s.step === "save_drafts" && `成功 ${s.saved} · 失败 ${s.failed}`}
                                 {s.step === "guard_reject" && `${s.platform} / ${s.topic_id} · ${s.result} · ${s.reason}`}
@@ -878,7 +878,7 @@ export default function Production() {
                   ))}
                 </div>
                 <div className="note" style={{ marginBottom: 10 }}>
-                  G2 累计拦截 {pipeline.guard_rejections ?? "—"} 次（含重生成前）；
+                  终极目标检查累计拦截 {pipeline.guard_rejections ?? "—"} 次（含重生成前）；
                   草稿状态：
                   {Object.keys(pipeline.drafts_by_status).length === 0
                     ? " 无"
@@ -887,7 +887,7 @@ export default function Production() {
                 <div className="table-wrap">
                   <table>
                     <thead>
-                      <tr><th>平台</th><th>文案</th><th>G2 通过</th><th>卡片</th><th>草稿已存</th><th>待存</th><th>失败</th></tr>
+                      <tr><th>平台</th><th>文案</th><th>目标检查通过</th><th>卡片</th><th>草稿已存</th><th>待存</th><th>失败</th></tr>
                     </thead>
                     <tbody>
                       {pipeline.per_platform.length === 0 && (
@@ -910,7 +910,7 @@ export default function Production() {
                   </table>
                 </div>
                 <div className="note" style={{ marginTop: 8 }}>
-                  说明：G1 文案数 = 通过目标检查 后落库的数量；被 G2 拦截并丢弃的文案不会出现在这里，只在「G2 累计拦截」计数。
+                  说明：文案数 = 通过终极目标检查后落库的数量；被拦截并丢弃的文案不会出现在这里，只计入「检查累计拦截」。
                 </div>
               </>
             )}
@@ -947,7 +947,7 @@ export default function Production() {
                   <div className="task-main">
                     <div className="task-title">{c.title}</div>
                     <div className="task-desc">
-                      {PLATFORM_NAME[c.platform]} · G2 {c.guard_outcome ?? "—"}
+                      {PLATFORM_NAME[c.platform]} · 检查 {c.guard_outcome ?? "—"}
                       {c.draft_status && <> · <span className={`tag ${STATUS_CLS[c.draft_status] ?? "gray"}`}>{c.draft_status}</span></>}
                     </div>
                   </div>
@@ -1060,7 +1060,7 @@ export default function Production() {
                 </div>
 
                 <div className="note" style={{ marginTop: 12 }}>
-                  当前 DB 记录：G2 = <b>{selectedContent.guard_outcome ?? "—"}</b>
+                  当前记录：终极目标检查 = <b>{selectedContent.guard_outcome ?? "—"}</b>
                   {selectedContent.guard_reason && <>（{selectedContent.guard_reason}）</>}
                   {" · "}正文 {selectedContent.word_count ?? "—"} 字 · 草稿 {selectedContent.draft_status ?? "—"}
                 </div>
@@ -1093,10 +1093,10 @@ export default function Production() {
                 >
                   <i className={`task-prio ${STATUS_CLS[r.status]}`} />
                   <div className="task-main">
-                    <div className="task-title">Round {r.round_number}</div>
+                    <div className="task-title">第 {r.round_number} 轮</div>
                     <div className="task-desc">创建于 {new Date(r.created_at).toLocaleString("zh-CN")}</div>
                   </div>
-                  <span className={`tag ${STATUS_CLS[r.status]}`}>{r.status}</span>
+                  <span className={`tag ${STATUS_CLS[r.status]}`}>{ROUND_STATUS_LABEL[r.status] ?? r.status}</span>
                 </div>
               ))}
             </div>
@@ -1140,7 +1140,7 @@ export default function Production() {
                   计划版本：{roundDetail.plan_signature
                     ? <span style={{ fontFamily: "monospace" }}>{roundDetail.plan_signature.slice(0, 16)}…</span>
                     : "—"}
-                  {(roundDetail as any).guard_rejections != null && <> · G2 拦截 {(roundDetail as any).guard_rejections} 次</>}
+                  {(roundDetail as any).guard_rejections != null && <> · 目标检查拦截 {(roundDetail as any).guard_rejections} 次</>}
                 </div>
 
                 <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -1211,7 +1211,7 @@ function RoundPicker({ rounds, value, onChange }: {
       style={{ fontSize: 12 }}
     >
       {rounds.map((r) => (
-        <option key={r.id} value={r.id}>Round {r.round_number} · {r.status}</option>
+        <option key={r.id} value={r.id}>第 {r.round_number} 轮 · {ROUND_STATUS_LABEL[r.status] ?? r.status}</option>
       ))}
     </select>
   );

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, HotTopicsResponse, HotTopicItem, type SystemConfigView } from "../api";
+import { api, HotTopicsResponse, HotTopicItem, type HotSource, type SystemConfigView } from "../api";
 import { useUrlTab } from "../nav";
 import { platformLabel } from "../platforms";
 import DemoBadge from "../components/DemoBadge";
@@ -291,6 +291,8 @@ export default function HotTopics() {
         </div>
         {hot?.storage && <div className="metric-foot" style={{ marginTop: 10 }}>库内 {hot.storage.rows} 条，上限 {hot.storage.max_rows} 条</div>}
       </div>
+
+      <HotSourceManager onSaved={loadHot} />
       </>
       )}
 
@@ -404,3 +406,111 @@ export default function HotTopics() {
     </>
   );
 }
+
+/** 热点来源：综合热榜可整条关掉；可添加 RSS / 自定义 JSON 行业源（每天随定时任务采集） */
+function HotSourceManager({ onSaved }: { onSaved: () => void }) {
+  const { showToast } = useApp();
+  const [items, setItems] = useState<HotSource[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [type, setType] = useState<"rss" | "json">("rss");
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const [platform, setPlatform] = useState("");
+
+  useEffect(() => {
+    api.hotSources()
+      .then((res) => setItems(res.items))
+      .catch((e) => showToast((e as Error).message, "error"))
+      .finally(() => setLoading(false));
+  }, [showToast]);
+
+  const save = async (next: HotSource[], successText: string) => {
+    setBusy(true);
+    try {
+      const res = await api.saveHotSources(next);
+      setItems(res.items);
+      showToast(successText, "success");
+      onSaved();
+    } catch (e) {
+      showToast((e as Error).message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const add = async () => {
+    if (!name.trim() || !url.trim()) {
+      showToast("来源名称和地址都要填", "error");
+      return;
+    }
+    await save(
+      [...items, { name: name.trim(), type, url: url.trim(), platform: platform.trim() || name.trim(), enabled: true }],
+      "行业源已添加",
+    );
+    setName(""); setUrl(""); setPlatform("");
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <div>
+          <div className="panel-title"><span className="icon">＋</span>热点来源</div>
+          <div className="panel-sub">综合热榜可以关掉；也可以添加行业媒体 RSS 或自定义 JSON 源</div>
+        </div>
+      </div>
+
+      {loading ? <div className="note">加载来源中…</div> : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>名称</th><th>类型</th><th>地址</th><th>平台</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody>
+              {items.map((s, i) => (
+                <tr key={`${s.name}-${i}`}>
+                  <td>{s.name}</td>
+                  <td><span className="tag gray">{s.type === "aggregate" ? "综合热榜" : s.type === "rss" ? "RSS" : "JSON"}</span></td>
+                  <td className="metric-foot">{s.url}</td>
+                  <td>{(s.platforms || []).join("、") || s.platform || "—"}</td>
+                  <td>{s.enabled === false ? <span className="tag gray">停用</span> : <span className="tag green">启用</span>}</td>
+                  <td>
+                    <div className="flex wrap" style={{ gap: 6 }}>
+                      <button className="btn xs soft" type="button" disabled={busy}
+                        onClick={() => save(items.map((x, idx) => idx === i ? { ...x, enabled: x.enabled === false } : x),
+                          s.enabled === false ? "来源已启用" : "来源已停用")}>
+                        {s.enabled === false ? "启用" : "停用"}
+                      </button>
+                      <button className="btn xs danger" type="button" disabled={busy}
+                        onClick={() => {
+                          if (window.confirm(`移除来源「${s.name}」？`)) {
+                            save(items.filter((_, idx) => idx !== i), "来源已移除");
+                          }
+                        }}>
+                        移除
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {items.length === 0 && (
+                <tr><td colSpan={6}><EmptyHint className="" next="在下方添加一个 RSS 或 JSON 行业源">没有配置热点来源</EmptyHint></td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="flex wrap" style={{ gap: 8, marginTop: 12, alignItems: "center" }}>
+        <select className="field" style={{ width: 100 }} value={type} onChange={(e) => setType(e.target.value as "rss" | "json")}>
+          <option value="rss">RSS</option>
+          <option value="json">JSON</option>
+        </select>
+        <input className="field" style={{ width: 150 }} placeholder="来源名称" value={name} onChange={(e) => setName(e.target.value)} />
+        <input className="field" style={{ flex: 1, minWidth: 220 }} placeholder="https://example.com/feed.xml"
+          value={url} onChange={(e) => setUrl(e.target.value)} />
+        <input className="field" style={{ width: 110 }} placeholder="平台（可选）" value={platform} onChange={(e) => setPlatform(e.target.value)} />
+        <button className="btn sm" type="button" disabled={busy} onClick={add}>添加来源</button>
+      </div>
+    </div>
+  );
+}
+

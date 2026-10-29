@@ -13,18 +13,29 @@ paths:
   screenshot_dir: "data/screenshots"        # Playwright 截图（R23 保留 30 天）
   log_dir: "data/logs"                      # 日志目录
 
-# ===== 选题库配置（§16.1 字段映射）=====
+# ===== 选题库配置（§16.1）=====
+# 三种来源可在页面「内容资产 → 选题库来源」管理：
+#   上传文件 / 远程地址（CSV/JSON/RSS，每天同步）/ 服务器路径
+# 默认使用数据目录下的空库（首次启动自动创建），不接选题库也能跑
+# 相对路径相对「数据目录」，也可以写绝对路径
 topic_kb:
-  path: "/Users/longyi/WorkBuddy/AI 资料/kb.db"
-  type: "auto"                              # auto / sqlite / csv / jsonl
-  table_name: "items"                       # SQLite 读哪张表
-  field_mapping:                            # 通用字段 → 原始字段名（真实 db schema）
+  path: "kb/topics.csv"
+  type: "auto"                              # auto / csv / json / jsonl / xlsx / sqlite
+  table_name: "items"                       # SQLite 读哪张表（留空自动选行数最多的）
+  default_dimension: "综合"                 # 没有维度列时归到这个维度
+  field_mapping:                            # 通用字段 → 原始列名（留空 = 自动识别中英文列名）
     source: "source"
     title: "title"
     summary: "summary"
     link: "link"
-    date: "pub_date"                        # 实际叫 pub_date
-    dimension: "dim"                        # 实际叫 dim
+    date: "date"
+    dimension: "dimension"
+
+# ===== 图片卡片渲染 =====
+render:
+  # 中文字体路径；留空自动匹配（macOS / Linux / Windows 常见字体）
+  font_path: ""
+  card_tag_fallback: "今日分享"
 
 # ===== 四平台运营计划 =====
 # enabled=false 的平台本轮完全跳过（存草稿/拉数据/运营都不跑）
@@ -84,12 +95,12 @@ scoring:
 
 # ===== 终极目标画像（§12.3 UltimateGoalChecker）=====
 ultimate_goal:
-  # 账号定位关键词（内容必须匹配）
+  # 账号定位关键词（内容必须匹配；示例为中性写法，可在「行业模板」一键换成垂类示例）
   persona_keywords:
-    - "AI教育"
-    - "人工智能"
-    - "效率工具"
     - "个人成长"
+    - "实用经验"
+    - "生活方式"
+    - "效率方法"
   # 红线关键词（出现即丢弃重生成，G2 红线分支）
   redline_keywords:
     - "赌博"
@@ -236,9 +247,18 @@ hot_topics:
     cross_platform_similarity: 0.8   # 跨平台标题相似度阈值（字符二元组 Jaccard，0.5–1.0）
     cross_platform_window_hours: 48  # 只在该时间窗内找跨平台重复
   sources:
+    # 综合热榜（可整条去掉或 enabled: false）
     - name: "60s.viki.moe"
+      type: "aggregate"                 # aggregate / rss / json
       url: "https://60s.viki.moe"
       platforms: ["weibo", "douyin", "zhihu", "toutiao", "bilibili"]
+    # 行业源示例（RSS / 自定义 JSON，可在「热点雷达」页面里增删）：
+    # - name: "行业媒体"
+    #   type: "rss"                     # rss / json
+    #   platform: "行业"                 # 展示用的平台/来源名
+    #   url: "https://example.com/feed.xml"
+    #   enabled: true
+    #   headers: { Authorization: "Bearer <token>" }
   # 4 门筛选（后 2 门不可关闭，R22）
   filters:
     heat_threshold: 5000          # 🔥 热度门槛（可关）
@@ -283,6 +303,7 @@ scheduler:
     comment_polling:        { enabled: true, interval_minutes: 30 }   # 评论轮询
     cb_recovery:            { enabled: true, interval_minutes: 5 }    # 熔断恢复检查
     kb_scan:                { enabled: true, cron: "0 6 * * *" }      # 选题库增量扫描
+    kb_sync:                { enabled: true, cron: "0 7 * * *" }      # 远程选题库每日同步
     data_retention_cleanup: { enabled: true, cron: "10 6 * * *" }     # 过期数据清理
     round_timeout_sweeper:  { enabled: true, interval_minutes: 60 }   # 轮次阶段超时
     round_review:           { enabled: true, interval_minutes: 10 }   # 轮次复盘收口

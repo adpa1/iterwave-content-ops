@@ -7,9 +7,9 @@ import { useApp } from "../AppContext";
 const STEPS = [
   { key: "persona",  label: "① 账号画像",     hint: "终极目标 / 红线 / 定位关键词" },
   { key: "platforms", label: "② 启用平台",    hint: "4 选 2 起；建议先 1 平台跑通" },
-  { key: "kb",       label: "③ 选题库 KB",    hint: "选题来源：本地文件或数据库" },
+  { key: "kb",       label: "③ 选题库",       hint: "上传 / 远程 / 服务器路径" },
   { key: "llm",      label: "④ 模型配置",     hint: "Provider / Model / API Key" },
-  { key: "skills",   label: "⑤ Skills 环境",  hint: "检查登录与运行环境" },
+  { key: "skills",   label: "⑤ 运行环境",     hint: "检查登录与运行环境" },
   { key: "goals",    label: "⑥ 阶段目标",     hint: "指标 / 目标值 / 基线" },
   { key: "check",    label: "⑦ 检查清单",     hint: "预检 + 启动首轮" },
 ] as const;
@@ -18,6 +18,12 @@ type StepKey = typeof STEPS[number]["key"];
 
 const PLATFORM_NAMES: Record<Platform, string> = {
   xhs: "小红书", douyin: "抖音", kuaishou: "快手", wechat_channels: "视频号",
+};
+
+const SCORING_MODE_LABELS: Record<string, string> = {
+  cold_start: "冷启动（已发布样本 < 10）",
+  sample_accumulating: "样本积累（部分维度样本 < 5）",
+  stable: "稳定运行（活跃维度样本 ≥ 5）",
 };
 
 const GOAL_METRICS = [
@@ -137,7 +143,10 @@ export default function Onboarding() {
     login_ok: status.logged_in_platforms.length >= 1,
     goals_ok: goals.length >= 1,
   };
-  const allOk = Object.values(checks).every(Boolean);
+  /** 阶段目标不阻塞开跑：没有目标也能试跑第一轮，只是不统计达成率 */
+  const blockingOk = checks.persona_ok && checks.platforms_ok && checks.kb_ok
+    && checks.llm_ok && checks.login_ok;
+  const blocked = diag ? diag.overall === "block" : !blockingOk;
 
   return (
     <>
@@ -146,7 +155,7 @@ export default function Onboarding() {
           <div className="eyebrow">FIRST-TIME SETUP</div>
           <h1 className="page-title">首次配置向导</h1>
           <div className="page-desc">
-            7 步完成 IterWave 初始化。每一步都能直接编辑并保存，保存后立即生效。
+            7 步完成初始化。每一步都能直接编辑并保存，保存后立即生效。
           </div>
         </div>
       </div>
@@ -211,9 +220,10 @@ export default function Onboarding() {
 
         {step === "kb" && (
           <div>
-            <div className="panel-title" style={{ marginBottom: 16 }}>③ 选题库 Knowledge Base</div>
+            <div className="panel-title" style={{ marginBottom: 16 }}>③ 选题库</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              选题来源可以是本地 CSV、JSONL 或数据库，至少要有「标题」和「维度」两列。
+              选题来源可以是本地上传（CSV / JSON / JSONL / XLSX）、远程地址（含 RSS）或服务器路径，
+              至少要有「标题」和「维度」两列。完整来源管理在「内容资产 → 字段映射检查」。
             </p>
             <KbEditor view={cfg} onSaved={reload} />
           </div>
@@ -236,7 +246,7 @@ export default function Onboarding() {
 
         {step === "skills" && (
           <div>
-            <div className="panel-title" style={{ marginBottom: 16 }}>⑤ Skills 环境预检</div>
+            <div className="panel-title" style={{ marginBottom: 16 }}>⑤ 运行环境预检</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
               核心运行依赖一次性检查：登录态 / 熔断 / 评分模式 / 活跃轮次 / 断点恢复。
             </p>
@@ -244,7 +254,7 @@ export default function Onboarding() {
               <table>
                 <thead><tr><th>信号</th><th>值</th><th>状态</th></tr></thead>
                 <tbody>
-                  <tr><td>评分模式</td><td>{status.scoring_mode}</td><td><span className="tag green">✓</span></td></tr>
+                  <tr><td>评分模式</td><td>{SCORING_MODE_LABELS[status.scoring_mode] ?? status.scoring_mode}</td><td><span className="tag green">✓</span></td></tr>
                   <tr><td>活跃轮次</td><td>{status.active_rounds}</td><td><span className={`tag ${status.active_rounds > 0 ? "blue" : "gray"}`}>{status.active_rounds > 0 ? "运行中" : "空闲（正常）"}</span></td></tr>
                   <tr><td>已发布样本</td><td>{status.published_samples}</td><td><span className={`tag ${status.published_samples >= 10 ? "green" : "orange"}`}>{status.published_samples >= 10 ? "样本充足" : "冷启动中"}</span></td></tr>
                   <tr><td>熔断平台</td><td>{status.circuit_broken_platforms.length > 0 ? status.circuit_broken_platforms.join(", ") : "—"}</td><td>{status.circuit_broken_platforms.length > 0 ? <span className="tag red">! 阻塞</span> : <span className="tag green">OK</span>}</td></tr>
@@ -353,12 +363,12 @@ export default function Onboarding() {
           <div>
             <div className="panel-title" style={{ marginBottom: 16 }}>⑦ 检查清单 · 启动首轮</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              以下全绿才能开始真实生产。点「启动首轮」→ 创建 spiral_round → RunRound 执行选题评分 + G → G1 → G2 终极目标检查 → H 图片卡片 → I 存草稿。
+              以下阻塞项全部通过才能开始真实生产。首轮依次完成：选题评分 → 文案生成 → 终极目标检查 → 图片卡片 → 保存草稿（不会自动发布）。
             </p>
             {diag && (
               <div className="table-wrap" style={{ marginBottom: 14 }}>
                 <table>
-                  <thead><tr><th style={{ width: 36 }}>#</th><th>8 点诊断</th><th style={{ width: 50 }}>结果</th><th>说明</th><th style={{ width: 86 }}></th></tr></thead>
+                  <thead><tr><th style={{ width: 36 }}>#</th><th>自检清单（{diag.items.length} 项）</th><th style={{ width: 50 }}>结果</th><th>说明</th><th style={{ width: 86 }}></th></tr></thead>
                   <tbody>
                     {diag.items.map((it) => (
                       <tr key={it.no}>
@@ -389,10 +399,16 @@ export default function Onboarding() {
             <div style={{ marginTop: 20, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <button
                 className="btn primary"
-                disabled={diag ? diag.overall === "block" : !allOk}
+                disabled={blocked}
                 onClick={() => navigate("production", "pipeline")}
-              >↗ 全部就绪 → 跳转到生产页启动首轮</button>
-              {(diag ? diag.overall === "block" : !allOk) && <span style={{ color: "var(--orange)", fontSize: 12 }}>! 还有项未通过，先完成配置</span>}
+              >{checks.goals_ok ? "↗ 开始第一轮" : "↗ 试跑第一轮（暂不设阶段目标）"}</button>
+              {blocked
+                ? <span style={{ color: "var(--orange)", fontSize: 12 }}>! 还有阻塞项未通过，先完成配置</span>
+                : !checks.goals_ok && (
+                  <span style={{ color: "var(--muted)", fontSize: 12 }}>
+                    没设阶段目标也能试跑：本轮照常产出草稿，只是暂时不统计目标达成率
+                  </span>
+                )}
             </div>
           </div>
         )}
