@@ -70,7 +70,7 @@ from src.core.ops.engine import OperationsEngine
 from src.core import auth
 from src.core import kb_sources
 from src.core import industry_presets
-from src.core.env_store import read_env, write_env
+from src.core.env_store import env_file, read_env, write_env
 from src.core.redact import redact, redact_path
 from src.core.notify import Notifier, set_active as set_active_notifier, macos_available
 from src.core.hot_topics import HotTopicCollector
@@ -2917,30 +2917,10 @@ def _register_routes(app: FastAPI) -> None:
         cfg = _g()["cfg"]
         key_name = cfg.llm.api_key_env
         value = req.api_key.strip()
-        lines: list[str] = []
-        if DEFAULT_ENV_PATH.exists():
-            lines = DEFAULT_ENV_PATH.read_text(encoding="utf-8").splitlines()
-        out: list[str] = []
-        replaced = False
-        for line in lines:
-            if line.strip().startswith(f"{key_name}="):
-                if value:
-                    out.append(f"{key_name}={value}")
-                    replaced = True
-                continue  # 空值 = 删除该行
-            out.append(line)
-        if value and not replaced:
-            out.append(f"{key_name}={value}")
-        DEFAULT_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-        DEFAULT_ENV_PATH.write_text("\n".join(out) + "\n", encoding="utf-8")
-        DEFAULT_ENV_PATH.chmod(0o600)
-        if value:
-            os.environ[key_name] = value
-        else:
-            os.environ.pop(key_name, None)
+        write_env(key_name, value)
         # R23：只回报状态，绝不回报 Key 本身
         return {"ok": True, "has_key": bool(os.environ.get(key_name)),
-                "env_file": str(DEFAULT_ENV_PATH)}
+                "env_file": str(env_file())}
 
     # --- 内容资产（G-13：外部参考 / 个人观点 / 内容模板）---
     @app.get("/api/assets")
