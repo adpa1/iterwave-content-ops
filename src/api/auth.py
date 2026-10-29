@@ -61,8 +61,10 @@ def _client_ip(request: Request) -> str:
 
 
 def _is_trusted_local_setup(request: Request) -> bool:
-    # 必须同时满足 TCP 对端与访问主机名均是 loopback；不能只靠可伪造的 Host 头。
-    # 反向代理传入转发头时一律按远程请求处理，即使代理本身监听在 loopback。
+    # 本机免引导初始化必须显式 opt-in。反向代理可能让外部请求看起来来自 loopback，
+    # 因此不能仅根据 request.client 或 Host 判断信任。
+    if os.environ.get("ITERWAVE_ALLOW_LOCAL_BOOTSTRAP", "").strip().lower() not in ("1", "true", "yes"):
+        return False
     if any(request.headers.get(name) for name in (
         "forwarded", "x-forwarded-for", "x-real-ip", "x-forwarded-proto"
     )):
