@@ -241,12 +241,22 @@ def restore_backup(backup_path: Path | str, db_path: Path | str, data_dir: Path 
         # 先保留回滚副本；数据库 WAL/SHM 在停机恢复前一并移走。
         db_rollback = backup_dir / f"pre_restore_{tenant_id}_{ts}.db"
         if db_path.exists():
-            shutil.copy2(db_path, db_rollback)
+            rollback_source = sqlite3.connect(str(db_path), timeout=30)
+            rollback_target = sqlite3.connect(str(db_rollback))
+            try:
+                rollback_source.backup(rollback_target)
+            finally:
+                rollback_target.close()
+                rollback_source.close()
         for suffix in ("-wal", "-shm"):
             db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
         media_rollback = backup_dir / f"pre_restore_media_{tenant_id}_{ts}"
         output_dir = data_dir / "outputs"
         output_rollback = backup_dir / f"pre_restore_outputs_{tenant_id}_{ts}"
+        config_path = data_dir / "config_overrides.json"
+        config_rollback = backup_dir / f"pre_restore_config_{tenant_id}_{ts}.json"
+        if config_path.exists():
+            shutil.copy2(config_path, config_rollback)
         created_outputs: list[Path] = []
         overwritten_outputs: list[str] = []
         if media_dir.exists():
@@ -266,7 +276,6 @@ def restore_backup(backup_path: Path | str, db_path: Path | str, data_dir: Path 
                 else:
                     created_outputs.append(destination)
                 os.replace(staged_file, destination)
-            config_path = data_dir / "config_overrides.json"
             if (stage / "config_overrides.json").exists():
                 os.replace(stage / "config_overrides.json", config_path)
             else:
@@ -285,5 +294,9 @@ def restore_backup(backup_path: Path | str, db_path: Path | str, data_dir: Path 
                     shutil.copy2(previous, output_dir / name)
             if db_rollback.exists():
                 shutil.copy2(db_rollback, db_path)
+            if config_rollback.exists():
+                shutil.copy2(config_rollback, config_path)
+            else:
+                config_path.unlink(missing_ok=True)
             raise BackupError(f"恢复未完成，已尝试回滚：{exc}") from exc
     return {"database": str(db_path), "media_dir": str(media_dir), "rollback_db": str(db_rollback)}
