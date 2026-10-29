@@ -60,6 +60,17 @@ class Database:
             logger.warning("无法收紧数据库文件权限：%s", self.db_path.name)
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.execute("PRAGMA journal_mode = WAL;")    # 读写并发
+        # WAL/SHM 可能包含尚未检查点的私有数据；与主数据库保持相同的私有权限。
+        for protected in (
+            self.db_path,
+            Path(str(self.db_path) + "-wal"),
+            Path(str(self.db_path) + "-shm"),
+        ):
+            if protected.exists():
+                try:
+                    protected.chmod(0o600)
+                except OSError:
+                    logger.warning("无法收紧数据库文件权限：%s", protected.name)
         conn.execute("PRAGMA synchronous = NORMAL;")    # WAL 下足够安全
         conn.execute("PRAGMA timeout = 30000;")        # 忙等 30s
         conn.row_factory = sqlite3.Row                  # 列名访问
@@ -166,7 +177,12 @@ class Database:
         for suffix in ("", "-wal", "-shm"):
             src = self.db_path.with_name(self.db_path.name + suffix)
             if src.exists():
-                shutil.copy2(src, dest.with_name(dest.name + suffix))
+                target = dest.with_name(dest.name + suffix)
+                shutil.copy2(src, target)
+                try:
+                    target.chmod(0o600)
+                except OSError:
+                    logger.warning("无法收紧数据库备份文件权限：%s", target.name)
         logger.info("数据库已备份: %s", dest)
 
         # 保留最近 10 份
