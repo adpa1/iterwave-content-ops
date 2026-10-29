@@ -22,11 +22,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import urljoin
 
 import httpx
 
@@ -47,6 +49,42 @@ _FETCH_TIMEOUT_SECONDS = 15
 # 配置里的平台名 → 60s API 路径名（bilibili 的接口路径是 bili）
 _PLATFORM_PATH = {"bilibili": "bili"}
 _MULTIPLIERS = {"万": 10_000, "亿": 100_000_000}
+
+
+def _fetch_public_text(url: str, *, headers: dict[str, str], timeout: int) -> tuple[str, str]:
+    """有限体积的公网 HTTP(S) 抓取；重定向逐跳验证且只允许同源，防止 SSRF。"""
+    from .kb_sources import MAX_UPLOAD_BYTES, _url_origin, _validate_remote_url
+
+    current_url = url
+    redirect_statuses = {301, 302, 303, 307, 308}
+    for _ in range(6):
+        parsed = _validate_remote_url(current_url)
+        with httpx.stream(
+            "GET", current_url, headers=headers, timeout=timeout, follow_redirects=False
+        ) as resp:
+            if resp.status_code in redirect_statuses:
+                location = resp.headers.get("location")
+                if not location:
+                    raise ValueError("远程热点源返回了不完整的重定向")
+                next_url = urljoin(current_url, location)
+                next_parsed = _validate_remote_url(next_url)
+                if _url_origin(parsed) != _url_origin(next_parsed):
+                    raise ValueError("远程热点源不允许跨域重定向，请直接填写最终地址")
+                current_url = next_url
+                continue
+
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "")
+            chunks: list[bytes] = []
+            size = 0
+            for chunk in resp.iter_bytes():
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise ValueError("远程热点源响应超过 20MB 上限")
+                chunks.append(chunk)
+            return b"".join(chunks).decode("utf-8", errors="replace"), content_type
+
+    raise ValueError("远程热点源重定向次数过多")
 
 
 def _parse_feed_ts(value) -> Optional[datetime]:
@@ -246,12 +284,11 @@ class HotTopicCollector:
     def _fetch_platform(self, platform: str, base_url: str, source_name: str) -> list[dict]:
         path = _PLATFORM_PATH.get(platform, platform)
         url = f"{base_url}/v2/{path}"
-        resp = httpx.get(
+        body, _content_type = _fetch_public_text(
             url, timeout=_FETCH_TIMEOUT_SECONDS,
             headers={"User-Agent": "iterwave/0.1 (+local)"},
         )
-        resp.raise_for_status()
-        payload = resp.json()
+        payload = json.loads(body)
         if payload.get("code") not in (200, None):
             raise RuntimeError(f"接口返回 code={payload.get('code')} {payload.get('message', '')}")
 
@@ -285,21 +322,19 @@ class HotTopicCollector:
         url = str(source.get("url") or "").strip()
         if not url.startswith(("http://", "https://")):
             raise ValueError("行业源地址无效")
-        resp = httpx.get(
+        body, content_type = _fetch_public_text(
             url, timeout=_FETCH_TIMEOUT_SECONDS,
             headers={**{str(k): str(v) for k, v in (source.get("headers") or {}).items() if k},
                      "User-Agent": "iterwave/0.1 (+local)"},
-            follow_redirects=True,
         )
-        resp.raise_for_status()
         feed_type = source.get("type") or "rss"
-        if feed_type == "rss" or "xml" in resp.headers.get("content-type", ""):
+        if feed_type == "rss" or "xml" in content_type:
             from .kb_sources import parse_rss
-            _, raw_rows = parse_rss(resp.text)
+            _, raw_rows = parse_rss(body)
             rows = [{"title": r.get("title"), "link": r.get("link"), "description": r.get("summary"),
                      "date": r.get("date"), "heat": None} for r in raw_rows]
         else:
-            payload = resp.json()
+            payload = json.loads(body)
             raw_rows = payload if isinstance(payload, list) else payload.get("items") or payload.get("data") or []
             rows = []
             for raw in raw_rows if isinstance(raw_rows, list) else []:
