@@ -929,7 +929,8 @@ def _register_routes(app: FastAPI) -> None:
         conn = _g()["conn"]
         existing = conn.execute(
             "SELECT id, title, original_filename, mime_type, byte_size, width, height, "
-            "alt_text, tags, status, created_at FROM media_assets WHERE sha256 = ? LIMIT 1",
+            "alt_text, tags, status, created_at FROM media_assets "
+            "WHERE sha256 = ? AND status = 'active' LIMIT 1",
             (digest,),
         ).fetchone()
         if existing:
