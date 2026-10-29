@@ -1541,6 +1541,76 @@ def _register_routes(app: FastAPI) -> None:
         )
         return {"draft_id": draft_id, "status": "user_published", "note_url": note_url or None}
 
+    @app.post("/api/drafts/{draft_id}/confirm_platform_sync")
+    def confirm_platform_draft_sync(
+        draft_id: str, req: PlatformSyncConfirmRequest,
+    ):
+        """用户确认已在平台端手动更新草稿，使其与当前本地文案版本一致。"""
+        conn = _g()["conn"]
+        row = conn.execute(
+            "SELECT d.status, d.saved_content_hash, c.id AS content_id, c.round_id, "
+            "c.title, c.body, c.tags, c.image_paths, c.guard_outcome, c.guard_reason, "
+            "c.review_rejected, c.review_rejection_reason "
+            "FROM drafts d JOIN contents c ON c.id = d.content_id WHERE d.id = ?",
+            (draft_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, f"草稿 {draft_id} 不存在")
+        if row["status"] != "draft_saved":
+            raise HTTPException(
+                409, f"当前状态为 {row['status']}，只有已存入平台的草稿可以确认同步",
+            )
+        _ensure_content_round_idle(row, "确认平台版本同步")
+        if bool(row["review_rejected"]):
+            raise HTTPException(
+                409,
+                f"该内容已被人工驳回：{row['review_rejection_reason'] or '未提供原因'}。"
+                "请先修改文案、重新过目标检查并提交审核",
+            )
+        from src.core.content_pipeline import _llm_available
+        llm_available = _llm_available(_g()["cfg"])
+        guard_outcome = row["guard_outcome"]
+        guard_accepted = guard_outcome == "pass" or (
+            guard_outcome == "warn" and not llm_available
+        )
+        if not guard_accepted:
+            raise HTTPException(
+                409,
+                f"当前质检状态为 {guard_outcome or '未检查'}："
+                f"{row['guard_reason'] or '当前文案尚未通过目标检查'}。"
+                "请先运行「重新过目标检查」并通过后，再确认平台版本同步",
+            )
+
+        from src.core.content_version import content_version_hash, parse_json_list
+        stored_images = parse_json_list(row["image_paths"])
+        payload_images = [str(stored_images[0])] if stored_images and stored_images[0] else []
+        current_hash = content_version_hash(
+            row["title"], row["body"], parse_json_list(row["tags"]), payload_images,
+        )
+        old_hash = row["saved_content_hash"]
+        conn.execute(
+            "UPDATE drafts SET saved_content_hash = ? WHERE id = ?",
+            (current_hash, draft_id),
+        )
+        conn.execute(
+            "INSERT INTO user_override (round_id, override_field, original_value, "
+            "override_value, reason, overridden_by, overridden_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["round_id"], "platform_content_sync_confirmed",
+                json.dumps({"saved_content_hash": old_hash}, ensure_ascii=False)[:500],
+                json.dumps({"saved_content_hash": current_hash}, ensure_ascii=False)[:500],
+                req.reason.strip(), "publish-confirm-ui",
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        conn.commit()
+        return {
+            "draft_id": draft_id,
+            "platform_content_sync": "matched",
+            "message": "已记录平台草稿与当前本地文案版本一致",
+        }
+
     @app.post("/api/drafts/{draft_id}/cancel")
     def cancel_draft(draft_id: str):
         """用户点"❌ 不发了" → 草稿转 cancelled（R9：collecting_metrics 期间仍可取消未发布草稿）。"""
