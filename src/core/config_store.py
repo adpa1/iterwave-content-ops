@@ -516,6 +516,11 @@ def load_overrides(cfg: Config) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
+        # 兼容旧版本创建的文件：读取时也收紧权限，不必等待下一次配置写入。
+        try:
+            path.chmod(0o600)
+        except OSError:
+            logger.warning("无法收紧运行时配置覆盖文件权限：%s", path.name)
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError) as e:
