@@ -262,16 +262,16 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
         return {"selected": {"id": tenant_id, "name": registry.get(tenant_id).get("name") or tenant_id},
                 "runtime_tenant_id": tenant_id, "restart_required": False,
                 "switch_status": "unchanged", "message": "当前账号组已是运行中的账号组。"}
+    try:
+        registry.get(tenant_id)
+    except TenantError as exc:
+        raise HTTPException(404, str(exc)) from exc
     # 请求闸门已排空普通 API 请求；仍在运行的轮次最多等待 120 秒，超时则安全中止。
     round_deadline = time.monotonic() + 120.0
     while _running_rounds:
         if time.monotonic() >= round_deadline:
             raise HTTPException(409, "轮次在 120 秒内未能结束，已取消账号组切换")
         await asyncio.sleep(0.05)
-    try:
-        registry.get(tenant_id)
-    except TenantError as exc:
-        raise HTTPException(404, str(exc)) from exc
 
     old_context = dict(_g_ctx)
     old_scheduler = old_context.get("scheduler")
