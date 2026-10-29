@@ -363,6 +363,30 @@ export default function MediaLibraryPane() {
           </div>
         </div>
         {targetWarning && <div className="note" role="alert" style={{ color: "var(--orange)", marginBottom: 10 }}>{targetWarning}</div>}
+        {targets.length > 0 && <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+          <button className="btn sm primary" onClick={() => void recommendForContent()} disabled={!selectedContentId || recommendationLoading}>
+            {recommendationLoading ? "匹配中…" : "为当前内容推荐素材"}
+          </button>
+        </div>}
+        {recommendations.length > 0 && <div className="panel" style={{ marginBottom: 14, padding: 12 }}>
+          <div className="panel-title">匹配推荐（前 {recommendations.length} 项）</div>
+          <div className="panel-sub">按内容标题、正文、素材名称及标签进行关键词匹配；仅展示已审核素材，不会自动配图。</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 8, marginTop: 10 }}>
+            {recommendations.map((rec) => {
+              const asset = items.find((item) => item.id === rec.asset_id);
+              if (!asset) return null;
+              return <div key={rec.asset_id} style={{ display: "flex", gap: 10, border: "1px solid var(--border)", borderRadius: 8, padding: 8, minWidth: 0 }}>
+                <img src={asset.file_url} alt={asset.alt_text || asset.title} loading="lazy" style={{ width: 68, height: 68, objectFit: "contain", background: "var(--surface-2)", borderRadius: 6, flexShrink: 0 }} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{asset.title}</div>
+                  <div className="panel-sub">{rec.reason || "关键词匹配"} · 匹配分 {rec.score}</div>
+                  <button className="btn sm primary" style={{ marginTop: 6 }} onClick={() => void assignToContent(asset)} disabled={!selectedContentId || isPending("media:use:" + asset.id)}>使用此素材</button>
+                </div>
+              </div>;
+            })}
+          </div>
+          {recommendationMessage && <div className="panel-sub" style={{ marginTop: 8 }}>{recommendationMessage}</div>}
+        </div>}
         {targets.length > 0 && (
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
             <span className="field-label">手动配图目标</span>
