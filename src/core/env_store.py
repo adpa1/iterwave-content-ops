@@ -23,7 +23,19 @@ def env_file() -> Path:
 
 
 def write_env(key: str, value: str) -> Path:
-    """原子写入 / 删除一个环境变量，保留其它行并尽量避免半写入密钥文件。"""
+    """校验并串行化写入 / 删除一个环境变量，避免注入和进程内并发覆盖。"""
+    if not isinstance(key, str) or not _ENV_KEY_RE.fullmatch(key):
+        raise ValueError("环境变量名格式不合法")
+    if not isinstance(value, str):
+        raise TypeError("环境变量值必须是字符串")
+    if "\\n" in value or "\\r" in value:
+        raise ValueError("环境变量值不能包含换行符")
+    with _WRITE_LOCK:
+        return _write_env_unlocked(key, value)
+
+
+def _write_env_unlocked(key: str, value: str) -> Path:
+    """调用方持有进程内锁时执行原子文件替换。"""
     path = env_file()
     lines: list[str] = []
     if path.exists():
