@@ -1519,7 +1519,7 @@ def _register_routes(app: FastAPI) -> None:
                         row["contents_all"] = int(conn.execute("SELECT COUNT(*) FROM contents").fetchone()[0])
                         cols = {r["name"] for r in conn.execute("PRAGMA table_info(contents)").fetchall()}
                         if "created_at" in cols:
-                            row["contents_period"] = int(conn.execute("SELECT COUNT(*) FROM contents WHERE created_at >= ?", (since,)).fetchone()[0])
+                            row["contents_period"] = int(conn.execute("SELECT COUNT(*) FROM contents WHERE datetime(created_at) >= datetime(?)", (since,)).fetchone()[0])
                         for item in conn.execute("SELECT platform, COUNT(*) AS n FROM contents GROUP BY platform").fetchall():
                             platform = item["platform"]
                             row["platforms"].setdefault(platform, {"contents": 0, "drafts": 0})["contents"] = int(item["n"])
