@@ -93,7 +93,7 @@ def test_resume_requires_enabled_save_draft_step(cfg, conn, seed):
     seed.draft(round_id, platform="xhs", draft_status="draft_pending", fetch_status=None)
     steps = default_steps()
     for step in steps:
-        if step["id"] == "save_draft":
+        if step["id"] in ("save_draft", "await_publish"):
             step["enabled"] = False
     save_steps(conn, steps)
 
