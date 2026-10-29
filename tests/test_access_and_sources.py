@@ -118,6 +118,13 @@ def test_login_rate_limit():
     assert auth.login("secret123", "5.6.7.8")
 
 
+def test_prefixed_api_routes_are_normalized(api_client, monkeypatch):
+    monkeypatch.setenv("APP_BASE_PATH", "/iterwave/")
+    response = api_client.get("/iterwave/api/topics")
+    assert response.status_code == 403
+    assert response.json()["code"] == "setup_required"
+
+
 def test_middleware_requires_login_only_after_password_set(api_client):
     blocked = api_client.get("/api/topics")
     assert blocked.status_code == 403
