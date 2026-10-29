@@ -30,9 +30,10 @@ export default function GlobalMonitor() {
     ["账号组", total?.tenants ?? "—", `数据库可读取 ${total?.available_tenants ?? "—"} 个`],
     ["内容产出", total?.contents_period ?? "—", `近 ${days} 天`],
     ["内容总量", total?.contents_all ?? "—", "所有可读取账号组"],
-    ["待审核 / 待存草稿", total?.drafts_pending ?? "—", "按当前状态口径统计"],
+    ["待存草稿", total?.drafts_pending ?? "—", "draft_pending 状态；不等同于人工审核"],
     ["已存平台草稿", total?.drafts_saved ?? "—", "不等同于已发布"],
     ["已发布及后续状态", total?.drafts_published ?? "—", "含已发布、采集和已采集"],
+    ["失败草稿", total?.drafts_failed ?? "—", "按失败状态记录统计"],
     ["可用图片素材", total?.media_active ?? "—", "各账号组素材库合计"],
     ["素材使用关系", total?.media_usage ?? "—", "记录配图分配关系"],
   ] as const;
@@ -117,7 +118,7 @@ export default function GlobalMonitor() {
           </section>
 
           <div className="note" style={{ marginTop: 12 }}>
-            统计说明：内容产出量依据 contents.created_at；草稿按 drafts.status 分类；“发布及后续”包含已发布、数据采集中和已采集状态。当前数据模型没有可去重的平台账号身份字段，因此本页不把平台数或账号快照数冒充账号数。
+            统计说明：内容产出量依据 contents.created_at；草稿按 drafts.status 分类；“待存草稿”不代表人工审核队列；“发布及后续”包含已发布、数据采集中和已采集状态。当前数据模型没有可去重的平台账号身份字段，因此本页不把平台数或账号快照数冒充账号数。
           </div>
         </>
       )}
