@@ -1616,6 +1616,7 @@ def _register_routes(app: FastAPI) -> None:
         conn = _g()["conn"]
         sql = (
             "SELECT d.*, c.title, c.body, c.tags, c.image_paths, c.round_id, c.topic_id, "
+            "c.visual_status AS visual_status, c.visual_reason AS visual_reason, "
             "c.platform as cfg_platform, c.guard_outcome AS guard_outcome, c.guard_reason AS guard_reason, "
             "c.review_rejected AS review_rejected, "
             "c.review_rejection_reason AS review_rejection_reason "
