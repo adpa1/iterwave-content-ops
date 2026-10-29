@@ -999,7 +999,7 @@ def _register_routes(app: FastAPI) -> None:
                     "mime_type": mime_type, "byte_size": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
                     "width": width, "height": height, "alt_text": req.alt_text.strip(),
                     "tags": tags, "source_type": "generated", "source_ref": source_ref,
-                    "status": "active", "review_status": "pending_review",
+                    "status": "active", "review_status": "pending_review", "review_note": None,
                     "duplicate": False, "file_url": f"/api/media/{asset_id}/file",
                     "job_id": job_id, "review_required": True,
                 }
@@ -1147,7 +1147,7 @@ def _register_routes(app: FastAPI) -> None:
         conn = _g()["conn"]
         existing = conn.execute(
             "SELECT id, title, original_filename, mime_type, byte_size, width, height, "
-            "alt_text, tags, status, created_at FROM media_assets "
+            "alt_text, tags, status, review_status, review_note, created_at FROM media_assets "
             "WHERE sha256 = ? AND status = 'active' LIMIT 1",
             (digest,),
         ).fetchone()
@@ -1210,6 +1210,7 @@ def _register_routes(app: FastAPI) -> None:
             "mime_type": mime_type, "byte_size": len(raw), "sha256": digest,
             "width": width, "height": height, "alt_text": req.alt_text.strip(),
             "tags": tags, "source_type": "upload", "status": "active",
+            "review_status": "approved", "review_note": None,
             "duplicate": False, "file_url": f"/api/media/{cur.lastrowid}/file",
         }
 
