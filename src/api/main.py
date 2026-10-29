@@ -1002,7 +1002,7 @@ def _register_routes(app: FastAPI) -> None:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
             used = int(conn.execute(
-                "SELECT COUNT(*) FROM media_generation_jobs WHERE created_at >= ?", (month_start,),
+                "SELECT COUNT(*) FROM media_generation_jobs WHERE created_at >= ? AND status = 'succeeded'", (month_start,),
             ).fetchone()[0])
             quota = int(settings.get("monthly_quota") or 0)
             if quota <= 0 or used >= quota:
@@ -1070,7 +1070,7 @@ def _register_routes(app: FastAPI) -> None:
                     target.unlink(missing_ok=True)
                 conn.execute(
                     "UPDATE media_generation_jobs SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?",
-                    ("图片生成请求未完成", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
+                    ("图片生成失败", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
                 )
                 conn.commit()
                 raise
@@ -1079,14 +1079,15 @@ def _register_routes(app: FastAPI) -> None:
                     target.unlink(missing_ok=True)
                 conn.execute(
                     "UPDATE media_generation_jobs SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?",
-                    (str(exc)[:500], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
+                    ("图片生成失败，详细原因仅记录在服务端日志", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
                 )
                 conn.commit()
                 logger.exception("AI 配图任务失败 job=%s", job_id)
                 from src.core.media_generation import ImageGenerationError
                 if isinstance(exc, ImageGenerationError):
-                    raise HTTPException(502, str(exc)) from exc
-                raise HTTPException(500, "图片生成失败，任务已记录") from exc
+                    # 服务商原文可能包含内部地址或认证信息，不向客户端透传。
+                    raise HTTPException(502, "图片生成服务暂时不可用，请检查服务配置后重试") from exc
+                raise HTTPException(500, "图片生成失败，请稍后重试；如持续失败请联系管理员") from exc
 
     @app.get("/api/media/generation-settings")
     def get_media_generation_settings():
@@ -1103,12 +1104,11 @@ def _register_routes(app: FastAPI) -> None:
         settings["enabled"] = bool(settings["enabled"])
         month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
         settings["used_this_month"] = int(conn.execute(
-            "SELECT COUNT(*) FROM media_generation_jobs WHERE created_at >= ?", (month_start,),
+            "SELECT COUNT(*) FROM media_generation_jobs WHERE created_at >= ? AND status = 'succeeded'", (month_start,),
         ).fetchone()[0])
         key_env = os.getenv("ITERWAVE_IMAGE_API_KEY_ENV", "OPENAI_API_KEY").strip()
         settings["provider_configured"] = bool(key_env and os.getenv(key_env))
-        settings["api_base_url"] = os.getenv("ITERWAVE_IMAGE_API_BASE_URL", "https://api.openai.com/v1")
-        settings["api_key_env"] = key_env
+        # 服务端地址与密钥环境变量名属于部署细节，不通过公开设置接口返回。
         return settings
 
     @app.put("/api/media/generation-settings")
@@ -1134,8 +1134,12 @@ def _register_routes(app: FastAPI) -> None:
         row = _g()["conn"].execute("SELECT id, title, body, platform FROM contents WHERE id = ?", (content_id,)).fetchone()
         if row is None:
             raise HTTPException(404, "目标内容不存在")
-        title = str(row["title"] or "内容配图")
-        body = str(row["body"] or "")
+        title = str(row["title"] or "").strip()
+        body = str(row["body"] or "").strip()
+        if not body:
+            raise HTTPException(422, "请先补充正文内容，再生成配图")
+        if not title:
+            title = "内容配图"
         role_label = {"cover": "封面主视觉", "illustration": "正文插图", "background": "背景图"}[usage_role]
         prompt = (f"为当前平台内容生成一张{role_label}。主题：{title}。正文摘要：{body[:900]}。" +
                   "画面与主题直接相关，构图清晰，适合移动端阅读；不要生成文字、二维码、水印或虚构品牌标识。" +
@@ -1340,7 +1344,7 @@ def _register_routes(app: FastAPI) -> None:
     def recommend_media_assets(
         content_id: str = Query(..., min_length=1, max_length=128),
         usage_role: str = Query("cover", pattern="^(cover|illustration|background)$"),
-        limit: int = Query(8, ge=1, le=20),
+        limit: int = Query(20, ge=1, le=20),
     ):
         """基于内容文本与素材标题/标签的可解释关键词匹配；只推荐已审核且未归档素材，不自动分配。"""
         conn = _g()["conn"]
@@ -1597,7 +1601,7 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(409, str(exc)) from exc
         return {
             "tenant": {"id": req.tenant_id, "name": req.name.strip()},
-            "paths": paths.as_dict(),
+            "storage_ready": True,
             "restart_required": False,
         }
 
@@ -1692,7 +1696,7 @@ def _register_routes(app: FastAPI) -> None:
                 if platform in platform_totals:
                     platform_totals[platform]["registered_accounts"] += int(values.get("registered_accounts", 0))
             tenant_rows.append(row)
-        return {"days": days, "since": since, "totals": totals, "platform_totals": platform_totals, "tenants": tenant_rows, "account_count_note": "账号数量来自用户登记的平台账号标识，按账号组和平台去重；未登记的账号不会自动推断计入。"}
+        return {"days": days, "since": since, "totals": totals, "platform_totals": platform_totals, "tenants": tenant_rows, "account_count_note": "账号总数为人工登记的全部平台账号；启用数仅统计状态为启用的账号。未登记的账号不会自动推断计入。"}
 
     # --- 访问保护（口令 / 会话 / 脚本令牌）---
     @app.get("/api/auth/status")
