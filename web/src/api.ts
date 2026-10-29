@@ -467,6 +467,8 @@ export interface TenantListResponse {
   runtime_tenant_id: string;
   selected_tenant_id: string;
   restart_required: boolean;
+  /** 即时切换需在服务端显式设置 ITERWAVE_ENABLE_TENANT_HOT_SWITCH=true。 */
+  hot_switch_enabled?: boolean;
   items: TenantItem[];
 }
 export interface GlobalMonitorTenant {
