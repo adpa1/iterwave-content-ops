@@ -656,7 +656,15 @@ class RoundExecutor:
         variant_summary: list[dict] = []
 
         orch = getattr(self, "_orch", None)
-        make_cards = orch.on("image_card") if orch else True
+        # IterWave 的交付物是图文内容，图片卡片属于必需步骤，不能被编排开关静默关闭。
+        # 兼容旧配置：记录已强制启用，避免旧账号组生成没有任何图片的内容。
+        make_cards = True
+        if orch and not orch.on("image_card"):
+            report["steps"].append({
+                "step": "image_card",
+                "status": "forced_enabled",
+                "reason": "图文内容必须包含视觉素材；旧编排中的关闭设置不再跳过出图",
+            })
         card_first = bool(orch and orch.card_before_gate and make_cards)
         for rank, st in enumerate(scored):
             topic = st.topic
