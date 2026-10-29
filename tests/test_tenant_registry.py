@@ -56,7 +56,7 @@ def test_corrupt_registry_does_not_fall_back_to_default(tmp_path: Path) -> None:
     registry = TenantRegistry(tmp_path)
     registry.initialize()
     registry.registry_file.write_text("{broken", encoding="utf-8")
-    with pytest.raises(TenantError, match="无法读取"):
+    with pytest.raises(TenantError, match="拒绝自动回退"):
         registry.active_id()
 
 
