@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -93,3 +95,72 @@ def test_xlsx_column_coordinate_is_bounded():
         pass
     else:
         raise AssertionError("expected excessive Excel column coordinate to be rejected")
+
+def test_topic_parsers_enforce_row_limits(monkeypatch):
+    monkeypatch.setattr(kb_sources, "MAX_TOPIC_ROWS", 2)
+
+    assert len(kb_sources.parse_csv("title\na\nb")[1]) == 2
+    for parser, payload in (
+        (kb_sources.parse_csv, "title\na\nb\nc"),
+        (kb_sources.parse_json, json.dumps([{"title": "a"}, {"title": "b"}, {"title": "c"}])),
+        (kb_sources.parse_jsonl, '{"title":"a"}\n{"title":"b"}\n{"title":"c"}'),
+        (kb_sources.parse_rss, "<rss><channel><title>x</title><item><title>a</title></item><item><title>b</title></item><item><title>c</title></item></channel></rss>"),
+    ):
+        try:
+            parser(payload)
+        except ValueError as exc:
+            assert "行上限" in str(exc)
+        else:
+            raise AssertionError(f"{parser.__name__} should enforce the row limit")
+
+
+def test_sqlite_table_names_are_quoted_consistently(tmp_path, monkeypatch):
+    monkeypatch.setattr(kb_sources, "MAX_TOPIC_ROWS", 10)
+    path = tmp_path / "topics.sqlite"
+    connection = sqlite3.connect(path)
+    try:
+        table_name = 'odd"] OR 1=1 --'
+        quoted = '"' + table_name.replace('"', '""') + '"'
+        connection.execute(f"CREATE TABLE {quoted} (title TEXT)")
+        connection.execute(f"INSERT INTO {quoted} VALUES ('safe title')")
+        connection.commit()
+    finally:
+        connection.close()
+
+    columns, rows = kb_sources.parse_sqlite(path, None)
+    assert columns == ["title"]
+    assert rows == [{"title": "safe title"}]
+
+
+def test_registry_save_is_atomic_and_private(tmp_path):
+    cfg = SimpleNamespace(paths=SimpleNamespace(data_dir=str(tmp_path)))
+    source = {"id": "kb-test_1", "kind": "server", "name": "test"}
+
+    kb_sources.save_registry(cfg, [source])
+
+    path = kb_sources.registry_file(cfg)
+    assert json.loads(path.read_text(encoding="utf-8"))["sources"] == [source]
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert not list(path.parent.glob(".sources.json.*.tmp"))
+
+
+def test_source_cache_ids_cannot_escape_cache_directory(tmp_path):
+    cfg = SimpleNamespace(paths=SimpleNamespace(data_dir=str(tmp_path)))
+    try:
+        kb_sources._source_path(cfg, {"id": "../outside", "kind": "remote", "format": "csv"})
+    except ValueError as exc:
+        assert "ID" in str(exc)
+    else:
+        raise AssertionError("path-like source IDs must be rejected")
+
+
+def test_config_overrides_save_is_atomic_and_private(tmp_path, monkeypatch):
+    path = tmp_path / "config_overrides.json"
+    monkeypatch.setattr(config_store, "OVERRIDES_FILE", path)
+
+    config_store._save_overrides(None, {"ui.theme": "dark"})
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {"ui.theme": "dark"}
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert not list(tmp_path.glob(".config_overrides.json.*.tmp"))
+
