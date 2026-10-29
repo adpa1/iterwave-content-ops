@@ -428,6 +428,11 @@ class MediaGenerationRequest(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=30)
 
 
+class TenantBackupRestoreRequest(BaseModel):
+    backup_name: str = Field(min_length=1, max_length=255)
+    confirm: bool = False
+
+
 class MediaAssetReviewRequest(BaseModel):
     decision: str = Field(pattern="^(approved|rejected)$")
     note: str = Field(default="", max_length=500)
@@ -1321,6 +1326,75 @@ def _register_routes(app: FastAPI) -> None:
         )
         conn.commit()
         return {"id": asset_id, "status": "archived", "already_archived": row["status"] == "archived"}
+
+    @app.post("/api/tenant-backup")
+    def create_tenant_backup():
+        cfg = _g()["cfg"]
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        data_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
+        db_path = Path(cfg.resolve_path(cfg.paths.db_file))
+        backup_dir = Path(cfg.resolve_path(cfg.paths.backup_dir))
+        try:
+            from src.core.tenant_backup import create_backup
+            target = create_backup(db_path, data_dir, backup_dir, tenant_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("账号组备份失败 tenant=%s", tenant_id)
+            raise HTTPException(500, f"账号组备份失败：{exc}") from exc
+        return {
+            "backup_name": target.name,
+            "size_bytes": target.stat().st_size,
+            "created_at": datetime.fromtimestamp(target.stat().st_mtime).isoformat(timespec="seconds"),
+            "includes": ["SQLite 数据库快照", "活动图片素材", "账号组运行配置覆盖"],
+            "excludes": ["登录态 Cookie", "浏览器登录 profile", "API 密钥", "共享原始热点数据"],
+        }
+
+    @app.get("/api/tenant-backups")
+    def list_tenant_backups():
+        cfg = _g()["cfg"]
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        backup_dir = Path(cfg.resolve_path(cfg.paths.backup_dir))
+        items = []
+        for path in sorted(backup_dir.glob(f"iterwave_{tenant_id}_*.zip"), reverse=True):
+            if not path.is_file():
+                continue
+            items.append({
+                "backup_name": path.name,
+                "size_bytes": path.stat().st_size,
+                "created_at": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+            })
+        return {"items": items}
+
+    @app.post("/api/tenant-backup/restore")
+    def stage_tenant_backup_restore(req: TenantBackupRestoreRequest):
+        if not req.confirm:
+            raise HTTPException(400, "恢复操作需要显式确认")
+        if _running_rounds:
+            raise HTTPException(409, "当前仍有轮次在执行，不能安排恢复")
+        cfg = _g()["cfg"]
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        data_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
+        backup_dir = Path(cfg.resolve_path(cfg.paths.backup_dir)).resolve()
+        backup_name = Path(req.backup_name).name
+        if backup_name != req.backup_name or not backup_name.startswith(f"iterwave_{tenant_id}_") or not backup_name.endswith(".zip"):
+            raise HTTPException(422, "备份名称无效或不属于当前账号组")
+        target = (backup_dir / backup_name).resolve()
+        if not target.is_relative_to(backup_dir) or not target.is_file():
+            raise HTTPException(404, "备份文件不存在")
+        pending = data_dir / ".pending_restore.json"
+        pending.write_text(
+            json.dumps({"tenant_id": tenant_id, "backup_name": backup_name}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        try:
+            pending.chmod(0o600)
+        except OSError:
+            pass
+        return {
+            "staged": True,
+            "restart_required": True,
+            "backup_name": backup_name,
+            "message": "恢复将在后端下次启动、打开数据库前执行。请停止使用当前实例并立即重启；重启前的新写入不会保留。",
+        }
 
     @app.get("/api/tenants")
     def list_tenants():
