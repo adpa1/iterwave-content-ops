@@ -212,6 +212,10 @@ def _guess_ext(source: dict) -> str:
 
 def _validate_remote_url(url: str):
     """仅允许访问解析到公网地址的 HTTP(S) 来源，防止选题源变成 SSRF 入口。"""
+    if not isinstance(url, str):
+        raise ValueError("远程地址必须是字符串")
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
+        raise ValueError("远程地址不能包含空白或控制字符")
     try:
         parsed = urlsplit(url)
         scheme = parsed.scheme.lower()
@@ -219,9 +223,6 @@ def _validate_remote_url(url: str):
         port = parsed.port
     except ValueError as exc:
         raise ValueError("远程地址格式不合法") from exc
-
-    if not isinstance(url, str) or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
-        raise ValueError("远程地址不能包含空白或控制字符")
     if scheme not in ("http", "https") or not host:
         raise ValueError("远程地址必须是完整的 http(s) URL")
     if parsed.username is not None or parsed.password is not None:
