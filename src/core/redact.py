@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from urllib.parse import urlsplit
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _HOME = Path.home()
@@ -18,8 +17,11 @@ _HOME = Path.home()
 _SECRET_PATTERN = re.compile(
     r"(?i)\b(cookie|token|authorization|api[_-]?key)\b\s*[:=]\s*(?:bearer\s+)?([^\s,;]+)"
 )
-# URL 可能把凭据放在 userinfo、路径或查询参数里；日志中只保留协议和主机。
-_URL_PATTERN = re.compile(r"""(?i)https?://[^\s"'<>]+""")
+# URL userinfo（https://user:password@host）与常见签名/令牌查询参数
+_URL_USERINFO_PATTERN = re.compile(r"(?i)(https?://)[^/@\s]+@")
+_URL_SECRET_PARAM_PATTERN = re.compile(
+    r"(?i)([?&][^=&#\s]*(?:access[_-]?token|refresh[_-]?token|token|secret|password|signature|sig|credential|api[_-]?key|auth)[^=&#\s]*=)[^&#\s]+"
+)
 # 手机号（11 位 1[3-9]...）
 _PHONE_PATTERN = re.compile(r"(?<!\d)(1[3-9]\d)(\d{4})(\d{4})(?!\d)")
 # 微信号
@@ -42,24 +44,8 @@ def redact(text: str) -> str:
         if len(value) <= 4:
             return f"{key}=***"
         return f"{key}={value[:4]}***"
-    def _repl_url(m: re.Match) -> str:
-        raw = m.group(0)
-        try:
-            parsed = urlsplit(raw)
-            scheme = parsed.scheme.lower()
-            host = parsed.hostname or ""
-            if not scheme or not host:
-                return "https://***"
-            if ":" in host and not host.startswith("["):
-                host = f"[{host}]"
-            port = parsed.port
-            default_port = 443 if scheme == "https" else 80
-            authority = host if port is None or port == default_port else f"{host}:{port}"
-            return f"{scheme}://{authority}/…"
-        except ValueError:
-            return "https://***"
-
-    text = _URL_PATTERN.sub(_repl_url, text)
+    text = _URL_USERINFO_PATTERN.sub(r"\1***@", text)
+    text = _URL_SECRET_PARAM_PATTERN.sub(r"\1***", text)
     text = _SECRET_PATTERN.sub(_repl_secret, text)
 
     def _repl_phone(m: re.Match) -> str:

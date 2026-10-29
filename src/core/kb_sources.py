@@ -37,7 +37,6 @@ from .scoring.topic_eval import TopicItem
 logger = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
-MAX_TOPIC_ROWS = 100_000
 # XLSX 本质是 ZIP。压缩文件小于 20MB 不代表展开后的 XML 安全；限制总展开体积与条目数，防止 ZIP bomb。
 MAX_XLSX_EXPANDED_BYTES = 40 * 1024 * 1024
 MAX_XLSX_ENTRIES = 1000
@@ -84,10 +83,6 @@ def data_dir(cfg) -> Path:
 def kb_dir(cfg) -> Path:
     p = data_dir(cfg) / "kb"
     p.mkdir(parents=True, exist_ok=True)
-    try:
-        p.chmod(0o700)
-    except OSError:
-        logger.debug("无法收紧选题库目录权限：%s", p.name)
     return p
 
 
@@ -98,20 +93,12 @@ def registry_file(cfg) -> Path:
 def upload_dir(cfg) -> Path:
     p = kb_dir(cfg) / "uploads"
     p.mkdir(parents=True, exist_ok=True)
-    try:
-        p.chmod(0o700)
-    except OSError:
-        logger.debug("无法收紧上传目录权限：%s", p.name)
     return p
 
 
 def cache_dir(cfg) -> Path:
     p = kb_dir(cfg) / "cache"
     p.mkdir(parents=True, exist_ok=True)
-    try:
-        p.chmod(0o700)
-    except OSError:
-        logger.debug("无法收紧缓存目录权限：%s", p.name)
     return p
 
 
@@ -183,10 +170,6 @@ def save_registry(cfg, sources: list[dict]) -> None:
         json.dumps({"version": 1, "sources": sources}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    try:
-        path.chmod(0o600)
-    except OSError:
-        logger.warning("无法收紧选题来源登记文件权限：%s", path.name)
 
 
 def _new_id() -> str:
@@ -212,10 +195,6 @@ def _guess_ext(source: dict) -> str:
 
 def _validate_remote_url(url: str):
     """仅允许访问解析到公网地址的 HTTP(S) 来源，防止选题源变成 SSRF 入口。"""
-    if not isinstance(url, str):
-        raise ValueError("远程地址必须是字符串")
-    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
-        raise ValueError("远程地址不能包含空白或控制字符")
     try:
         parsed = urlsplit(url)
         scheme = parsed.scheme.lower()
@@ -223,6 +202,9 @@ def _validate_remote_url(url: str):
         port = parsed.port
     except ValueError as exc:
         raise ValueError("远程地址格式不合法") from exc
+
+    if not isinstance(url, str) or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
+        raise ValueError("远程地址不能包含空白或控制字符")
     if scheme not in ("http", "https") or not host:
         raise ValueError("远程地址必须是完整的 http(s) URL")
     if parsed.username is not None or parsed.password is not None:
@@ -440,10 +422,6 @@ def parse_rss(text: str) -> tuple[list[str], list[dict]]:
     return ["title", "link", "summary", "date", "source"], rows
 
 
-def _quote_sqlite_identifier(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
-
-
 def parse_sqlite(path: Path, table_name: Optional[str]) -> tuple[list[str], list[dict]]:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
@@ -458,17 +436,12 @@ def parse_sqlite(path: Path, table_name: Optional[str]) -> tuple[list[str], list
             counts = []
             for t in tables:
                 try:
-                    quoted = _quote_sqlite_identifier(t)
-                    counts.append((conn.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0], t))
+                    counts.append((conn.execute(f"SELECT COUNT(*) FROM [{t}]").fetchone()[0], t))
                 except sqlite3.Error:
                     continue
             table = max(counts)[1] if counts else tables[0]
-        quoted = _quote_sqlite_identifier(table)
-        row_count = int(conn.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0])
-        if row_count > MAX_TOPIC_ROWS:
-            raise ValueError(f"SQLite 选题库超过 {MAX_TOPIC_ROWS:,} 行上限")
-        columns = [r[1] for r in conn.execute(f"PRAGMA table_info({quoted})").fetchall()]
-        rows = [dict(r) for r in conn.execute(f"SELECT * FROM {quoted}").fetchall()]
+        columns = [r[1] for r in conn.execute(f"PRAGMA table_info([{table}])").fetchall()]
+        rows = [dict(r) for r in conn.execute(f"SELECT * FROM [{table}]").fetchall()]
         return columns, rows
     finally:
         conn.close()
@@ -480,22 +453,17 @@ def read_table(path: Path, fmt: str, table_name: Optional[str] = None) -> tuple[
     if path.stat().st_size > MAX_UPLOAD_BYTES:
         raise ValueError("选题库文件超过 20MB 上限")
     if fmt == "xlsx":
-        columns, rows = parse_xlsx(path)
-    elif fmt == "sqlite":
-        columns, rows = parse_sqlite(path, table_name)
-    else:
-        text = _read_text(path)
-        if fmt == "json":
-            columns, rows = parse_json(text)
-        elif fmt == "jsonl":
-            columns, rows = parse_jsonl(text)
-        elif fmt == "rss":
-            columns, rows = parse_rss(text)
-        else:
-            columns, rows = parse_csv(text)
-    if len(rows) > MAX_TOPIC_ROWS:
-        raise ValueError(f"选题库超过 {MAX_TOPIC_ROWS:,} 行上限")
-    return columns, rows
+        return parse_xlsx(path)
+    if fmt == "sqlite":
+        return parse_sqlite(path, table_name)
+    text = _read_text(path)
+    if fmt == "json":
+        return parse_json(text)
+    if fmt == "jsonl":
+        return parse_jsonl(text)
+    if fmt == "rss":
+        return parse_rss(text)
+    return parse_csv(text)
 
 
 # ----------------------------------------------------------------------
@@ -572,10 +540,6 @@ def sync_remote(cfg, source: dict) -> dict:
         cache.write_text(buf.getvalue(), encoding="utf-8-sig")
     else:
         raise ValueError("远程来源不支持写入缓存（仅 CSV / JSON / JSONL / RSS）")
-    try:
-        cache.chmod(0o600)
-    except OSError:
-        logger.warning("无法收紧远程缓存文件权限：%s", cache.name)
     return {
         "last_sync_at": datetime.now().isoformat(timespec="seconds"),
         "last_error": None,
@@ -648,10 +612,9 @@ def _topic_from_row(row: dict, mapping: dict[str, str], fallback_dim: str) -> Op
 def read_source(cfg, source: dict) -> dict:
     """读取单个来源，返回 {items, status, rows, columns, mapping, error}，不抛出。"""
     base = {
-        "id": source.get("id"),
-        "name": redact(str(source.get("name") or source.get("id") or "")),
+        "id": source.get("id"), "name": source.get("name") or source.get("id"),
         "kind": source.get("kind"), "format": source.get("format") or "auto",
-        "display_path": _redact_remote_url(source.get("url") or "") if source.get("kind") == "remote"
+        "display_path": source.get("url") if source.get("kind") == "remote"
         else redact_path(_source_path(cfg, source)),
         "items": [], "status": "ok", "rows": 0, "columns": [], "mapping": {},
         "error": None,
@@ -751,10 +714,12 @@ def _public_source(cfg, source: dict) -> dict:
     }
     if source.get("kind") == "remote":
         out["display_path"] = _redact_remote_url(source.get("url") or "")
+        # 旧来源可能曾把完整 URL 自动用作名称，防止名称字段继续泄露凭据。
+        raw_name = str(source.get("name") or "")
+        if raw_name.lower().startswith(("http://", "https://")):
+            out["name"] = _redact_remote_url(raw_name)
     else:
         out["display_path"] = redact_path(_source_path(cfg, source))
-    if out.get("name"):
-        out["name"] = redact(str(out["name"]))
     if out.get("last_error"):
         out["last_error"] = redact(str(out["last_error"]))
     out["header_keys"] = sorted((source.get("headers") or {}).keys())
@@ -775,12 +740,8 @@ def _validate_name(name: str) -> str:
 
 
 def _decode_upload(filename: str, content_b64: str) -> tuple[str, bytes]:
-    encoded = str(content_b64 or "").split(",", 1)[-1]
-    max_encoded_chars = ((MAX_UPLOAD_BYTES + 2) // 3) * 4
-    if len(encoded) > max_encoded_chars:
-        raise ValueError("上传文件超过 20MB 上限")
     try:
-        data = base64.b64decode(encoded, validate=True)
+        data = base64.b64decode(content_b64.split(",", 1)[-1], validate=False)
     except (binascii.Error, ValueError) as exc:
         raise ValueError(f"文件内容不是合法 base64：{exc}") from exc
     if len(data) > MAX_UPLOAD_BYTES:
@@ -802,10 +763,6 @@ def add_upload(cfg, *, filename: str, content_b64: str, name: str = "",
         raise ValueError("文件不是有效的 .xlsx")
     dest = upload_dir(cfg) / f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{safe}"
     dest.write_bytes(data)
-    try:
-        dest.chmod(0o600)
-    except OSError:
-        logger.warning("无法收紧上传文件权限：%s", dest.name)
     columns, rows = read_table(dest, fmt)
     mapping, missing = detect_mapping(columns, field_mapping or {})
     if "title" in missing:
