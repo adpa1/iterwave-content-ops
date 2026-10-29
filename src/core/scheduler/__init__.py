@@ -284,7 +284,9 @@ class SchedulerEngine:
             return
 
         rows = self.conn.execute(
-            "SELECT d.id, d.platform, d.draft_id, d.saved_at, c.round_id AS round_id, c.title "
+            "SELECT d.id, d.platform, d.draft_id, d.saved_at, c.round_id AS round_id, c.title, "
+            "c.review_rejected AS review_rejected, "
+            "c.review_rejection_reason AS review_rejection_reason "
             "FROM drafts d JOIN contents c ON d.content_id = c.id "
             "WHERE d.status = 'draft_saved'"
         ).fetchall()
@@ -322,6 +324,29 @@ class SchedulerEngine:
                 row["id"], via="30min 只读轮询确认平台侧已发布", note_url=work_url,
             ):
                 confirmed += 1
+                if bool(row["review_rejected"]):
+                    # 审核驳回不能抹掉平台已经发生的真实发布；记录为观察到的例外，
+                    # 继续采集数据，同时让后续复盘能追溯到驳回原因。
+                    try:
+                        self.conn.execute(
+                            "INSERT INTO user_override (round_id, override_field, original_value, "
+                            "override_value, reason, overridden_by, overridden_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                row["round_id"], "publish_review_rejection_observed",
+                                json.dumps({
+                                    "review_rejected": True,
+                                    "review_rejection_reason": row["review_rejection_reason"],
+                                }, ensure_ascii=False)[:500],
+                                json.dumps({"status": "user_published", "via": "platform_polling"}, ensure_ascii=False),
+                                "系统在平台侧检测到已发布作品，为保留真实运营数据继续采集",
+                                "publish-polling",
+                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            ),
+                        )
+                        self.conn.commit()
+                    except Exception:  # noqa: BLE001 — 实际发布已发生，审计失败不能中断采集
+                        logger.exception("[APS] 发布驳回例外审计写入失败 draft=%s", row["id"])
                 if getattr(self, "notifier", None):
                     self.notifier.emit(
                         "publish_confirmed",
