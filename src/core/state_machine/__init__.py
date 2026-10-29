@@ -275,15 +275,21 @@ class DraftStateMachine:
         from datetime import timedelta
         now = now or datetime.now()
         cursor = self.db.execute(
-            "SELECT id, saved_at FROM drafts WHERE status = 'draft_saved' AND saved_at IS NOT NULL"
+            "SELECT id, saved_at, created_at FROM drafts WHERE status = 'draft_saved'"
         )
         expired_ids: list[str] = []
-        for draft_id, saved_at_str in cursor.fetchall():
-            if not saved_at_str:
-                continue
-            try:
-                saved_at = datetime.fromisoformat(saved_at_str)
-            except ValueError:
+        for draft_id, saved_at_str, created_at_str in cursor.fetchall():
+            # 老版本/迁移数据可能没有 saved_at；以创建时间兜底，避免待发布草稿永远无法过期。
+            candidates = [value for value in (saved_at_str, created_at_str) if value]
+            saved_at = None
+            for candidate in candidates:
+                try:
+                    saved_at = datetime.fromisoformat(str(candidate))
+                    break
+                except ValueError:
+                    continue
+            if saved_at is None:
+                logger.warning("草稿 %s 缺少有效 saved_at / created_at，无法自动判过期", draft_id)
                 continue
             total_wait = timedelta(hours=timeout_hours + grace_hours)
             if now - saved_at > total_wait:
