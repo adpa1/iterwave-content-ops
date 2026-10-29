@@ -413,6 +413,83 @@ def test_cancel_round_cancels_local_pending_drafts_together(client):
     ).fetchone()[0] == "cancelled"
 
 
+def test_publish_confirmation_requires_current_quality_gate_or_audited_override(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="awaiting_publish")
+    draft_id = seed.draft(
+        round_id, platform="xhs", draft_status="draft_saved", fetch_status=None,
+    )
+    content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    payload = {"note_url": "https://www.xiaohongshu.com/explore/123"}
+
+    # 当前文案未检查：普通确认被拦截，不改变发布/轮次状态。
+    response = tc.post(f"/api/drafts/{draft_id}/publish_confirm", json=payload)
+    assert response.status_code == 409
+    assert "未检查" in response.json()["detail"]
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "draft_saved"
+
+    # 当前质检失败：没有明确例外原因不能静默放行。
+    conn.execute(
+        "UPDATE contents SET guard_outcome = 'fail', guard_reason = '红线命中' WHERE id = ?",
+        (content_id,),
+    )
+    conn.commit()
+    response = tc.post(f"/api/drafts/{draft_id}/publish_confirm", json=payload)
+    assert response.status_code == 409
+    assert "红线命中" in response.json()["detail"]
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "draft_saved"
+
+    # 如果发布确实已在外部平台发生，用户可提供显式原因登记；状态闭环不丢失，且写入审计。
+    override_payload = {
+        **payload,
+        "quality_override_reason": "实际已发布，保留真实运营数据",
+    }
+    response = tc.post(f"/api/drafts/{draft_id}/publish_confirm", json=override_payload)
+    assert response.status_code == 200
+    assert response.json()["status"] == "user_published"
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "user_published"
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "collecting_metrics"
+    audit = conn.execute(
+        "SELECT override_field, reason, overridden_by FROM user_override "
+        "WHERE round_id = ? ORDER BY id DESC LIMIT 1", (round_id,)
+    ).fetchone()
+    assert audit is not None
+    assert audit["override_field"] == "publish_quality_override"
+    assert audit["reason"] == "实际已发布，保留真实运营数据"
+    assert audit["overridden_by"] == "publish-confirm-ui"
+
+    # 另一个草稿的当前质量门通过后，可走普通确认，无需例外理由。
+    other_round = seed.round(status="awaiting_publish")
+    other_id = seed.draft(
+        other_round, platform="xhs", draft_status="draft_saved",
+        fetch_status=None, topic_id="pass-quality",
+    )
+    other_content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (other_id,)
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE contents SET guard_outcome = 'pass', guard_reason = '检查通过' WHERE id = ?",
+        (other_content_id,),
+    )
+    conn.commit()
+    response = tc.post(f"/api/drafts/{other_id}/publish_confirm", json=payload)
+    assert response.status_code == 200
+    assert response.json()["status"] == "user_published"
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (other_round,)
+    ).fetchone()[0] == "collecting_metrics"
+
+
 # ---------------------------------------------------------------- R-5 KPI 窗口
 def test_ops_kpi_days_param(client):
     tc, _, seed = client
