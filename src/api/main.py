@@ -1878,7 +1878,7 @@ def _register_routes(app: FastAPI) -> None:
     async def select_tenant(req: TenantSelectRequest):
         try:
             await _tenant_switch_gate.begin_switch(timeout_seconds=30.0)
-        except TenantSwitchInProgress as exc:
+        except (TenantSwitchInProgress, TimeoutError) as exc:
             raise HTTPException(409, str(exc)) from exc
         keep_gate_closed = False
         try:
