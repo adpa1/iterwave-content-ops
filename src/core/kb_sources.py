@@ -683,14 +683,33 @@ def read_all(cfg) -> tuple[list[TopicItem], dict]:
 # 来源管理（API 用）
 # ----------------------------------------------------------------------
 
+def _redact_remote_url(url: str) -> str:
+    """用于界面/API 展示的远程地址：绝不返回 userinfo、查询参数或片段。"""
+    try:
+        parsed = urlsplit(str(url or ""))
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname or ""
+        if not scheme or not host:
+            return "远程地址"
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        port = parsed.port
+        default_port = 443 if scheme == "https" else 80
+        authority = host if port is None or port == default_port else f"{host}:{port}"
+        # 路径也可能携带 token，故不直接暴露原始 path。
+        return f"{scheme}://{authority}/…" if parsed.path not in ("", "/") else f"{scheme}://{authority}"
+    except (TypeError, ValueError):
+        return "远程地址"
+
+
 def _public_source(cfg, source: dict) -> dict:
-    """对外视图：路径脱敏、请求头只回键名（R23 不回传绝对路径与鉴权值）。"""
+    """对外视图：路径脱敏、远程 URL 不回传凭据，请求头只回键名。"""
     out = {
         k: v for k, v in source.items()
-        if k not in ("headers", "path", "cache_path")
+        if k not in ("headers", "path", "cache_path", "url")
     }
     out["display_path"] = (
-        source.get("url") if source.get("kind") == "remote"
+        _redact_remote_url(source.get("url") or "") if source.get("kind") == "remote"
         else redact_path(_source_path(cfg, source))
     )
     out["header_keys"] = sorted((source.get("headers") or {}).keys())
@@ -784,7 +803,7 @@ def add_remote(cfg, *, url: str, name: str = "", fmt: str = "auto",
     if not url.startswith(("http://", "https://")):
         raise ValueError("远程地址必须是 http(s) URL")
     source = {
-        "id": _new_id(), "kind": "remote", "name": _validate_name(name or url),
+        "id": _new_id(), "kind": "remote", "name": _validate_name(name or _redact_remote_url(url)),
         "enabled": True, "url": url, "format": detect_format(url, fmt),
         "headers": {str(k): str(v) for k, v in (headers or {}).items() if k and v},
         "field_mapping": dict(field_mapping or {}),
