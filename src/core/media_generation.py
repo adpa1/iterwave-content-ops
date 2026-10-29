@@ -33,8 +33,8 @@ def validate_image_bytes(raw: bytes) -> tuple[str, str, int, int]:
         with Image.open(io.BytesIO(raw)) as image:
             image_format = (image.format or "").upper()
             width, height = image.size
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
-        raise ImageGenerationError("生成结果不是有效的图片文件") from exc
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as exc:
+        raise ImageGenerationError("生成结果不是有效的图片文件或超过安全像素限制") from exc
     if image_format not in _FORMATS:
         raise ImageGenerationError("生成结果格式不支持，仅接受 JPEG、PNG、WebP、GIF")
     if width < 1 or height < 1 or width > 20000 or height > 20000 or width * height > 40_000_000:
