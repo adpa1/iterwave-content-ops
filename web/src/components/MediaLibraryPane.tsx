@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useApp } from "../AppContext";
-import { api, MediaAsset, MediaUsageTarget, MediaGenerationSettings } from "../api";
+import { api, MediaAsset, MediaUsageTarget, MediaGenerationSettings, MediaRecommendation } from "../api";
 
 function fileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -27,16 +27,23 @@ export default function MediaLibraryPane() {
   const [items, setItems] = useState<MediaAsset[]>([]);
   const [targets, setTargets] = useState<MediaUsageTarget[]>([]);
   const [selectedContentId, setSelectedContentId] = useState("");
+  const [usageRole, setUsageRole] = useState<"cover" | "illustration" | "background">("illustration");
   const [generationSettings, setGenerationSettings] = useState<MediaGenerationSettings | null>(null);
   const [generationPrompt, setGenerationPrompt] = useState("");
   const [query, setQuery] = useState("");
-  const [filename, setFilename] = useState("");
   const [title, setTitle] = useState("");
   const [altText, setAltText] = useState("");
   const [tagsText, setTagsText] = useState("");
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [purpose, setPurpose] = useState("门店环境");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [targetWarning, setTargetWarning] = useState("");
+  const [recommendations, setRecommendations] = useState<MediaRecommendation[]>([]);
+  const [recommendationMessage, setRecommendationMessage] = useState("");
+  const [recommendationLoading, setRecommendationLoading] = useState(false);
+  const [recommendationContentId, setRecommendationContentId] = useState("");
+  const [recommendationRole, setRecommendationRole] = useState<"cover" | "illustration" | "background">("cover");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -48,10 +55,23 @@ export default function MediaLibraryPane() {
       setItems(result.items);
       setTargets(targetResult.items);
       setGenerationSettings(settingsResult);
-      setSelectedContentId((current) => (
-        current && targetResult.items.some((item) => item.id === current)
-          ? current : targetResult.items[0]?.id ?? ""
-      ));
+      const requestedContentId = new URLSearchParams(window.location.search).get("focusContent");
+      if (requestedContentId) {
+        const requestedTarget = targetResult.items.find((item) => item.id === requestedContentId);
+        if (requestedTarget) {
+          setSelectedContentId(requestedContentId);
+          setTargetWarning("");
+        } else {
+          setSelectedContentId("");
+          setTargetWarning("从编辑页跳转的这篇内容当前不符合配图条件（可能已发布或不在待存草稿状态）。系统不会自动改选其他内容，请手动选择正确的待存草稿。");
+        }
+      } else {
+        setTargetWarning("");
+        setSelectedContentId((current) => (
+          current && targetResult.items.some((item) => item.id === current)
+            ? current : targetResult.items[0]?.id ?? ""
+        ));
+      }
     } catch (e) {
       const message = e instanceof Error ? e.message : "图片素材加载失败";
       setError(message);
@@ -62,40 +82,54 @@ export default function MediaLibraryPane() {
 
   useEffect(() => { void load(); }, [load]);
 
-  const chooseFile = (next: File | null) => {
-    setFile(next);
-    setFilename(next?.name || "");
-    if (next && !title.trim()) setTitle(next.name.replace(/\.[^.]+$/, ""));
+  const chooseFiles = (next: File[]) => {
+    setFiles(next);
+    if (next.length === 1 && !title.trim()) setTitle(next[0].name.replace(/\.[^.]+$/, ""));
+    if (next.length > 1) setTitle("");
   };
 
   const upload = async () => {
-    if (!file || isPending("media:upload")) return;
-    if (file.size <= 0 || file.size > 12 * 1024 * 1024) {
-      showToast("图片大小必须大于 0 且不超过 12MB", "error");
+    if (!files.length || isPending("media:upload")) return;
+    const invalid = files.filter((item) => item.size <= 0 || item.size > 12 * 1024 * 1024);
+    if (invalid.length) {
+      showToast(`有 ${invalid.length} 张图片大小不符合要求（单张需大于 0 且不超过 12MB），请移除后再上传`, "error");
       return;
     }
     await withPending("media:upload", async () => {
-      try {
-        const data = await fileAsBase64(file);
-        const result = await api.uploadMediaAsset({
-          filename: filename || file.name,
-          title: title.trim(),
-          alt_text: altText.trim(),
-          tags: tagsText.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 30),
-          data_base64: data,
-        });
-        showToast(result.duplicate ? "素材已存在，已复用现有记录" : "图片素材已入库", "success");
-        setFile(null);
-        setFilename("");
-        setTitle("");
-        setAltText("");
-        setTagsText("");
-        const input = document.getElementById("media-upload-input") as HTMLInputElement | null;
-        if (input) input.value = "";
-        await load();
-      } catch (e) {
-        showToast(e instanceof Error ? e.message : "图片上传失败", "error");
+      let succeeded = 0;
+      let duplicates = 0;
+      let failed = 0;
+      const failedFiles: File[] = [];
+      const customTags = tagsText.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean);
+      for (const item of files) {
+        try {
+          const data = await fileAsBase64(item);
+          const result = await api.uploadMediaAsset({
+            filename: item.name,
+            title: (files.length === 1 && title.trim()) ? title.trim() : item.name.replace(/\.[^.]+$/, ""),
+            alt_text: altText.trim(),
+            tags: Array.from(new Set([purpose, ...customTags])).slice(0, 30),
+            data_base64: data,
+          });
+          if (result.duplicate) duplicates += 1;
+          else succeeded += 1;
+        } catch (e) {
+          failed += 1;
+          failedFiles.push(item);
+          console.error("media upload failed:", item.name, e);
+        }
       }
+      showToast(
+        `批量导入完成：新增 ${succeeded} 张，重复复用 ${duplicates} 张，失败 ${failed} 张。${failed ? "失败项已保留，可直接重试。" : ""}`,
+        failed ? "info" : "success",
+      );
+      setFiles(failedFiles);
+      setTitle("");
+      setAltText("");
+      setTagsText("");
+      const input = document.getElementById("media-upload-input") as HTMLInputElement | null;
+      if (input) input.value = "";
+      await load();
     });
   };
 
@@ -172,6 +206,18 @@ export default function MediaLibraryPane() {
     });
   };
 
+  const recommendForContent = async () => {
+    if (!selectedContentId) { showToast("请先选择待配图内容", "error"); return; }
+    setRecommendationLoading(true); setRecommendations([]); setRecommendationMessage("");
+    try {
+      const result = await api.recommendMediaAssets(selectedContentId, usageRole);
+      setRecommendations(result.items); setRecommendationMessage(result.message);
+      setRecommendationContentId(selectedContentId); setRecommendationRole(usageRole);
+      if (result.items.length === 0) showToast("没有找到明显匹配的已审核素材，可调整素材标签或继续手动选择", "info");
+    } catch (e) { showToast(e instanceof Error ? e.message : "素材推荐失败", "error"); }
+    finally { setRecommendationLoading(false); }
+  };
+
   const assignToContent = async (item: MediaAsset) => {
     if (!selectedContentId) {
       showToast("没有可选的待存草稿或平台草稿", "error");
@@ -179,7 +225,7 @@ export default function MediaLibraryPane() {
     }
     await withPending("media:use:" + item.id, async () => {
       try {
-        const result = await api.useMediaAsset(item.id, selectedContentId, "illustration");
+        const result = await api.useMediaAsset(item.id, selectedContentId, usageRole);
         showToast(result.message, "success");
         await load();
       } catch (e) {
@@ -213,11 +259,18 @@ export default function MediaLibraryPane() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
           <label className="field">
             <span className="field-label">选择图片</span>
-            <input id="media-upload-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => chooseFile(event.target.files?.[0] ?? null)} />
+            <input id="media-upload-input" type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => chooseFiles(Array.from(event.target.files ?? []))} />
           </label>
           <label className="field">
-            <span className="field-label">素材名称</span>
-            <input value={title} maxLength={200} onChange={(event) => setTitle(event.target.value)} placeholder="例如：品牌主视觉" />
+            <span className="field-label">用途分类（批量应用）</span>
+            <select value={purpose} onChange={(event) => setPurpose(event.target.value)}>
+              <option>封面</option><option>商品/菜品</option><option>门店环境</option><option>团队人物</option>
+              <option>服务过程</option><option>活动海报</option><option>品牌标识</option><option>其他</option>
+            </select>
+          </label>
+          <label className="field">
+            <span className="field-label">素材名称（单张上传时使用）</span>
+            <input value={title} maxLength={200} onChange={(event) => setTitle(event.target.value)} placeholder="批量导入时自动取文件名" />
           </label>
           <label className="field">
             <span className="field-label">替代文本</span>
@@ -228,11 +281,11 @@ export default function MediaLibraryPane() {
             <input value={tagsText} onChange={(event) => setTagsText(event.target.value)} placeholder="封面, 品牌, 教程" />
           </label>
         </div>
-        {file && <div className="panel-sub" style={{ marginTop: 8 }}>待上传：{file.name} · {formatBytes(file.size)} · 仅支持 JPEG、PNG、WebP、GIF</div>}
+        {files.length > 0 && <div className="panel-sub" style={{ marginTop: 8 }}>已选 {files.length} 张：{files.slice(0, 4).map((item) => `${item.name}（${formatBytes(item.size)}）`).join("、")}{files.length > 4 ? ` 等共 ${files.length} 张` : ""} · 单张不超过 12MB</div>}
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
-          <button className="btn sm" onClick={() => { setFile(null); setTitle(""); setAltText(""); setTagsText(""); setFilename(""); }}>清空</button>
-          <button className="btn primary sm" onClick={() => void upload()} disabled={!file || isPending("media:upload")}>
-            {isPending("media:upload") ? "上传中…" : "上传到素材库"}
+          <button className="btn sm" onClick={() => { setFiles([]); setTitle(""); setAltText(""); setTagsText(""); const input = document.getElementById("media-upload-input") as HTMLInputElement | null; if (input) input.value = ""; }}>清空</button>
+          <button className="btn primary sm" onClick={() => void upload()} disabled={!files.length || isPending("media:upload")}>
+            {isPending("media:upload") ? `导入中 ${files.length} 张…` : `导入 ${files.length || ""} 张图片到素材库`}
           </button>
         </div>
       </section>
@@ -312,16 +365,47 @@ export default function MediaLibraryPane() {
             <button className="btn sm" onClick={() => void load()} disabled={loading}>刷新</button>
           </div>
         </div>
+        {targetWarning && <div className="note" role="alert" style={{ color: "var(--orange)", marginBottom: 10 }}>{targetWarning}</div>}
+        {targets.length > 0 && <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+          <button className="btn sm primary" onClick={() => void recommendForContent()} disabled={!selectedContentId || recommendationLoading}>
+            {recommendationLoading ? "匹配中…" : "为当前内容推荐素材"}
+          </button>
+        </div>}
+        {recommendations.length > 0 && recommendationContentId === selectedContentId && recommendationRole === usageRole && <div className="panel" style={{ marginBottom: 14, padding: 12 }}>
+          <div className="panel-title">匹配推荐（前 {recommendations.length} 项）</div>
+          <div className="panel-sub">按内容标题、正文、素材名称及标签进行关键词匹配；仅展示已审核素材，不会自动配图。</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 8, marginTop: 10 }}>
+            {recommendations.map((rec) => {
+              const asset = items.find((item) => item.id === rec.asset_id);
+              if (!asset) return null;
+              return <div key={rec.asset_id} style={{ display: "flex", gap: 10, border: "1px solid var(--border)", borderRadius: 8, padding: 8, minWidth: 0 }}>
+                <img src={asset.file_url} alt={asset.alt_text || asset.title} loading="lazy" style={{ width: 68, height: 68, objectFit: "contain", background: "var(--surface-2)", borderRadius: 6, flexShrink: 0 }} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{asset.title}</div>
+                  <div className="panel-sub">{rec.reason || "关键词匹配"} · 匹配分 {rec.score}</div>
+                  <button className="btn sm primary" style={{ marginTop: 6 }} onClick={() => void assignToContent(asset)} disabled={!selectedContentId || isPending("media:use:" + asset.id)}>使用此素材</button>
+                </div>
+              </div>;
+            })}
+          </div>
+          {recommendationMessage && <div className="panel-sub" style={{ marginTop: 8 }}>{recommendationMessage}</div>}
+        </div>}
         {targets.length > 0 && (
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
             <span className="field-label">手动配图目标</span>
-            <select value={selectedContentId} onChange={(event) => setSelectedContentId(event.target.value)} style={{ minWidth: 260, maxWidth: "100%" }}>
+            <select value={selectedContentId} onChange={(event) => { setSelectedContentId(event.target.value); setTargetWarning(""); setRecommendations([]); setRecommendationMessage(""); }} style={{ minWidth: 260, maxWidth: "100%" }}>
               {targets.map((target) => (
                 <option value={target.id} key={target.id}>
                   {target.title} · {target.platform} · {target.draft_status} · {target.visual_status === "media_asset" ? "已有素材图" : target.visual_status === "generated" ? "AI 配图" : "模板降级图"} · #{target.id}
                 </option>
               ))}
             </select>
+            <label className="field" style={{ minWidth: 140 }}>
+              <span className="field-label">在内容中的用途</span>
+              <select value={usageRole} onChange={(event) => { setUsageRole(event.target.value as "cover" | "illustration" | "background"); setRecommendations([]); setRecommendationMessage(""); }}>
+                <option value="cover">封面</option><option value="illustration">正文配图</option><option value="background">背景</option>
+              </select>
+            </label>
             <span className="panel-sub">选择一篇尚未发布的内容，再点击素材卡片中的「配给此内容」。模板渐变图会明确标记为降级，正式配图需人工选择或后续 AI 配图。</span>
           </div>
         )}

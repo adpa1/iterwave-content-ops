@@ -330,6 +330,7 @@ class RoundExecutor:
                 "title": title,
                 "body": body,
                 "tags": tags,
+                "image_paths": image_paths,
                 "image_path": str(image_paths[0]) if image_paths and image_paths[0] else None,
             })
 

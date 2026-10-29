@@ -86,6 +86,9 @@ export default function Production() {
 
   // 内容编辑与审核
   const [contents, setContents] = useState<ContentItem[]>([]);
+  const [reviewSearch, setReviewSearch] = useState("");
+  const [reviewPlatform, setReviewPlatform] = useState<"all" | Platform>("all");
+  const [reviewState, setReviewState] = useState("all");
   // 搜索结果可带目标内容 ID；加载轮次内容后自动选中并填入编辑区。
   const [selectedContentId, setSelectedContentId] = useState<string | null>(() => {
     const value = new URLSearchParams(window.location.search).get("focusContent");
@@ -480,6 +483,18 @@ export default function Production() {
 
   const canRun = !!roundDetail && roundDetail.status === "created" && !running && (usePlan || selPlatforms.length > 0);
   const selectedContent = contents.find((c) => c.id === selectedContentId) ?? null;
+  const filteredReviewContents = contents.filter((item) => {
+    const query = reviewSearch.trim().toLowerCase();
+    const matchesQuery = !query || [item.title, item.body, item.topic_id, ...item.tags].some((value) => String(value ?? "").toLowerCase().includes(query));
+    const matchesPlatform = reviewPlatform === "all" || item.platform === reviewPlatform;
+    const status = item.draft_status ?? "not_saved";
+    const matchesState = reviewState === "all"
+      || (reviewState === "needs_review" && (item.guard_outcome !== "pass" || item.review_rejected))
+      || (reviewState === "not_saved" && status === "draft_pending")
+      || (reviewState === "saved" && status === "draft_saved")
+      || (reviewState === "rejected" && !!item.review_rejected);
+    return matchesQuery && matchesPlatform && matchesState;
+  });
 
   // ---------------------------------------------------------------- 渲染
   return (
@@ -979,16 +994,30 @@ export default function Production() {
           <div className="panel">
             <div className="panel-head">
               <div>
-                <div className="panel-title"><span className="icon">✎</span>本轮内容（{contents.length}）</div>
-                <div className="panel-sub">点击选择后可编辑 / 重检 / 驳回</div>
+                <div className="panel-title"><span className="icon">✎</span>本轮内容（{filteredReviewContents.length}/{contents.length}）</div>
+                <div className="panel-sub">按关键词、平台和状态快速定位；点击内容后在右侧编辑</div>
               </div>
             </div>
             <RoundPicker rounds={rounds} value={currentRoundId} onChange={setCurrentRoundId} />
-            <div className="list">
+            <div className="review-filters">
+              <input aria-label="搜索本轮内容" value={reviewSearch} onChange={(event) => setReviewSearch(event.target.value)} placeholder="搜索标题、正文、标签…" />
+              <select aria-label="按平台筛选" value={reviewPlatform} onChange={(event) => setReviewPlatform(event.target.value as "all" | Platform)}>
+                <option value="all">全部平台</option><option value="xhs">小红书</option><option value="douyin">抖音</option>
+                <option value="kuaishou">快手</option><option value="wechat_channels">视频号</option>
+              </select>
+              <select aria-label="按状态筛选" value={reviewState} onChange={(event) => setReviewState(event.target.value)}>
+                <option value="all">全部状态</option><option value="needs_review">需要复核</option>
+                <option value="not_saved">待存草稿</option><option value="saved">已存草稿</option><option value="rejected">已驳回</option>
+              </select>
+            </div>
+            <div className="list review-content-list">
               {contents.length === 0 && (
                 <EmptyHint next="到「③ 生产线」选中本轮并点「▶ 运行本轮」">本轮暂无内容</EmptyHint>
               )}
-              {contents.map((c) => (
+              {contents.length > 0 && filteredReviewContents.length === 0 && (
+                <div className="empty-state">没有符合筛选条件的内容。清空关键词或改用其他筛选条件。</div>
+              )}
+              {filteredReviewContents.map((c) => (
                 <div
                   key={c.id}
                   className="task-row"
@@ -1054,6 +1083,14 @@ export default function Production() {
                   <button className="btn" onClick={handleRecheck} disabled={isPending("recheck-content")}>
                     {isPending("recheck-content") ? "重检中…" : "⌕ 重新过目标检查"}
                   </button>
+                  <button className="btn" onClick={() => {
+                    const url = new URL(window.location.href);
+                    url.searchParams.set("page", "assets");
+                    url.searchParams.set("tab", "media");
+                    url.searchParams.set("focusContent", selectedContent.id);
+                    window.history.pushState({}, "", url.toString());
+                    window.dispatchEvent(new PopStateEvent("popstate"));
+                  }}>▧ 在素材库为此内容配图</button>
                   <button className="btn" onClick={handleCopy}>☷ 复制文案</button>
                   <button className="btn danger" style={{ marginLeft: "auto" }} onClick={handleDeleteContent}
                     disabled={isPending("delete-content") || ["user_published", "data_fetching", "published"].includes(selectedContent.draft_status ?? "")}

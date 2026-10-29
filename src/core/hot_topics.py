@@ -28,9 +28,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Callable, Optional
-from urllib.parse import urljoin
 
-import httpx
 
 from .redact import redact
 

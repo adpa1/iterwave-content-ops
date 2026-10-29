@@ -469,6 +469,34 @@ export interface TenantListResponse {
   restart_required: boolean;
   items: TenantItem[];
 }
+export interface GlobalMonitorTenant {
+  tenant_id: string;
+  tenant_name: string;
+  created_at: string | null;
+  db_available: boolean;
+  contents_period: number;
+  contents_all: number;
+  drafts_all: number;
+  drafts_pending: number;
+  drafts_saved: number;
+  drafts_published: number;
+  drafts_failed: number;
+  media_active: number;
+  media_usage: number;
+  platforms: Record<string, { contents: number; contents_period: number; drafts: number }>;
+}
+export interface GlobalMonitorResponse {
+  days: number;
+  since: string;
+  totals: {
+    tenants: number; available_tenants: number; contents_period: number; contents_all: number;
+    drafts_all: number; drafts_pending: number; drafts_saved: number; drafts_published: number;
+    drafts_failed: number; media_active: number; media_usage: number;
+  };
+  platform_totals: Record<string, { contents: number; drafts: number }>;
+  tenants: GlobalMonitorTenant[];
+  account_count_note: string;
+}
 export interface TenantBackupItem {
   backup_name: string;
   size_bytes: number;
@@ -495,6 +523,18 @@ export interface MediaUsageTarget {
   visual_status: "degraded" | "media_asset" | "generated";
   visual_reason: string | null;
   draft_status: "draft_pending" | "draft_saved";
+}
+
+export interface MediaRecommendation {
+  asset_id: number;
+  title: string;
+  score: number;
+  matched_keywords: string[];
+  purpose_matches: string[];
+  quality_score: number | null;
+  width: number | null;
+  height: number | null;
+  reason: string;
 }
 
 export interface MediaAsset {
@@ -1226,6 +1266,7 @@ export const api = {
     fetchJson<{ draft_id: string; scheduled_publish_at: string | null }>(
       `/api/schedule/${draft_id}`, { method: "PATCH", body: JSON.stringify({ scheduled_publish_at: scheduled }) },
     ),
+  globalMonitor: (days = 30) => fetchJson<GlobalMonitorResponse>(`/api/global-monitor?days=${days}`),
   // === 账号组隔离 ===
   tenants: () => fetchJson<TenantListResponse>("/api/tenants"),
   createTenant: (data: { tenant_id: string; name: string }) =>
@@ -1255,6 +1296,10 @@ export const api = {
   archiveMediaAsset: (id: number) =>
     fetchJson<{ id: number; status: string; already_archived: boolean }>(`/api/media/${id}/archive`, { method: "POST" }),
   mediaUsageTargets: () => fetchJson<{ items: MediaUsageTarget[] }>("/api/media/targets"),
+  recommendMediaAssets: (content_id: string, usage_role: "cover" | "illustration" | "background" = "cover") =>
+    fetchJson<{ content_id: string; usage_role: string; method: "keyword_match"; automatic_assignment: false; items: MediaRecommendation[]; message: string }>(
+      `/api/media/recommendations?content_id=${encodeURIComponent(content_id)}&usage_role=${usage_role}`,
+    ),
   useMediaAsset: (asset_id: number, content_id: string, usage_role: "cover" | "illustration" | "background" = "illustration") =>
     fetchJson<{ asset_id: number; content_id: string; platform: Platform; image_assigned: boolean; message: string }>(
       `/api/media/${asset_id}/use`, { method: "POST", body: JSON.stringify({ content_id, usage_role }) },
