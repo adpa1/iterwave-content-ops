@@ -1520,9 +1520,12 @@ def _register_routes(app: FastAPI) -> None:
                         cols = {r["name"] for r in conn.execute("PRAGMA table_info(contents)").fetchall()}
                         if "created_at" in cols:
                             row["contents_period"] = int(conn.execute("SELECT COUNT(*) FROM contents WHERE datetime(created_at) >= datetime(?)", (since,)).fetchone()[0])
+                            for item in conn.execute("SELECT platform, COUNT(*) AS n FROM contents WHERE datetime(created_at) >= datetime(?) GROUP BY platform", (since,)).fetchall():
+                                platform = item["platform"]
+                                row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0})["contents_period"] = int(item["n"])
                         for item in conn.execute("SELECT platform, COUNT(*) AS n FROM contents GROUP BY platform").fetchall():
                             platform = item["platform"]
-                            row["platforms"].setdefault(platform, {"contents": 0, "drafts": 0})["contents"] = int(item["n"])
+                            row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0})["contents"] = int(item["n"])
                             if platform in platform_totals: platform_totals[platform]["contents"] += int(item["n"])
                     if "drafts" in tables:
                         row["drafts_all"] = int(conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0])
@@ -1534,7 +1537,7 @@ def _register_routes(app: FastAPI) -> None:
                             elif status in ("failed", "error"): row["drafts_failed"] += count
                         for item in conn.execute("SELECT platform, COUNT(*) AS n FROM drafts GROUP BY platform").fetchall():
                             platform = item["platform"]
-                            row["platforms"].setdefault(platform, {"contents": 0, "drafts": 0})["drafts"] = int(item["n"])
+                            row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0})["drafts"] = int(item["n"])
                             if platform in platform_totals: platform_totals[platform]["drafts"] += int(item["n"])
                     if "media_assets" in tables:
                         row["media_active"] = int(conn.execute("SELECT COUNT(*) FROM media_assets WHERE status = 'active'").fetchone()[0])
