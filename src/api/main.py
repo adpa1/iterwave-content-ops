@@ -33,6 +33,7 @@ POST /api/hot_topics/refresh  触发后台采集 + 标签匹配
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import sqlite3
@@ -743,9 +744,26 @@ def _register_routes(app: FastAPI) -> None:
         return {"authenticated": False, "needs_login": auth.password_configured()}
 
     @app.post("/api/auth/password")
-    def auth_set_password(payload: dict):
+    def auth_set_password(payload: dict, request: Request):
+        # 首次设置前，所有 API 默认开放；若公网访客可以调用此接口，就能抢先设置口令并锁定管理员。
+        # 本机直连允许首次设置；公网域名/反向代理部署必须通过服务端环境变量提供的一次性引导口令。
+        if not auth.password_configured():
+            host = (request.url.hostname or "").strip("[]").lower()
+            remote_or_proxied = host not in ("localhost", "127.0.0.1", "::1") or any(
+                request.headers.get(name)
+                for name in ("x-forwarded-for", "x-real-ip", "forwarded")
+            )
+            bootstrap = os.getenv("ITERWAVE_BOOTSTRAP_TOKEN", "")
+            provided = str((payload or {}).get("bootstrap_token") or "")
+            if remote_or_proxied and (
+                not bootstrap or not provided or not hmac.compare_digest(provided, bootstrap)
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="首次设置口令需本机访问，或先在服务器配置 ITERWAVE_BOOTSTRAP_TOKEN 后提交引导口令",
+                )
         try:
-            auth.set_password(str(payload.get("password") or ""))
+            auth.set_password(str((payload or {}).get("password") or ""))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"configured": True, "needs_login": True,
