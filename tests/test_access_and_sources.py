@@ -673,11 +673,16 @@ def test_hot_sources_config_roundtrip(api_client):
     ).status_code == 422
 
 
-def test_media_upload_stream_limit_matches_declared_limit(api_client):
+def test_media_upload_stream_limit_matches_declared_limit(api_client, tmp_path):
     import base64
+    from src.core.tenant_registry import TenantRegistry
 
-    # The 12 MB binary image limit requires roughly 16 MB of base64 JSON.
-    # Six MB of invalid image bytes should reach image validation (422), not the 5 MB middleware cap (413).
+    registry = TenantRegistry(tmp_path)
+    registry.initialize()
+    api_main._g_ctx["tenant_registry"] = registry
+    api_main._g_ctx["runtime_tenant_id"] = "default"
+
+    # Six MB of invalid image bytes should reach endpoint validation, not the 5 MB middleware cap.
     response = api_client.post(
         "/api/media",
         json={"filename": "invalid.png", "data_base64": base64.b64encode(b"x" * (6 * 1024 * 1024)).decode("ascii")},
