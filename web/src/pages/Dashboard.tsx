@@ -117,15 +117,17 @@ export default function Dashboard() {
   const failed = new Set(failedSources);
 
   /** 主按钮直达用户当前需要处理的子页面，不把“跳转”伪装成“执行” */
-  const primaryAction = savedDrafts > 0
-    ? { label: `去审核（${savedDrafts} 篇待确认）`, page: "production", tab: "review" }
-    : latestRound?.status === "awaiting_publish"
-      ? { label: "继续审核发布", page: "production", tab: "review" }
-      : latestRound && ["created", "producing"].includes(latestRound.status)
-        ? { label: "继续生产本轮", page: "production", tab: "pipeline" }
-        : rounds.length === 0
-          ? { label: "开始配置首轮", page: "production", tab: "plan" }
-          : { label: "查看最近一轮", page: "production", tab: "rounds" };
+  const primaryAction = failed.has("轮次")
+    ? { label: "检查轮次数据", page: "production", tab: "rounds" }
+    : savedDrafts > 0
+      ? { label: `去审核（${savedDrafts} 篇待确认）`, page: "production", tab: "review" }
+      : latestRound?.status === "awaiting_publish"
+        ? { label: "继续审核发布", page: "production", tab: "review" }
+        : latestRound && ["created", "producing"].includes(latestRound.status)
+          ? { label: "继续生产本轮", page: "production", tab: "pipeline" }
+          : rounds.length === 0
+            ? { label: "开始配置首轮", page: "production", tab: "plan" }
+            : { label: "查看最近一轮", page: "production", tab: "rounds" };
 
   return (
     <AsyncPanel loading={loading} error={error} onRetry={load} loadingText="加载运营总览…">
@@ -172,7 +174,11 @@ export default function Dashboard() {
           value={failed.has("待处理事项") ? "—" : actions.length}
           unit="项"
           foot={[
-            highActions.length ? <span key="h" style={{ color: "var(--red)", fontWeight: 700 }}>{highActions.length} 项高优先级</span> : <span key="h">无高优先级</span>,
+            failed.has("待处理事项")
+              ? <span key="h">优先级信息待加载</span>
+              : highActions.length
+                ? <span key="h" style={{ color: "var(--red)", fontWeight: 700 }}>{highActions.length} 项高优先级</span>
+                : <span key="h">无高优先级</span>,
             <span key="a">{failed.has("轮次") ? "待发布轮次待加载" : `${awaitingRounds.length} 轮待确认发布`}</span>,
           ]}
         />
