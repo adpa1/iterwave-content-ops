@@ -422,6 +422,11 @@ def test_publish_confirmation_requires_current_quality_gate_or_audited_override(
     content_id = conn.execute(
         "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
     ).fetchone()[0]
+    conn.execute(
+        "UPDATE drafts SET saved_content_hash = ? WHERE id = ?",
+        (_current_platform_payload_hash(conn, content_id), draft_id),
+    )
+    conn.commit()
     payload = {"note_url": "https://www.xiaohongshu.com/explore/123"}
 
     # 当前文案未检查：普通确认被拦截，不改变发布/轮次状态。
@@ -477,6 +482,10 @@ def test_publish_confirmation_requires_current_quality_gate_or_audited_override(
     other_content_id = conn.execute(
         "SELECT content_id FROM drafts WHERE id = ?", (other_id,)
     ).fetchone()[0]
+    conn.execute(
+        "UPDATE drafts SET saved_content_hash = ? WHERE id = ?",
+        (_current_platform_payload_hash(conn, other_content_id), other_id),
+    )
     conn.execute(
         "UPDATE contents SET guard_outcome = 'pass', guard_reason = '检查通过' WHERE id = ?",
         (other_content_id,),
@@ -550,6 +559,10 @@ def test_manual_rejection_blocks_normal_publish_until_resubmitted_or_overridden(
     content_id = conn.execute(
         "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
     ).fetchone()[0]
+    conn.execute(
+        "UPDATE drafts SET saved_content_hash = ? WHERE id = ?",
+        (_current_platform_payload_hash(conn, content_id), draft_id),
+    )
     conn.execute(
         "UPDATE contents SET guard_outcome = 'pass', guard_reason = 'G2 通过' WHERE id = ?",
         (content_id,),
