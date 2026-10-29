@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
-
 from fastapi.testclient import TestClient
 
 from src.api import main as api_main
@@ -173,10 +171,10 @@ def test_recommendation_limit_can_return_more_than_eight_items(conn, seed, test_
     for asset_id in range(1, 13):
         conn.execute(
             "INSERT INTO media_assets "
-            "(id, title, original_filename, stored_filename, alt_text, tags, quality_score, width, height, status, review_status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 80, 1200, 900, 'active', 'approved', '2026-10-01')",
-            (asset_id, f"产品设计素材 {asset_id}", f"product-{asset_id}.jpg", f"product-{asset_id}.jpg",
-             "产品设计细节", '["产品", "设计", "细节"]'),
+            "(id, title, original_filename, stored_filename, mime_type, byte_size, sha256, alt_text, tags, source_type, quality_score, width, height, status, review_status, created_at) "
+            "VALUES (?, ?, ?, ?, 'image/png', 1, ?, ?, ?, 'upload', 80, 1200, 900, 'active', 'approved', '2026-10-01')",
+            (asset_id, f"产品设计素材 {asset_id}", f"product-{asset_id}.png", f"product-{asset_id}.png",
+             f"test-sha-{asset_id}", "产品设计细节", '["产品", "设计", "细节"]'),
         )
     conn.commit()
     saved = dict(api_main._g_ctx)
