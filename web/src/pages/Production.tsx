@@ -1164,13 +1164,13 @@ export default function Production() {
                         value={resubmitReason}
                         onChange={(e) => setResubmitReason(e.target.value)}
                         placeholder="重新提交审核的说明（必填）"
-                        disabled={selectedContentIsImmutable || isPending("resubmit-content")}
+                        disabled={selectedContentIsImmutable || running || savingPending || isPending("resubmit-content")}
                         style={{ flex: 1, minWidth: 220 }}
                       />
                       <button
                         className="btn primary"
                         onClick={handleResubmit}
-                        disabled={selectedContentIsImmutable || isPending("resubmit-content") || !resubmitReason.trim()}
+                        disabled={selectedContentIsImmutable || running || savingPending || isPending("resubmit-content") || !resubmitReason.trim()}
                       >
                         {isPending("resubmit-content") ? "提交中…" : "重新提交审核"}
                       </button>
@@ -1178,14 +1178,14 @@ export default function Production() {
                   </div>
                 )}
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-                  <button className="btn primary" onClick={handleSaveContent} disabled={selectedContentIsImmutable || isPending("save-content")}>
+                  <button className="btn primary" onClick={handleSaveContent} disabled={selectedContentIsImmutable || running || savingPending || isPending("save-content")}>
                     {isPending("save-content") ? "提交中…" : "✓ 保存修改"}
                   </button>
-                  <button className="btn" onClick={handleRecheck} disabled={selectedContentIsImmutable || isPending("recheck-content")}>
+                  <button className="btn" onClick={handleRecheck} disabled={selectedContentIsImmutable || running || savingPending || isPending("recheck-content")}>
                     {isPending("recheck-content") ? "重检中…" : "⌕ 重新过目标检查"}
                   </button>
                   <button className="btn danger" style={{ marginLeft: "auto" }} onClick={handleDeleteContent}
-                    disabled={isPending("delete-content") || selectedContentIsImmutable}
+                    disabled={isPending("delete-content") || selectedContentIsImmutable || running || savingPending}
                     title="已确认发布或有发布历史的内容不能删除">
                     {isPending("delete-content") ? "删除中…" : "删除这篇"}
                   </button>
@@ -1210,11 +1210,11 @@ export default function Production() {
                   <div className="panel-title" style={{ fontSize: 12, marginBottom: 6 }}>人工驳回（会阻断正常发布；修改后需重新提交审核）</div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <input
-                      value={rejectReason} placeholder="例如：观点与账号定位不符" disabled={selectedContentIsImmutable || selectedContent.review_rejected}
+                      value={rejectReason} placeholder="例如：观点与账号定位不符" disabled={selectedContentIsImmutable || selectedContent.review_rejected || running || savingPending}
                       onChange={(e) => setRejectReason(e.target.value)}
                       style={{ flex: 1 }}
                     />
-                    <button className="btn" onClick={handleReject} disabled={selectedContentIsImmutable || selectedContent.review_rejected || isPending("reject-content")}>
+                    <button className="btn" onClick={handleReject} disabled={selectedContentIsImmutable || selectedContent.review_rejected || running || savingPending || isPending("reject-content")}>
                       {isPending("reject-content") ? "提交中…" : "✕ 驳回"}
                     </button>
                   </div>
