@@ -1700,8 +1700,11 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.delete("/api/contents/{content_id}")
     def delete_content(content_id: str):
+        conn = _g()["conn"]
+        row = _content_row(conn, content_id)
+        _ensure_content_round_idle(row, "删除内容")
         from src.core.content_admin import delete_contents
-        res = delete_contents(_g()["cfg"], _g()["conn"], [content_id])
+        res = delete_contents(_g()["cfg"], conn, [content_id])
         if res["not_found"]:
             raise HTTPException(404, f"内容 {content_id} 不存在")
         if res["blocked"]:
@@ -1726,6 +1729,14 @@ def _register_routes(app: FastAPI) -> None:
         if not row:
             raise HTTPException(404, f"内容 {content_id} 不存在")
         return row
+
+    def _ensure_content_round_idle(row, operation: str) -> None:
+        round_id = row["round_id"]
+        if round_id is not None and round_id in _running_rounds:
+            raise HTTPException(
+                409,
+                f"轮次 {round_id} 正在执行生产/存草稿操作，暂不能{operation}；请等待本轮结束",
+            )
 
     @app.get("/api/contents")
     def list_contents(
@@ -1786,6 +1797,7 @@ def _register_routes(app: FastAPI) -> None:
         """人工编辑未发布文案 → 写 user_override 留痕；已发布内容保持不可变。"""
         conn = _g()["conn"]
         row = _content_row(conn, content_id)
+        _ensure_content_round_idle(row, "编辑内容")
         published = conn.execute(
             "SELECT status FROM drafts WHERE content_id = ? "
             "AND (user_confirmed_at IS NOT NULL "
@@ -1848,6 +1860,7 @@ def _register_routes(app: FastAPI) -> None:
         conn = _g()["conn"]
         guard = _g()["guard"]
         row = _content_row(conn, content_id)
+        _ensure_content_round_idle(row, "重新检查内容")
         try:
             tags = json.loads(row["tags"]) if row["tags"] else []
         except (TypeError, ValueError):
@@ -1878,6 +1891,7 @@ def _register_routes(app: FastAPI) -> None:
         """人工驳回与 G2 自动质检分开留痕；驳回后禁止正常存草稿/确认发布。"""
         conn = _g()["conn"]
         row = _content_row(conn, content_id)
+        _ensure_content_round_idle(row, "驳回内容")
         published = conn.execute(
             "SELECT COUNT(*) FROM drafts WHERE content_id = ? "
             "AND (user_confirmed_at IS NOT NULL "
@@ -1930,6 +1944,7 @@ def _register_routes(app: FastAPI) -> None:
         """人工驳回后的内容必须先重新过当前 G2，再显式提交审核解除拦截。"""
         conn = _g()["conn"]
         row = _content_row(conn, content_id)
+        _ensure_content_round_idle(row, "重新提交内容")
         if not bool(row["review_rejected"]):
             raise HTTPException(409, "该内容当前没有人工驳回状态")
         if conn.execute(
