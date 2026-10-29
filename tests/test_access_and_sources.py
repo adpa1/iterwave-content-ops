@@ -19,7 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.api import main as api_main
-from src.core import auth, config_store, env_store, kb_sources
+from src.core import auth, config_store, env_store, kb_sources, safe_http
 from src.core.db import Database
 from src.core.notify import _as_escape
 from src.core.redact import redact
@@ -176,6 +176,19 @@ def test_api_rejects_oversized_declared_body(api_client):
     body = b"x" * (5 * 1024 * 1024 + 1)
     response = api_client.post("/api/topics", content=body,
                                headers={"Content-Type": "application/json"})
+    assert response.status_code == 413
+
+
+def test_api_rejects_oversized_chunked_body_without_content_length(api_client):
+    # Iterable content is sent without Content-Length; the ASGI receive-layer cap must still reject it.
+    chunks = (b"x" * (1024 * 1024) for _ in range(5))
+    request = api_client.build_request(
+        "POST", "/api/topics",
+        content=iter([*chunks, b"x"]),
+        headers={"Content-Type": "application/json"},
+    )
+    assert "content-length" not in request.headers
+    response = api_client.send(request)
     assert response.status_code == 413
 
 
@@ -419,16 +432,102 @@ def test_public_remote_source_redacts_url_credentials(cfg):
     assert public["header_keys"] == ["Authorization"]
 
 
+
+def test_remote_dns_rejects_mixed_public_and_private_answers(monkeypatch):
+    # A DNS answer set containing even one private address must be rejected as a whole.
+    monkeypatch.setattr(
+        safe_http.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (safe_http.socket.AF_INET, safe_http.socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443)),
+            (safe_http.socket.AF_INET, safe_http.socket.SOCK_STREAM, 6, "", ("10.0.0.9", 443)),
+        ],
+    )
+    with pytest.raises(ValueError, match="公网|内网|保留"):
+        safe_http.validate_public_url("https://mixed.example/feed")
+
+
+def test_fetch_rejects_dns_rebinding_between_redirect_hops(monkeypatch):
+    lookups = {"count": 0}
+    requests = {"count": 0}
+
+    def changing_dns(host, port, **kwargs):
+        lookups["count"] += 1
+        address = "8.8.8.8" if lookups["count"] == 1 else "10.0.0.9"
+        return [
+            (safe_http.socket.AF_INET, safe_http.socket.SOCK_STREAM, 6, "", (address, port))
+        ]
+
+    class FakeResponse:
+        status_code = 302
+        headers = {"location": "/second-hop"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class FakeClient:
+        def __init__(self, *, transport, **kwargs):
+            self.transport = transport
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.transport.close()
+            return False
+
+        def stream(self, *args, **kwargs):
+            requests["count"] += 1
+            return FakeResponse()
+
+    monkeypatch.setattr(safe_http.socket, "getaddrinfo", changing_dns)
+    monkeypatch.setattr(safe_http.httpx, "Client", FakeClient)
+    with pytest.raises(ValueError, match="内网|本机|保留"):
+        safe_http.fetch_public_bytes("https://feeds.example/first-hop")
+    # 第一次已校验的请求允许发出；DNS 变化后第二跳必须在连接前被拒绝。
+    assert requests["count"] == 1
+    assert lookups["count"] == 2
+
+
+def test_actual_tcp_backend_uses_only_validated_ip(monkeypatch):
+    backend = safe_http._PinnedNetworkBackend()
+    marker = object()
+    captured = {}
+
+    def fake_connect(self, host, port, timeout=None, local_address=None, socket_options=None):
+        captured["host"] = host
+        captured["port"] = port
+        return marker
+
+    monkeypatch.setattr(safe_http.SyncBackend, "connect_tcp", fake_connect)
+    backend.set_pins("feeds.example", 443, ("8.8.8.8", "1.1.1.1"))
+    assert backend.connect_tcp(host="feeds.example", port=443) is marker
+    assert captured == {"host": "8.8.8.8", "port": 443}
+    with pytest.raises(safe_http.httpcore.ConnectError, match="未完成公网 IP 校验"):
+        backend.connect_tcp(host="unvalidated.example", port=443)
+
+
+def test_http_transport_installs_pinned_network_backend():
+    transport = safe_http._PinnedHTTPTransport()
+    try:
+        assert transport._pool._network_backend is transport._pinned_backend
+    finally:
+        transport.close()
+
+
 def test_remote_source_rejects_private_destinations(monkeypatch):
     # 字面 IP 直接拦截；域名解析到内网地址也必须拦截，不能发出 HTTP 请求。
     with pytest.raises(ValueError, match="内网|本机|保留"):
         kb_sources.fetch_remote({"url": "http://127.0.0.1/internal.csv"})
 
     monkeypatch.setattr(
-        kb_sources.socket,
+        safe_http.socket,
         "getaddrinfo",
         lambda *args, **kwargs: [
-            (kb_sources.socket.AF_INET, kb_sources.socket.SOCK_STREAM, 6, "", ("10.0.0.8", 80))
+            (safe_http.socket.AF_INET, safe_http.socket.SOCK_STREAM, 6, "", ("10.0.0.8", 80))
         ],
     )
     with pytest.raises(ValueError, match="内网|本机|保留"):
@@ -497,10 +596,10 @@ def test_preview_and_delete(cfg):
 def test_webhook_written_to_env(api_client, tmp_path, monkeypatch):
     # 该测试不依赖外网 DNS；模拟该 webhook 域名解析到公网地址。
     monkeypatch.setattr(
-        kb_sources.socket,
+        safe_http.socket,
         "getaddrinfo",
         lambda host, port, **kwargs: [
-            (kb_sources.socket.AF_INET, kb_sources.socket.SOCK_STREAM, 6, "", ("8.8.8.8", port))
+            (safe_http.socket.AF_INET, safe_http.socket.SOCK_STREAM, 6, "", ("8.8.8.8", port))
         ],
     )
     r = api_client.post("/api/notify/webhook",
