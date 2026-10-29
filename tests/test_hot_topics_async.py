@@ -41,7 +41,7 @@ def test_hot_source_fetch_rejects_private_destinations(monkeypatch):
         _fetch_public_text("http://127.0.0.1/internal", headers={}, timeout=1)
 
     monkeypatch.setattr(
-        "src.core.kb_sources.socket.getaddrinfo",
+        "src.core.safe_http.socket.getaddrinfo",
         lambda host, port, **kwargs: [
             (__import__("socket").AF_INET, __import__("socket").SOCK_STREAM, 6, "", ("192.168.1.10", port))
         ],
