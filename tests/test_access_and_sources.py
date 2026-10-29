@@ -119,7 +119,9 @@ def test_login_rate_limit():
 
 
 def test_middleware_requires_login_only_after_password_set(api_client):
-    assert api_client.get("/api/topics").status_code == 200
+    blocked = api_client.get("/api/topics")
+    assert blocked.status_code == 403
+    assert blocked.json()["code"] == "setup_required"
 
     assert api_client.post("/api/auth/password", json={"password": "secret123"}).status_code == 200
     assert api_client.get("/api/auth/status").json()["needs_login"] is True
