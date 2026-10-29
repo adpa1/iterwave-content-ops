@@ -130,6 +130,26 @@ def test_publish_confirm_timeout_is_per_draft(conn: sqlite3.Connection, seed) ->
     assert conn.execute("SELECT status FROM drafts WHERE id = ?", (b,)).fetchone()[0] == "draft_saved"
 
 
+def test_legacy_draft_without_saved_at_uses_created_at_for_expiry(conn: sqlite3.Connection, seed) -> None:
+    """迁移/旧数据 saved_at 为空时不能永久留在 draft_saved。"""
+    r = seed.round(status="collecting_metrics")
+    d = seed.draft(r, draft_status="draft_saved", saved_at=None, fetch_status=None)
+    old_created = (datetime.now() - timedelta(hours=72 + 48 + 1)).isoformat()
+    conn.execute(
+        "UPDATE drafts SET saved_at = NULL, created_at = ? WHERE id = ?",
+        (old_created, d),
+    )
+    conn.commit()
+
+    expired = DraftStateMachine(conn).check_expired_drafts(
+        timeout_hours=72, grace_hours=48,
+    )
+    assert d in expired
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (d,)
+    ).fetchone()[0] == "expired"
+
+
 def test_timeout_window_is_timeout_plus_grace(conn: sqlite3.Connection, seed) -> None:
     """不到 timeout+grace 不 expired；改了 grace 立刻影响判定（参数真正生效）。"""
     r = seed.round(status="collecting_metrics")
