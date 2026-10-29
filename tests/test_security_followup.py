@@ -11,6 +11,7 @@ def test_write_env_atomically_preserves_other_values_and_private_mode(tmp_path, 
     path.write_text("EXISTING=value\nSECRET=old\n", encoding="utf-8")
     path.chmod(0o644)
     monkeypatch.setenv("ITERWAVE_ENV_FILE", str(path))
+    monkeypatch.setenv("SECRET", "old")
 
     result = env_store.write_env("SECRET", "new-secret")
 
