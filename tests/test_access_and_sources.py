@@ -44,7 +44,7 @@ def unconfigured_api_client(cfg, conn):
     api_main._g_ctx.clear()
     api_main._g_ctx.update({"cfg": cfg, "conn": conn})
     try:
-        yield TestClient(api_main._build_app(), base_url="http://127.0.0.1")
+        yield TestClient(api_main._build_app(), base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
     finally:
         api_main._g_ctx.clear()
         api_main._g_ctx.update(saved)
