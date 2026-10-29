@@ -189,6 +189,25 @@ def test_server_source_and_path_redaction(cfg, tmp_path):
         kb_sources.add_server(cfg, path=str(tmp_path / "missing.csv"))
 
 
+def test_remote_source_rejects_private_destinations(monkeypatch):
+    # 字面 IP 直接拦截；域名解析到内网地址也必须拦截，不能发出 HTTP 请求。
+    with pytest.raises(ValueError, match="内网|本机|保留"):
+        kb_sources.fetch_remote({"url": "http://127.0.0.1/internal.csv"})
+
+    monkeypatch.setattr(
+        kb_sources.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (kb_sources.socket.AF_INET, kb_sources.socket.SOCK_STREAM, 6, "", ("10.0.0.8", 80))
+        ],
+    )
+    with pytest.raises(ValueError, match="内网|本机|保留"):
+        kb_sources.fetch_remote({"url": "http://topics.example/internal.csv"})
+
+    with pytest.raises(ValueError, match="用户名或密码"):
+        kb_sources.fetch_remote({"url": "http://user:secret@public.example/topics.csv"})
+
+
 def test_remote_csv_json_rss(cfg, monkeypatch):
     monkeypatch.setattr(kb_sources, "fetch_remote", lambda source, timeout=20: (
         ["source", "title", "summary", "link", "date", "dimension"],
