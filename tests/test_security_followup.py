@@ -144,6 +144,16 @@ def test_registry_save_is_atomic_and_private(tmp_path):
     assert not list(path.parent.glob(".sources.json.*.tmp"))
 
 
+def test_load_registry_restricts_legacy_permissions(tmp_path):
+    cfg = SimpleNamespace(paths=SimpleNamespace(data_dir=str(tmp_path)))
+    path = kb_sources.registry_file(cfg)
+    path.write_text(json.dumps({"sources": [{"id": "legacy1", "kind": "server"}]}), encoding="utf-8")
+    path.chmod(0o644)
+
+    assert kb_sources.load_registry(cfg)[0]["id"] == "legacy1"
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
 def test_source_cache_ids_cannot_escape_cache_directory(tmp_path):
     cfg = SimpleNamespace(paths=SimpleNamespace(data_dir=str(tmp_path)))
     try:
