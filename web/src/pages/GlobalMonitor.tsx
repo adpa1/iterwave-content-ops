@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, GlobalMonitorResponse } from "../api";
+import { api, GlobalMonitorResponse, RegisteredPlatformAccount, Platform } from "../api";
 
 const PLATFORM_LABELS: Record<string, string> = {
   xhs: "小红书", douyin: "抖音", kuaishou: "快手", wechat_channels: "视频号",
@@ -12,6 +12,13 @@ export default function GlobalMonitor() {
   const [data, setData] = useState<GlobalMonitorResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [registeredAccounts, setRegisteredAccounts] = useState<RegisteredPlatformAccount[]>([]);
+  const [accountPlatform, setAccountPlatform] = useState<Platform>("xhs");
+  const [accountHandle, setAccountHandle] = useState("");
+  const [accountName, setAccountName] = useState("");
+  const [accountNotes, setAccountNotes] = useState("");
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountError, setAccountError] = useState("");
 
   const load = async (windowDays = days) => {
     setLoading(true);
@@ -25,7 +32,7 @@ export default function GlobalMonitor() {
     }
   };
 
-  useEffect(() => { void load(days); }, [days]);
+  useEffect(() => { void load(days); void api.registeredPlatformAccounts().then((r) => setRegisteredAccounts(r.items)).catch((e) => setAccountError(e instanceof Error ? e.message : "账号清单加载失败")); }, [days]);
 
   const visibleTenants = (data?.tenants ?? []).filter((tenant) => tenantFilter === "all" || tenant.tenant_id === tenantFilter);
   const total = data ? visibleTenants.reduce((sum, tenant) => ({
@@ -99,6 +106,22 @@ export default function GlobalMonitor() {
           </div>
 
           <section className="panel">
+            <div className="panel-head"><div><div className="panel-title">平台账号登记</div><div className="panel-sub">仅统计人工登记的真实账号标识；不会从平台数、登录态或快照推断账号数。</div></div>
+              <span className="tag gray">已登记 {registeredAccounts.length} 个 · 启用 {registeredAccounts.filter((a) => a.status === "active").length} 个</span></div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
+              <label className="field"><span className="field-label">平台</span><select value={accountPlatform} onChange={(e) => setAccountPlatform(e.target.value as Platform)}><option value="xhs">小红书</option><option value="douyin">抖音</option><option value="kuaishou">快手</option><option value="wechat_channels">视频号</option></select></label>
+              <label className="field"><span className="field-label">账号标识（必填）</span><input value={accountHandle} onChange={(e) => setAccountHandle(e.target.value)} placeholder="昵称、账号 ID 或主页标识" maxLength={160}/></label>
+              <label className="field"><span className="field-label">展示名称</span><input value={accountName} onChange={(e) => setAccountName(e.target.value)} placeholder="可选" maxLength={160}/></label>
+              <label className="field"><span className="field-label">备注</span><input value={accountNotes} onChange={(e) => setAccountNotes(e.target.value)} placeholder="可选" maxLength={500}/></label>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}><button className="btn primary sm" disabled={!accountHandle.trim() || accountBusy} onClick={async () => { setAccountBusy(true); setAccountError(""); try { await api.createRegisteredPlatformAccount({ platform: accountPlatform, account_handle: accountHandle.trim(), display_name: accountName.trim(), status: "active", notes: accountNotes.trim() }); setAccountHandle(""); setAccountName(""); setAccountNotes(""); setRegisteredAccounts((await api.registeredPlatformAccounts()).items); await load(days); } catch (e) { setAccountError(e instanceof Error ? e.message : "登记失败"); } finally { setAccountBusy(false); } }}>{accountBusy ? "登记中…" : "登记平台账号"}</button></div>
+            {accountError && <div className="note" role="alert" style={{ color: "var(--red)" }}>{accountError}</div>}
+            <div className="table-wrap" style={{ marginTop: 12 }}><table><thead><tr><th>平台</th><th>账号标识</th><th>展示名称</th><th>备注</th><th>操作</th></tr></thead><tbody>
+              {registeredAccounts.map((a) => <tr key={a.id}><td>{PLATFORM_LABELS[a.platform] ?? a.platform}</td><td>{a.account_handle}</td><td>{a.display_name || "—"}</td><td>{a.notes || "—"}</td><td><button className="btn sm" onClick={async () => { if (!window.confirm("删除登记记录？不会注销平台账号。")) return; await api.deleteRegisteredPlatformAccount(a.id); setRegisteredAccounts((await api.registeredPlatformAccounts()).items); await load(days); }}>删除登记</button></td></tr>)}
+              {registeredAccounts.length === 0 && <tr><td colSpan={5}>暂无登记账号，请录入真实账号标识。</td></tr>}</tbody></table></div>
+          </section>
+
+          <section className="panel">
             <div className="panel-head">
               <div>
                 <div className="panel-title">平台内容分布</div>
@@ -130,7 +153,7 @@ export default function GlobalMonitor() {
             </div>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>账号组</th><th>数据库</th><th>近 {days} 天内容</th><th>内容总量</th><th>草稿总量</th><th>待处理</th><th>已存草稿</th><th>发布及后续</th><th>可用素材</th><th>素材使用</th></tr></thead>
+                <thead><tr><th>账号组</th><th>数据库</th><th>近 {days} 天内容</th><th>内容总量</th><th>草稿总量</th><th>待处理</th><th>已存草稿</th><th>发布及后续</th><th>可用素材</th><th>素材使用</th><th>启用账号</th></tr></thead>
                 <tbody>
                   {visibleTenants.map((tenant) => (
                     <tr key={tenant.tenant_id}>
@@ -144,6 +167,7 @@ export default function GlobalMonitor() {
                       <td>{tenant.db_available ? tenant.drafts_published : "—"}</td>
                       <td>{tenant.db_available ? tenant.media_active : "—"}</td>
                       <td>{tenant.db_available ? tenant.media_usage : "—"}</td>
+                      <td>{tenant.db_available ? tenant.registered_accounts_active : "—"}</td>
                     </tr>
                   ))}
                 </tbody>
