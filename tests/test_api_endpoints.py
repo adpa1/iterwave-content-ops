@@ -490,6 +490,57 @@ def test_publish_confirmation_requires_current_quality_gate_or_audited_override(
     ).fetchone()[0] == "collecting_metrics"
 
 
+def test_dry_run_content_can_be_manually_published_and_confirmation_is_idempotent(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="producing")
+    draft_id = seed.draft(
+        round_id,
+        platform="xhs",
+        draft_status="draft_pending",
+        fetch_status=None,
+        topic_id="manual-publish-from-dry-run",
+    )
+    content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE contents SET guard_outcome = 'pass', guard_reason = '当前文案检查通过' WHERE id = ?",
+        (content_id,),
+    )
+    conn.commit()
+    payload = {"note_url": "https://www.xiaohongshu.com/explore/manual-post"}
+
+    # 干跑内容没有平台草稿，但用户手动发布后可登记，进入正常采集流程。
+    response = tc.post(f"/api/drafts/{draft_id}/publish_confirm", json=payload)
+    assert response.status_code == 200
+    assert response.json()["status"] == "user_published"
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "user_published"
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "collecting_metrics"
+
+    transition_log_before = conn.execute(
+        "SELECT transition_log FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0]
+    confirmed_at_before = conn.execute(
+        "SELECT user_confirmed_at FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+
+    # 重复提交时返回当前状态，不再覆盖确认时间、不重复推进轮次或重新触发发布副作用。
+    response = tc.post(f"/api/drafts/{draft_id}/publish_confirm", json=payload)
+    assert response.status_code == 200
+    assert response.json()["status"] == "user_published"
+    assert response.json()["already_confirmed"] is True
+    assert conn.execute(
+        "SELECT transition_log FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == transition_log_before
+    assert conn.execute(
+        "SELECT user_confirmed_at FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == confirmed_at_before
+
+
 # ---------------------------------------------------------------- R-5 KPI 窗口
 def test_ops_kpi_days_param(client):
     tc, _, seed = client

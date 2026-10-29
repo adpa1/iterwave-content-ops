@@ -186,7 +186,7 @@ DRAFT_STATUSES = (
 )
 
 DRAFT_TRANSITIONS: dict[str, set[str]] = {
-    "draft_pending":    {"draft_saved", "failed", "cancelled"},
+    "draft_pending":    {"draft_saved", "user_published", "failed", "cancelled"},
     "draft_saved":      {"user_published", "failed", "cancelled", "expired"},
     "user_published":   {"data_fetching", "failed"},
     "data_fetching":    {"published", "failed"},
