@@ -6,6 +6,7 @@ import asyncio
 import json
 
 from src.adapters.base import DraftResult, Platform
+from src.core.guard.ultimate_goal_checker import CheckOutcome, CheckResult
 from src.core.orchestration import default_steps, save_steps
 from src.core.round_executor import RoundExecutor
 from src.core.state_machine import DraftStateMachine, RoundStateMachine
@@ -20,12 +21,22 @@ class _SuccessfulDraftAdapter:
         return DraftResult(success=True, platform_draft_id="platform-draft-123")
 
 
-def _executor(cfg, conn, adapters=None):
+class _PassingGuard:
+    def check_content(self, title, body, tags, *, platform):
+        return CheckOutcome(result=CheckResult.PASS, reason="测试通过")
+
+
+class _RejectingGuard:
+    def check_content(self, title, body, tags, *, platform):
+        return CheckOutcome(result=CheckResult.FAIL, reason="测试命中红线")
+
+
+def _executor(cfg, conn, adapters=None, guard=None):
     return RoundExecutor(
         cfg=cfg,
         conn=conn,
         scoring=None,
-        guard=None,
+        guard=guard if guard is not None else _PassingGuard(),
         adapters=adapters or {},
         sm_round=RoundStateMachine(conn),
         sm_draft=DraftStateMachine(conn),
@@ -86,6 +97,45 @@ def test_dry_run_pending_drafts_can_be_saved_without_regenerating(cfg, conn, see
     assert not any(step.get("step") == "dry_run" for step in stored["steps"])
     assert stored["resume_history"][-1]["drafts_saved"] == 1
     assert stored["step_status"]["save_draft"]["status"] == "success"
+
+
+def test_resume_rechecks_current_content_before_any_platform_save(cfg, conn, seed):
+    round_id = seed.round(status="producing")
+    draft_id = seed.draft(
+        round_id, platform="xhs", draft_status="draft_pending",
+        fetch_status=None, topic_id="edited-invalid-content",
+    )
+    conn.execute(
+        "UPDATE contents SET title = ?, body = ?, tags = ?, guard_outcome = NULL, guard_reason = NULL "
+        "WHERE id = (SELECT content_id FROM drafts WHERE id = ?)",
+        ("编辑后的违规标题", "当前正文", json.dumps(["测试"]), draft_id),
+    )
+    conn.commit()
+
+    adapter = _SuccessfulDraftAdapter()
+    executor = _executor(cfg, conn, {Platform.XHS: adapter}, guard=_RejectingGuard())
+    try:
+        asyncio.run(executor.save_pending_drafts(round_id))
+    except ValueError as exc:
+        assert "未通过当前质量门" in str(exc)
+        assert "测试命中红线" in str(exc)
+    else:
+        raise AssertionError("当前内容未通过质量门，不应执行存草稿")
+
+    # 即使质检拦截，也先持久化当前文案的失败结果，方便 UI 展示与修订。
+    content = conn.execute(
+        "SELECT guard_outcome, guard_reason FROM contents WHERE id = "
+        "(SELECT content_id FROM drafts WHERE id = ?)", (draft_id,),
+    ).fetchone()
+    assert content["guard_outcome"] == "fail"
+    assert "测试命中红线" in content["guard_reason"]
+    assert adapter.payloads == []  # 质检前不能触发任何平台副作用
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "draft_pending"
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "producing"
 
 
 def test_resume_merges_draft_ids_instead_of_losing_prior_successes(cfg, conn, seed):
