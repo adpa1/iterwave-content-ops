@@ -24,15 +24,33 @@ export default function GlobalSearch({ onNavigate }: Props) {
   const [busy, setBusy] = useState(false);
   const [partialError, setPartialError] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        setOpen(false);
+        setMobileOpen(false);
+      }
+    };
+    const onShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const typing = target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+      if (event.key === "/" && !typing && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        setMobileOpen(true);
+        setOpen(true);
+        inputRef.current?.focus();
+      }
     };
     document.addEventListener("pointerdown", onPointerDown);
-    return () => document.removeEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onShortcut);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onShortcut);
+    };
   }, []);
 
   useEffect(() => {
@@ -197,6 +215,7 @@ export default function GlobalSearch({ onNavigate }: Props) {
 
   const choose = (hit: SearchHit) => {
     setOpen(false);
+    setMobileOpen(false);
     setQuery("");
     onNavigate(hit.page, hit.tab);
   };
@@ -220,13 +239,24 @@ export default function GlobalSearch({ onNavigate }: Props) {
   };
 
   return (
-    <div className="global-search" ref={rootRef}>
+    <div className={mobileOpen ? "global-search mobile-open" : "global-search"} ref={rootRef}>
+      <button
+        type="button"
+        className="mobile-search-toggle"
+        aria-label="打开全局搜索"
+        aria-expanded={mobileOpen}
+        onClick={() => {
+          setMobileOpen((value) => !value);
+          setOpen((value) => !value);
+          window.setTimeout(() => inputRef.current?.focus(), 0);
+        }}
+      >⌕</button>
       <label className="sr-only" htmlFor="globalSearch">全局搜索</label>
       <input
         ref={inputRef}
         id="globalSearch"
         type="search"
-        className="search"
+        className={mobileOpen ? "search mobile-open" : "search"}
         role="combobox"
         aria-autocomplete="list"
         aria-expanded={open && norm(query).length >= 2}
