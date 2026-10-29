@@ -88,6 +88,46 @@ def test_dry_run_pending_drafts_can_be_saved_without_regenerating(cfg, conn, see
     assert stored["step_status"]["save_draft"]["status"] == "success"
 
 
+def test_resume_merges_draft_ids_instead_of_losing_prior_successes(cfg, conn, seed):
+    round_id = seed.round(status="producing")
+    previous_saved_id = seed.draft(
+        round_id, platform="xhs", draft_status="draft_saved",
+        fetch_status=None, topic_id="already-saved",
+    )
+    pending_id = seed.draft(
+        round_id, platform="xhs", draft_status="draft_pending",
+        fetch_status=None, topic_id="still-pending",
+    )
+    conn.execute(
+        "UPDATE spiral_rounds SET draft_ids = ?, run_report = ? WHERE id = ?",
+        (
+            json.dumps([previous_saved_id]),
+            json.dumps({
+                "round_id": round_id, "round_number": 1,
+                "contents_created": 2, "drafts_created": 2,
+                "drafts_saved": 1, "drafts_failed": 0, "errors": [],
+                "steps": [{"step": "produce", "contents": 2},
+                          {"step": "save_drafts", "saved": 1, "failed": 0}],
+                "final_status": "producing",
+            }),
+            round_id,
+        ),
+    )
+    conn.commit()
+
+    adapter = _SuccessfulDraftAdapter()
+    result = asyncio.run(_executor(cfg, conn, {Platform.XHS: adapter}).save_pending_drafts(round_id))
+    saved_ids = json.loads(conn.execute(
+        "SELECT draft_ids FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0])
+
+    assert result["drafts_saved"] == 1
+    assert result["final_status"] == "awaiting_publish"
+    assert previous_saved_id in saved_ids
+    assert pending_id in saved_ids
+    assert len(saved_ids) == len(set(saved_ids))
+
+
 def test_resume_requires_enabled_save_draft_step(cfg, conn, seed):
     round_id = seed.round(status="producing")
     seed.draft(round_id, platform="xhs", draft_status="draft_pending", fetch_status=None)
