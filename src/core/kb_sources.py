@@ -37,6 +37,9 @@ from .scoring.topic_eval import TopicItem
 logger = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+# XLSX 本质是 ZIP。压缩文件小于 20MB 不代表展开后的 XML 安全；限制总展开体积与条目数，防止 ZIP bomb。
+MAX_XLSX_EXPANDED_BYTES = 40 * 1024 * 1024
+MAX_XLSX_ENTRIES = 1000
 DEFAULT_DIMENSION = "综合"
 SUPPORTED_FORMATS = ("auto", "csv", "json", "jsonl", "xlsx", "sqlite", "rss")
 KINDS = ("file", "server", "remote")
@@ -348,6 +351,12 @@ def _xlsx_col_index(cell_ref: str) -> int:
 def parse_xlsx(path: Path) -> tuple[list[str], list[dict]]:
     """stdlib 解析 .xlsx（首个工作表），避免额外依赖。"""
     with zipfile.ZipFile(path) as zf:
+        infos = zf.infolist()
+        if len(infos) > MAX_XLSX_ENTRIES:
+            raise ValueError("Excel 文件包含过多压缩条目")
+        expanded_size = sum(info.file_size for info in infos)
+        if expanded_size > MAX_XLSX_EXPANDED_BYTES:
+            raise ValueError("Excel 展开后超过 40MB 上限")
         shared: list[str] = []
         if "xl/sharedStrings.xml" in zf.namelist():
             root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
