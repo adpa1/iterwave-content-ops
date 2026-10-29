@@ -24,13 +24,13 @@ def _insert(conn, tid, title, *, batch="2026-10-28T10:00:00", source="60s.viki.m
 
 
 @pytest.fixture()
-def client(cfg, conn):
+def client(cfg, conn, test_auth):
     saved = dict(api_main._g_ctx)
     api_main._g_ctx.clear()
     api_main._g_ctx.update({"cfg": cfg, "conn": conn})
     hot_topic_service.reset_for_tests()
     try:
-        yield TestClient(api_main._build_app()), conn
+        yield test_auth(TestClient(api_main._build_app(), base_url="http://127.0.0.1")), conn
     finally:
         api_main._g_ctx.clear()
         api_main._g_ctx.update(saved)
