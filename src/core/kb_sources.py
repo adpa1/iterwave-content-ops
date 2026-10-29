@@ -37,6 +37,7 @@ MAX_TOPIC_ROWS = 100_000
 # XLSX 本质是 ZIP。压缩文件小于 20MB 不代表展开后的 XML 安全；限制总展开体积与条目数，防止 ZIP bomb。
 MAX_XLSX_EXPANDED_BYTES = 40 * 1024 * 1024
 MAX_XLSX_ENTRIES = 1000
+MAX_XLSX_COLUMNS = 512
 DEFAULT_DIMENSION = "综合"
 SUPPORTED_FORMATS = ("auto", "csv", "json", "jsonl", "xlsx", "sqlite", "rss")
 KINDS = ("file", "server", "remote")
@@ -324,10 +325,17 @@ def _xlsx_col_index(cell_ref: str) -> int:
     letters = re.match(r"[A-Z]+", cell_ref or "")
     if not letters:
         return 0
+    label = letters.group()
+    # 选题数据不需要超宽表格；拒绝异常坐标，避免分配巨大列表。
+    if len(label) > 3:
+        raise ValueError("Excel 单元格列坐标不合法")
     idx = 0
-    for ch in letters.group():
+    for ch in label:
         idx = idx * 26 + (ord(ch) - 64)
-    return idx - 1
+    idx -= 1
+    if idx < 0 or idx >= MAX_XLSX_COLUMNS:
+        raise ValueError(f"Excel 列数超过 {MAX_XLSX_COLUMNS} 列上限")
+    return idx
 
 
 def parse_xlsx(path: Path) -> tuple[list[str], list[dict]]:
@@ -349,7 +357,9 @@ def parse_xlsx(path: Path) -> tuple[list[str], list[dict]]:
             raise ValueError("Excel 文件没有工作表")
         root = ET.fromstring(zf.read(sheets[0]))
         raw_rows: list[list[str]] = []
-        for row in root.iter(f"{_XLSX_NS['main']}row"):
+        for row_index, row in enumerate(root.iter(f"{_XLSX_NS['main']}row"), start=1):
+            if row_index > MAX_TOPIC_ROWS + 1:
+                raise ValueError(f"Excel 选题库超过行上限（{MAX_TOPIC_ROWS:,} 行）")
             cells: dict[int, str] = {}
             for c in row.findall(f"{_XLSX_NS['main']}c"):
                 idx = _xlsx_col_index(c.get("r") or "")
