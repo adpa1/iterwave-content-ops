@@ -407,6 +407,11 @@ def _build_app() -> FastAPI:
 # Pydantic 请求模型
 # =====================================================================
 
+class MediaAssetUseRequest(BaseModel):
+    content_id: str = Field(min_length=1, max_length=128)
+    usage_role: str = Field(default="illustration", pattern="^(cover|illustration|background)$")
+
+
 class MediaAssetUploadRequest(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     title: str = Field(default="", max_length=200)
@@ -1009,6 +1014,62 @@ def _register_routes(app: FastAPI) -> None:
             target, media_type=row["mime_type"],
             headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"},
         )
+
+    @app.get("/api/media/targets")
+    def list_media_usage_targets():
+        rows = _g()["conn"].execute(
+            "SELECT c.id, c.title, c.platform, c.round_id, c.created_at, "
+            "d.status AS draft_status "
+            "FROM contents c JOIN drafts d ON d.content_id = c.id "
+            "WHERE d.status IN ('draft_pending','draft_saved') "
+            "ORDER BY c.created_at DESC LIMIT 200"
+        ).fetchall()
+        return {"items": [dict(row) for row in rows]}
+
+    @app.post("/api/media/{asset_id}/use")
+    def use_media_asset(asset_id: int, req: MediaAssetUseRequest):
+        registry = _g().get("tenant_registry")
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        if registry is None:
+            raise HTTPException(503, "账号组注册表尚未初始化")
+        conn = _g()["conn"]
+        asset = conn.execute(
+            "SELECT stored_filename, status FROM media_assets WHERE id = ?", (asset_id,),
+        ).fetchone()
+        if asset is None or asset["status"] != "active":
+            raise HTTPException(404, "图片素材不存在或已归档")
+        content = conn.execute(
+            "SELECT id, round_id, platform, title FROM contents WHERE id = ?",
+            (req.content_id,),
+        ).fetchone()
+        if content is None:
+            raise HTTPException(404, "目标内容不存在")
+        draft = conn.execute(
+            "SELECT status FROM drafts WHERE content_id = ? AND platform = ? "
+            "ORDER BY rowid DESC LIMIT 1",
+            (req.content_id, content["platform"]),
+        ).fetchone()
+        if draft is None or draft["status"] not in ("draft_pending", "draft_saved"):
+            raise HTTPException(409, "只能为尚未发布的待存草稿或平台草稿选择图片")
+        paths = registry.paths(tenant_id)
+        image_path = (paths.media_dir / asset["stored_filename"]).resolve()
+        if not image_path.is_relative_to(paths.media_dir.resolve()) or not image_path.is_file():
+            raise HTTPException(404, "素材文件不存在")
+        conn.execute(
+            "UPDATE contents SET image_paths = ? WHERE id = ?",
+            (json.dumps([str(image_path)], ensure_ascii=False), req.content_id),
+        )
+        conn.execute(
+            "INSERT INTO media_asset_usages (media_asset_id, content_id, platform, usage_role) "
+            "VALUES (?, ?, ?, ?)",
+            (asset_id, req.content_id, content["platform"], req.usage_role),
+        )
+        conn.commit()
+        return {
+            "asset_id": asset_id, "content_id": req.content_id,
+            "platform": content["platform"], "image_assigned": True,
+            "message": "已将素材设为该内容的图片。若平台草稿此前已保存，需重新同步平台草稿后再发布。",
+        }
 
     @app.post("/api/media/{asset_id}/archive")
     def archive_media_asset(asset_id: int):
