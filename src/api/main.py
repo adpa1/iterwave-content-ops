@@ -606,7 +606,21 @@ def _build_app() -> FastAPI:
                     headers={"Retry-After": "2"},
                 )
         try:
-            return await call_next(request)
+            response = await call_next(request)
+            if tracked_request:
+                body_iterator = getattr(response, "body_iterator", None)
+                if body_iterator is not None:
+                    async def tracked_body():
+                        try:
+                            async for chunk in body_iterator:
+                                yield chunk
+                        finally:
+                            # BaseHTTPMiddleware 会在响应体真正发送时消费该迭代器；
+                            # 下载/流式响应也必须算在途，不能只等响应头返回。
+                            _tenant_switch_gate.leave_request()
+                    response.body_iterator = tracked_body()
+                    tracked_request = False
+            return response
         finally:
             if tracked_request:
                 _tenant_switch_gate.leave_request()
