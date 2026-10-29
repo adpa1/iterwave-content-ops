@@ -248,8 +248,12 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
         return {"selected": {"id": tenant_id, "name": registry.get(tenant_id).get("name") or tenant_id},
                 "runtime_tenant_id": tenant_id, "restart_required": False,
                 "switch_status": "unchanged", "message": "当前账号组已是运行中的账号组。"}
-    if _running_rounds:
-        raise HTTPException(409, "当前仍有轮次在执行，不能切换账号组")
+    # 请求闸门已排空普通 API 请求；仍在运行的轮次最多等待 120 秒，超时则安全中止。
+    round_deadline = time.monotonic() + 120.0
+    while _running_rounds:
+        if time.monotonic() >= round_deadline:
+            raise HTTPException(409, "轮次在 120 秒内未能结束，已取消账号组切换")
+        await asyncio.sleep(0.05)
     try:
         registry.get(tenant_id)
     except TenantError as exc:
@@ -1840,8 +1844,6 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/tenants/select")
     async def select_tenant(req: TenantSelectRequest):
-        if _running_rounds:
-            raise HTTPException(409, "当前仍有轮次在执行，不能切换账号组")
         try:
             await _tenant_switch_gate.begin_switch(timeout_seconds=30.0)
         except TenantSwitchInProgress as exc:
