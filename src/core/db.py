@@ -170,7 +170,7 @@ class Database:
                     if column in existing:
                         continue
                 filtered.append(line)
-            sql = "\\n".join(filtered)
+            sql = "\n".join(filtered)
 
         # SQLite 不支持单次多条语句的多结果集执行，用 executescript
         conn.executescript(sql)
