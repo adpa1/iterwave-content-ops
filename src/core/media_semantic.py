@@ -19,8 +19,10 @@ def rank_media_with_vision(
     *, title: str, body: str, usage_role: str, candidates: list[dict[str, Any]],
     media_dir: Path,
 ) -> list[dict[str, Any]] | None:
+    # Image bytes leave the local machine only when explicitly enabled by the operator.
+    enabled = os.getenv("ITERWAVE_ENABLE_VISION_MEDIA_RANKING", "").strip().lower() in ("1", "true", "yes")
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key or not candidates:
+    if not enabled or not api_key or not candidates:
         return None
 
     blocks: list[dict[str, Any]] = []
@@ -33,6 +35,8 @@ def rank_media_with_vision(
         if not raw or len(raw) > 4 * 1024 * 1024:
             continue
         suffix = path.suffix.lower()
+        if suffix not in (".jpg", ".jpeg", ".png", ".webp"):
+            continue
         mime = "image/jpeg" if suffix in (".jpg", ".jpeg") else "image/png" if suffix == ".png" else "image/webp"
         asset_id = int(item["asset_id"])
         allowed_ids.add(asset_id)
