@@ -61,17 +61,23 @@ def _client_ip(request: Request) -> str:
 
 
 def _is_trusted_local_setup(request: Request) -> bool:
-    # localhost 只能以 TCP 对端地址判定，不能信任 Host 头；
-    # 反向代理传入转发头时按远程请求处理，即使代理本身监听在 loopback。
+    # 必须同时满足 TCP 对端与访问主机名均是 loopback；不能只靠可伪造的 Host 头。
+    # 反向代理传入转发头时一律按远程请求处理，即使代理本身监听在 loopback。
     if any(request.headers.get(name) for name in (
         "forwarded", "x-forwarded-for", "x-real-ip", "x-forwarded-proto"
     )):
         return False
     peer = request.client.host if request.client else ""
+    host = (request.url.hostname or "").strip("[]").lower()
     try:
-        return ipaddress.ip_address(peer).is_loopback
+        peer_local = ipaddress.ip_address(peer).is_loopback
     except ValueError:
-        return False
+        peer_local = False
+    try:
+        host_local = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        host_local = host == "localhost" or host.endswith(".localhost")
+    return peer_local and host_local
 
 
 def _too_many_fails(ip: str) -> bool:
