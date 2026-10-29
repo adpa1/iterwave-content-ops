@@ -94,6 +94,11 @@ def _record_fail(ip: str) -> None:
         _fails.setdefault(ip, deque()).append(time.time())
 
 
+def _clear_fails(ip: str) -> None:
+    with _fail_lock:
+        _fails.pop(ip, None)
+
+
 def _set_cookie(resp: Response, token: str, request: Request) -> None:
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
     resp.set_cookie(COOKIE_NAME, _session_value(token), max_age=COOKIE_MAX_AGE,
@@ -142,6 +147,8 @@ def install_auth(app: FastAPI) -> None:
             if has_bearer:
                 _record_fail(ip)
             return JSONResponse({"detail": "需要登录", "auth_required": True}, status_code=401)
+        if has_bearer:
+            _clear_fails(ip)
         return await call_next(request)
 
     @app.get("/api/auth/status")
@@ -159,6 +166,7 @@ def install_auth(app: FastAPI) -> None:
         if not hmac.compare_digest((req.token or "").strip(), token):
             _record_fail(ip)
             raise HTTPException(401, "口令不正确")
+        _clear_fails(ip)
         _set_cookie(response, token, request)
         return {"ok": True}
 
@@ -188,13 +196,19 @@ def install_auth(app: FastAPI) -> None:
                 raise HTTPException(401, "旧口令不正确")
         elif not _is_trusted_local_setup(request):
             # 公网初始化需要操作者事先通过服务器控制台配置引导令牌，防止陌生访客抢先设密。
+            if _too_many_fails(ip):
+                raise HTTPException(429, "尝试次数过多，请 10 分钟后再试")
             bootstrap = os.environ.get("ITERWAVE_BOOTSTRAP_TOKEN", "")
             provided = (req.bootstrap_token or "").strip()
             if not bootstrap or not provided or not hmac.compare_digest(provided, bootstrap):
+                _record_fail(ip)
                 raise HTTPException(
                     403,
                     "首次设置口令需从本机直连，或在服务器配置 ITERWAVE_BOOTSTRAP_TOKEN 后提交引导口令",
                 )
+            _clear_fails(ip)
+        else:
+            _clear_fails(ip)
         set_env_secret(TOKEN_ENV, new)
         _set_cookie(response, new, request)
         return {"ok": True, "required": True}
