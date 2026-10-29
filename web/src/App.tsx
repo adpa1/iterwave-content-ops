@@ -76,6 +76,9 @@ function Router() {
   if (!auth) {
     return <div className="app-loading">正在检测访问状态…</div>;
   }
+  if (!auth.configured) {
+    return <InitialSetupScreen />;
+  }
   if (auth.needs_login) {
     return <LoginScreen />;
   }
@@ -104,6 +107,61 @@ function Router() {
           <PageBoundary key={page}>{render()}</PageBoundary>
         </main>
       </div>
+    </div>
+  );
+}
+
+// ===== 首次启动：设置口令前禁止访问业务 API =====
+function InitialSetupScreen() {
+  const { refreshAuth } = useApp();
+  const [password, setPassword] = useState("");
+  const [bootstrapToken, setBootstrapToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password.trim().length < 6 || busy) {
+      if (password.trim().length < 6) setError("访问口令至少 6 个字符");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await api.setPassword(password, bootstrapToken);
+      setPassword("");
+      setBootstrapToken("");
+      await refreshAuth();
+    } catch (err) {
+      setError((err as Error).message || "设置失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="login-shell">
+      <form className="login-card" onSubmit={submit}>
+        <div className="login-brand">IterWave</div>
+        <h1>首次安全设置</h1>
+        <p>设置访问口令后才能访问账号、内容和运营数据。公网域名或反向代理部署需要服务器预先配置 ITERWAVE_BOOTSTRAP_TOKEN，并在下方输入对应引导口令；本机直连可留空。</p>
+        <label className="sr-only" htmlFor="initialAccessPassword">新访问口令</label>
+        <input
+          id="initialAccessPassword" className="field" type="password" autoFocus
+          value={password} onChange={(e) => setPassword(e.target.value)}
+          placeholder="设置访问口令（至少 6 位）" autoComplete="new-password"
+        />
+        <label className="sr-only" htmlFor="initialBootstrapToken">首次设置引导口令</label>
+        <input
+          id="initialBootstrapToken" className="field" type="password"
+          value={bootstrapToken} onChange={(e) => setBootstrapToken(e.target.value)}
+          placeholder="服务器引导口令（公网部署必填）" autoComplete="off"
+        />
+        {error && <div className="login-error" role="alert">{error}</div>}
+        <button className="btn" type="submit" disabled={busy}>
+          {busy ? "设置中…" : "设置访问口令"}
+        </button>
+      </form>
     </div>
   );
 }
