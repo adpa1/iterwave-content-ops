@@ -258,15 +258,24 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
     old_context = dict(_g_ctx)
     old_scheduler = old_context.get("scheduler")
     old_conn = old_context.get("conn")
-    new_context = _build_tenant_runtime_context(registry, tenant_id)
+    try:
+        new_context = _build_tenant_runtime_context(registry, tenant_id)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        logger.exception("目标账号组运行时初始化失败 tenant=%s", tenant_id)
+        raise HTTPException(500, f"目标账号组初始化失败，当前账号组未变更：{type(exc).__name__}") from exc
+
     old_stopped = False
     new_started = False
     try:
         if old_scheduler is not None:
-            old_scheduler.shutdown()
+            drained = await old_scheduler.quiesce(timeout_seconds=30.0)
+            if not drained:
+                raise HTTPException(409, "旧账号组后台任务未能在 30 秒内结束，已取消切换")
             old_stopped = True
-            # APScheduler 的异步 shutdown 通过当前事件循环完成 executor 收尾。
-            await asyncio.sleep(0.05)
+            if old_conn is not None:
+                old_conn.close()
 
         from src.core import account_login, login_manager
         new_data_dir = new_context["cfg"].resolve_path(new_context["cfg"].paths.data_dir)
@@ -279,11 +288,6 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
         set_active_notifier(new_context["notifier"])
         _g_ctx.clear()
         _g_ctx.update(new_context)
-        if old_conn is not None:
-            try:
-                old_conn.close()
-            except Exception:
-                logger.exception("关闭旧账号组连接失败 tenant=%s", old_tenant_id)
         logger.info("账号组运行时热切换成功 from=%s to=%s", old_tenant_id, tenant_id)
         return {
             "selected": selected, "runtime_tenant_id": tenant_id,
@@ -304,6 +308,8 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
             logger.exception("关闭失败的新账号组连接失败 tenant=%s", tenant_id)
 
         if not old_stopped:
+            if isinstance(exc, HTTPException):
+                raise exc
             raise HTTPException(500, f"账号组初始化失败，原运行时未变更：{type(exc).__name__}") from exc
 
         try:
