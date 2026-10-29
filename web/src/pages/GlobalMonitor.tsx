@@ -7,6 +7,8 @@ const PLATFORM_LABELS: Record<string, string> = {
 
 export default function GlobalMonitor() {
   const [days, setDays] = useState(30);
+  const [tenantFilter, setTenantFilter] = useState("all");
+  const [platformFilter, setPlatformFilter] = useState("all");
   const [data, setData] = useState<GlobalMonitorResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -25,7 +27,31 @@ export default function GlobalMonitor() {
 
   useEffect(() => { void load(days); }, [days]);
 
-  const total = data?.totals;
+  const visibleTenants = (data?.tenants ?? []).filter((tenant) => tenantFilter === "all" || tenant.tenant_id === tenantFilter);
+  const total = data ? visibleTenants.reduce((sum, tenant) => ({
+    tenants: sum.tenants + 1,
+    available_tenants: sum.available_tenants + (tenant.db_available ? 1 : 0),
+    contents_period: sum.contents_period + tenant.contents_period,
+    contents_all: sum.contents_all + tenant.contents_all,
+    drafts_all: sum.drafts_all + tenant.drafts_all,
+    drafts_pending: sum.drafts_pending + tenant.drafts_pending,
+    drafts_saved: sum.drafts_saved + tenant.drafts_saved,
+    drafts_published: sum.drafts_published + tenant.drafts_published,
+    drafts_failed: sum.drafts_failed + tenant.drafts_failed,
+    media_active: sum.media_active + tenant.media_active,
+    media_usage: sum.media_usage + tenant.media_usage,
+  }), { tenants: 0, available_tenants: 0, contents_period: 0, contents_all: 0, drafts_all: 0, drafts_pending: 0, drafts_saved: 0, drafts_published: 0, drafts_failed: 0, media_active: 0, media_usage: 0 }) : undefined;
+  const platformTotals = visibleTenants.reduce<Record<string, { contents: number; contents_period: number; drafts: number }>>((sum, tenant) => {
+    for (const [platform, values] of Object.entries(tenant.platforms)) {
+      const current = sum[platform] ?? { contents: 0, contents_period: 0, drafts: 0 };
+      current.contents += values.contents;
+      current.contents_period += values.contents_period;
+      current.drafts += values.drafts;
+      sum[platform] = current;
+    }
+    return sum;
+  }, {});
+  const shownPlatforms = Object.entries(platformTotals).filter(([platform]) => platformFilter === "all" || platform === platformFilter);
   const kpis = [
     ["账号组", total?.tenants ?? "—", `数据库可读取 ${total?.available_tenants ?? "—"} 个`],
     ["内容产出", total?.contents_period ?? "—", `近 ${days} 天`],
@@ -46,7 +72,11 @@ export default function GlobalMonitor() {
           <h1 className="page-title">全局监控</h1>
           <div className="page-desc">跨账号组只读汇总。单个数据库不可读取时会单独标记，不会用其他账号组的数据替代。</div>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <select aria-label="账号组筛选" value={tenantFilter} onChange={(event) => setTenantFilter(event.target.value)}>
+            <option value="all">全部账号组</option>
+            {(data?.tenants ?? []).map((tenant) => <option key={tenant.tenant_id} value={tenant.tenant_id}>{tenant.tenant_name}</option>)}
+          </select>
           <select aria-label="内容统计时间范围" value={days} onChange={(event) => setDays(Number(event.target.value))}>
             <option value={1}>最近 24 小时</option><option value={7}>近 7 天</option>
             <option value={30}>近 30 天</option><option value={90}>近 90 天</option><option value={365}>近 365 天</option>
@@ -72,14 +102,18 @@ export default function GlobalMonitor() {
             <div className="panel-head">
               <div>
                 <div className="panel-title">平台内容分布</div>
-                <div className="panel-sub">按所有可读取账号组内的内容记录和草稿记录分别统计。</div>
+                <div className="panel-sub">当前账号组筛选范围内，按平台汇总内容与草稿记录。</div>
               </div>
+              <select aria-label="平台明细筛选" value={platformFilter} onChange={(event) => setPlatformFilter(event.target.value)}>
+                <option value="all">全部平台</option><option value="xhs">小红书</option><option value="douyin">抖音</option>
+                <option value="kuaishou">快手</option><option value="wechat_channels">视频号</option>
+              </select>
             </div>
             <div className="table-wrap">
               <table>
                 <thead><tr><th>平台</th><th>内容总量</th><th>草稿记录</th></tr></thead>
                 <tbody>
-                  {Object.entries(data?.platform_totals ?? {}).map(([platform, values]) => (
+                  {shownPlatforms.map(([platform, values]) => (
                     <tr key={platform}><td>{PLATFORM_LABELS[platform] ?? platform}</td><td>{values.contents}</td><td>{values.drafts}</td></tr>
                   ))}
                 </tbody>
@@ -98,7 +132,7 @@ export default function GlobalMonitor() {
               <table>
                 <thead><tr><th>账号组</th><th>数据库</th><th>近 {days} 天内容</th><th>内容总量</th><th>草稿总量</th><th>待处理</th><th>已存草稿</th><th>发布及后续</th><th>可用素材</th><th>素材使用</th></tr></thead>
                 <tbody>
-                  {(data?.tenants ?? []).map((tenant) => (
+                  {visibleTenants.map((tenant) => (
                     <tr key={tenant.tenant_id}>
                       <td><strong>{tenant.tenant_name}</strong><div className="panel-sub"><code>{tenant.tenant_id}</code></div></td>
                       <td><span className={tenant.db_available ? "tag green" : "tag orange"}>{tenant.db_available ? "可读取" : "不可用"}</span></td>
