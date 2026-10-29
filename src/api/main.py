@@ -267,8 +267,11 @@ def _build_app() -> FastAPI:
                         {"detail": "请先完成访问口令设置", "code": "setup_required"},
                         status_code=403,
                     )
-            # 已设密码 → 强制认证；本机直连且未设密码 → 放行方便本地开发
+            # 本机直连且未设密码时保留开发便利。
+            # 公网首次设口令交给该端点校验引导令牌，不能先要求已有登录态。
             if not auth.password_configured() and local_direct:
+                pass
+            elif not auth.password_configured() and path == "/api/auth/password":
                 pass
             else:
                 cookie_token = request.cookies.get(auth.COOKIE_NAME)
