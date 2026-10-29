@@ -168,7 +168,8 @@ def request_token(cookie_token: Optional[str], headers) -> Optional[str]:
 
 def is_authenticated(cookie_token: Optional[str], headers, ip: Optional[str] = None) -> bool:
     if not password_configured():
-        return True
+        # 未完成首次设置时不宣称请求已认证；中间件只开放明确的初始化路由。
+        return False
     # Cookie 只接受服务端签发的会话 token；无效 Cookie 不再触发 PBKDF2 口令校验。
     if _session_valid(cookie_token):
         return True
