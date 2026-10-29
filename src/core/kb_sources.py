@@ -405,25 +405,44 @@ def read_xlsx_rows(p: Path) -> tuple[list[str], list[dict]]:
                 raise KbSourceError("Excel 文件包含过多压缩条目")
             if sum(item.file_size for item in entries) > MAX_XLSX_EXPANDED_BYTES:
                 raise KbSourceError("Excel 展开后超过 40MB 上限")
+    except KbSourceError:
+        raise
     except (zipfile.BadZipFile, OSError) as exc:
         raise KbSourceError("Excel 文件不是有效的 XLSX 压缩包") from exc
+
     try:
         from openpyxl import load_workbook
     except ImportError as exc:  # pragma: no cover
         raise KbSourceError("服务器缺少 Excel 解析组件（openpyxl），请改用 CSV") from exc
-    wb = load_workbook(io.BytesIO(p.read_bytes()), read_only=True, data_only=True)
-    ws = wb.worksheets[0]
-    rows_iter = ws.iter_rows(values_only=True)
-    header = next(rows_iter, None)
-    if not header:
-        return [], []
-    cols = [str(h).strip() if h is not None else f"列{i + 1}" for i, h in enumerate(header)]
-    rows = []
-    for r in rows_iter:
-        if r is None or all(v is None or str(v).strip() == "" for v in r):
-            continue
-        rows.append({cols[i]: ("" if v is None else str(v)) for i, v in enumerate(r) if i < len(cols)})
-        if len(rows) > MAX_TOPIC_ROWS:
-            raise KbSourceError(f"选题库超过 {MAX_TOPIC_ROWS:,} 行上限")
-    wb.close()
-    return cols, rows
+
+    try:
+        wb = load_workbook(io.BytesIO(p.read_bytes()), read_only=True, data_only=True)
+    except Exception as exc:  # noqa: BLE001 — 不把底层 XML/路径异常原样传给 UI
+        raise KbSourceError("Excel 文件无法解析，请确认它是有效的 XLSX 文件") from exc
+
+    try:
+        if not wb.worksheets:
+            raise KbSourceError("Excel 文件中没有工作表")
+        ws = wb.worksheets[0]
+        rows_iter = ws.iter_rows(values_only=True)
+        header = next(rows_iter, None)
+        if not header:
+            return [], []
+        cols = [str(h).strip() if h is not None else f"列{i + 1}" for i, h in enumerate(header)]
+        rows: list[dict] = []
+        for row in rows_iter:
+            if row is None or all(v is None or str(v).strip() == "" for v in row):
+                continue
+            rows.append({
+                cols[i]: ("" if value is None else str(value))
+                for i, value in enumerate(row) if i < len(cols)
+            })
+            if len(rows) > MAX_TOPIC_ROWS:
+                raise KbSourceError(f"选题库超过 {MAX_TOPIC_ROWS:,} 行上限")
+        return cols, rows
+    except KbSourceError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — 损坏的 XML 不应回传裸堆栈
+        raise KbSourceError("Excel 文件内容损坏，无法读取") from exc
+    finally:
+        wb.close()
