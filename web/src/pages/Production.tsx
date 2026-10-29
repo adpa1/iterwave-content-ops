@@ -296,9 +296,15 @@ export default function Production() {
 
   /** 「✕ 不发了」：draft_pending / draft_saved → cancelled（R9：不冻结未发布草稿） */
   const cancelDraft = async (draftId: string) => {
+    const draft = roundDetail?.drafts?.find((item) => item.id === draftId);
     try {
       await api.cancelDraft(draftId);
-      showToast("已取消该草稿");
+      showToast(
+        draft?.status === "draft_saved"
+          ? "本地状态已取消；平台端草稿仍存在，请到平台端手动清理"
+          : "已取消本地待存草稿",
+        draft?.status === "draft_saved" ? "info" : "success",
+      );
       await refresh();
       if (currentRoundId) await loadRoundData(currentRoundId);
     } catch (e: any) { showToast(`取消失败: ${e.message}`, "error"); }
@@ -486,6 +492,16 @@ export default function Production() {
   const selectedContentIsImmutable = !!selectedContent &&
     (!!selectedContent.draft_user_confirmed_at ||
       ["user_published", "data_fetching", "published"].includes(selectedContent.draft_status ?? ""));
+  const roundDrafts = roundDetail?.drafts ?? [];
+  const roundHasPublishHistory = roundDrafts.some((d) =>
+    !!d.user_confirmed_at || ["user_published", "data_fetching", "published"].includes(d.status),
+  );
+  const roundHasSavedPlatformDraft = roundDrafts.some((d) => d.status === "draft_saved");
+  const roundCancelBlockReason = roundHasPublishHistory
+    ? "本轮存在已确认发布或有发布历史的内容；请让数据采集与复盘正常收口"
+    : roundHasSavedPlatformDraft
+      ? "本轮仍有已存入平台的草稿；请先逐篇取消并到平台端手动清理"
+      : null;
 
   // ---------------------------------------------------------------- 渲染
   return (
@@ -1234,10 +1250,25 @@ export default function Production() {
                 <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: 8 }}>
                   <span style={{ fontSize: 11, color: "var(--muted)", marginRight: 4 }}>可迁移到：</span>
                   {(ROUND_TARGETABLE[roundDetail.status] || []).map((t) => (
-                    <button key={t} className="btn sm" onClick={() => handleTransition(t)}>→ {t}</button>
+                    <button
+                      key={t}
+                      className="btn sm"
+                      onClick={() => handleTransition(t)}
+                      disabled={t === "cancelled" && (running || savingPending || !!roundCancelBlockReason)}
+                      title={t === "cancelled"
+                        ? (running || savingPending
+                          ? "本轮操作仍在执行，不能中途取消"
+                          : roundCancelBlockReason ?? "取消轮次并清理本地待存草稿")
+                        : undefined}
+                    >→ {t}</button>
                   ))}
                   {(ROUND_TARGETABLE[roundDetail.status] || []).length === 0 && (
                     <span style={{ fontSize: 12, color: "var(--subtle)" }}>当前状态无合法迁移（终态）</span>
+                  )}
+                  {roundCancelBlockReason && (ROUND_TARGETABLE[roundDetail.status] || []).includes("cancelled") && (
+                    <div className="note" style={{ flexBasis: "100%", marginTop: 4 }}>
+                      暂不能取消轮次：{roundCancelBlockReason}
+                    </div>
                   )}
                   <button className="btn sm danger" style={{ marginLeft: "auto" }} onClick={handleDeleteRound}
                     disabled={isPending("delete-round") || ["producing", "collecting_metrics", "analyzing"].includes(roundDetail.status)}
