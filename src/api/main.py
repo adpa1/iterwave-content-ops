@@ -1539,7 +1539,8 @@ def _register_routes(app: FastAPI) -> None:
         conn = _g()["conn"]
         sql = (
             "SELECT c.*, d.id AS draft_id, d.status AS draft_status, "
-            "       d.error_msg AS draft_error, d.saved_at AS draft_saved_at "
+            "       d.error_msg AS draft_error, d.saved_at AS draft_saved_at, "
+            "       d.user_confirmed_at AS draft_user_confirmed_at "
             "FROM contents c LEFT JOIN drafts d ON d.content_id = c.id "
             "WHERE c.round_id = ?"
         )
@@ -1591,7 +1592,8 @@ def _register_routes(app: FastAPI) -> None:
         row = _content_row(conn, content_id)
         published = conn.execute(
             "SELECT status FROM drafts WHERE content_id = ? "
-            "AND status IN ('user_published', 'data_fetching', 'published') "
+            "AND (user_confirmed_at IS NOT NULL "
+            "     OR status IN ('user_published', 'data_fetching', 'published')) "
             "ORDER BY rowid DESC LIMIT 1",
             (content_id,),
         ).fetchone()
