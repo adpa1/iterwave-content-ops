@@ -302,6 +302,90 @@ def test_cancel_round_cancels_local_pending_drafts_together(client):
     ).fetchone()[0] == "cancelled"
 
 
+def test_round_cancel_rejected_while_run_is_active(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="producing")
+    api_main._running_rounds.add(round_id)
+    try:
+        response = tc.post(
+            f"/api/rounds/{round_id}/transition",
+            json={"target_status": "cancelled", "reason": "回归测试"},
+        )
+    finally:
+        api_main._running_rounds.discard(round_id)
+
+    assert response.status_code == 409
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "producing"
+
+
+def test_round_cancel_rejected_while_platform_draft_is_saved(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="awaiting_publish")
+    draft_id = seed.draft(
+        round_id, platform="xhs", draft_status="draft_saved", fetch_status=None,
+    )
+    response = tc.post(
+        f"/api/rounds/{round_id}/transition",
+        json={"target_status": "cancelled", "reason": "回归测试"},
+    )
+
+    assert response.status_code == 409
+    assert "已存入平台" in response.json()["detail"]
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "awaiting_publish"
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "draft_saved"
+
+
+def test_round_cancel_rejected_if_published_history_exists_even_when_failed(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="collecting_metrics")
+    draft_id = seed.draft(
+        round_id, platform="xhs", draft_status="failed", fetch_status=None,
+    )
+    conn.execute(
+        "UPDATE drafts SET user_confirmed_at = ?, error_msg = ? WHERE id = ?",
+        ("2026-01-01T00:00:00", "采集重试耗尽", draft_id),
+    )
+    conn.commit()
+
+    response = tc.post(
+        f"/api/rounds/{round_id}/transition",
+        json={"target_status": "cancelled", "reason": "回归测试"},
+    )
+
+    assert response.status_code == 409
+    assert "存在发布历史" in response.json()["detail"]
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "collecting_metrics"
+
+
+def test_cancel_round_cancels_local_pending_drafts_together(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="producing")
+    draft_id = seed.draft(
+        round_id, platform="xhs", draft_status="draft_pending", fetch_status=None,
+    )
+    response = tc.post(
+        f"/api/rounds/{round_id}/transition",
+        json={"target_status": "cancelled", "reason": "用户取消本轮"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["new_status"] == "cancelled"
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "cancelled"
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "cancelled"
+
+
 # ---------------------------------------------------------------- R-5 KPI 窗口
 def test_ops_kpi_days_param(client):
     tc, _, seed = client
