@@ -100,6 +100,7 @@ _g_ctx: dict = {}
 
 # G-22：正在执行的轮次集合。同一轮次并发触发会被拒绝（409），避免重复产出草稿
 _running_rounds: set[int] = set()
+_media_generation_lock = threading.Lock()
 
 # G-11：写接口幂等去重窗口（秒）。重复提交/连点在窗口内只落一条记录
 _DEDUPE_TTL_SECONDS = 10.0
@@ -411,6 +412,26 @@ def _build_app() -> FastAPI:
 # =====================================================================
 # Pydantic 请求模型
 # =====================================================================
+
+class MediaGenerationSettingsRequest(BaseModel):
+    enabled: bool = False
+    monthly_quota: int = Field(default=20, ge=0, le=1000)
+    prompt_prefix: str = Field(default="", max_length=2000)
+    model: str = Field(default="gpt-image-1", min_length=1, max_length=120)
+    size: str = Field(default="1024x1024", pattern="^(1024x1024|1024x1536|1536x1024)$")
+
+
+class MediaGenerationRequest(BaseModel):
+    prompt: str = Field(min_length=5, max_length=2000)
+    title: str = Field(default="", max_length=200)
+    alt_text: str = Field(default="", max_length=500)
+    tags: list[str] = Field(default_factory=list, max_length=30)
+
+
+class MediaAssetReviewRequest(BaseModel):
+    decision: str = Field(pattern="^(approved|rejected)$")
+    note: str = Field(default="", max_length=500)
+
 
 class MediaAssetUseRequest(BaseModel):
     content_id: str = Field(min_length=1, max_length=128)
