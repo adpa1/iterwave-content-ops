@@ -994,6 +994,19 @@ class SchedulerEngine:
                 self.conn.commit()
 
             if status == "collecting_metrics":
+                # 未发布的 draft_saved 仍可由用户在平台发布；在其单篇确认超时前
+                # 不得先结束轮次，否则晚发布的内容会成为无法进入复盘的孤儿记录。
+                waiting = self.conn.execute(
+                    "SELECT COUNT(*) FROM drafts d JOIN contents c ON d.content_id = c.id "
+                    "WHERE c.round_id = ? AND d.status = 'draft_saved'",
+                    (row["id"],),
+                ).fetchone()[0]
+                if waiting:
+                    logger.info(
+                        "[APS] 轮次 %s collecting_metrics 阶段超时暂缓：%d 篇平台草稿仍待用户确认",
+                        row["id"], waiting,
+                    )
+                    continue
                 self._fail_uncollected_drafts(row["id"], reason)
 
             if self.sm_round.transition(row["id"], target, reason=f"R8 阶段超时：{reason}"):
@@ -1036,25 +1049,19 @@ class SchedulerEngine:
 
         # 1) collecting_metrics：所有 user_published / data_fetching 都已落定 → analyzing
         rows = self.conn.execute(
-            "SELECT id, collecting_metrics_started_at FROM spiral_rounds WHERE status = 'collecting_metrics'"
+            "SELECT id FROM spiral_rounds WHERE status = 'collecting_metrics'"
         ).fetchall()
-        grace_h = getattr(self.cfg.timeouts, "publish_confirm_grace_hours", 48) or 0
         for row in rows:
             round_id = row["id"]
-            # 还有草稿等用户发布：首篇发布后给 publish_confirm_grace_hours 的窗口，
-            # 避免第一篇有数据就收口、后面发布的篇目进不了复盘
+            # 只要还有 draft_saved，用户仍可发布它；必须等待单篇发布确认超时任务
+            # 将其转为 expired 后再收口，不能靠一段较短的轮次宽限期提前终态化。
             waiting = self.conn.execute(
                 "SELECT COUNT(*) FROM drafts d JOIN contents c ON d.content_id = c.id "
                 "WHERE c.round_id = ? AND d.status = 'draft_saved'",
                 (round_id,),
             ).fetchone()[0]
-            if waiting and grace_h and row["collecting_metrics_started_at"]:
-                try:
-                    started = datetime.fromisoformat(str(row["collecting_metrics_started_at"])[:19])
-                    if (datetime.now() - started).total_seconds() < grace_h * 3600:
-                        continue
-                except ValueError:
-                    pass
+            if waiting:
+                continue
             unresolved = self.conn.execute(
                 "SELECT COUNT(*) FROM drafts d JOIN contents c ON d.content_id = c.id "
                 "WHERE c.round_id = ? AND d.status IN ('user_published','data_fetching')",
