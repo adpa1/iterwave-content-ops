@@ -87,3 +87,10 @@ PROJECT_MEMORY.md
 *.html
 # 内部验证脚本
 verify_*.py
+审查.md
+*改造方案*.md
+# 会话吊销表（运行时）
+config/.session_revocations.json
+
+# ===== 跨账号组共享运行时数据（热点原始库、账号组注册表）=====
+shared/

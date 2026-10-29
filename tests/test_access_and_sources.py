@@ -30,10 +30,10 @@ def clean_auth_state(monkeypatch, tmp_path):
     """每个用例独立 .env + 清空内存会话/失败计数，避免用例互相污染。"""
     monkeypatch.setenv("ITERWAVE_ENV_FILE", str(tmp_path / ".env"))
     monkeypatch.delenv(auth.PASSWORD_ENV, raising=False)
-    auth._sessions.clear()
+    auth._reset_revocations()
     auth._failures.clear()
     yield
-    auth._sessions.clear()
+    auth._reset_revocations()
     auth._failures.clear()
     os.environ.pop(auth.PASSWORD_ENV, None)
 

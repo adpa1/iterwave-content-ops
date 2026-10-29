@@ -7,6 +7,7 @@
 - 脚本调用：请求头 ``X-Access-Token: <口令>`` 或 ``Authorization: Bearer <口令>``
 - 登录和脚本令牌失败共用按 IP 限速（10 分钟内最多 5 次，超出 429）
 - 口令以 PBKDF2-HMAC-SHA256 哈希存 config/.env（chmod 600），永不回传明文
+- 会话为签名令牌（ITERWAVE_SESSION_SECRET + 口令哈希），重启不掉线，多 worker 可互认
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import base64
 import hashlib
 import hmac
 import ipaddress
+import json
 import logging
 import os
 import secrets
@@ -56,8 +58,14 @@ def is_trusted_local_setup(request) -> bool:
         host_local = host == "localhost"
     return peer_local and host_local
 
-# 内存会话（重启即失效，对本地单进程足够；不落盘避免多一份密钥）
-_sessions: dict[str, float] = {}
+SESSION_SECRET_ENV = "ITERWAVE_SESSION_SECRET"
+REVOCATION_FILE_NAME = ".session_revocations.json"
+
+# 会话为服务端签名的无状态令牌：重启不掉线、多 worker 共用同一密钥即可互认。
+# 签名密钥 = ITERWAVE_SESSION_SECRET（首次使用自动生成写入 .env）+ 当前口令哈希，
+# 修改或清除口令后旧会话自动全部失效。登出的令牌记入 .env 同目录的吊销表（0600）。
+_revoked: dict[str, float] = {}
+_revoked_mtime: float = -1.0
 _failures: dict[str, list[float]] = {}
 
 
@@ -101,13 +109,13 @@ def set_password(password: str) -> None:
     if len(password) > 64:
         raise ValueError("访问口令最长 64 个字符")
     write_env(PASSWORD_ENV, _hash_password(password))
-    _sessions.clear()
+    _reset_revocations()
     logger.info("访问口令已更新，已有会话全部失效")
 
 
 def clear_password() -> None:
     write_env(PASSWORD_ENV, "")
-    _sessions.clear()
+    _reset_revocations()
     logger.info("访问口令已清除，全站恢复免登录（会显示安全警告）")
 
 
@@ -122,27 +130,116 @@ def verify_password(password: str) -> bool:
 # 会话
 # ----------------------------------------------------------------------
 
+def _session_secret() -> bytes:
+    secret = read_env(SESSION_SECRET_ENV)
+    if not secret:
+        secret = secrets.token_urlsafe(48)
+        write_env(SESSION_SECRET_ENV, secret)
+    return secret.encode("utf-8")
+
+
+def _signing_key() -> Optional[bytes]:
+    stored = get_password_hash()
+    if not stored:
+        return None
+    return hashlib.sha256(_session_secret() + b"|" + stored.encode("utf-8")).digest()
+
+
+def _sign(payload: str, key: bytes) -> str:
+    mac = hmac.new(key, payload.encode("ascii"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(mac).decode("ascii").rstrip("=")
+
+
+def _revocation_path():
+    from .env_store import env_file
+    return env_file().parent / REVOCATION_FILE_NAME
+
+
+def _load_revocations() -> dict[str, float]:
+    global _revoked, _revoked_mtime
+    path = _revocation_path()
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return _revoked
+    if mtime != _revoked_mtime:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            _revoked = {str(k): float(v) for k, v in data.items()} if isinstance(data, dict) else {}
+        except (OSError, ValueError, TypeError):
+            _revoked = {}
+        _revoked_mtime = mtime
+    return _revoked
+
+
+def _save_revocations() -> None:
+    global _revoked_mtime
+    path = _revocation_path()
+    now = time.time()
+    data = {k: v for k, v in _revoked.items() if v > now}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, path)
+        _revoked_mtime = path.stat().st_mtime
+    except OSError:
+        logger.warning("会话吊销表写入失败，登出仅在当前进程生效")
+
+
+def _reset_revocations() -> None:
+    global _revoked_mtime
+    _revoked.clear()
+    _revoked_mtime = -1.0
+    try:
+        _revocation_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _parse_session(token: Optional[str]) -> Optional[tuple[str, float]]:
+    """校验签名与有效期，返回 (nonce, 过期时间)；无效返回 None。"""
+    if not token or len(token) > 256 or token.count(".") != 2:
+        return None
+    key = _signing_key()
+    if key is None:
+        return None
+    exp_s, nonce, sig = token.split(".")
+    if not hmac.compare_digest(_sign(f"{exp_s}.{nonce}", key), sig):
+        return None
+    try:
+        expire = float(int(exp_s))
+    except ValueError:
+        return None
+    if expire < time.time():
+        return None
+    return nonce, expire
+
+
 def _new_session() -> str:
-    token = secrets.token_urlsafe(32)
-    _sessions[token] = time.time() + SESSION_TTL_SECONDS
-    return token
+    key = _signing_key()
+    if key is None:
+        raise ValueError("尚未设置访问口令")
+    payload = f"{int(time.time() + SESSION_TTL_SECONDS)}.{secrets.token_urlsafe(18)}"
+    return f"{payload}.{_sign(payload, key)}"
 
 
 def _session_valid(token: Optional[str]) -> bool:
-    if not token:
+    parsed = _parse_session(token)
+    if parsed is None:
         return False
-    expire = _sessions.get(token)
-    if expire is None:
-        return False
-    if expire < time.time():
-        _sessions.pop(token, None)
-        return False
-    return True
+    return parsed[0] not in _load_revocations()
 
 
 def logout_session(token: Optional[str]) -> None:
-    if token:
-        _sessions.pop(token, None)
+    parsed = _parse_session(token)
+    if parsed is None:
+        return
+    _load_revocations()
+    _revoked[parsed[0]] = parsed[1]
+    _save_revocations()
 
 
 # ----------------------------------------------------------------------
