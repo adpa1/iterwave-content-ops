@@ -469,6 +469,34 @@ export interface TenantListResponse {
   restart_required: boolean;
   items: TenantItem[];
 }
+export interface GlobalMonitorTenant {
+  tenant_id: string;
+  tenant_name: string;
+  created_at: string | null;
+  db_available: boolean;
+  contents_period: number;
+  contents_all: number;
+  drafts_all: number;
+  drafts_pending: number;
+  drafts_saved: number;
+  drafts_published: number;
+  drafts_failed: number;
+  media_active: number;
+  media_usage: number;
+  platforms: Record<string, { contents: number; drafts: number }>;
+}
+export interface GlobalMonitorResponse {
+  days: number;
+  since: string;
+  totals: {
+    tenants: number; available_tenants: number; contents_period: number; contents_all: number;
+    drafts_all: number; drafts_pending: number; drafts_saved: number; drafts_published: number;
+    drafts_failed: number; media_active: number; media_usage: number;
+  };
+  platform_totals: Record<string, { contents: number; drafts: number }>;
+  tenants: GlobalMonitorTenant[];
+  account_count_note: string;
+}
 export interface TenantBackupItem {
   backup_name: string;
   size_bytes: number;
@@ -1226,6 +1254,7 @@ export const api = {
     fetchJson<{ draft_id: string; scheduled_publish_at: string | null }>(
       `/api/schedule/${draft_id}`, { method: "PATCH", body: JSON.stringify({ scheduled_publish_at: scheduled }) },
     ),
+  globalMonitor: (days = 30) => fetchJson<GlobalMonitorResponse>(`/api/global-monitor?days=${days}`),
   // === 账号组隔离 ===
   tenants: () => fetchJson<TenantListResponse>("/api/tenants"),
   createTenant: (data: { tenant_id: string; name: string }) =>
