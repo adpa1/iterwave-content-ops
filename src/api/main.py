@@ -296,6 +296,8 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
                 old_conn.close()
             # 热点服务另有独立后台线程，APScheduler 结束不代表该线程已退出。
             await _wait_for_tenant_background_jobs(timeout_seconds=120.0)
+            from src.core import hot_topic_service
+            hot_topic_service.reset_runtime_state()
 
         from src.core import account_login, login_manager
         # 旧账号组的扫码登录子进程和登录态导出线程必须先退出，避免继续读写旧/新目录。
@@ -310,6 +312,9 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
         set_active_notifier(new_context["notifier"])
         _g_ctx.clear()
         _g_ctx.update(new_context)
+        # 幂等去重结果含业务响应，必须在租户边界切换后清空，避免复用旧租户响应。
+        with _dedupe_lock:
+            _dedupe_cache.clear()
         logger.info("账号组运行时热切换成功 from=%s to=%s", old_tenant_id, tenant_id)
         return {
             "selected": selected, "runtime_tenant_id": tenant_id,
