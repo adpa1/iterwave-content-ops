@@ -218,6 +218,29 @@ def test_xlsx_expansion_limit_blocks_zip_bombs(tmp_path, monkeypatch):
         kb_sources.parse_xlsx(path)
 
 
+def test_source_registry_and_uploaded_file_permissions_are_private(cfg):
+    kb_sources.save_registry(cfg, [{
+        "id": "remote-secret",
+        "kind": "remote",
+        "name": "私有源",
+        "url": "https://example.com/feed?access_token=SECRET",
+        "headers": {"Authorization": "Bearer SECRET"},
+    }])
+    registry = kb_sources.registry_file(cfg)
+    assert oct(registry.stat().st_mode)[-3:] == "600"
+    assert oct(kb_sources.kb_dir(cfg).stat().st_mode)[-3:] == "700"
+
+    source = kb_sources.add_upload(
+        cfg,
+        filename="private.csv",
+        content_b64=base64.b64encode(_csv_bytes(1)).decode(),
+        name="私有上传",
+    )
+    stored = next(s for s in kb_sources.load_registry(cfg) if s["id"] == source["id"])
+    assert oct(Path(stored["path"]).stat().st_mode)[-3:] == "600"
+    assert oct(kb_sources.upload_dir(cfg).stat().st_mode)[-3:] == "700"
+
+
 def test_upload_csv_and_read(cfg):
     b64 = "data:text/csv;base64," + base64.b64encode(_csv_bytes()).decode()
     source = kb_sources.add_upload(cfg, filename="topics.csv", content_b64=b64)
@@ -299,6 +322,9 @@ def test_remote_source_rejects_private_destinations(monkeypatch):
 
     with pytest.raises(ValueError, match="用户名或密码"):
         kb_sources.fetch_remote({"url": "http://user:secret@public.example/topics.csv"})
+
+    with pytest.raises(ValueError, match="空白或控制字符"):
+        kb_sources.fetch_remote({"url": "https://public.example/feed\nOTHER=unsafe"})
 
 
 def test_remote_csv_json_rss(cfg, monkeypatch):
