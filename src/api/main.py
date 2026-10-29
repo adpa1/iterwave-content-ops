@@ -1020,7 +1020,7 @@ def _register_routes(app: FastAPI) -> None:
     def list_media_usage_targets():
         rows = _g()["conn"].execute(
             "SELECT c.id, c.title, c.platform, c.round_id, c.created_at, "
-            "d.status AS draft_status "
+            "c.visual_status, c.visual_reason, d.status AS draft_status "
             "FROM contents c JOIN drafts d ON d.content_id = c.id "
             "WHERE d.status IN ('draft_pending','draft_saved') "
             "ORDER BY c.created_at DESC LIMIT 200"
@@ -1057,7 +1057,8 @@ def _register_routes(app: FastAPI) -> None:
         if not image_path.is_relative_to(paths.media_dir.resolve()) or not image_path.is_file():
             raise HTTPException(404, "素材文件不存在")
         conn.execute(
-            "UPDATE contents SET image_paths = ? WHERE id = ?",
+            "UPDATE contents SET image_paths = ?, visual_status = 'media_asset', "
+            "visual_reason = NULL WHERE id = ?",
             (json.dumps([str(image_path)], ensure_ascii=False), req.content_id),
         )
         conn.execute(
