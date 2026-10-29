@@ -142,9 +142,12 @@ class RoundExecutor:
             raise ValueError(f"轮次 {round_id} 无法进入 producing")
 
         task_run_id = self._start_task_run(round_id)
-        self._feedback = self._resolve_feedback(round_id, feedback, report)
 
         try:
+            # 复盘反馈也属于执行流程；若读取/解析异常，必须进入统一失败收尾，
+            # 不能让轮次停在 producing 且 task_run 永远保持 running。
+            self._feedback = self._resolve_feedback(round_id, feedback, report)
+
             # ① + ② 选题读取与评分（G 节点）
             scored = self._select_topics(topic_count, report)
             if not scored:
@@ -198,6 +201,122 @@ class RoundExecutor:
             round_id, report["contents_created"], report["drafts_created"],
             report["drafts_saved"], report["drafts_failed"], report["final_status"],
         )
+        return report
+
+    async def save_pending_drafts(self, round_id: int) -> dict:
+        """恢复存草稿未执行的轮次，不重新生成内容。
+
+        只处理已经通过质量门、持久化在 contents/drafts 中且仍为 draft_pending 的内容。
+        所有发布动作仍由用户在平台完成；此方法只调用 adapter.save_draft。
+        """
+        round_row = self.conn.execute(
+            "SELECT status, round_number, run_report FROM spiral_rounds WHERE id = ?",
+            (round_id,),
+        ).fetchone()
+        if not round_row:
+            raise ValueError(f"轮次 {round_id} 不存在")
+        if round_row["status"] != "producing":
+            raise ValueError(
+                f"轮次 {round_id} 当前状态为 {round_row['status']}，只有 producing 状态可恢复存草稿"
+            )
+
+        self._orch = Orchestration.load(self.conn)
+        if not self._orch.on("save_draft"):
+            raise ValueError("Agent 编排已关闭「存草稿」步骤，请先启用后再恢复")
+
+        pending_rows = self.conn.execute(
+            "SELECT d.id AS draft_id, d.content_id, d.platform, "
+            "c.title, c.body, c.tags, c.image_paths "
+            "FROM drafts d JOIN contents c ON c.id = d.content_id "
+            "WHERE c.round_id = ? AND d.status = 'draft_pending' "
+            "ORDER BY c.rowid, d.rowid",
+            (round_id,),
+        ).fetchall()
+        if not pending_rows:
+            raise ValueError(f"轮次 {round_id} 没有待存草稿")
+
+        rows: list[dict] = []
+        for item in pending_rows:
+            try:
+                tags = json.loads(item["tags"]) if item["tags"] else []
+            except (TypeError, ValueError):
+                tags = []
+            if not isinstance(tags, list):
+                tags = []
+
+            try:
+                image_paths = json.loads(item["image_paths"]) if item["image_paths"] else []
+            except (TypeError, ValueError):
+                image_paths = []
+            if not isinstance(image_paths, list):
+                image_paths = []
+
+            rows.append({
+                "draft_id": item["draft_id"],
+                "content_id": item["content_id"],
+                "platform": Platform(item["platform"]),
+                "title": item["title"] or "",
+                "body": item["body"] or "",
+                "tags": [str(tag) for tag in tags],
+                "image_path": str(image_paths[0]) if image_paths and image_paths[0] else None,
+            })
+
+        report: dict = {
+            "round_id": round_id,
+            "round_number": round_row["round_number"],
+            "started_at": datetime.now().isoformat(),
+            "steps": [],
+            "contents_created": 0,
+            "drafts_created": len(rows),
+            "drafts_attempted": len(rows),
+            "drafts_saved": 0,
+            "drafts_failed": 0,
+            "guard_rejected": 0,
+            "errors": [],
+            "final_status": "producing",
+            "operation": "resume_save_drafts",
+        }
+
+        await self._save_all_drafts(rows, round_id, report)
+        self._finalize_round(round_id, report, save_drafts=True)
+        report["pending_drafts"] = int(self.conn.execute(
+            "SELECT COUNT(*) FROM drafts d JOIN contents c ON c.id = d.content_id "
+            "WHERE c.round_id = ? AND d.status = 'draft_pending'",
+            (round_id,),
+        ).fetchone()[0])
+        report["finished_at"] = datetime.now().isoformat()
+
+        # 保留原有生产报告，并把恢复操作作为历史事件追加；移除当前态的 dry_run 标记，
+        # 避免工作流仍被展示为“存草稿已跳过”。
+        previous: dict = {}
+        try:
+            parsed = json.loads(round_row["run_report"] or "{}")
+            if isinstance(parsed, dict):
+                previous = parsed
+        except (TypeError, ValueError):
+            previous = {}
+        previous["steps"] = [
+            step for step in previous.get("steps", [])
+            if isinstance(step, dict) and step.get("step") != "dry_run"
+        ]
+        previous["steps"].append({
+            "step": "resume_save_drafts",
+            "attempted": report["drafts_attempted"],
+            "saved": report["drafts_saved"],
+            "failed": report["drafts_failed"],
+            "pending": report["pending_drafts"],
+        })
+        previous.setdefault("resume_history", []).append(report)
+        previous["drafts_saved"] = int(previous.get("drafts_saved") or 0) + report["drafts_saved"]
+        previous["drafts_failed"] = int(previous.get("drafts_failed") or 0) + report["drafts_failed"]
+        previous["final_status"] = report["final_status"]
+        previous["finished_at"] = report["finished_at"]
+        previous["step_status"] = step_status_from_report(previous, self._orch)
+        self.conn.execute(
+            "UPDATE spiral_rounds SET run_report = ? WHERE id = ?",
+            (json.dumps(previous, ensure_ascii=False, default=str), round_id),
+        )
+        self.conn.commit()
         return report
 
     # ------------------------------------------------------------------
