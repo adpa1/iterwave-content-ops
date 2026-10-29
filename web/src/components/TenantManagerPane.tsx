@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { useApp } from "../AppContext";
-import { api, TenantListResponse } from "../api";
+import { api, TenantBackupItem, TenantListResponse } from "../api";
 
 export default function TenantManagerPane() {
   const { showToast, withPending, isPending } = useApp();
   const [data, setData] = useState<TenantListResponse | null>(null);
+  const [backups, setBackups] = useState<TenantBackupItem[]>([]);
   const [tenantId, setTenantId] = useState("");
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
@@ -14,7 +15,9 @@ export default function TenantManagerPane() {
     setLoading(true);
     setError("");
     try {
-      setData(await api.tenants());
+      const [tenantData, backupData] = await Promise.all([api.tenants(), api.tenantBackups()]);
+      setData(tenantData);
+      setBackups(backupData.items);
     } catch (e) {
       setError(e instanceof Error ? e.message : "账号组信息加载失败");
     } finally {
@@ -39,6 +42,33 @@ export default function TenantManagerPane() {
         await load();
       } catch (e) {
         showToast(e instanceof Error ? e.message : "创建账号组失败", "error");
+      }
+    });
+  };
+
+  const createBackup = async () => {
+    await withPending("tenant:backup", async () => {
+      try {
+        const result = await api.createTenantBackup();
+        showToast(`备份已创建：${result.backup_name}`, "success");
+        await load();
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : "创建备份失败", "error");
+      }
+    });
+  };
+
+  const restoreBackup = async (backup: TenantBackupItem) => {
+    const confirmed = window.confirm(
+      `确定安排恢复到 ${backup.backup_name} 吗？恢复会在后端重启时替换当前账号组数据库、图片素材和运行配置。重启前的新写入不会保留；登录态和 API 密钥不会从备份恢复。`,
+    );
+    if (!confirmed) return;
+    await withPending("tenant:restore", async () => {
+      try {
+        const result = await api.stageTenantBackupRestore(backup.backup_name, true);
+        showToast(result.message, "info");
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : "安排恢复失败", "error");
       }
     });
   };
@@ -103,6 +133,37 @@ export default function TenantManagerPane() {
             </table>
           </div>
         )}
+      </section>
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <div className="panel-title">当前账号组备份与恢复</div>
+            <div className="panel-sub">快照包含数据库、活动图片素材和运行配置覆盖；不包含平台登录态、浏览器 Cookie、API 密钥或共享原始热点数据。</div>
+          </div>
+          <button className="btn primary sm" onClick={() => void createBackup()} disabled={isPending("tenant:backup")}>
+            {isPending("tenant:backup") ? "备份中…" : "立即创建备份"}
+          </button>
+        </div>
+        {backups.length === 0 ? <div className="empty-state">当前账号组暂无快照备份。</div> : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>备份文件</th><th>创建时间</th><th>大小</th><th>操作</th></tr></thead>
+              <tbody>
+                {backups.map((backup) => (
+                  <tr key={backup.backup_name}>
+                    <td><code>{backup.backup_name}</code></td>
+                    <td>{backup.created_at}</td>
+                    <td>{(backup.size_bytes / 1024 / 1024).toFixed(1)} MB</td>
+                    <td>
+                      <button className="btn sm" disabled={isPending("tenant:restore")} onClick={() => void restoreBackup(backup)}>安排恢复</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div className="panel-sub" style={{ marginTop: 8 }}>恢复先进行备份清单、路径、哈希与 SQLite 完整性校验，再在下次后端启动、打开数据库前执行。失败时会保留数据库回滚副本。</div>
       </section>
       <section className="panel">
         <div className="panel-head">
