@@ -416,6 +416,38 @@ export interface UnscheduledDraft {
 /** G-13 内容资产（外部参考 / 个人观点 / 内容模板） */
 export type AssetType = "reference" | "voice" | "template";
 
+export interface TenantItem {
+  id: string;
+  name: string;
+  created_at: string | null;
+  is_active: boolean;
+}
+export interface TenantListResponse {
+  runtime_tenant_id: string;
+  selected_tenant_id: string;
+  restart_required: boolean;
+  items: TenantItem[];
+}
+export interface MediaAsset {
+  id: number;
+  title: string;
+  original_filename: string;
+  mime_type: string;
+  byte_size: number;
+  sha256?: string;
+  width: number;
+  height: number;
+  alt_text: string;
+  tags: string[];
+  source_type: "upload" | "generated" | "imported";
+  source_ref?: string | null;
+  status: "active" | "archived";
+  created_at?: string;
+  updated_at?: string;
+  file_url: string;
+  duplicate?: boolean;
+}
+
 export interface AssetItem {
   id: number;
   asset_type: AssetType;
@@ -1118,6 +1150,25 @@ export const api = {
     fetchJson<{ draft_id: string; scheduled_publish_at: string | null }>(
       `/api/schedule/${draft_id}`, { method: "PATCH", body: JSON.stringify({ scheduled_publish_at: scheduled }) },
     ),
+  // === 账号组隔离 ===
+  tenants: () => fetchJson<TenantListResponse>("/api/tenants"),
+  createTenant: (data: { tenant_id: string; name: string }) =>
+    fetchJson<{ tenant: TenantItem; restart_required: boolean }>("/api/tenants", {
+      method: "POST", body: JSON.stringify(data),
+    }),
+  selectTenant: (tenant_id: string) =>
+    fetchJson<{ selected: { id: string; name: string }; runtime_tenant_id: string; restart_required: boolean; message: string }>(
+      "/api/tenants/select", { method: "POST", body: JSON.stringify({ tenant_id }) },
+    ),
+  // === 图片素材库 ===
+  mediaAssets: (query = "", status: "active" | "archived" | "all" = "active") =>
+    fetchJson<{ items: MediaAsset[]; limit: number; offset: number }>(
+      `/api/media?status=${encodeURIComponent(status)}&limit=200${query ? `&query=${encodeURIComponent(query)}` : ""}`,
+    ),
+  uploadMediaAsset: (data: { filename: string; title?: string; alt_text?: string; tags?: string[]; data_base64: string }) =>
+    fetchJson<MediaAsset>("/api/media", { method: "POST", body: JSON.stringify(data) }),
+  archiveMediaAsset: (id: number) =>
+    fetchJson<{ id: number; status: string; already_archived: boolean }>(`/api/media/${id}/archive`, { method: "POST" }),
   // === G-13 内容资产 / 字段映射 ===
   assets: (asset_type?: AssetType) =>
     fetchJson<{ items: AssetItem[]; total: number }>(
