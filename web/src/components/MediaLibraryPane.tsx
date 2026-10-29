@@ -34,7 +34,8 @@ export default function MediaLibraryPane() {
   const [title, setTitle] = useState("");
   const [altText, setAltText] = useState("");
   const [tagsText, setTagsText] = useState("");
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [purpose, setPurpose] = useState("门店环境");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -62,40 +63,53 @@ export default function MediaLibraryPane() {
 
   useEffect(() => { void load(); }, [load]);
 
-  const chooseFile = (next: File | null) => {
-    setFile(next);
-    setFilename(next?.name || "");
-    if (next && !title.trim()) setTitle(next.name.replace(/\.[^.]+$/, ""));
+  const chooseFiles = (next: File[]) => {
+    setFiles(next);
+    setFilename(next.length === 1 ? next[0].name : "");
+    if (next.length === 1 && !title.trim()) setTitle(next[0].name.replace(/\.[^.]+$/, ""));
+    if (next.length > 1) setTitle("");
   };
 
   const upload = async () => {
-    if (!file || isPending("media:upload")) return;
-    if (file.size <= 0 || file.size > 12 * 1024 * 1024) {
-      showToast("图片大小必须大于 0 且不超过 12MB", "error");
+    if (!files.length || isPending("media:upload")) return;
+    const invalid = files.filter((item) => item.size <= 0 || item.size > 12 * 1024 * 1024);
+    if (invalid.length) {
+      showToast(`有 ${invalid.length} 张图片大小不符合要求（单张需大于 0 且不超过 12MB），请移除后再上传`, "error");
       return;
     }
     await withPending("media:upload", async () => {
-      try {
-        const data = await fileAsBase64(file);
-        const result = await api.uploadMediaAsset({
-          filename: filename || file.name,
-          title: title.trim(),
-          alt_text: altText.trim(),
-          tags: tagsText.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 30),
-          data_base64: data,
-        });
-        showToast(result.duplicate ? "素材已存在，已复用现有记录" : "图片素材已入库", "success");
-        setFile(null);
-        setFilename("");
-        setTitle("");
-        setAltText("");
-        setTagsText("");
-        const input = document.getElementById("media-upload-input") as HTMLInputElement | null;
-        if (input) input.value = "";
-        await load();
-      } catch (e) {
-        showToast(e instanceof Error ? e.message : "图片上传失败", "error");
+      let succeeded = 0;
+      let failed = 0;
+      const customTags = tagsText.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean);
+      for (const item of files) {
+        try {
+          const data = await fileAsBase64(item);
+          const result = await api.uploadMediaAsset({
+            filename: item.name,
+            title: (files.length === 1 && title.trim()) ? title.trim() : item.name.replace(/\.[^.]+$/, ""),
+            alt_text: altText.trim(),
+            tags: Array.from(new Set([purpose, ...customTags])).slice(0, 30),
+            data_base64: data,
+          });
+          succeeded += 1;
+          if (result.duplicate) succeeded += 0;
+        } catch (e) {
+          failed += 1;
+          console.error("media upload failed:", item.name, e);
+        }
       }
+      showToast(
+        `批量导入完成：成功 ${succeeded} 张，失败 ${failed} 张。${failed ? "失败项请检查网络或服务日志后重试。" : ""}`,
+        failed ? "info" : "success",
+      );
+      setFiles([]);
+      setFilename("");
+      setTitle("");
+      setAltText("");
+      setTagsText("");
+      const input = document.getElementById("media-upload-input") as HTMLInputElement | null;
+      if (input) input.value = "";
+      await load();
     });
   };
 
@@ -213,11 +227,18 @@ export default function MediaLibraryPane() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
           <label className="field">
             <span className="field-label">选择图片</span>
-            <input id="media-upload-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => chooseFile(event.target.files?.[0] ?? null)} />
+            <input id="media-upload-input" type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => chooseFiles(Array.from(event.target.files ?? []))} />
           </label>
           <label className="field">
-            <span className="field-label">素材名称</span>
-            <input value={title} maxLength={200} onChange={(event) => setTitle(event.target.value)} placeholder="例如：品牌主视觉" />
+            <span className="field-label">用途分类（批量应用）</span>
+            <select value={purpose} onChange={(event) => setPurpose(event.target.value)}>
+              <option>封面</option><option>商品/菜品</option><option>门店环境</option><option>团队人物</option>
+              <option>服务过程</option><option>活动海报</option><option>品牌标识</option><option>其他</option>
+            </select>
+          </label>
+          <label className="field">
+            <span className="field-label">素材名称（单张上传时使用）</span>
+            <input value={title} maxLength={200} onChange={(event) => setTitle(event.target.value)} placeholder="批量导入时自动取文件名" />
           </label>
           <label className="field">
             <span className="field-label">替代文本</span>
@@ -228,11 +249,11 @@ export default function MediaLibraryPane() {
             <input value={tagsText} onChange={(event) => setTagsText(event.target.value)} placeholder="封面, 品牌, 教程" />
           </label>
         </div>
-        {file && <div className="panel-sub" style={{ marginTop: 8 }}>待上传：{file.name} · {formatBytes(file.size)} · 仅支持 JPEG、PNG、WebP、GIF</div>}
+        {files.length > 0 && <div className="panel-sub" style={{ marginTop: 8 }}>已选 {files.length} 张：{files.slice(0, 4).map((item) => `${item.name}（${formatBytes(item.size)}）`).join("、")}{files.length > 4 ? ` 等共 ${files.length} 张` : ""} · 单张不超过 12MB</div>}
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
-          <button className="btn sm" onClick={() => { setFile(null); setTitle(""); setAltText(""); setTagsText(""); setFilename(""); }}>清空</button>
-          <button className="btn primary sm" onClick={() => void upload()} disabled={!file || isPending("media:upload")}>
-            {isPending("media:upload") ? "上传中…" : "上传到素材库"}
+          <button className="btn sm" onClick={() => { setFiles([]); setTitle(""); setAltText(""); setTagsText(""); setFilename(""); const input = document.getElementById("media-upload-input") as HTMLInputElement | null; if (input) input.value = ""; }}>清空</button>
+          <button className="btn primary sm" onClick={() => void upload()} disabled={!files.length || isPending("media:upload")}>
+            {isPending("media:upload") ? `导入中 ${files.length} 张…` : `导入 ${files.length || ""} 张图片到素材库`}
           </button>
         </div>
       </section>
