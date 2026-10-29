@@ -724,7 +724,7 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=429, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
-        response.headers["set-cookie"] = auth.session_cookie_header(token)
+        response.headers["set-cookie"] = auth.session_cookie_header(token, secure=request.url.scheme == "https")
         return auth.status(token, request.headers)
 
     @app.post("/api/auth/logout")
