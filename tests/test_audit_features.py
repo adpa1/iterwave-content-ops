@@ -215,7 +215,7 @@ def test_goal_split_suggestion(cfg, conn):
 # ---------------- HTTP ----------------
 
 @pytest.fixture()
-def client(cfg, conn, kb):
+def client(cfg, conn, kb, test_auth):
     saved = dict(api_main._g_ctx)
     api_main._g_ctx.clear()
     api_main._g_ctx.update({
@@ -224,7 +224,7 @@ def client(cfg, conn, kb):
         "cb": None, "guard": UltimateGoalChecker(cfg), "scoring": ScoringEngine(cfg, conn),
     })
     try:
-        yield TestClient(api_main._build_app())
+        yield test_auth(TestClient(api_main._build_app(), base_url="http://127.0.0.1"))
     finally:
         api_main._g_ctx.clear()
         api_main._g_ctx.update(saved)
