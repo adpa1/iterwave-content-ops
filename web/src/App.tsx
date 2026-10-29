@@ -299,7 +299,12 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
                 <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
               ))}
             </select>
-            {tenantData.restart_required && (
+            {tenantLoading && (
+              <span className="tenant-switcher-pending" role="status" aria-live="polite">
+                切换中…
+              </span>
+            )}
+            {!tenantLoading && tenantData.restart_required && (
               <span className="tenant-switcher-pending" title={`当前运行空间：${tenantData.items.find((tenant) => tenant.id === tenantData.runtime_tenant_id)?.name ?? "当前账号组"}`}>
                 待重启
               </span>
