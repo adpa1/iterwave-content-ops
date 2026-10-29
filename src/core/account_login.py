@@ -72,8 +72,13 @@ _EXPORTING: set[str] = set()
 
 
 def _ensure_dirs() -> None:
+    # 浏览器 profile 包含可复用的社交平台 Cookie；目录权限必须阻止同机其他用户遍历。
     for d in (LOGIN_DIR, PROFILE_BASE, STORAGE_STATE_DIR):
         d.mkdir(parents=True, exist_ok=True)
+        try:
+            d.chmod(0o700)
+        except OSError:
+            logger.warning("无法收紧登录数据目录权限：%s", d.name)
 
 
 def _headed() -> bool:
