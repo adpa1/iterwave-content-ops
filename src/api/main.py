@@ -1343,6 +1343,12 @@ def _register_routes(app: FastAPI) -> None:
                 )
             else:
                 result["platform_content_sync"] = None
+            # 上面几个字段只用于后端计算版本状态，不属于草稿列表的响应契约；
+            # 尤其 image_paths 可能是本机绝对路径，不能随便随列表 API 下发。
+            for internal_field in (
+                "body", "tags", "image_paths", "saved_content_hash", "saved_platform_title",
+            ):
+                result.pop(internal_field, None)
             items.append(result)
         return items
 
