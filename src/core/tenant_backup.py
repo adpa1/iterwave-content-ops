@@ -181,7 +181,7 @@ def restore_backup(backup_path: Path | str, db_path: Path | str, data_dir: Path 
                     if name.is_absolute() or ".." in name.parts or info.is_dir():
                         raise BackupError("备份包含非法路径")
                     if info.filename not in allowed and not (
-                        len(name.parts) == 2 and name.parts[0] == "media"
+                        len(name.parts) == 2 and name.parts[0] in {"media", "outputs"}
                         and name.suffix.lower() in ALLOWED_IMAGE_SUFFIXES
                     ):
                         raise BackupError(f"备份包含不允许的文件：{info.filename}")
@@ -216,6 +216,20 @@ def restore_backup(backup_path: Path | str, db_path: Path | str, data_dir: Path 
                     file_stage.write_bytes(raw)
                     if _sha256(file_stage) != metadata.get("sha256"):
                         raise BackupError(f"素材校验失败：{safe_name}")
+                stage_outputs = stage / "outputs"
+                stage_outputs.mkdir()
+                expected_outputs = manifest.get("output_files") or {}
+                for filename, metadata in expected_outputs.items():
+                    safe_name = Path(filename).name
+                    if safe_name != filename or Path(safe_name).suffix.lower() not in ALLOWED_IMAGE_SUFFIXES:
+                        raise BackupError("备份清单包含非法卡片图片文件名")
+                    raw = archive.read(f"outputs/{safe_name}")
+                    if len(raw) != int(metadata.get("size", -1)):
+                        raise BackupError(f"卡片图片大小校验失败：{safe_name}")
+                    file_stage = stage_outputs / safe_name
+                    file_stage.write_bytes(raw)
+                    if _sha256(file_stage) != metadata.get("sha256"):
+                        raise BackupError(f"卡片图片校验失败：{safe_name}")
                 config_stage = stage / "config_overrides.json"
                 if "config_overrides.json" in archive.namelist():
                     config_stage.write_bytes(archive.read("config_overrides.json"))
@@ -231,11 +245,27 @@ def restore_backup(backup_path: Path | str, db_path: Path | str, data_dir: Path 
         for suffix in ("-wal", "-shm"):
             db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
         media_rollback = backup_dir / f"pre_restore_media_{tenant_id}_{ts}"
+        output_dir = data_dir / "outputs"
+        output_rollback = backup_dir / f"pre_restore_outputs_{tenant_id}_{ts}"
+        created_outputs: list[Path] = []
+        overwritten_outputs: list[str] = []
         if media_dir.exists():
             os.replace(media_dir, media_rollback)
         try:
             os.replace(stage / "easel.db", db_path)
             os.replace(stage / "media", media_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for staged_file in (stage / "outputs").iterdir():
+                destination = output_dir / staged_file.name
+                if destination.exists() and _sha256(destination) == _sha256(staged_file):
+                    continue
+                if destination.exists():
+                    output_rollback.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(destination, output_rollback / destination.name)
+                    overwritten_outputs.append(destination.name)
+                else:
+                    created_outputs.append(destination)
+                os.replace(staged_file, destination)
             config_path = data_dir / "config_overrides.json"
             if (stage / "config_overrides.json").exists():
                 os.replace(stage / "config_overrides.json", config_path)
@@ -247,6 +277,12 @@ def restore_backup(backup_path: Path | str, db_path: Path | str, data_dir: Path 
                 shutil.rmtree(media_dir, ignore_errors=True)
             if media_rollback.exists():
                 os.replace(media_rollback, media_dir)
+            for created in created_outputs:
+                created.unlink(missing_ok=True)
+            for name in overwritten_outputs:
+                previous = output_rollback / name
+                if previous.is_file():
+                    shutil.copy2(previous, output_dir / name)
             if db_rollback.exists():
                 shutil.copy2(db_rollback, db_path)
             raise BackupError(f"恢复未完成，已尝试回滚：{exc}") from exc
