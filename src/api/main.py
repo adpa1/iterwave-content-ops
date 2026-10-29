@@ -150,6 +150,31 @@ def _build_app() -> FastAPI:
             cfg.paths.log_dir = str(tenant_paths.log_dir)
             # 选题库及浏览器登录态均按账号组隔离；平台账号 key 不与 default 共用。
             cfg.topic_kb.path = str(tenant_paths.kb_dir / "topics.csv")
+        # 恢复任务只在启动且数据库尚未打开时执行；校验账号组与备份目录后再替换数据。
+        runtime_data_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
+        runtime_backup_dir = Path(cfg.resolve_path(cfg.paths.backup_dir)).resolve()
+        pending_restore = runtime_data_dir / ".pending_restore.json"
+        if pending_restore.exists():
+            try:
+                restore_request = json.loads(pending_restore.read_text(encoding="utf-8"))
+                backup_name = restore_request.get("backup_name")
+                if restore_request.get("tenant_id") != active_tenant_id or not isinstance(backup_name, str):
+                    raise RuntimeError("待恢复任务的账号组标识无效")
+                if Path(backup_name).name != backup_name or not backup_name.startswith(f"iterwave_{active_tenant_id}_") or not backup_name.endswith(".zip"):
+                    raise RuntimeError("待恢复备份名称无效")
+                backup_path = (runtime_backup_dir / backup_name).resolve()
+                if not backup_path.is_relative_to(runtime_backup_dir) or not backup_path.is_file():
+                    raise RuntimeError("待恢复备份文件不存在或超出备份目录")
+                from src.core.tenant_backup import restore_backup
+                restore_backup(
+                    backup_path, cfg.resolve_path(cfg.paths.db_file), runtime_data_dir,
+                    runtime_backup_dir, active_tenant_id,
+                )
+                pending_restore.unlink(missing_ok=True)
+                logger.warning("账号组快照恢复完成 tenant=%s backup=%s", active_tenant_id, backup_name)
+            except Exception as exc:  # noqa: BLE001 — 恢复失败必须阻止启动，不能悄悄使用旧库
+                logger.exception("账号组快照恢复失败，拒绝启动 tenant=%s", active_tenant_id)
+                raise RuntimeError(f"账号组恢复失败，应用未启动：{exc}") from exc
         # G-13：先套用 Web 端持久化的覆盖值（租户各自的 data/config_overrides.json），
         # 再构造各模块 —— 保证 scheduler/adapter/ops 拿到的是同一份生效配置
         applied_overrides = apply_overrides(cfg, load_overrides(cfg))
