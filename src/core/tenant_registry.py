@@ -173,7 +173,7 @@ class TenantRegistry:
             output_dir = root / "outputs"
             screenshot_dir = root / "screenshots"
             log_dir = root / "logs"
-            profile_dir = root / "browser_profiles"
+            profile_dir = data_dir / "_profiles"
             media_dir = root / "media"
             kb_dir = root / "kb"
         else:
