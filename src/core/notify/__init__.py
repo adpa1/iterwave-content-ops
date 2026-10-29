@@ -17,15 +17,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-import re
 import sqlite3
 import subprocess
 from datetime import datetime, timedelta
 from typing import Optional
 
-import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -252,28 +251,29 @@ class Notifier:
             logger.info("%s webhook 未设置（.env 缺少 %s），跳过", channel, url_env)
             return False
 
-        # .env 可能由人工维护；发送前再次检查目标，不能只依赖设置页面的校验。
-        try:
-            from ..kb_sources import _validate_remote_url
-            _validate_remote_url(url)
-        except ValueError as exc:
-            logger.warning("%s webhook 目标被安全校验拒绝：%s", channel, exc)
-            return False
-
+        # .env 可能由人工维护；最终目标必须在实际 TCP 连接中固定为校验通过的公网 IP。
         text = f"【{title}】{body}"
         if channel == "wecom":
             payload = {"msgtype": "text", "text": {"content": text}}
         else:  # feishu
             payload = {"msg_type": "text", "content": {"text": text}}
 
-        resp = httpx.post(url, json=payload, timeout=5)
-        if resp.status_code >= 300:
-            logger.warning("%s webhook 返回 %s（URL 已脱敏不打印）",
-                           channel, resp.status_code)
+        try:
+            from ..safe_http import post_public_json
+            status_code, response_body, _content_type = post_public_json(
+                url, payload, timeout=5, max_bytes=1024 * 1024
+            )
+        except ValueError as exc:
+            logger.warning("%s webhook 目标被安全校验拒绝：%s", channel, str(exc))
             return False
+
+        if status_code >= 300:
+            logger.warning("%s webhook 返回 %s（URL 已脱敏不打印）", channel, status_code)
+            return False
+
         # 企微/飞书 200 也可能业务失败，保守看 errcode
         try:
-            data = resp.json()
+            data = json.loads(response_body)
         except Exception:  # noqa: BLE001 — 非 JSON 响应按成功处理
             return True
         errcode = data.get("errcode", data.get("code", 0))
