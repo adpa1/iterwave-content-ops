@@ -455,12 +455,12 @@ class SchedulerEngine:
             metrics_attempt = int(prev["attempt"] or 0) + 1
             self.conn.execute(
                 "UPDATE metrics SET fetch_status = ?, fetched_at = ?, attempt = ?, "
-                "raw_response = ?, likes = ?, collects = ?, comments = ?, shares = ?, "
+                "raw_response = ?, error_msg = ?, likes = ?, collects = ?, comments = ?, shares = ?, "
                 "views = ?, new_followers = ?, like_rate = ?, collect_rate = ?, "
                 "interaction_rate = ?, follower_efficiency = ? WHERE id = ?",
                 (
                     snap.fetch_status.value, datetime.now().isoformat(), metrics_attempt,
-                    snap.raw_response, snap.likes, snap.collects, snap.comments,
+                    snap.raw_response, snap.error_msg, snap.likes, snap.collects, snap.comments,
                     snap.shares, snap.views, snap.new_followers,
                     snap.like_rate, snap.collect_rate, snap.interaction_rate,
                     snap.follower_efficiency, prev["id"],
@@ -471,12 +471,12 @@ class SchedulerEngine:
         else:
             self.conn.execute(
                 "INSERT INTO metrics (draft_id, content_id, platform, fetch_status, fetched_at, "
-                "attempt, raw_response, likes, collects, comments, shares, views, new_followers, "
+                "attempt, raw_response, error_msg, likes, collects, comments, shares, views, new_followers, "
                 "like_rate, collect_rate, interaction_rate, follower_efficiency) "
-                "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     draft_id, row["content_id"], platform.value, snap.fetch_status.value,
-                    datetime.now().isoformat(), snap.raw_response,
+                    datetime.now().isoformat(), snap.raw_response, snap.error_msg,
                     snap.likes, snap.collects, snap.comments, snap.shares, snap.views,
                     snap.new_followers,
                     snap.like_rate, snap.collect_rate, snap.interaction_rate,
