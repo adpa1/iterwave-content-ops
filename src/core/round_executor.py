@@ -155,6 +155,16 @@ class RoundExecutor:
                 self.sm_round.transition(round_id, "failed", "选题库无可用选题")
                 report["final_status"] = "failed"
                 self._finish_task_run(task_run_id, "failed", "选题库无可用选题")
+                report["finished_at"] = datetime.now().isoformat()
+                report["step_status"] = step_status_from_report(report, self._orch)
+                try:
+                    self.conn.execute(
+                        "UPDATE spiral_rounds SET run_report = ? WHERE id = ?",
+                        (json.dumps(report, ensure_ascii=False, default=str), round_id),
+                    )
+                    self.conn.commit()
+                except Exception:  # noqa: BLE001 — 失败报告尽量持久化，但不遮盖主错误
+                    logger.exception("空选题失败报告写入失败 round=%s", round_id)
                 return report
 
             # §19 母计划签名（R18）：选题分布确定后立即固化，改计划可追溯
