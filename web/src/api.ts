@@ -734,6 +734,8 @@ export interface ContentItem {
   draft_status: string | null;
   draft_error: string | null;
   draft_saved_at: string | null;
+  /** 首次用户确认发布的时间；即使后续采集失败变为 failed，也仍属于不可变历史内容。 */
+  draft_user_confirmed_at?: string | null;
 }
 
 export interface RecheckResult {
