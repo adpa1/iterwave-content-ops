@@ -327,6 +327,25 @@ def test_webhook_written_to_env(api_client, tmp_path, monkeypatch):
 # 自定义热点源配置
 # =====================================================================
 
+def test_hot_source_url_is_redacted_and_preserved_on_toggle(api_client):
+    secret_url = "https://feeds.example.com/rss?access_token=SECRET"
+    first = api_client.put("/api/hot_topics/sources", json={"items": [
+        {"name": "有鉴权的 RSS", "type": "rss", "url": secret_url, "platform": "行业", "enabled": True},
+    ]})
+    assert first.status_code == 200
+    visible = first.json()["items"][0]
+    assert visible["url"] == "https://feeds.example.com/…"
+    assert "SECRET" not in json.dumps(first.json(), ensure_ascii=False)
+
+    # 模拟界面拿到脱敏值后执行停用，再提交全量来源列表。
+    second = api_client.put("/api/hot_topics/sources", json={"items": [{
+        **visible, "enabled": False,
+    }]})
+    assert second.status_code == 200
+    assert second.json()["items"][0]["enabled"] is False
+    assert api_main._g_ctx["cfg"].hot_topics.sources[0]["url"] == secret_url
+
+
 def test_hot_sources_config_roundtrip(api_client):
     assert api_client.get("/api/hot_topics/sources").status_code == 200
     items = [
