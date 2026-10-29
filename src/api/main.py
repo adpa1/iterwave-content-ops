@@ -1191,7 +1191,8 @@ def _register_routes(app: FastAPI) -> None:
         target = (paths.media_dir / stored_filename).resolve()
         if not target.is_relative_to(paths.media_dir.resolve()):
             raise HTTPException(422, "素材文件路径无效")
-        title = req.title.strip() or Path(req.filename).name[:200]
+        safe_filename = Path(req.filename.replace(chr(92), "/")).name[:255]
+        title = req.title.strip() or safe_filename[:200]
         tags = list(dict.fromkeys(tag.strip()[:60] for tag in req.tags if tag.strip()))[:30]
         from src.core.media_quality import score_image
         quality = score_image(raw)
@@ -1207,7 +1208,7 @@ def _register_routes(app: FastAPI) -> None:
                 "width, height, alt_text, tags, source_type, status, quality_score, quality_details) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upload', 'active', ?, ?)",
                 (
-                    title, Path(req.filename.replace("\\\\", "/")).name[:255], stored_filename, mime_type,
+                    title, safe_filename, stored_filename, mime_type,
                     len(raw), digest, width, height, req.alt_text.strip(),
                     json.dumps(tags, ensure_ascii=False), quality["score"],
                     json.dumps(quality, ensure_ascii=False),
