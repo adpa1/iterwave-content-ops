@@ -25,13 +25,42 @@ def env(cfg, conn, tmp_path, monkeypatch):
     monkeypatch.setattr("src.core.config_store.OVERRIDES_FILE", tmp_path / "ov.json")
     envf = tmp_path / ".env"
     monkeypatch.setattr("src.core.secrets_env.DEFAULT_ENV_PATH", envf)
+    monkeypatch.setenv("ITERWAVE_ACCESS_TOKEN", "test-access")
+    saved = dict(api_main._g_ctx)
+    api_main._g_ctx.clear()
+    api_main._g_ctx.update({"cfg": cfg, "conn": conn, "sm_draft": DraftStateMachine(conn),
+                            "notifier": Notifier(cfg, conn)})
+    try:
+        client = TestClient(
+            api_main._build_app(),
+            base_url="http://127.0.0.1",
+            headers={"Authorization": "Bearer test-access"},
+            client=("127.0.0.1", 54321),
+        )
+        yield client, cfg, envf
+    finally:
+        api_main._g_ctx.clear()
+        api_main._g_ctx.update(saved)
+        os.environ.pop("WECOM_WEBHOOK_URL", None)
+
+
+@pytest.fixture()
+def unconfigured_env(cfg, conn, tmp_path, monkeypatch):
+    monkeypatch.setattr("src.core.config_store.OVERRIDES_FILE", tmp_path / "ov.json")
+    envf = tmp_path / ".env"
+    monkeypatch.setattr("src.core.secrets_env.DEFAULT_ENV_PATH", envf)
     monkeypatch.delenv("ITERWAVE_ACCESS_TOKEN", raising=False)
     saved = dict(api_main._g_ctx)
     api_main._g_ctx.clear()
     api_main._g_ctx.update({"cfg": cfg, "conn": conn, "sm_draft": DraftStateMachine(conn),
                             "notifier": Notifier(cfg, conn)})
     try:
-        yield TestClient(api_main._build_app()), cfg, envf
+        client = TestClient(
+            api_main._build_app(),
+            base_url="http://127.0.0.1",
+            client=("127.0.0.1", 54321),
+        )
+        yield client, cfg, envf
     finally:
         api_main._g_ctx.clear()
         api_main._g_ctx.update(saved)
@@ -82,18 +111,25 @@ def test_remote_rss_sync(env, monkeypatch):
     client, cfg, _ = env
     import httpx
 
+    from urllib.parse import urlsplit
+    from src.core import safe_http
+
     class Resp:
         status_code = 200
         content = RSS
         headers = {"content-type": "application/rss+xml"}
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def iter_bytes(self): yield self.content
 
     class FakeClient:
         def __init__(self, *a, **k): pass
         def __enter__(self): return self
         def __exit__(self, *a): return False
-        def get(self, url, headers=None): return Resp()
+        def stream(self, method, url, headers=None, follow_redirects=False): return Resp()
 
     monkeypatch.setattr(httpx, "Client", FakeClient)
+    monkeypatch.setattr(safe_http, "validate_public_url", lambda url: urlsplit(url))
     r = client.patch("/api/config", json={"updates": {
         "topic_kb.source_type": "remote", "topic_kb.remote_url": "https://e.com/feed"}})
     assert r.status_code == 200, r.text
@@ -111,10 +147,11 @@ def test_parse_feed_and_scrub():
     assert display_path("/srv/elsewhere/kb.db").endswith("kb.db")
 
 
-def test_access_token_flow(env):
-    client, _, envf = env
+def test_access_token_flow(unconfigured_env):
+    client, _, envf = unconfigured_env
     assert client.get("/api/auth/status").json() == {"required": False, "authed": True}
-    assert client.get("/api/verticals").status_code == 200
+    assert client.get("/api/verticals").status_code == 403
+    assert client.get("/api/verticals").json()["code"] == "setup_required"
     r = client.post("/api/auth/setup", json={"token": "short"})
     assert r.status_code == 400
     r = client.post("/api/auth/setup", json={"token": "secret-12345"})
