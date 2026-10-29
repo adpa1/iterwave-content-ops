@@ -373,7 +373,7 @@ export default function MediaLibraryPane() {
         </div>}
         {recommendations.length > 0 && recommendationContentId === selectedContentId && recommendationRole === usageRole && <div className="panel" style={{ marginBottom: 14, padding: 12 }}>
           <div className="panel-title">匹配推荐（前 {recommendations.length} 项）</div>
-          <div className="panel-sub">按内容标题、正文、素材名称及标签进行关键词匹配；仅展示已审核素材，不会自动配图。</div>
+          <div className="panel-sub">{recommendationMessage || "推荐结果仅供确认，不会自动替换内容图片。"}</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 8, marginTop: 10 }}>
             {recommendations.map((rec) => {
               const asset = items.find((item) => item.id === rec.asset_id);
