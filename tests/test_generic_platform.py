@@ -212,6 +212,27 @@ def test_webhook_saved_to_env_and_validated(env):
     assert "qyapi" not in client.get("/api/notify/channels").text
 
 
+def test_config_redacts_custom_feed_urls_and_preserves_them_on_other_updates(env):
+    client, cfg, _ = env
+    secret_url = "https://feeds.example.com/private/token?access_token=TOPSECRET"
+    cfg.hot_topics.custom_feeds = [{"name": "私有行业源", "url": secret_url}]
+
+    response = client.get("/api/config")
+    assert response.status_code == 200
+    feeds = response.json()["config"]["editable"]["hot_topics"]["custom_feeds"]
+    assert feeds == [{"name": "私有行业源", "url": "https://feeds.example.com/…"}]
+    assert "TOPSECRET" not in response.text
+    assert "/private/token" not in response.text
+
+    # 模拟设置页回传脱敏地址，同时修改另一个配置项；后端应恢复未变更的原 URL。
+    updated = client.patch("/api/config", json={"updates": {
+        "hot_topics.custom_feeds": feeds,
+        "hot_topics.general_lists_enabled": False,
+    }})
+    assert updated.status_code == 200, updated.text
+    assert cfg.hot_topics.custom_feeds[0]["url"] == secret_url
+
+
 def test_custom_feeds_config_validation(env):
     client, cfg, _ = env
     r = client.patch("/api/config", json={"updates": {
