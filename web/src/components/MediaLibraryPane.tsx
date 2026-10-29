@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useApp } from "../AppContext";
-import { api, MediaAsset, MediaUsageTarget, MediaGenerationSettings } from "../api";
+import { api, MediaAsset, MediaUsageTarget, MediaGenerationSettings, MediaRecommendation } from "../api";
 
 function fileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -39,6 +39,9 @@ export default function MediaLibraryPane() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [targetWarning, setTargetWarning] = useState("");
+  const [recommendations, setRecommendations] = useState<MediaRecommendation[]>([]);
+  const [recommendationMessage, setRecommendationMessage] = useState("");
+  const [recommendationLoading, setRecommendationLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -199,6 +202,17 @@ export default function MediaLibraryPane() {
         showToast(e instanceof Error ? e.message : "素材审核操作失败", "error");
       }
     });
+  };
+
+  const recommendForContent = async () => {
+    if (!selectedContentId) { showToast("请先选择待配图内容", "error"); return; }
+    setRecommendationLoading(true); setRecommendations([]); setRecommendationMessage("");
+    try {
+      const result = await api.recommendMediaAssets(selectedContentId, usageRole);
+      setRecommendations(result.items); setRecommendationMessage(result.message);
+      if (result.items.length === 0) showToast("没有找到明显匹配的已审核素材，可调整素材标签或继续手动选择", "info");
+    } catch (e) { showToast(e instanceof Error ? e.message : "素材推荐失败", "error"); }
+    finally { setRecommendationLoading(false); }
   };
 
   const assignToContent = async (item: MediaAsset) => {
