@@ -2283,31 +2283,16 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/config/llm_key")
     def save_llm_api_key(req: LlmKeyRequest):
-        """把 API Key 写入 config/.env（chmod 600），立即生效；永不回传明文。"""
+        """把 API Key 原子写入 config/.env（权限 600），立即生效；永不回传明文。"""
+        from src.core.secrets_env import set_env_secret
+
         cfg = _g()["cfg"]
         key_name = cfg.llm.api_key_env
         value = req.api_key.strip()
-        lines: list[str] = []
-        if DEFAULT_ENV_PATH.exists():
-            lines = DEFAULT_ENV_PATH.read_text(encoding="utf-8").splitlines()
-        out: list[str] = []
-        replaced = False
-        for line in lines:
-            if line.strip().startswith(f"{key_name}="):
-                if value:
-                    out.append(f"{key_name}={value}")
-                    replaced = True
-                continue  # 空值 = 删除该行
-            out.append(line)
-        if value and not replaced:
-            out.append(f"{key_name}={value}")
-        DEFAULT_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-        DEFAULT_ENV_PATH.write_text("\n".join(out) + "\n", encoding="utf-8")
-        DEFAULT_ENV_PATH.chmod(0o600)
-        if value:
-            os.environ[key_name] = value
-        else:
-            os.environ.pop(key_name, None)
+        try:
+            set_env_secret(key_name, value)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         # R23：只回报状态，绝不回报 Key 本身
         return {"ok": True, "has_key": bool(os.environ.get(key_name)),
                 "env_file": str(DEFAULT_ENV_PATH)}
