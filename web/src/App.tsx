@@ -96,13 +96,7 @@ function Router() {
       />
       <div className="main">
         <Topbar label={currentNav?.label ?? ""} onNavigate={setPage} />
-        {!auth.configured && (
-          <div className="security-warning" role="alert">
-            <b>未设置访问口令</b>
-            <span>接口目前没有访问保护，公网部署前请先设置口令。</span>
-            <button type="button" className="btn sm" onClick={() => setPage("settings")}>去设置</button>
-          </div>
-        )}
+
         <main className="content" id="main-content">
           <PageBoundary key={page}>{render()}</PageBoundary>
         </main>
