@@ -8,11 +8,13 @@ interface SearchHit {
   detail: string;
   page: string;
   tab?: string;
+  roundId?: number;
+  contentId?: string;
   kind: "页面" | "目标" | "热点" | "任务" | "轮次" | "草稿" | "内容";
 }
 
 interface Props {
-  onNavigate: (page: string, tab?: string) => void;
+  onNavigate: (page: string, tab?: string, focus?: { roundId?: number; contentId?: string }) => void;
 }
 
 const norm = (value: unknown) => String(value ?? "").trim().toLocaleLowerCase();
@@ -146,6 +148,7 @@ export default function GlobalSearch({ onNavigate }: Props) {
               detail: `内容轮次 · ${round.status}`,
               page: "production",
               tab: "rounds",
+              roundId: round.id,
               kind: "轮次",
             });
           }
@@ -160,6 +163,8 @@ export default function GlobalSearch({ onNavigate }: Props) {
               detail: `草稿 · ${draft.platform} · ${draft.status}`,
               page: "production",
               tab: "review",
+              roundId: draft.round_id ?? undefined,
+              contentId: draft.content_id,
               kind: "草稿",
             });
           }
@@ -186,6 +191,8 @@ export default function GlobalSearch({ onNavigate }: Props) {
                 detail: `内容 · ${item.platform} · 第 ${result.value.round_id} 轮`,
                 page: "production",
                 tab: "review",
+                roundId: item.round_id ?? result.value.round_id,
+                contentId: item.id,
                 kind: "内容",
               });
             }
@@ -217,7 +224,7 @@ export default function GlobalSearch({ onNavigate }: Props) {
     setOpen(false);
     setMobileOpen(false);
     setQuery("");
-    onNavigate(hit.page, hit.tab);
+    onNavigate(hit.page, hit.tab, { roundId: hit.roundId, contentId: hit.contentId });
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
