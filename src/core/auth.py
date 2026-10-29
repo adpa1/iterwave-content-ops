@@ -2,7 +2,7 @@
 
 口径：
 - 未设置口令：仅允许读取认证状态和设置首次口令；其它业务 API 返回 setup_required
-- 本机直连可首次设置口令；公网域名 / 反向代理首次设置必须提供服务端 ITERWAVE_BOOTSTRAP_TOKEN
+- 本机直连仅在显式设置 ITERWAVE_ALLOW_LOCAL_BOOTSTRAP=1 时可免引导设置；其它首次设置必须提供服务端 ITERWAVE_BOOTSTRAP_TOKEN
 - 设置口令后：``/api/*`` 全部校验；页面未登录时只能看到登录页
 - 脚本调用：请求头 ``X-Access-Token: <口令>`` 或 ``Authorization: Bearer <口令>``
 - 登录和脚本令牌失败共用按 IP 限速（10 分钟内最多 5 次，超出 429）
@@ -15,8 +15,8 @@ import base64
 import hashlib
 import hmac
 import ipaddress
-import os
 import logging
+import os
 import secrets
 import time
 from typing import Optional
