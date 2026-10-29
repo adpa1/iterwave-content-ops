@@ -251,14 +251,7 @@ def _build_app() -> FastAPI:
         if path.startswith("/api/") and path not in ("/api/auth/status", "/api/auth/login"):
             # 本机直连（localhost / 127.0.0.1 / ::1）且无反向代理头 → 跳过首次设置和登录要求。
             # 公网部署通过 Host 头或反代转发请求时仍然强制认证（R23 安全）。
-            host = (request.url.hostname or "").strip("[]").lower()
-            client_host = (request.client.host if request.client else "").strip("[]").lower()
-            local_hosts = ("localhost", "127.0.0.1", "::1")
-            forwarded = any(
-                request.headers.get(name)
-                for name in ("x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host")
-            )
-            local_direct = host in local_hosts and client_host in local_hosts and not forwarded
+            local_direct = auth.is_trusted_local_setup(request)
 
             if not auth.password_configured() and path != "/api/auth/password":
                 # 未设密码 + 本机直连 → 放行（方便本地开发）；公网部署 → 拦截 403
@@ -865,15 +858,7 @@ def _register_routes(app: FastAPI) -> None:
         # 首次设置前仅初始化路由可用；仍需防止公网访客抢先设置口令并锁定管理员。
         # 本机直连允许首次设置；公网域名/反向代理部署必须通过服务端环境变量提供的一次性引导口令。
         if not auth.password_configured():
-            host = (request.url.hostname or "").strip("[]").lower()
-            client_host = (request.client.host if request.client else "").strip("[]").lower()
-            local_hosts = ("localhost", "127.0.0.1", "::1")
-            forwarded = any(
-                request.headers.get(name)
-                for name in ("x-forwarded-for", "x-real-ip", "forwarded")
-            )
-            # Host 头可由客户端伪造；仅凭 Host=localhost 不应允许公网访客跳过引导口令。
-            local_direct = host in local_hosts and client_host in local_hosts and not forwarded
+            local_direct = auth.is_trusted_local_setup(request)
             bootstrap = os.getenv("ITERWAVE_BOOTSTRAP_TOKEN", "")
             provided = str((payload or {}).get("bootstrap_token") or "")
             if not local_direct:
