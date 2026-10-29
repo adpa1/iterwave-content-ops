@@ -291,9 +291,11 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
               value={tenantData.selected_tenant_id}
               disabled={tenantLoading}
               onChange={(event) => void handleTenantChange(event.target.value)}
-              title={tenantData.restart_required
-                ? `当前运行：${tenantData.items.find((tenant) => tenant.id === tenantData.runtime_tenant_id)?.name ?? "当前账号组"}；待生效：${tenantData.items.find((tenant) => tenant.id === tenantData.selected_tenant_id)?.name ?? "所选账号组"}`
-                : "选择工作空间"}
+              title={tenantData.hot_switch_enabled === false
+                ? "即时切换未启用，选择后需重启服务生效"
+                : tenantData.restart_required
+                  ? `当前运行：${tenantData.items.find((tenant) => tenant.id === tenantData.runtime_tenant_id)?.name ?? "当前账号组"}；待生效：${tenantData.items.find((tenant) => tenant.id === tenantData.selected_tenant_id)?.name ?? "所选账号组"}`
+                  : "选择工作空间"}
             >
               {tenantData.items.map((tenant) => (
                 <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
