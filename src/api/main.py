@@ -2331,9 +2331,12 @@ def _register_routes(app: FastAPI) -> None:
     async def kb_upload(file: UploadFile = File(...)):
         """上传选题库文件（CSV / Excel / JSON / JSONL / SQLite，≤20MB）并切换为「上传文件」来源。"""
         from src.core.config_store import patch_config
-        from src.core.kb_sources import KbSourceError, project_relative, save_upload
+        from src.core.kb_sources import MAX_UPLOAD_BYTES, KbSourceError, project_relative, save_upload
         g = _g()
-        content = await file.read()
+        # UploadFile 以分片文件接收；只读取上限 + 1 字节即可拒绝超大文件，避免整文件读入内存。
+        content = await file.read(MAX_UPLOAD_BYTES + 1)
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "文件超过 20MB，请拆分后上传，或改用远程地址")
         try:
             dest = save_upload(g["cfg"], file.filename or "", content)
         except KbSourceError as e:
