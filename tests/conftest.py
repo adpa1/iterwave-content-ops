@@ -115,3 +115,10 @@ class Seed:
 @pytest.fixture()
 def seed(conn) -> Seed:
     return Seed(conn)
+
+
+@pytest.fixture()
+def test_auth(monkeypatch):
+    """常规 API 端点测试使用隔离的测试令牌；认证专测显式清除此变量。"""
+    monkeypatch.setenv("ITERWAVE_ACCESS_TOKEN", "test-access")
+    return "test-access"
