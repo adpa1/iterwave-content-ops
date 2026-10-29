@@ -518,6 +518,11 @@ def load_overrides() -> dict[str, Any]:
     if not OVERRIDES_FILE.exists():
         return {}
     try:
+        # 兼容升级前创建的覆盖文件：加载时也收紧权限，避免必须等待下一次配置写入。
+        try:
+            OVERRIDES_FILE.chmod(0o600)
+        except OSError:
+            logger.warning("无法收紧运行时配置覆盖文件权限：%s", OVERRIDES_FILE.name)
         data = json.loads(OVERRIDES_FILE.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError) as e:
