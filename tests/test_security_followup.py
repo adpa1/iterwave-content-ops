@@ -66,7 +66,7 @@ def test_local_bootstrap_rejects_forwarded_or_non_loopback_requests(monkeypatch)
 def test_write_env_rejects_invalid_keys_and_multiline_values(tmp_path, monkeypatch):
     monkeypatch.setenv("ITERWAVE_ENV_FILE", str(tmp_path / ".env"))
 
-    for key in ("bad-key", "LOWERCASE", "A=INJECTED", "A" * 65):
+    for key in ("bad-key", "lowercase", "A=INJECTED", "A" * 65):
         try:
             env_store.write_env(key, "value")
         except ValueError:
