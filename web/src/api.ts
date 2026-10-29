@@ -1329,6 +1329,8 @@ export const api = {
     fetchJson<MediaGenerationSettings>("/api/media/generation-settings", { method: "PUT", body: JSON.stringify(data) }),
   generateMediaAsset: (data: { prompt: string; title?: string; alt_text?: string; tags?: string[] }) =>
     fetchJson<MediaAsset>("/api/media/generate", { method: "POST", body: JSON.stringify(data) }),
+  generateMediaForContent: (content_id: string, usage_role: "cover" | "illustration" | "background" = "cover") =>
+    fetchJson<MediaAsset>("/api/media/generate-for-content/" + encodeURIComponent(content_id) + "?usage_role=" + usage_role, { method: "POST" }),
   editMediaAsset: (id: number, data: { prompt: string; title?: string; alt_text?: string; tags?: string[] }) =>
     fetchJson<MediaAsset>(`/api/media/${id}/edit`, { method: "POST", body: JSON.stringify(data) }),
   reviewMediaAsset: (id: number, decision: "approved" | "rejected", note = "") =>
