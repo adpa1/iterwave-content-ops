@@ -38,6 +38,7 @@ export default function MediaLibraryPane() {
   const [purpose, setPurpose] = useState("门店环境");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [targetWarning, setTargetWarning] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -50,11 +51,22 @@ export default function MediaLibraryPane() {
       setTargets(targetResult.items);
       setGenerationSettings(settingsResult);
       const requestedContentId = new URLSearchParams(window.location.search).get("focusContent");
-      setSelectedContentId((current) => {
-        if (requestedContentId && targetResult.items.some((item) => item.id === requestedContentId)) return requestedContentId;
-        return current && targetResult.items.some((item) => item.id === current)
-          ? current : targetResult.items[0]?.id ?? "";
-      });
+      if (requestedContentId) {
+        const requestedTarget = targetResult.items.find((item) => item.id === requestedContentId);
+        if (requestedTarget) {
+          setSelectedContentId(requestedContentId);
+          setTargetWarning("");
+        } else {
+          setSelectedContentId("");
+          setTargetWarning("从编辑页跳转的这篇内容当前不符合配图条件（可能已发布或不在待存草稿状态）。系统不会自动改选其他内容，请手动选择正确的待存草稿。");
+        }
+      } else {
+        setTargetWarning("");
+        setSelectedContentId((current) => (
+          current && targetResult.items.some((item) => item.id === current)
+            ? current : targetResult.items[0]?.id ?? ""
+        ));
+      }
     } catch (e) {
       const message = e instanceof Error ? e.message : "图片素材加载失败";
       setError(message);
@@ -336,6 +348,7 @@ export default function MediaLibraryPane() {
             <button className="btn sm" onClick={() => void load()} disabled={loading}>刷新</button>
           </div>
         </div>
+        {targetWarning && <div className="note" role="alert" style={{ color: "var(--orange)", marginBottom: 10 }}>{targetWarning}</div>}
         {targets.length > 0 && (
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
             <span className="field-label">手动配图目标</span>
