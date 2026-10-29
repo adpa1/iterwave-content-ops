@@ -46,6 +46,10 @@ def main(argv: list[str] | None = None) -> int:
 
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        out.parent.chmod(0o700)
+    except OSError:
+        print("warning: unable to restrict storage-state directory permissions", file=sys.stderr)
     with sync_playwright() as p:
         ctx = _open_context(p, a.platform, a.profile_base)
         try:
@@ -57,7 +61,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     tmp = out.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    try:
+        tmp.chmod(0o600)
+    except OSError:
+        print("warning: unable to restrict temporary storage-state permissions", file=sys.stderr)
     tmp.replace(out)
+    try:
+        out.chmod(0o600)
+    except OSError:
+        print("warning: unable to restrict storage-state file permissions", file=sys.stderr)
     print(f"exported {len(state['cookies'])} cookies → {out}")
     return 0
 
