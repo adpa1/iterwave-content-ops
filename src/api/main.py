@@ -960,6 +960,7 @@ def _register_routes(app: FastAPI) -> None:
             target = None
             try:
                 from src.core.media_generation import ImageGenerationError, generate_image_bytes
+                from src.core.media_quality import score_image
                 raw, mime_type, suffix, width, height = generate_image_bytes(
                     final_prompt, model=model, size=size, source_path=source_path,
                     source_mime_type=source_mime, source_filename=source_filename,
@@ -976,15 +977,18 @@ def _register_routes(app: FastAPI) -> None:
                 title = req.title.strip() or prompt[:80]
                 tags = list(dict.fromkeys(tag.strip()[:60] for tag in req.tags if tag.strip()))[:30]
                 source_ref = f"job:{job_id}" if source_asset_id is None else f"job:{job_id};edit_of:{source_asset_id}"
+                quality = score_image(raw)
                 asset_cur = conn.execute(
                     "INSERT INTO media_assets "
                     "(title, original_filename, stored_filename, mime_type, byte_size, sha256, "
-                    "width, height, alt_text, tags, source_type, source_ref, status, review_status) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, 'active', 'pending_review')",
+                    "width, height, alt_text, tags, source_type, source_ref, status, review_status, "
+                    "quality_score, quality_details) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, 'active', 'pending_review', ?, ?)",
                     (
                         title, stored_filename, stored_filename, mime_type, len(raw),
                         hashlib.sha256(raw).hexdigest(), width, height, req.alt_text.strip(),
-                        json.dumps(tags, ensure_ascii=False), source_ref,
+                        json.dumps(tags, ensure_ascii=False), source_ref, quality["score"],
+                        json.dumps(quality, ensure_ascii=False),
                     ),
                 )
                 asset_id = int(asset_cur.lastrowid)
@@ -999,6 +1003,7 @@ def _register_routes(app: FastAPI) -> None:
                     "mime_type": mime_type, "byte_size": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
                     "width": width, "height": height, "alt_text": req.alt_text.strip(),
                     "tags": tags, "source_type": "generated", "source_ref": source_ref,
+                    "quality_score": quality["score"], "quality_details": quality,
                     "status": "active", "review_status": "pending_review", "review_note": None,
                     "duplicate": False, "file_url": f"/api/media/{asset_id}/file",
                     "job_id": job_id, "review_required": True,
@@ -1111,7 +1116,8 @@ def _register_routes(app: FastAPI) -> None:
             params.extend([needle, needle, needle, needle])
         sql = (
             "SELECT id, title, original_filename, mime_type, byte_size, sha256, "
-            "width, height, alt_text, tags, source_type, source_ref, status, review_status, review_note, created_at, updated_at "
+            "width, height, alt_text, tags, source_type, source_ref, status, review_status, review_note, "
+            "quality_score, quality_details, created_at, updated_at "
             "FROM media_assets"
         )
         if where:
@@ -1126,6 +1132,10 @@ def _register_routes(app: FastAPI) -> None:
                 item["tags"] = json.loads(item["tags"] or "[]")
             except (TypeError, ValueError):
                 item["tags"] = []
+            try:
+                item["quality_details"] = json.loads(item["quality_details"]) if item.get("quality_details") else None
+            except (TypeError, ValueError):
+                item["quality_details"] = None
             item["file_url"] = f"/api/media/{item['id']}/file"
             result.append(item)
         return {"items": result, "limit": limit, "offset": offset}
