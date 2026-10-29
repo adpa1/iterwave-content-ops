@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Optional
 
 from .kb_sources import (
+    MAX_LOCAL_SOURCE_BYTES,
+    MAX_TOPIC_ROWS,
     KbSourceError,
     display_path,
     extract_json_rows,
@@ -76,6 +78,11 @@ class KbReader:
             if self.kb_cfg.source_type == "remote":
                 raise KbSourceError("远程选题库还没有同步过，请先点「立即同步」")
             raise KbSourceError(f"选题库文件不存在：{display_path(p)}")
+        try:
+            if p.stat().st_size > MAX_LOCAL_SOURCE_BYTES:
+                raise KbSourceError("本地选题库超过 100MB 上限")
+        except OSError as exc:
+            raise KbSourceError("无法读取选题库文件") from exc
         return p
 
     def read(self) -> tuple[list[TopicItem], dict]:
@@ -98,6 +105,8 @@ class KbReader:
             columns, rows = self._sqlite_rows(p, report)
         else:
             columns, rows = self._file_rows(p, file_type, report)
+        if len(rows) > MAX_TOPIC_ROWS:
+            raise KbSourceError(f"选题库超过 {MAX_TOPIC_ROWS:,} 行上限")
         mapping = self._resolve_mapping(columns)
         report["field_mapping"] = mapping
         items = self._to_items(rows, mapping, report)
@@ -141,6 +150,10 @@ class KbReader:
         return mapping
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _quote_identifier(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+
     def _pick_table(self, conn) -> str:
         table_name = self.kb_cfg.table_name
         tables = [r[0] for r in conn.execute(
@@ -151,9 +164,10 @@ class KbReader:
         if not tables:
             raise KbSourceError("SQLite 文件里没有表")
         counts = []
-        for t in tables:
+        for table in tables:
             try:
-                counts.append((conn.execute(f"SELECT COUNT(*) FROM [{t}]").fetchone()[0], t))
+                ident = self._quote_identifier(table)
+                counts.append((conn.execute(f"SELECT COUNT(*) FROM {ident}").fetchone()[0], table))
             except sqlite3.Error:
                 pass
         return max(counts)[1] if counts else tables[0]
@@ -164,11 +178,14 @@ class KbReader:
         try:
             table = self._pick_table(conn)
             report["table"] = table
-            cols = [r[1] for r in conn.execute(f"PRAGMA table_info([{table}])").fetchall()]
-            sql = f"SELECT * FROM [{table}]" + (f" LIMIT {int(limit)}" if limit else "")
+            ident = self._quote_identifier(table)
+            total_rows = int(conn.execute(f"SELECT COUNT(*) FROM {ident}").fetchone()[0])
+            report.setdefault("stats", {})["total_rows"] = total_rows
+            if total_rows > MAX_TOPIC_ROWS and not limit:
+                raise KbSourceError(f"SQLite 选题库超过 {MAX_TOPIC_ROWS:,} 行上限")
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({ident})").fetchall()]
+            sql = f"SELECT * FROM {ident}" + (f" LIMIT {int(limit)}" if limit else "")
             rows = [dict(r) for r in conn.execute(sql).fetchall()]
-            report.setdefault("stats", {})["total_rows"] = conn.execute(
-                f"SELECT COUNT(*) FROM [{table}]").fetchone()[0]
         finally:
             conn.close()
         return cols, rows
