@@ -408,3 +408,27 @@ details[open] > summary::before { content: "▾ "; }
   .tenant-switcher { gap: 3px; padding: 3px 5px; }
   .tenant-switcher select { max-width: 92px; min-width: 60px; font-size: 11px; }
 }
+
+
+/* ===== 内容审核工作台筛选区 ===== */
+.review-filters {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(100px, .65fr) minmax(110px, .7fr);
+  gap: 7px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+.review-filters input,
+.review-filters select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.review-content-list { max-height: min(66vh, 760px); overflow: auto; }
+.review-content-list .task-row { padding: 10px; border-radius: 9px; transition: background .15s ease, border-color .15s ease; }
+.review-content-list .task-row:hover { background: var(--surface-2); }
+@media (max-width: 720px) {
+  .review-filters { grid-template-columns: 1fr 1fr; }
+  .review-filters input { grid-column: 1 / -1; }
+}
