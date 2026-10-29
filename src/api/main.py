@@ -268,7 +268,7 @@ def _build_app() -> FastAPI:
         path = request.scope.get("path", "/")
         if path.startswith("/api/"):
             # 上传接口的 base64 JSON 约 28MB；其它 API 不应接受无限大的请求体。
-            max_body_bytes = 30 * 1024 * 1024 if path == "/api/kb/sources/upload" else 5 * 1024 * 1024
+            max_body_bytes = 30 * 1024 * 1024 if path == "/api/kb/sources/upload" else 17 * 1024 * 1024 if path == "/api/media" else 5 * 1024 * 1024
             content_length = request.headers.get("content-length")
             if content_length:
                 try:
