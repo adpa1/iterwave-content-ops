@@ -280,6 +280,23 @@ def test_xlsx_expansion_limit_blocks_zip_bombs(tmp_path, monkeypatch):
         kb_sources.parse_xlsx(path)
 
 
+def test_config_diagnostics_redact_tokens_from_overrides(cfg, conn, monkeypatch, tmp_path):
+    monkeypatch.setattr(config_store, "OVERRIDES_FILE", tmp_path / "overrides.json")
+    config_store._save_overrides(cfg, {
+        "hot_topics.sources": [{
+            "name": "有签名的来源",
+            "type": "rss",
+            "url": "https://feeds.example.com/private/path?access_token=TOPSECRET",
+            "enabled": True,
+        }],
+    })
+    view = config_store.current_config_view(cfg, conn)
+    rendered = json.dumps(view, ensure_ascii=False)
+    assert "TOPSECRET" not in rendered
+    assert "/private/path" not in rendered
+    assert "https://feeds.example.com/…" in rendered
+
+
 def test_source_registry_and_uploaded_file_permissions_are_private(cfg):
     kb_sources.save_registry(cfg, [{
         "id": "remote-secret",
