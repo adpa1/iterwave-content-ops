@@ -484,7 +484,8 @@ export default function Production() {
   const canRun = !!roundDetail && roundDetail.status === "created" && !running && (usePlan || selPlatforms.length > 0);
   const selectedContent = contents.find((c) => c.id === selectedContentId) ?? null;
   const selectedContentIsImmutable = !!selectedContent &&
-    ["user_published", "data_fetching", "published"].includes(selectedContent.draft_status ?? "");
+    (!!selectedContent.draft_user_confirmed_at ||
+      ["user_published", "data_fetching", "published"].includes(selectedContent.draft_status ?? ""));
 
   // ---------------------------------------------------------------- 渲染
   return (
