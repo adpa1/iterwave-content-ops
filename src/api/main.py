@@ -904,6 +904,7 @@ def _register_routes(app: FastAPI) -> None:
     def list_media_assets(
         query: Optional[str] = Query(None, max_length=200),
         status: str = Query("active", pattern="^(active|archived|all)$"),
+        review_status: str = Query("all", pattern="^(pending_review|approved|rejected|all)$"),
         limit: int = Query(100, ge=1, le=500),
         offset: int = Query(0, ge=0),
     ):
@@ -913,13 +914,16 @@ def _register_routes(app: FastAPI) -> None:
         if status != "all":
             where.append("status = ?")
             params.append(status)
+        if review_status != "all":
+            where.append("review_status = ?")
+            params.append(review_status)
         if query and query.strip():
             needle = f"%{query.strip()}%"
             where.append("(title LIKE ? OR original_filename LIKE ? OR alt_text LIKE ? OR tags LIKE ?)")
             params.extend([needle, needle, needle, needle])
         sql = (
             "SELECT id, title, original_filename, mime_type, byte_size, sha256, "
-            "width, height, alt_text, tags, source_type, source_ref, status, created_at, updated_at "
+            "width, height, alt_text, tags, source_type, source_ref, status, review_status, created_at, updated_at "
             "FROM media_assets"
         )
         if where:
