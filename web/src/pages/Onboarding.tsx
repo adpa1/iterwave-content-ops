@@ -6,7 +6,7 @@ import { useApp } from "../AppContext";
 
 const STEPS = [
   { key: "persona",  label: "① 账号画像",     hint: "终极目标 / 红线 / 定位关键词" },
-  { key: "platforms", label: "② 启用平台",    hint: "4 选 2 起；建议先 1 平台跑通" },
+  { key: "platforms", label: "② 启用平台",    hint: "至少启用 1 个；建议先跑通 1 个平台" },
   { key: "kb",       label: "③ 选题库",       hint: "上传 / 远程 / 服务器路径" },
   { key: "llm",      label: "④ 模型配置",     hint: "Provider / Model / API Key" },
   { key: "skills",   label: "⑤ 运行环境",     hint: "检查登录与运行环境" },
@@ -43,9 +43,13 @@ const GOAL_DATA_SOURCES = [
 ];
 
 function todayStr(offsetDays = 0): string {
+  // 使用本地日历日期，避免 UTC 时区换算导致目标起止日期偏移一天。
   const d = new Date();
   d.setDate(d.getDate() + offsetDays);
-  return d.toISOString().slice(0, 10);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export default function Onboarding() {
