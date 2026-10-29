@@ -176,6 +176,23 @@ export default function Production() {
     if (currentRoundId) loadRoundData(currentRoundId);
   }, [currentRoundId]);
 
+  // 全局搜索可能在当前已打开的「内容生产」页内切换目标；
+  // 组件不会因 page key 变化而重挂载，因此需要响应 URL 深链变化。
+  useEffect(() => {
+    const syncFocusFromUrl = () => {
+      const params = new URLSearchParams(window.location.search);
+      const rawRoundId = params.get("focusRound");
+      const parsedRoundId = rawRoundId ? Number(rawRoundId) : NaN;
+      if (Number.isInteger(parsedRoundId) && parsedRoundId > 0) {
+        setCurrentRoundId(parsedRoundId);
+      }
+      const contentId = params.get("focusContent");
+      if (contentId) setSelectedContentId(contentId);
+    };
+    window.addEventListener("popstate", syncFocusFromUrl);
+    return () => window.removeEventListener("popstate", syncFocusFromUrl);
+  }, []);
+
   // 选中内容 → 填充编辑器
   useEffect(() => {
     const item = contents.find((c) => c.id === selectedContentId);
