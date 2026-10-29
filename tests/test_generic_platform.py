@@ -219,7 +219,7 @@ def test_config_redacts_custom_feed_urls_and_preserves_them_on_other_updates(env
 
     response = client.get("/api/config")
     assert response.status_code == 200
-    feeds = response.json()["config"]["editable"]["hot_topics"]["custom_feeds"]
+    feeds = response.json()["editable"]["hot_topics"]["custom_feeds"]
     assert feeds == [{"name": "私有行业源", "url": "https://feeds.example.com/…"}]
     assert "TOPSECRET" not in response.text
     assert "/private/token" not in response.text
