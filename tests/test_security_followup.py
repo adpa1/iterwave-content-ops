@@ -72,7 +72,7 @@ def test_write_env_rejects_invalid_keys_and_multiline_values(tmp_path, monkeypat
         else:
             raise AssertionError(f"expected invalid key to be rejected: {key!r}")
 
-    for value in ("line1\\nINJECTED=yes", "line1\\rINJECTED=yes"):
+    for value in ("line1\nINJECTED=yes", "line1\rINJECTED=yes"):
         try:
             env_store.write_env("SAFE_KEY", value)
         except ValueError:
