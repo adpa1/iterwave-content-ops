@@ -160,6 +160,17 @@ export interface Draft {
 }
 
 /** POST /api/rounds/{id}/run 的执行报告（RoundExecutor.run 返回） */
+export interface PendingDraftSaveResult {
+  round_id: number;
+  round_number: number;
+  drafts_attempted: number;
+  drafts_saved: number;
+  drafts_failed: number;
+  pending_drafts: number;
+  final_status: string;
+  errors: string[];
+}
+
 export interface RunRoundReport {
   round_id: number;
   round_number: number;
@@ -723,6 +734,8 @@ export interface ContentItem {
   draft_status: string | null;
   draft_error: string | null;
   draft_saved_at: string | null;
+  /** 首次用户确认发布的时间；即使后续采集失败变为 failed，也仍属于不可变历史内容。 */
+  draft_user_confirmed_at?: string | null;
 }
 
 export interface RecheckResult {
@@ -997,6 +1010,11 @@ export const api = {
   runRound: (id: number, data: { topic_count?: number; platforms?: Platform[]; save_drafts?: boolean } = {}) =>
     fetchJson<RunRoundReport>(`/api/rounds/${id}/run`, {
       method: "POST", body: JSON.stringify(data),
+    }),
+  /** 恢复已生成、尚未存平台草稿的内容；不会重新生成或发布。 */
+  savePendingDrafts: (id: number) =>
+    fetchJson<PendingDraftSaveResult>(`/api/rounds/${id}/save_pending`, {
+      method: "POST",
     }),
   transitionRound: (id: number, target_status: string, reason = "") =>
     fetchJson<{ round_id: number; new_status: string }>(`/api/rounds/${id}/transition`, {

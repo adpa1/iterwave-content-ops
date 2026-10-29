@@ -102,6 +102,7 @@ export default function Production() {
   const [selPlatforms, setSelPlatforms] = useState<Platform[]>(ALL_PLATFORMS);
   const [saveDrafts, setSaveDrafts] = useState(true);
   const [running, setRunning] = useState(false);
+  const [savingPending, setSavingPending] = useState(false);
   const [report, setReport] = useState<RunRoundReport | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [noLogin, setNoLogin] = useState<Platform[]>([]);
@@ -241,6 +242,36 @@ export default function Production() {
       showToast(`运行失败: ${e.message}`, "error");
     } finally {
       setRunning(false);
+    }
+  };
+
+  const handleSavePendingDrafts = async () => {
+    if (!currentRoundId || savingPending || running) return;
+    setSavingPending(true);
+    setRunError(null);
+    setReport(null);
+    try {
+      const result = await api.savePendingDrafts(currentRoundId);
+      if (result.final_status === "awaiting_publish") {
+        showToast(
+          `✓ 已恢复存草稿：成功 ${result.drafts_saved} 篇，失败 ${result.drafts_failed} 篇`,
+          result.drafts_failed > 0 ? "info" : "success",
+        );
+      } else if (result.final_status === "failed") {
+        showToast("✕ 恢复存草稿失败，请查看各篇草稿错误原因", "error");
+      } else {
+        showToast(
+          `已尝试 ${result.drafts_attempted} 篇：成功 ${result.drafts_saved}，失败 ${result.drafts_failed}，仍待存 ${result.pending_drafts}`,
+          "info",
+        );
+      }
+      await refresh();
+      await loadRoundData(currentRoundId);
+    } catch (e: any) {
+      setRunError(e?.message ?? "恢复待存草稿失败");
+      showToast(`恢复存草稿失败：${e?.message ?? "未知错误"}`, "error");
+    } finally {
+      setSavingPending(false);
     }
   };
 
@@ -452,6 +483,9 @@ export default function Production() {
 
   const canRun = !!roundDetail && roundDetail.status === "created" && !running && (usePlan || selPlatforms.length > 0);
   const selectedContent = contents.find((c) => c.id === selectedContentId) ?? null;
+  const selectedContentIsImmutable = !!selectedContent &&
+    (!!selectedContent.draft_user_confirmed_at ||
+      ["user_published", "data_fetching", "published"].includes(selectedContent.draft_status ?? ""));
 
   // ---------------------------------------------------------------- 渲染
   return (
@@ -814,7 +848,24 @@ export default function Production() {
 
                 {roundDetail.status !== "created" && (
                   <div className="note" style={{ marginTop: 8 }}>
-                    只有 created 状态的轮次可运行（当前 {roundDetail.status}）。如需重跑，请新建一轮。
+                    {roundDetail.status === "producing" &&
+                    (roundDetail.drafts ?? []).some((d) => d.status === "draft_pending") ? (
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+                        <span>
+                          当前轮次有 {(roundDetail.drafts ?? []).filter((d) => d.status === "draft_pending").length} 篇内容已生成但尚未存入平台。继续存草稿不会重新生成内容。
+                        </span>
+                        <button
+                          type="button"
+                          className="btn primary sm"
+                          onClick={handleSavePendingDrafts}
+                          disabled={savingPending || running}
+                        >
+                          {savingPending ? "正在恢复…" : "继续存剩余草稿"}
+                        </button>
+                      </div>
+                    ) : (
+                      <>只有 created 状态的轮次可运行（当前 {roundDetail.status}）。如需启动新一轮，请新建一轮。</>
+                    )}
                   </div>
                 )}
                 {!usePlan && selPlatforms.length === 0 && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>至少选择一个平台</div>}
@@ -1003,19 +1054,30 @@ export default function Production() {
                   )}
                 </div>
 
+                {selectedContentIsImmutable ? (
+                  <div className="note" style={{ marginBottom: 10, borderLeft: "4px solid var(--orange)", paddingLeft: 8 }}>
+                    该内容已确认发布或进入数据采集。为保留真实发布版本与历史数据，此处只读；如需修改，请新建一篇修订内容。
+                  </div>
+                ) : selectedContent.draft_status === "draft_saved" ? (
+                  <div className="note" style={{ marginBottom: 10, borderLeft: "4px solid var(--orange)", paddingLeft: 8 }}>
+                    该内容已存入平台草稿。这里的修改只更新本地记录，不会自动同步到平台；保存后请复制文案并在平台端更新草稿，再重新过目标检查。
+                  </div>
+                ) : null}
+
                 <label style={{ fontSize: 12, color: "var(--muted)" }}>标题</label>
-                <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
+                <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} disabled={selectedContentIsImmutable} style={{ width: "100%", marginBottom: 8 }} />
 
                 <label style={{ fontSize: 12, color: "var(--muted)" }}>正文</label>
                 <textarea
                   value={editBody}
                   onChange={(e) => setEditBody(e.target.value)}
+                  disabled={selectedContentIsImmutable}
                   rows={10}
                   style={{ width: "100%", marginBottom: 8, fontFamily: "inherit", resize: "vertical" }}
                 />
 
                 <label style={{ fontSize: 12, color: "var(--muted)" }}>标签（空格或逗号分隔）</label>
-                <input value={editTags} onChange={(e) => setEditTags(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
+                <input value={editTags} onChange={(e) => setEditTags(e.target.value)} disabled={selectedContentIsImmutable} style={{ width: "100%", marginBottom: 10 }} />
 
                 {/* G-36：复制文案 + 下载卡片，补齐小红书本地草稿的发布闭环 */}
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
@@ -1043,10 +1105,10 @@ export default function Production() {
                 )}
 
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-                  <button className="btn primary" onClick={handleSaveContent} disabled={isPending("save-content")}>
+                  <button className="btn primary" onClick={handleSaveContent} disabled={selectedContentIsImmutable || isPending("save-content")}>
                     {isPending("save-content") ? "提交中…" : "✓ 保存修改"}
                   </button>
-                  <button className="btn" onClick={handleRecheck} disabled={isPending("recheck-content")}>
+                  <button className="btn" onClick={handleRecheck} disabled={selectedContentIsImmutable || isPending("recheck-content")}>
                     {isPending("recheck-content") ? "重检中…" : "⌕ 重新过目标检查"}
                   </button>
                   <button className="btn danger" style={{ marginLeft: "auto" }} onClick={handleDeleteContent}
@@ -1075,11 +1137,11 @@ export default function Production() {
                   <div className="panel-title" style={{ fontSize: 12, marginBottom: 6 }}>驳回（记录理由，不自动改草稿状态）</div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <input
-                      value={rejectReason} placeholder="例如：观点与账号定位不符"
+                      value={rejectReason} placeholder="例如：观点与账号定位不符" disabled={selectedContentIsImmutable}
                       onChange={(e) => setRejectReason(e.target.value)}
                       style={{ flex: 1 }}
                     />
-                    <button className="btn" onClick={handleReject} disabled={isPending("reject-content")}>
+                    <button className="btn" onClick={handleReject} disabled={selectedContentIsImmutable || isPending("reject-content")}>
                       {isPending("reject-content") ? "提交中…" : "✕ 驳回"}
                     </button>
                   </div>

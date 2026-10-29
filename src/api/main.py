@@ -1163,6 +1163,21 @@ def _register_routes(app: FastAPI) -> None:
             _running_rounds.discard(round_id)
         return report
 
+    @app.post("/api/rounds/{round_id}/save_pending")
+    async def save_pending_drafts(round_id: int):
+        """恢复已生成但尚未存到平台的草稿，不重新生成内容、不执行发布操作。"""
+        if round_id in _running_rounds:
+            raise HTTPException(
+                409, f"轮次 {round_id} 正在执行中，请等待本次执行结束"
+            )
+        _running_rounds.add(round_id)
+        try:
+            return await _g()["executor"].save_pending_drafts(round_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        finally:
+            _running_rounds.discard(round_id)
+
     @app.post("/api/rounds/{round_id}/transition")
     def round_transition(round_id: int, req: TransitionRequest):
         ok, msg = _g()["sm_round"].can_transition(round_id, req.target_status)
@@ -1524,7 +1539,8 @@ def _register_routes(app: FastAPI) -> None:
         conn = _g()["conn"]
         sql = (
             "SELECT c.*, d.id AS draft_id, d.status AS draft_status, "
-            "       d.error_msg AS draft_error, d.saved_at AS draft_saved_at "
+            "       d.error_msg AS draft_error, d.saved_at AS draft_saved_at, "
+            "       d.user_confirmed_at AS draft_user_confirmed_at "
             "FROM contents c LEFT JOIN drafts d ON d.content_id = c.id "
             "WHERE c.round_id = ?"
         )
@@ -1571,9 +1587,21 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.patch("/api/contents/{content_id}")
     def update_content(content_id: str, req: UpdateContentRequest):
-        """人工编辑文案 → 写 user_override 留痕（§16.3），不自动放行 G2。"""
+        """人工编辑未发布文案 → 写 user_override 留痕；已发布内容保持不可变。"""
         conn = _g()["conn"]
         row = _content_row(conn, content_id)
+        published = conn.execute(
+            "SELECT status FROM drafts WHERE content_id = ? "
+            "AND (user_confirmed_at IS NOT NULL "
+            "     OR status IN ('user_published', 'data_fetching', 'published')) "
+            "ORDER BY rowid DESC LIMIT 1",
+            (content_id,),
+        ).fetchone()
+        if published:
+            raise HTTPException(
+                409,
+                "该内容已确认发布或已进入数据采集，不能原地修改历史记录；请新建一篇修订内容",
+            )
 
         title = req.title if req.title is not None else row["title"]
         body = req.body if req.body is not None else row["body"]
@@ -1585,10 +1613,18 @@ def _register_routes(app: FastAPI) -> None:
             title != row["title"] or body != row["body"] or tags_json != row["tags"]
         )
 
-        conn.execute(
-            "UPDATE contents SET title = ?, body = ?, tags = ?, word_count = ? WHERE id = ?",
-            (title, body, tags_json, len(body or ""), content_id),
-        )
+        if changed:
+            # G2 结果绑定的是具体文案版本。修改标题/正文/标签后，旧的 PASS 不能继续显示为有效。
+            conn.execute(
+                "UPDATE contents SET title = ?, body = ?, tags = ?, word_count = ?, "
+                "guard_outcome = NULL, guard_reason = NULL WHERE id = ?",
+                (title, body, tags_json, len(body or ""), content_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE contents SET title = ?, body = ?, tags = ?, word_count = ? WHERE id = ?",
+                (title, body, tags_json, len(body or ""), content_id),
+            )
         if changed:
             conn.execute(
                 "INSERT INTO user_override (round_id, override_field, original_value, "

@@ -118,6 +118,73 @@ def test_notify_test_503_when_notifier_missing(client):
     assert tc.post("/api/notify/test").status_code == 503
 
 
+def test_editing_content_invalidates_previous_guard_result(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="awaiting_publish")
+    draft_id = seed.draft(round_id, platform="xhs", draft_status="draft_saved", fetch_status=None)
+    content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE contents SET guard_outcome = 'pass', guard_reason = '原稿通过' WHERE id = ?",
+        (content_id,),
+    )
+    conn.commit()
+
+    unchanged = tc.patch(f"/api/contents/{content_id}", json={"title": "T"})
+    assert unchanged.status_code == 200 and unchanged.json()["changed"] is False
+    row = conn.execute(
+        "SELECT guard_outcome, guard_reason FROM contents WHERE id = ?", (content_id,)
+    ).fetchone()
+    assert row["guard_outcome"] == "pass"
+
+    edited = tc.patch(
+        f"/api/contents/{content_id}",
+        json={"body": "编辑后的正文", "reason": "测试修改"},
+    )
+    assert edited.status_code == 200 and edited.json()["changed"] is True
+    row = conn.execute(
+        "SELECT guard_outcome, guard_reason FROM contents WHERE id = ?", (content_id,)
+    ).fetchone()
+    assert row["guard_outcome"] is None
+    assert row["guard_reason"] is None
+
+
+def test_published_content_cannot_be_mutated_in_place(client):
+    tc, conn, seed = client
+    cases = [
+        ("user_published", None),
+        # 数据采集失败会把草稿状态改成 failed，但确认发布时间必须继续保护历史文案。
+        ("failed", "2026-01-01T00:00:00"),
+    ]
+    for index, (status, confirmed_at) in enumerate(cases):
+        round_id = seed.round(status="collecting_metrics")
+        draft_id = seed.draft(
+            round_id, platform="xhs", draft_status=status, fetch_status=None,
+            topic_id=f"immutability-{index}",
+        )
+        if confirmed_at:
+            conn.execute(
+                "UPDATE drafts SET user_confirmed_at = ? WHERE id = ?",
+                (confirmed_at, draft_id),
+            )
+            conn.commit()
+        content_id = conn.execute(
+            "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
+        ).fetchone()[0]
+
+        response = tc.patch(
+            f"/api/contents/{content_id}",
+            json={"title": "不应覆盖已发布版本", "reason": "回归测试"},
+        )
+        assert response.status_code == 409
+        row = conn.execute(
+            "SELECT title, body FROM contents WHERE id = ?", (content_id,)
+        ).fetchone()
+        assert row["title"] == "T"
+        assert row["body"] == "B"
+
+
 # ---------------------------------------------------------------- R-5 KPI 窗口
 def test_ops_kpi_days_param(client):
     tc, _, seed = client
