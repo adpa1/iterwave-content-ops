@@ -641,7 +641,14 @@ def read_source(cfg, source: dict) -> dict:
     """读取单个来源，返回 {items, status, rows, columns, mapping, error}，不抛出。"""
     source_name = source.get("name") or source.get("id")
     is_remote = source.get("kind") == "remote"
-    display_path = _redact_remote_url(source.get("url") or "") if is_remote else redact_path(_source_path(cfg, source))
+    # 路径解析可能因损坏的来源登记或非法 ID 失败，不能在错误处理边界之外抛出。
+    if is_remote:
+        display_path = _redact_remote_url(source.get("url") or "")
+    else:
+        try:
+            display_path = redact_path(_source_path(cfg, source))
+        except Exception:
+            display_path = ""
     if is_remote and str(source_name or "").lower().startswith(("http://", "https://")):
         source_name = _redact_remote_url(str(source_name))
     base = {
