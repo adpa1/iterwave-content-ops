@@ -352,7 +352,7 @@ export default function MediaLibraryPane() {
         {targets.length > 0 && (
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
             <span className="field-label">手动配图目标</span>
-            <select value={selectedContentId} onChange={(event) => setSelectedContentId(event.target.value)} style={{ minWidth: 260, maxWidth: "100%" }}>
+            <select value={selectedContentId} onChange={(event) => { setSelectedContentId(event.target.value); setTargetWarning(""); }} style={{ minWidth: 260, maxWidth: "100%" }}>
               {targets.map((target) => (
                 <option value={target.id} key={target.id}>
                   {target.title} · {target.platform} · {target.draft_status} · {target.visual_status === "media_asset" ? "已有素材图" : target.visual_status === "generated" ? "AI 配图" : "模板降级图"} · #{target.id}
