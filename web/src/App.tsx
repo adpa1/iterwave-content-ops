@@ -1,7 +1,7 @@
 import { Component, useEffect, useState, type ReactNode } from "react";
 import Sidebar, { NAV_ITEMS } from "./Sidebar";
 import { AppProvider, useApp } from "./AppContext";
-import { api } from "./api";
+import { api, TenantListResponse } from "./api";
 import { platformMeta } from "./platforms";
 import Dashboard from "./pages/Dashboard";
 import HotTopics from "./pages/HotTopics";
@@ -214,8 +214,41 @@ function todayLabel() {
 }
 
 function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, tab?: string, focus?: { roundId?: number; contentId?: string }) => void }) {
-  const { status } = useApp();
+  const { status, showToast } = useApp();
   const [noticesOpen, setNoticesOpen] = useState(false);
+  const [tenantData, setTenantData] = useState<TenantListResponse | null>(null);
+  const [tenantLoading, setTenantLoading] = useState(false);
+
+  const loadTenants = async () => {
+    try {
+      setTenantData(await api.tenants());
+    } catch (error) {
+      console.warn("tenant switcher load failed:", error);
+    }
+  };
+
+  useEffect(() => { void loadTenants(); }, []);
+
+  const handleTenantChange = async (tenantId: string) => {
+    if (!tenantId || tenantId === tenantData?.selected_tenant_id || tenantLoading) return;
+    setTenantLoading(true);
+    try {
+      const result = await api.selectTenant(tenantId);
+      const latest = await api.tenants();
+      setTenantData(latest);
+      showToast(
+        result.restart_required
+          ? `已选择「${result.selected.name}」，但当前运行空间仍是「${result.runtime_tenant_id}」。请安排后端重启后生效。`
+          : result.message,
+        result.restart_required ? "info" : "success",
+      );
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "切换账号组失败", "error");
+      await loadTenants();
+    } finally {
+      setTenantLoading(false);
+    }
+  };
   const broken = status?.circuit_broken_platforms || [];
   const enabled = status?.enabled_platforms || [];
   const loggedIn = status?.logged_in_platforms || [];
@@ -242,6 +275,29 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
         IterWave <span className="crumb-sep" aria-hidden="true">/</span><strong>{label}</strong>
       </div>
       <div className="top-actions">
+        {tenantData && tenantData.items.length > 0 && (
+          <div className="tenant-switcher" aria-label="账号组切换">
+            <span className="tenant-switcher-label">工作空间</span>
+            <select
+              aria-label="选择账号组"
+              value={tenantData.selected_tenant_id}
+              disabled={tenantLoading}
+              onChange={(event) => void handleTenantChange(event.target.value)}
+              title={tenantData.restart_required
+                ? `当前运行：${tenantData.runtime_tenant_id}；待生效：${tenantData.selected_tenant_id}`
+                : "选择工作空间"}
+            >
+              {tenantData.items.map((tenant) => (
+                <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
+              ))}
+            </select>
+            {tenantData.restart_required && (
+              <span className="tenant-switcher-pending" title={`当前运行空间：${tenantData.runtime_tenant_id}`}>
+                待重启
+              </span>
+            )}
+          </div>
+        )}
         <GlobalSearch onNavigate={go} />
         <span className="today">{todayLabel()}</span>
         <button type="button" className="btn sm soft" onClick={() => go("onboarding")}>
