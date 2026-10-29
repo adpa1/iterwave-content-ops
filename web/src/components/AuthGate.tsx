@@ -110,7 +110,7 @@ function InitialSetupScreen({ onDone }: { onDone: () => void }) {
       <form className="auth-card" onSubmit={save}>
         <div className="auth-title">IterWave</div>
         <div className="auth-sub">首次安全设置</div>
-        <p className="auth-hint">设置访问口令后才能使用业务功能。公网域名或反向代理部署必须先在服务器配置 ITERWAVE_BOOTSTRAP_TOKEN，并在下方输入该引导口令；本机直连可留空。</p>
+        <p className="auth-hint">设置访问口令后才能使用业务功能。默认需要服务器预先配置 ITERWAVE_BOOTSTRAP_TOKEN 并在下方输入；只有服务端显式设置 ITERWAVE_ALLOW_LOCAL_BOOTSTRAP=1 且直接本机访问时，才可留空引导口令。</p>
         <label className="sr-only" htmlFor="iwSetupToken">新访问口令</label>
         <input id="iwSetupToken" type="password" autoFocus autoComplete="new-password"
           className="auth-input" value={token} onChange={(e) => setToken(e.target.value)}
