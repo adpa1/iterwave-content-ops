@@ -35,7 +35,7 @@ from .scoring.topic_eval import TopicItem
 
 logger = logging.getLogger(__name__)
 _REGISTRY_LOCK = threading.RLock()
-_SOURCE_ID_RE = re.compile(r"^(?:default|kb-[0-9]{14}-[a-f0-9]{6})$")
+_SOURCE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_TOPIC_ROWS = 100_000
