@@ -16,6 +16,7 @@ import Agent from "./pages/Agent";
 import Accounts from "./pages/Accounts";
 import Onboarding from "./pages/Onboarding";
 import Settings from "./pages/Settings";
+import GlobalSearch from "./components/GlobalSearch";
 
 function Router() {
   // 初始读 URL param，之后 onChange 同步写 URL（demo 风格）
@@ -27,11 +28,15 @@ function Router() {
   const [page, setPageState] = useState<string>(getInitial);
   const { status, auth } = useApp();
 
-  const setPage = (p: string) => {
-    setPageState(p);
+  const setPage = (p: string, tab?: string) => {
     const url = new URL(window.location.href);
     url.searchParams.set("page", p);
-    window.history.replaceState({}, "", url.toString());
+    if (tab) url.searchParams.set("tab", tab);
+    else url.searchParams.delete("tab");
+    window.history.pushState({}, "", url.toString());
+    setPageState(p);
+    // 让页面内部的 useUrlTab 同步读取深链 tab（例如直接进入内容审核）。
+    window.dispatchEvent(new PopStateEvent("popstate"));
   };
 
   useEffect(() => {
@@ -145,25 +150,34 @@ function LoginScreen() {
   );
 }
 
-// ===== 全局顶部栏（对齐 demo：64px 半透明 + 日期 / 引导 / 通知 / 头像） =====
+// ===== 全局顶部栏：全局搜索、引导与可操作的通知 =====
 const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 function todayLabel() {
   const d = new Date();
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 · ${WEEKDAYS[d.getDay()]}`;
 }
 
-function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string) => void }) {
-  const { status, showToast } = useApp();
+function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, tab?: string) => void }) {
+  const { status } = useApp();
+  const [noticesOpen, setNoticesOpen] = useState(false);
   const broken = status?.circuit_broken_platforms || [];
-  const noLogin = (status?.enabled_platforms || []).filter((p) => !(status?.logged_in_platforms || []).includes(p));
-  const notices = broken.length + noLogin.length;
+  const enabled = status?.enabled_platforms || [];
+  const loggedIn = status?.logged_in_platforms || [];
+  const noLogin = enabled.filter((p) => !loggedIn.includes(p));
+  const noticeCount = broken.length + noLogin.filter((p) => !broken.includes(p)).length;
 
-  const openNotices = () => {
-    if (!notices) { showToast("暂无需要处理的提醒", "info"); return; }
-    const parts: string[] = [];
-    if (broken.length) parts.push(`${broken.map((p) => platformMeta(p).label).join("、")} 处于熔断`);
-    if (noLogin.length) parts.push(`${noLogin.map((p) => platformMeta(p).label).join("、")} 未登录`);
-    showToast(parts.join("；"), broken.length ? "error" : "info");
+  useEffect(() => {
+    if (!noticesOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setNoticesOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [noticesOpen]);
+
+  const go = (page: string, tab?: string) => {
+    setNoticesOpen(false);
+    onNavigate(page, tab);
   };
 
   return (
@@ -172,15 +186,51 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string) 
         IterWave <span className="crumb-sep" aria-hidden="true">/</span><strong>{label}</strong>
       </div>
       <div className="top-actions">
-        <label className="sr-only" htmlFor="globalSearch">全局搜索</label>
-        <input id="globalSearch" type="search" className="search" placeholder="搜索选题、内容、热点、任务…" />
+        <GlobalSearch onNavigate={go} />
         <span className="today">{todayLabel()}</span>
-        <button type="button" className="btn sm soft" onClick={() => onNavigate("onboarding")}>
+        <button type="button" className="btn sm soft" onClick={() => go("onboarding")}>
           <span aria-hidden="true">☷</span> 新手引导 / 快速配置
         </button>
-        <button type="button" className="btn sm" onClick={openNotices} aria-label={`通知，${notices} 条待处理`}>
-          <span aria-hidden="true">♧</span> 通知 <span>{notices}</span>
-        </button>
+        <div className="notice-wrap">
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => setNoticesOpen((open) => !open)}
+            aria-expanded={noticesOpen}
+            aria-controls="notice-popover"
+            aria-label={`通知，${noticeCount} 条待处理`}
+          >
+            <span aria-hidden="true">♧</span> 通知 <span className={noticeCount ? "notice-count active" : "notice-count"}>{noticeCount}</span>
+          </button>
+          {noticesOpen && (
+            <div className="notice-popover" id="notice-popover" role="region" aria-label="需要处理的提醒">
+              <div className="notice-popover-head">
+                <strong>需要处理</strong>
+                <span>{noticeCount} 项</span>
+              </div>
+              {broken.length === 0 && noLogin.length === 0 ? (
+                <div className="notice-empty">暂无账号告警或登录问题。</div>
+              ) : (
+                <div className="notice-list">
+                  {broken.map((p) => (
+                    <button type="button" className="notice-item" key={`broken-${p}`} onClick={() => go("operations")}>
+                      <span className="notice-item-mark danger" aria-hidden="true">!</span>
+                      <span><b>{platformMeta(p).label}已触发熔断</b><small>进入运营控制台检查原因并恢复</small></span>
+                      <span aria-hidden="true">→</span>
+                    </button>
+                  ))}
+                  {noLogin.filter((p) => !broken.includes(p)).map((p) => (
+                    <button type="button" className="notice-item" key={`login-${p}`} onClick={() => go("accounts")}>
+                      <span className="notice-item-mark warning" aria-hidden="true">!</span>
+                      <span><b>{platformMeta(p).label}尚未登录</b><small>扫码登录后才能执行平台操作</small></span>
+                      <span aria-hidden="true">→</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
         <div className="avatar" aria-hidden="true">I</div>
       </div>
     </header>
