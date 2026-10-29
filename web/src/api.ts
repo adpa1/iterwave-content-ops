@@ -483,7 +483,7 @@ export interface GlobalMonitorTenant {
   drafts_failed: number;
   media_active: number;
   media_usage: number;
-  platforms: Record<string, { contents: number; drafts: number }>;
+  platforms: Record<string, { contents: number; contents_period: number; drafts: number }>;
 }
 export interface GlobalMonitorResponse {
   days: number;
