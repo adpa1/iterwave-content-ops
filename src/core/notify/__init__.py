@@ -62,9 +62,10 @@ def _as_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace('"', '\\"')
 
 def macos_available() -> bool:
-    """macOS 原生通知只在 macOS 上可用（Linux 服务器上没有 osascript）。"""
+    """macOS 通知只在 macOS 上可用；Linux/Windows 部署自动跳过（可移植）。"""
     import shutil
     import sys
+
     return sys.platform == "darwin" and shutil.which("osascript") is not None
 
 
@@ -192,23 +193,6 @@ class Notifier:
     # 通道自检（R4：系统设置「发送测试通知」）
     # ------------------------------------------------------------------
 
-    def channels_status(self) -> dict:
-        """各通道状态：available（本机能用）/ enabled / configured（webhook 已填）。"""
-        out = {}
-        for channel in ("macos", "wecom", "feishu"):
-            ccfg = self.channels.get(channel)
-            enabled = bool(ccfg and ccfg.enabled)
-            if channel == "macos":
-                out[channel] = {"available": macos_available(), "enabled": enabled, "configured": True}
-            else:
-                env = (ccfg.webhook_url_env if ccfg else None) or f"{channel.upper()}_WEBHOOK_URL"
-                out[channel] = {"available": True, "enabled": enabled,
-                                "configured": bool(os.environ.get(env)), "env": env}
-        out["any_ready"] = any(
-            v["enabled"] and v["available"] and v["configured"] for v in out.values() if isinstance(v, dict)
-        )
-        return out
-
     def send_test(self) -> dict:
         """逐通道发一条测试通知，**不写 notifications 表**（不污染 R16 去重窗口）。
 
@@ -219,11 +203,11 @@ class Notifier:
         results: dict[str, str] = {}
         for channel in ("macos", "wecom", "feishu"):
             ccfg = self.channels.get(channel)
-            if channel == "macos" and not macos_available():
-                results[channel] = "unavailable"
-                continue
             if ccfg is None or not ccfg.enabled:
                 results[channel] = "disabled"
+                continue
+            if channel == "macos" and not macos_available():
+                results[channel] = "unavailable"
                 continue
             try:
                 ok = (

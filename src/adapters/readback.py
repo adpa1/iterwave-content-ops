@@ -163,11 +163,8 @@ def read_works_sync(platform: Platform, limit: int = 20) -> list[dict]:
     if not has_login_state(platform):
         raise ReadbackUnavailable(f"{platform.display_name} 无登录态文件，请先扫码登录")
 
-    import os
-    _headed = os.environ.get("ITERWAVE_BROWSER_HEADED", "0") == "1"
-
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=not _headed)
+        browser = p.chromium.launch(headless=False)
         try:
             ctx = browser.new_context(storage_state=str(_platform_state_path(platform)))
             page = ctx.new_page()

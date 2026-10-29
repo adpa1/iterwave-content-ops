@@ -38,6 +38,5 @@ const SOURCE_LABELS: Record<string, string> = {
   xhs: "小红书", kuaishou: "快手", wechat_channels: "视频号",
 };
 export function platformLabel(p: string): string {
-  if (p.startsWith("feed:")) return p.slice(5);
   return SOURCE_LABELS[p] ?? META[p as Platform]?.label ?? p;
 }

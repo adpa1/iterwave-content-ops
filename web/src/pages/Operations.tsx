@@ -57,31 +57,6 @@ function groupOf(t: OpsTab): OpsGroup {
   return (TABS.find((g) => g.key === t || g.panes.includes(t as OpsPane)) ?? TABS[0]).key;
 }
 
-/** 系统维护类任务：自动运行即可，不提供「立即执行」以免误操作 */
-const MAINTENANCE_JOBS = new Set(["data_retention_cleanup", "round_timeout_sweeper", "cb_recovery"]);
-
-const WEEK = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-/** 把间隔 / cron 转成「每 30 分钟」「每天 8:00」这样的说法；看不懂的 cron 原样显示 */
-export function humanSchedule(j: { interval_minutes?: number | null; cron?: string | null; schedule?: string }): string {
-  if (j.interval_minutes) {
-    const m = j.interval_minutes;
-    if (m % 1440 === 0) return `每 ${m / 1440} 天`;
-    if (m % 60 === 0) return m === 60 ? "每小时" : `每 ${m / 60} 小时`;
-    return `每 ${m} 分钟`;
-  }
-  const c = (j.cron || "").trim().split(/\s+/);
-  if (c.length === 5) {
-    const [mi, h, dom, mon, dow] = c;
-    const t = /^\d+$/.test(mi) && /^\d+$/.test(h) ? `${Number(h)}:${mi.padStart(2, "0")}` : null;
-    if (t && dom === "*" && mon === "*" && dow === "*") return `每天 ${t}`;
-    if (t && dom === "*" && mon === "*" && /^\d$/.test(dow)) return `每${WEEK[Number(dow) % 7]} ${t}`;
-    if (t && /^\d+$/.test(dom) && mon === "*" && dow === "*") return `每月 ${dom} 日 ${t}`;
-    if (/^\d+$/.test(mi) && h === "*" && dom === "*" && mon === "*" && dow === "*") return `每小时第 ${mi} 分`;
-    return `定时：${j.cron}`;
-  }
-  return j.schedule || "";
-}
-
 export default function Operations() {
   const { showToast, withPending } = useApp();
   const [rawTab, setTab] = useUrlTab<OpsTab>(ALL_OPS_TABS, "kpi");
@@ -160,10 +135,9 @@ export default function Operations() {
     setNotifBusy(true);
     try {
       const r = await api.notifyTest();
-      const label: Record<string, string> = { ok: "正常", failed: "失败", disabled: "未启用", unavailable: "此服务器不支持" };
-      const name: Record<string, string> = { macos: "本机通知", wecom: "企业微信", feishu: "飞书" };
+      const label: Record<string, string> = { ok: "正常", failed: "失败", disabled: "未启用" };
       showToast(
-        "通知测试：" + Object.entries(r.results).map(([k, v]) => `${name[k] ?? k} ${label[v] ?? v}`).join(" · "),
+        "通道自检：" + Object.entries(r.results).map(([k, v]) => `${k}=${label[v] ?? v}`).join(" · "),
         "info",
       );
     } catch (e: any) { showToast(e.message, "error"); }
@@ -285,7 +259,7 @@ function KpiPane({
   return (
     <>
       <div style={{ marginBottom: 12 }}>
-        <DemoBadge level="demo" text="评论、关注的数字是系统执行的次数；平台是否真正展示以平台为准" />
+        <DemoBadge level="demo" text="平台运营动作（评论/关注）当前为适配器接入中，数字代表系统记录的尝试量，不代表平台侧真实结果" />
       </div>
       {/* KPI 时间窗口切换（与 R12 评分 90 天口径独立） */}
       <div className="compact-tabbar" style={{ marginBottom: 12 }}>
@@ -488,10 +462,9 @@ function PublishPane() {
     <div className="panel">
       <div className="panel-head">
         <div>
-          <div className="panel-title"><span className="icon">◷</span>发布确认</div>
+          <div className="panel-title"><span className="icon">◷</span>发布确认双通道</div>
           <div className="panel-sub">手动点「✓ 我已发布」或等系统每 30 分钟自动检测</div>
           <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
-            <DemoBadge level="accelerated" text="每 30 分钟自动检查一次平台是否已发布" />
             <DemoBadge level="blocked" text="系统永不点击发布按钮，只能由你手动发布" />
           </div>
         </div>
@@ -634,8 +607,8 @@ function TasksPane({ tasks, onResolved }: {
     <div className="panel">
       <div className="panel-head">
         <div>
-          <div className="panel-title"><span className="icon">⌁</span>任务记录</div>
-          <div className="panel-sub">每次任务的运行结果；服务重启后会自动接着处理未完成的任务</div>
+          <div className="panel-title"><span className="icon">⌁</span>任务追踪</div>
+          <div className="panel-sub">运行 / 中断 / 待核实 — 崩溃恢复的关键表</div>
         </div>
       </div>
       {err && <div className="panel-sub" style={{ padding: "0 16px 8px", color: "var(--red)" }}>{err}</div>}
@@ -746,7 +719,7 @@ function SchedulerPane({ jobs, onTriggered }: {
       <AutogrowPanel />
       <div className="grid three" style={{ marginBottom: 16 }}>
         <div className="metric">
-          <div className="metric-label">定时任务</div>
+          <div className="metric-label">定时调度状态</div>
           <div className="metric-val" style={{ color: jobs.running ? "var(--green)" : "var(--red)" }}>
             {jobs.running ? "运行中" : "已停止"}
           </div>
@@ -770,11 +743,11 @@ function SchedulerPane({ jobs, onTriggered }: {
               <i className={`task-prio ${j.enabled ? "blue" : "gray"}`} />
               <div className="task-main">
                 <div className="task-title">
-                  {j.name}
+                  {j.name} <code style={{ fontSize: 10, color: "var(--muted)" }}>{j.id}</code>
                   {!j.enabled && <span className="tag gray" style={{ marginLeft: 6 }}>已关闭</span>}
                 </div>
                 <div className="task-desc">
-                  {humanSchedule(j)}
+                  {j.schedule}
                   {j.enabled && j.next_run_time && <> · 下次 {new Date(j.next_run_time).toLocaleString("zh-CN")}</>}
                   {j.enabled && !j.next_run_time && <> · 未排定</>}
                 </div>
@@ -782,7 +755,6 @@ function SchedulerPane({ jobs, onTriggered }: {
               {j.configurable && editing !== j.id && (
                 <button className="btn sm" onClick={() => startEdit(j)}>配置</button>
               )}
-              {!MAINTENANCE_JOBS.has(j.id) && (
               <button
                 className="btn sm"
                 disabled={busyId === j.id || !j.enabled}
@@ -791,7 +763,6 @@ function SchedulerPane({ jobs, onTriggered }: {
               >
                 {busyId === j.id ? "处理中…" : "▶ 立即执行"}
               </button>
-              )}
               {editing === j.id && (
                 <form
                   className="flex wrap"
@@ -807,7 +778,7 @@ function SchedulerPane({ jobs, onTriggered }: {
                   <select id={`mode-${j.id}`} className="field" value={draft.mode}
                     onChange={(e) => setDraft({ ...draft, mode: e.target.value as "interval" | "cron" })}>
                     <option value="interval">固定间隔</option>
-                    <option value="cron">按时间点（高级）</option>
+                    <option value="cron">cron 表达式</option>
                   </select>
                   {draft.mode === "interval" ? (
                     <label className="flex" style={{ gap: 4, alignItems: "center" }}>
@@ -1035,18 +1006,22 @@ function NotificationsPane({ items, rules, onChanged }: {
           <div className="panel-head">
             <div>
               <div className="panel-title"><span className="icon">⌁</span>通知通道</div>
-              <div className="panel-sub">企业微信 / 飞书群机器人，草稿生成、需要你发布、登录失效时提醒</div>
+              <div className="panel-sub">
+                通道级总开关：关闭后该通道任何事件都不发（规则表也无法绕过）
+              </div>
             </div>
           </div>
-          <NotifyChannelsEditor />
+          <NotifyChannelsEditor
+            view={cfgView}
+            onSaved={() => api.config().then(setCfgView).catch(() => {})} />
         </div>
       )}
       <div className="panel">
         <div className="panel-head">
           <div>
-            <div className="panel-title"><span className="icon">⚙</span>通知规则</div>
+            <div className="panel-title"><span className="icon">⚙</span>通知规则（notify_rules 表）</div>
             <div className="panel-sub">
-              给某类事件单独指定发到哪个通道、什么级别；没有设置的事件按默认规则发送
+              某场景一旦有规则，就只按规则限定的通道/级别发送；没有规则 → 走 config 默认
             </div>
           </div>
         </div>

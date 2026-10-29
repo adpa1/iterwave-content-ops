@@ -35,27 +35,27 @@ const ROUND_STATUS_LABEL: Record<string, string> = {
 };
 
 const SKILLS = [
-  // 原型按「运营工作流」分组
+  // 按「运营工作流」分组
   { group: "内容生产", rows: [
     { id: "topic_scoring",      name: "选题评分引擎",        src: "src/core/scoring/",                 status: "OK", note: "三模式自动切换" },
-    { id: "prompt_variants",    name: "四平台变体生成",      src: "src/core/content_pipeline.py",       status: "OK", note: "同一选题按四个平台风格各写一版" },
+    { id: "prompt_variants",    name: "四平台变体生成",      src: "src/core/content_pipeline.py",       status: "OK", note: "同选题 × 四风格" },
     { id: "ultimate_goal_check",name: "终极目标检查（R2）", src: "src/core/guard/",                    status: "OK", note: "三入口 check_content/strategy/comment" },
-    { id: "image_card",         name: "图片卡片制作",        src: "src/core/content_pipeline.py",        status: "OK", note: "渐变底 + 标题 + 维度标签" },
-    { id: "draft_saver",        name: "自动存草稿",  src: "src/adapters/",       status: "!", note: "R1：只点存草稿" },
+    { id: "image_card",         name: "图片卡片制作",        src: "src/core/content_pipeline.py",        status: "OK", note: "Pillow + OpenCV" },
+    { id: "draft_saver",        name: "Playwright 存草稿",  src: "src/adapters/",       status: "!", note: "R1：只点存草稿" },
   ]},
   { group: "运营与复盘", rows: [
     { id: "circuit_breaker",    name: "熔断器（R6）",       src: "src/core/ops/circuit_breaker.py",   status: "OK", note: "5 信号 + 3 步恢复" },
     { id: "rhythm_controller",  name: "节奏控制器",          src: "src/core/ops/rhythm.py",            status: "OK", note: "平台独立配额 + 时段窗口" },
     { id: "ops_engine",         name: "运营引擎",           src: "src/core/ops/engine.py",            status: "!", note: "被动回复已接；主动评论/关注极低配额" },
-    { id: "spiral_engine",      name: "轮次复盘 + 缺口分析", src: "src/core/spiral/",                  status: "OK", note: "三通道输出" },
+    { id: "spiral_engine",      name: "螺旋引擎 + 缺口分析", src: "src/core/spiral/",                  status: "OK", note: "三通道输出" },
     { id: "zscore_normalize",   name: "跨平台归一化（R13）", src: "src/core/metrics/",                 status: "OK", note: "平台内 z-score" },
   ]},
   { group: "支撑层", rows: [
-    { id: "recovery_manager",  name: "断点恢复（R16）",    src: "src/core/recovery.py",              status: "OK", note: "重启后接着处理，不重复操作" },
+    { id: "recovery_manager",  name: "断点恢复（R16）",    src: "src/core/recovery.py",              status: "OK", note: "任务记录持久化 + 幂等覆盖" },
     { id: "autogrow",           name: "自动闭环（自生长）",   src: "src/core/autogrow.py",              status: "OK", note: "复盘→评分/文案，条件满足自动开下一轮" },
     { id: "topic_pool",         name: "选题池",              src: "src/core/topic_pool.py",            status: "OK", note: "本地库 + 热点 + 手动，软删除可恢复" },
-    { id: "orchestration",      name: "编排与诊断",           src: "src/core/orchestration.py",         status: "OK", note: "步骤开关 / 依赖校验 / 运行前检查" },
-    { id: "scheduler",          name: "定时任务（10 类）", src: "src/core/scheduler/",             status: "OK", note: "服务重启后自动恢复" },
+    { id: "orchestration",      name: "编排与诊断",           src: "src/core/orchestration.py",         status: "OK", note: "步骤开关 / 依赖校验 / 自检清单" },
+    { id: "scheduler",          name: "定时任务调度（10 类）", src: "src/core/scheduler/",             status: "OK", note: "任务记录持久化到本地数据库" },
     { id: "platform_readback",  name: "平台数据读回",        src: "src/vendor/easel/",                 status: "!", note: "account_stats / platform_readback 需登录态" },
   ]},
 ];
@@ -317,7 +317,7 @@ function DiagnosePane() {
     <div className="panel">
       <div className="panel-head">
         <div>
-          <div className="panel-title"><span className="icon">⚑</span>运行前检查</div>
+          <div className="panel-title"><span className="icon">⚑</span>8 点端到端诊断</div>
           <div className="panel-sub">
             {res ? `检查于 ${new Date(res.checked_at).toLocaleString("zh-CN")} · 总体 ${icon[res.overall]}` : "检查选题库、画像、登录、LLM、熔断、配额、数据库、Skills"}
           </div>
@@ -461,7 +461,7 @@ function AuditPane() {
         <div className="panel-head">
           <div>
             <div className="panel-title"><span className="icon">☷</span>AI 证据审计链</div>
-            <div className="panel-sub">LLM 调用记录 · 人工覆盖痕迹 · 终极目标红线拦截历史 — 原型 view-review → 缺口与 AI 证据 的 live 对应</div>
+            <div className="panel-sub">LLM 调用记录 · 人工覆盖痕迹 · 终极目标红线拦截历史</div>
           </div>
           <button className="btn sm" onClick={loadAudit} style={{ marginLeft: 10 }}>↻ 刷新</button>
         </div>

@@ -5,19 +5,25 @@ import { PersonaEditor, KbEditor, LlmEditor, PlatformToggles } from "../componen
 import { useApp } from "../AppContext";
 
 const STEPS = [
-  { key: "persona",  label: "① 账号画像",     hint: "做什么内容、不做什么" },
-  { key: "platforms", label: "② 启用平台",    hint: "建议先用 1 个平台跑通" },
-  { key: "kb",       label: "③ 选题库",    hint: "上传 / 远程地址 / 服务器路径，可跳过" },
-  { key: "llm",      label: "④ 模型配置",     hint: "模型和 API Key" },
-  { key: "skills",   label: "⑤ 运行环境",  hint: "登录与运行状态" },
-  { key: "goals",    label: "⑥ 阶段目标",     hint: "可先跳过，试跑后再定" },
-  { key: "check",    label: "⑦ 检查清单",     hint: "检查并开始第一轮" },
+  { key: "persona",  label: "① 账号画像",     hint: "终极目标 / 红线 / 定位关键词" },
+  { key: "platforms", label: "② 启用平台",    hint: "至少启用 1 个；建议先跑通 1 个平台" },
+  { key: "kb",       label: "③ 选题库",       hint: "上传 / 远程 / 服务器路径" },
+  { key: "llm",      label: "④ 模型配置",     hint: "Provider / Model / API Key" },
+  { key: "skills",   label: "⑤ 运行环境",     hint: "检查登录与运行环境" },
+  { key: "goals",    label: "⑥ 阶段目标",     hint: "指标 / 目标值 / 基线" },
+  { key: "check",    label: "⑦ 检查清单",     hint: "预检 + 启动首轮" },
 ] as const;
 
 type StepKey = typeof STEPS[number]["key"];
 
 const PLATFORM_NAMES: Record<Platform, string> = {
   xhs: "小红书", douyin: "抖音", kuaishou: "快手", wechat_channels: "视频号",
+};
+
+const SCORING_MODE_LABELS: Record<string, string> = {
+  cold_start: "冷启动（已发布样本 < 10）",
+  sample_accumulating: "样本积累（部分维度样本 < 5）",
+  stable: "稳定运行（活跃维度样本 ≥ 5）",
 };
 
 const GOAL_METRICS = [
@@ -37,9 +43,13 @@ const GOAL_DATA_SOURCES = [
 ];
 
 function todayStr(offsetDays = 0): string {
+  // 使用本地日历日期，避免 UTC 时区换算导致目标起止日期偏移一天。
   const d = new Date();
   d.setDate(d.getDate() + offsetDays);
-  return d.toISOString().slice(0, 10);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export default function Onboarding() {
@@ -114,7 +124,7 @@ export default function Onboarding() {
         metric_period_end: goalForm.metric_period_end,
         data_source: goalForm.data_source,
       });
-      showToast("✓ 阶段目标已创建", "success");
+      showToast("✓ 阶段目标已创建并写入 goals 表", "success");
       await reload();
       setGoalForm((f) => ({ ...f, goal_text: "" }));
     } catch (e: any) {
@@ -137,7 +147,10 @@ export default function Onboarding() {
     login_ok: status.logged_in_platforms.length >= 1,
     goals_ok: goals.length >= 1,
   };
-  const allOk = Object.values(checks).every(Boolean);
+  /** 阶段目标不阻塞开跑：没有目标也能试跑第一轮，只是不统计达成率 */
+  const blockingOk = checks.persona_ok && checks.platforms_ok && checks.kb_ok
+    && checks.llm_ok && checks.login_ok;
+  const blocked = diag ? diag.overall === "block" : !blockingOk;
 
   return (
     <>
@@ -146,7 +159,7 @@ export default function Onboarding() {
           <div className="eyebrow">FIRST-TIME SETUP</div>
           <h1 className="page-title">首次配置向导</h1>
           <div className="page-desc">
-            7 步完成 IterWave 初始化。每一步都能直接编辑并保存，保存后立即生效。
+            7 步完成初始化。每一步都能直接编辑并保存，保存后立即生效。
           </div>
         </div>
       </div>
@@ -204,7 +217,7 @@ export default function Onboarding() {
               </div>
             )}
             <div className="note" style={{ marginTop: 12 }}>
-              ▣ 启用 ≠ 可发布：还需要扫码登录，入口在「账号与登录」页。
+              ▣ 启用 ≠ 可发布：还需要扫码登录，入口在「账号连接」页。
             </div>
           </div>
         )}
@@ -213,7 +226,8 @@ export default function Onboarding() {
           <div>
             <div className="panel-title" style={{ marginBottom: 16 }}>③ 选题库</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              上传一份选题表（只要有「标题」列就行），或填远程地址 / 服务器路径。暂时没有也可以跳过，用热点转入和手动添加。
+              选题来源可以是本地上传（CSV / JSON / JSONL / XLSX）、远程地址（含 RSS）或服务器路径，
+              至少要有「标题」和「维度」两列。完整来源管理在「内容资产 → 字段映射检查」。
             </p>
             <KbEditor view={cfg} onSaved={reload} />
           </div>
@@ -228,7 +242,7 @@ export default function Onboarding() {
             <LlmEditor view={cfg} onSaved={reload} />
             {!cfg.readonly.llm_has_api_key && (
               <div className="note" style={{ marginTop: 12, color: "var(--orange)" }}>
-                ! 还没填 API Key：文案会用固定模板生成，热点匹配只按关键词判断，复盘建议也不会写进下一轮文案。
+                ! API Key 未配置 → 选题评分 + 文案生成 + 终极目标检查 全部不可用。
               </div>
             )}
           </div>
@@ -236,21 +250,21 @@ export default function Onboarding() {
 
         {step === "skills" && (
           <div>
-            <div className="panel-title" style={{ marginBottom: 16 }}>⑤ 运行环境</div>
+            <div className="panel-title" style={{ marginBottom: 16 }}>⑤ 运行环境预检</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              当前系统状态：平台登录、是否被限流暂停、正在运行的轮次。
+              核心运行依赖一次性检查：登录态 / 熔断 / 评分模式 / 活跃轮次 / 断点恢复。
             </p>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>项目</th><th>当前</th><th>状态</th></tr></thead>
+                <thead><tr><th>信号</th><th>值</th><th>状态</th></tr></thead>
                 <tbody>
-                  <tr><td>评分模式</td><td>{({ cold_start: "冷启动", sample_accumulating: "样本积累", stable: "稳定运行", stable_operation: "稳定运行" } as Record<string, string>)[status.scoring_mode] ?? status.scoring_mode}</td><td><span className="tag green">✓</span></td></tr>
+                  <tr><td>评分模式</td><td>{SCORING_MODE_LABELS[status.scoring_mode] ?? status.scoring_mode}</td><td><span className="tag green">✓</span></td></tr>
                   <tr><td>活跃轮次</td><td>{status.active_rounds}</td><td><span className={`tag ${status.active_rounds > 0 ? "blue" : "gray"}`}>{status.active_rounds > 0 ? "运行中" : "空闲（正常）"}</span></td></tr>
                   <tr><td>已发布样本</td><td>{status.published_samples}</td><td><span className={`tag ${status.published_samples >= 10 ? "green" : "orange"}`}>{status.published_samples >= 10 ? "样本充足" : "冷启动中"}</span></td></tr>
-                  <tr><td>暂停中的平台</td><td>{status.circuit_broken_platforms.length > 0 ? status.circuit_broken_platforms.join(", ") : "—"}</td><td>{status.circuit_broken_platforms.length > 0 ? <span className="tag red">! 阻塞</span> : <span className="tag green">OK</span>}</td></tr>
+                  <tr><td>熔断平台</td><td>{status.circuit_broken_platforms.length > 0 ? status.circuit_broken_platforms.join(", ") : "—"}</td><td>{status.circuit_broken_platforms.length > 0 ? <span className="tag red">! 阻塞</span> : <span className="tag green">OK</span>}</td></tr>
                   <tr><td>缺登录态平台</td><td>{status.platforms_without_login.length > 0 ? status.platforms_without_login.map((p) => PLATFORM_NAMES[p]).join(", ") : "—"}</td><td>{status.platforms_without_login.length > 0 ? <span className="tag orange">! 需登录</span> : <span className="tag green">OK</span>}</td></tr>
-                  <tr><td>重启时接续的任务</td><td>{status.recovery.interrupted_tasks}</td><td><span className="tag gray">{status.recovery.interrupted_tasks === 0 ? "无" : "已恢复"}</span></td></tr>
-                  <tr><td>结果待确认的操作</td><td>{status.recovery.pending_verify}</td><td><span className="tag gray">{status.recovery.pending_verify === 0 ? "无" : "需人工确认"}</span></td></tr>
+                  <tr><td>断点恢复 · 中断任务</td><td>{status.recovery.interrupted_tasks}</td><td><span className="tag gray">{status.recovery.interrupted_tasks === 0 ? "无" : "已恢复"}</span></td></tr>
+                  <tr><td>断点恢复 · 待核实</td><td>{status.recovery.pending_verify}</td><td><span className="tag gray">{status.recovery.pending_verify === 0 ? "无" : "需人工确认"}</span></td></tr>
                 </tbody>
               </table>
             </div>
@@ -353,22 +367,20 @@ export default function Onboarding() {
           <div>
             <div className="panel-title" style={{ marginBottom: 16 }}>⑦ 检查清单 · 启动首轮</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              红色项必须先处理；黄色项不影响开始，但会影响效果。开始后系统会：挑选题 → 按各平台风格写文案 → 质量检查 → 出图 → 存到各平台草稿箱，等你去平台点发布。
+              以下阻塞项全部通过才能开始真实生产。首轮依次完成：选题评分 → 文案生成 → 终极目标检查 → 图片卡片 → 保存草稿（不会自动发布）。
             </p>
             {diag && (
               <div className="table-wrap" style={{ marginBottom: 14 }}>
                 <table>
-                  <thead><tr><th style={{ width: 36 }}>#</th><th>检查项</th><th style={{ width: 50 }}>结果</th><th>说明</th><th style={{ width: 86 }}></th></tr></thead>
+                  <thead><tr><th style={{ width: 36 }}>#</th><th>自检清单（{diag.items.length} 项）</th><th style={{ width: 50 }}>结果</th><th>说明</th><th style={{ width: 86 }}></th></tr></thead>
                   <tbody>
                     {diag.items.map((it) => (
                       <tr key={it.no}>
                         <td>{it.no}</td><td>{it.name}</td>
-                        <td>{it.status === "pass"
-                          ? <span className="tag green">通过</span>
-                          : it.status === "warn" ? <span className="tag orange">建议</span> : <span className="tag red">必须</span>}</td>
+                        <td>{it.status === "pass" ? "✓" : it.status === "warn" ? "●" : "●"}</td>
                         <td style={{ fontSize: 12 }}>{it.message}</td>
                         <td>{it.fix_page && it.status !== "pass" && (
-                          <button className="btn sm" onClick={() => navigate(it.fix_page!, it.fix_tab ?? undefined)}>去处理</button>
+                          <button className="btn sm" onClick={() => navigate(it.fix_page!, it.fix_tab ?? undefined)}>去修复</button>
                         )}</td>
                       </tr>
                     ))}
@@ -377,26 +389,30 @@ export default function Onboarding() {
               </div>
             )}
             <button className="btn sm" onClick={runDiag} disabled={diagBusy} style={{ marginBottom: 12 }}>
-              {diagBusy ? "检查中…" : "↻ 重新检查"}
+              {diagBusy ? "诊断中…" : "↻ 重新诊断"}
             </button>
-            {goals.length === 0 && (
-              <div className="note" style={{ marginBottom: 12 }}>
-                还没有设置目标也可以先试跑一轮：看看生成的内容是否符合预期，有了第一批数据再定目标更准确。
-                <button className="btn sm ghost" onClick={() => navigate("goals")}>去设置目标</button>
-              </div>
-            )}
+            <div className="list">
+              <CheckRow ok={checks.persona_ok}    label="账号画像"       detail={cfg.readonly.persona_keywords.join(", ")} />
+              <CheckRow ok={checks.platforms_ok}   label="启用平台"       detail={`${status.enabled_platforms.length} 个 (${status.enabled_platforms.map((p) => PLATFORM_NAMES[p]).join(", ")})`} />
+              <CheckRow ok={checks.login_ok}       label="登录态"         detail={`${status.logged_in_platforms.length} 个已登录`} />
+              <CheckRow ok={checks.kb_ok}          label="选题库 KB"      detail={`${cfg.readonly.kb_type} @ ${cfg.readonly.kb_path}`} />
+              <CheckRow ok={checks.llm_ok}         label="LLM API Key"    detail={cfg.readonly.llm_has_api_key ? "✓ 已配置" : "✕ 缺失"} />
+              <CheckRow ok={checks.goals_ok}        label="阶段目标"       detail={`${goals.length} 条`} />
+            </div>
 
-            <div style={{ marginTop: 8, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ marginTop: 20, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <button
                 className="btn primary"
-                disabled={!diag || diag.overall === "block"}
+                disabled={blocked}
                 onClick={() => navigate("production", "pipeline")}
-              >▶ {goals.length ? "开始第一轮" : "试跑第一轮"}</button>
-              {diag && diag.overall === "block" && (
-                <span style={{ color: "var(--orange)", fontSize: 12 }}>
-                  先处理标红的项：{diag.items.filter((i) => i.status === "block").map((i) => i.name).join("、")}
-                </span>
-              )}
+              >{checks.goals_ok ? "↗ 开始第一轮" : "↗ 试跑第一轮（暂不设阶段目标）"}</button>
+              {blocked
+                ? <span style={{ color: "var(--orange)", fontSize: 12 }}>! 还有阻塞项未通过，先完成配置</span>
+                : !checks.goals_ok && (
+                  <span style={{ color: "var(--muted)", fontSize: 12 }}>
+                    没设阶段目标也能试跑：本轮照常产出草稿，只是暂时不统计目标达成率
+                  </span>
+                )}
             </div>
           </div>
         )}

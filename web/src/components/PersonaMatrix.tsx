@@ -11,8 +11,6 @@ import { useEffect, useState } from "react";
 import { api, type GoalMode, type PersonasView, type Platform, type PlatformLink, type PlatformPersonaConfig } from "../api";
 import { useApp } from "../AppContext";
 import { ALL_PLATFORMS, platformMeta } from "../platforms";
-import VerticalPicker from "./VerticalPicker";
-import type { Vertical } from "../api";
 
 export const GOAL_MODE_META: Record<GoalMode, { title: string; desc: string }> = {
   unified: { title: "统一定位", desc: "所有平台是同一个账号人设，共用一个画像和一个总目标" },
@@ -77,8 +75,6 @@ export default function PersonaMatrix({ onSaved }: { onSaved?: () => void }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [openPlatform, setOpenPlatform] = useState<Platform | null>(null);
-  const [pendingRedlines, setPendingRedlines] = useState<string[]>([]);
-  const [posHint, setPosHint] = useState("如：用简单的话讲清楚一件事的分享者");
 
   const load = async () => {
     setErr(null);
@@ -117,19 +113,11 @@ export default function PersonaMatrix({ onSaved }: { onSaved?: () => void }) {
       if (!same(split(d.redlines), c.extra_redlines)) u[k("extra_redlines")] = split(d.redlines);
     }
     if (JSON.stringify(draft.links) !== JSON.stringify(view.links)) u["ultimate_goal.platform_links"] = draft.links;
-    if (pendingRedlines.length) {
-      try {
-        const cur = (await api.config()).readonly.redline_keywords ?? [];
-        const merged = Array.from(new Set([...cur, ...pendingRedlines]));
-        if (merged.length !== cur.length) u["ultimate_goal.redline_keywords"] = merged;
-      } catch { /* 红线合并失败不影响其他字段保存 */ }
-    }
     if (Object.keys(u).length === 0) { showToast("没有需要保存的改动", "info"); return; }
     try {
       const r = await withPending("persona:save", () => api.patchConfig(u));
       if (!r) return;
       showToast(`✓ 已保存 ${r.changed.length} 项画像设置，下一次生成文案即按新画像执行`, "success");
-      setPendingRedlines([]);
       await load();
       onSaved?.();
     } catch (e: any) {
@@ -153,22 +141,11 @@ export default function PersonaMatrix({ onSaved }: { onSaved?: () => void }) {
         ))}
       </div>
 
-      <VerticalPicker onApply={(v: Vertical) => {
-        setDraft({
-          ...draft,
-          keywords: v.persona_keywords.length ? join(v.persona_keywords) : draft.keywords,
-          forbidden: v.forbidden_directions.length ? join(v.forbidden_directions) : draft.forbidden,
-        });
-        setPendingRedlines(v.redline_keywords);
-        setPosHint(`如：${v.positioning_example}`);
-        showToast(`已填入「${v.name}」模板，确认后点保存`, "info");
-      }} />
-
-      <div className="panel-sub" style={{ marginBottom: 8, marginTop: 14 }}>{multi ? "全局画像（各平台未单独设置时使用；红线词库对所有平台生效）" : "账号画像（所有平台共用）"}</div>
+      <div className="panel-sub" style={{ marginBottom: 8 }}>{multi ? "全局画像（各平台未单独设置时使用；红线词库对所有平台生效）" : "账号画像（所有平台共用）"}</div>
       <div className="grid three" style={{ gap: 10, marginBottom: 16 }}>
         <div>
           <label className="form-label">一句话定位</label>
-          <input className="field" placeholder={posHint} value={draft.positioning}
+          <input className="field" placeholder="如：帮职场人用 AI 提效的效率博主" value={draft.positioning}
             onChange={(e) => setDraft({ ...draft, positioning: e.target.value })} />
         </div>
         <div>
@@ -226,7 +203,7 @@ export default function PersonaMatrix({ onSaved }: { onSaved?: () => void }) {
                       </div>
                       <div style={{ gridColumn: "1 / -1" }}>
                         <label className="form-label">目标受众</label>
-                        <input className="field" placeholder="如：刚工作的年轻人 / 关注某领域的从业者" value={d.audience} onChange={(e) => setP(p, { audience: e.target.value })} />
+                        <input className="field" placeholder="如：25-35 岁一线城市宝妈" value={d.audience} onChange={(e) => setP(p, { audience: e.target.value })} />
                       </div>
                       <div style={{ gridColumn: "1 / -1" }}>
                         <label className="gate-switch">
