@@ -21,16 +21,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
-from urllib.parse import urljoin
-
-import httpx
 
 from .redact import redact
 
@@ -54,39 +50,18 @@ _MULTIPLIERS = {"万": 10_000, "亿": 100_000_000}
 
 
 def _fetch_public_text(url: str, *, headers: dict[str, str], timeout: int) -> tuple[str, str]:
-    """有限体积的公网 HTTP(S) 抓取；重定向逐跳验证且只允许同源，防止 SSRF。"""
-    from .kb_sources import MAX_UPLOAD_BYTES, _url_origin, _validate_remote_url
+    """通过固定到已验证公网 IP 的连接抓取热点源。"""
+    from .kb_sources import MAX_UPLOAD_BYTES
+    from .safe_http import fetch_public_bytes
 
-    current_url = url
-    redirect_statuses = {301, 302, 303, 307, 308}
-    for _ in range(6):
-        parsed = _validate_remote_url(current_url)
-        with httpx.stream(
-            "GET", current_url, headers=headers, timeout=timeout, follow_redirects=False
-        ) as resp:
-            if resp.status_code in redirect_statuses:
-                location = resp.headers.get("location")
-                if not location:
-                    raise ValueError("远程热点源返回了不完整的重定向")
-                next_url = urljoin(current_url, location)
-                next_parsed = _validate_remote_url(next_url)
-                if _url_origin(parsed) != _url_origin(next_parsed):
-                    raise ValueError("远程热点源不允许跨域重定向，请直接填写最终地址")
-                current_url = next_url
-                continue
-
-            resp.raise_for_status()
-            content_type = resp.headers.get("content-type", "")
-            chunks: list[bytes] = []
-            size = 0
-            for chunk in resp.iter_bytes():
-                size += len(chunk)
-                if size > MAX_UPLOAD_BYTES:
-                    raise ValueError("远程热点源响应超过 20MB 上限")
-                chunks.append(chunk)
-            return b"".join(chunks).decode("utf-8", errors="replace"), content_type
-
-    raise ValueError("远程热点源重定向次数过多")
+    body, content_type, _final_url = fetch_public_bytes(
+        url,
+        headers=headers,
+        timeout=timeout,
+        max_bytes=MAX_UPLOAD_BYTES,
+        max_redirects=5,
+    )
+    return body.decode("utf-8", errors="replace"), content_type
 
 
 def _parse_feed_ts(value) -> Optional[datetime]:
