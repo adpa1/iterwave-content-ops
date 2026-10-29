@@ -19,7 +19,7 @@ _SECRET_PATTERN = re.compile(
     r"(?i)\b(cookie|token|authorization|api[_-]?key)\b\s*[:=]\s*(?:bearer\s+)?([^\s,;]+)"
 )
 # URL 可能把凭据放在 userinfo、路径或查询参数里；日志中只保留协议和主机。
-_URL_PATTERN = re.compile(r"(?i)https?://[^\s"'<>]+")
+_URL_PATTERN = re.compile(r"""(?i)https?://[^\s"'<>]+""")
 # 手机号（11 位 1[3-9]...）
 _PHONE_PATTERN = re.compile(r"(?<!\d)(1[3-9]\d)(\d{4})(\d{4})(?!\d)")
 # 微信号
