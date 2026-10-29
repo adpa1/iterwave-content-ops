@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -18,8 +19,11 @@ class _SeenAdapter:
     def __init__(self, status=FetchStatus.SUCCESS, platform=Platform.XHS):
         self.status = status
         self.platform = platform
+        self.searched_titles = []
 
-    async def fetch_metrics(self, *_a, **_k):
+    async def fetch_metrics(self, *args, **_k):
+        if len(args) > 1:
+            self.searched_titles.append(args[1])
         return MetricsSnapshot(platform=self.platform, fetch_status=self.status,
                                views=100, likes=5, comments=1, error_msg=None if self.status == FetchStatus.SUCCESS else "x")
 
@@ -39,6 +43,59 @@ def test_publish_polling_sql_and_schedules_fetch(cfg, conn, seed, monkeypatch):
     asyncio.run(eng._job_publish_polling())
     assert conn.execute("SELECT status FROM drafts WHERE id = ?", (d,)).fetchone()[0] == "user_published"
     assert any(j.id == f"data_fetch_{d}_a1" for j in eng.scheduler.get_jobs())
+
+
+def test_publish_polling_matches_using_saved_platform_title_after_local_edit(
+    cfg, conn, seed, monkeypatch,
+):
+    """本地改标题但平台草稿未同步时，轮询仍用存稿时标题识别实际发布作品。"""
+    monkeypatch.setattr("src.core.login_manager.has_login_state", lambda _p: True)
+    round_id = seed.round(status="awaiting_publish")
+    draft_id = seed.draft(round_id, draft_status="draft_saved", fetch_status=None)
+    content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    from src.core.content_version import content_version_hash, parse_json_list
+    conn.execute(
+        "UPDATE contents SET title = ? WHERE id = ?",
+        ("平台存稿时的标题", content_id),
+    )
+    content = conn.execute(
+        "SELECT title, body, tags, image_paths FROM contents WHERE id = ?", (content_id,)
+    ).fetchone()
+    images = parse_json_list(content["image_paths"])
+    payload_images = [str(images[0])] if images and images[0] else []
+    saved_hash = content_version_hash(
+        content["title"], content["body"], parse_json_list(content["tags"]), payload_images,
+    )
+    conn.execute(
+        "UPDATE drafts SET saved_platform_title = ?, saved_content_hash = ? WHERE id = ?",
+        ("平台存稿时的标题", saved_hash, draft_id),
+    )
+    conn.execute(
+        "UPDATE contents SET title = ? WHERE id = ?",
+        ("IterWave 本地修改后的标题", content_id),
+    )
+    conn.commit()
+
+    adapter = _SeenAdapter()
+    eng = _engine(cfg, conn, {Platform.XHS: adapter})
+    asyncio.run(eng._job_publish_polling())
+
+    assert adapter.searched_titles == ["平台存稿时的标题"]
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "user_published"
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "collecting_metrics"
+    audit = conn.execute(
+        "SELECT override_field, original_value FROM user_override "
+        "WHERE round_id = ? AND override_field = 'platform_content_sync_observed' "
+        "ORDER BY id DESC LIMIT 1", (round_id,)
+    ).fetchone()
+    assert audit is not None
+    assert json.loads(audit["original_value"])["state"] == "stale"
 
 
 def test_round_review_waits_until_remaining_saved_drafts_expire(cfg, conn, seed):

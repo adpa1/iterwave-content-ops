@@ -867,6 +867,7 @@ class RoundExecutor:
                     extra_updates={
                         "draft_id": result.platform_draft_id,
                         "saved_content_hash": saved_version_hash,
+                        "saved_platform_title": payload.title,
                     },
                 )
                 report["drafts_saved"] += 1

@@ -830,6 +830,13 @@ def test_legacy_platform_draft_requires_sync_attestation_before_normal_confirm(c
         "SELECT saved_content_hash FROM drafts WHERE id = ?", (draft_id,)
     ).fetchone()[0]
     assert saved_hash == expected_hash
+    saved_title = conn.execute(
+        "SELECT saved_platform_title FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    current_title = conn.execute(
+        "SELECT title FROM contents WHERE id = ?", (content_id,)
+    ).fetchone()[0]
+    assert saved_title == current_title
 
     confirmed = tc.post(f"/api/drafts/{draft_id}/publish_confirm", json={})
     assert confirmed.status_code == 200
