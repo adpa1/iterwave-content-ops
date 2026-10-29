@@ -2226,8 +2226,29 @@ def _register_routes(app: FastAPI) -> None:
         R22：维度匹配门 / 可发布性门属硬锁，请求里出现即 400。
         """
         g2 = _g()
+        updates = dict(req.updates)
+        # GET /api/config 只返回脱敏后的自定义热点源地址；用户若修改其它配置并回传该列表，
+        # 按名称把未改动的脱敏 URL 还原成服务端原值，避免丢失路径令牌/签名。
+        if isinstance(updates.get("hot_topics.custom_feeds"), list):
+            from src.core.kb_sources import _mask_url
+            current_feeds = list(getattr(g2["cfg"].hot_topics, "custom_feeds", []) or [])
+            restored_feeds = []
+            for incoming in updates["hot_topics.custom_feeds"]:
+                if not isinstance(incoming, dict):
+                    restored_feeds.append(incoming)
+                    continue
+                row = dict(incoming)
+                for existing in current_feeds:
+                    if (
+                        str(existing.get("name") or "") == str(row.get("name") or "")
+                        and str(row.get("url") or "") == _mask_url(str(existing.get("url") or ""))
+                    ):
+                        row["url"] = existing.get("url") or ""
+                        break
+                restored_feeds.append(row)
+            updates["hot_topics.custom_feeds"] = restored_feeds
         try:
-            result = patch_config(g2["cfg"], g2["conn"], req.updates)
+            result = patch_config(g2["cfg"], g2["conn"], updates)
         except ConfigNotAllowedError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except ConfigPatchError as e:
