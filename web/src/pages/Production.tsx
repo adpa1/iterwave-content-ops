@@ -97,6 +97,7 @@ export default function Production() {
   const [editTags, setEditTags] = useState("");
   const [recheck, setRecheck] = useState<RecheckResult | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [resubmitReason, setResubmitReason] = useState("");
 
   // 运行本轮
   const [topicCount, setTopicCount] = useState(5);
@@ -423,11 +424,30 @@ export default function Production() {
     await withPending("reject-content", async () => {
       try {
         const res = await api.rejectContent(selectedContentId, rejectReason.trim());
-        showToast(`✕ 已驳回，影响草稿 ${res.affected_drafts} 条`, "success");
+        const platformNote = res.platform_drafts_left > 0
+          ? `；其中 ${res.platform_drafts_left} 篇平台草稿仍需你到平台端手动清理`
+          : "";
+        showToast(`✕ 已驳回，正常发布/存草稿已阻断，影响 ${res.affected_drafts} 条${platformNote}`, "success");
         setRejectReason("");
         await loadRoundData(currentRoundId!);
       } catch (e: any) {
         showToast(`驳回失败: ${e.message}`, "error");
+      }
+    });
+  };
+
+  const handleResubmit = async () => {
+    if (!selectedContentId) return;
+    if (!resubmitReason.trim()) { showToast("请填写重新提交审核的理由", "error"); return; }
+    await withPending("resubmit-content", async () => {
+      try {
+        const res = await api.resubmitContent(selectedContentId, resubmitReason.trim());
+        showToast(res.message, "success");
+        setResubmitReason("");
+        setRecheck(null);
+        await loadRoundData(currentRoundId!);
+      } catch (e: any) {
+        showToast(`重新提交审核失败: ${e.message}`, "error");
       }
     });
   };
@@ -867,19 +887,33 @@ export default function Production() {
                   <div className="note" style={{ marginTop: 8 }}>
                     {roundDetail.status === "producing" &&
                     (roundDetail.drafts ?? []).some((d) => d.status === "draft_pending") ? (
-                      <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
-                        <span>
-                          当前轮次有 {(roundDetail.drafts ?? []).filter((d) => d.status === "draft_pending").length} 篇内容已生成但尚未存入平台。继续存草稿不会重新生成内容。
-                        </span>
-                        <button
-                          type="button"
-                          className="btn primary sm"
-                          onClick={handleSavePendingDrafts}
-                          disabled={savingPending || running}
-                        >
-                          {savingPending ? "正在恢复…" : "继续存剩余草稿"}
-                        </button>
-                      </div>
+                      (() => {
+                        const pendingDrafts = (roundDetail.drafts ?? []).filter((d) => d.status === "draft_pending");
+                        const saveableDrafts = pendingDrafts.filter((d) => !d.review_rejected);
+                        const rejectedDrafts = pendingDrafts.filter((d) => d.review_rejected);
+                        return (
+                          <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+                            <span>
+                              {saveableDrafts.length > 0
+                                ? `当前有 ${saveableDrafts.length} 篇内容可继续存草稿。`
+                                : "当前没有可存入平台的待存内容。"}
+                              {rejectedDrafts.length > 0 &&
+                                `另有 ${rejectedDrafts.length} 篇被人工驳回；请在审核页修改并重新提交，或取消本轮。`}
+                              {" "}继续存草稿不会重新生成内容。
+                            </span>
+                            {saveableDrafts.length > 0 && (
+                              <button
+                                type="button"
+                                className="btn primary sm"
+                                onClick={handleSavePendingDrafts}
+                                disabled={savingPending || running}
+                              >
+                                {savingPending ? "正在恢复…" : "继续存剩余草稿"}
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })()
                     ) : (
                       <>只有 created 状态的轮次可运行（当前 {roundDetail.status}）。如需启动新一轮，请新建一轮。</>
                     )}
@@ -1121,6 +1155,28 @@ export default function Production() {
                   </div>
                 )}
 
+                {selectedContent.review_rejected && (
+                  <div className="note" style={{ marginBottom: 10, borderLeft: "4px solid var(--red)", paddingLeft: 8 }}>
+                    <b>人工审核已驳回：</b>{selectedContent.review_rejection_reason || "未提供原因"}。
+                    正常存草稿与发布确认已阻断。修改内容后请先「重新过目标检查」，检查通过后再显式提交审核解除驳回状态。
+                    <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                      <input
+                        value={resubmitReason}
+                        onChange={(e) => setResubmitReason(e.target.value)}
+                        placeholder="重新提交审核的说明（必填）"
+                        disabled={selectedContentIsImmutable || isPending("resubmit-content")}
+                        style={{ flex: 1, minWidth: 220 }}
+                      />
+                      <button
+                        className="btn primary"
+                        onClick={handleResubmit}
+                        disabled={selectedContentIsImmutable || isPending("resubmit-content") || !resubmitReason.trim()}
+                      >
+                        {isPending("resubmit-content") ? "提交中…" : "重新提交审核"}
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
                   <button className="btn primary" onClick={handleSaveContent} disabled={selectedContentIsImmutable || isPending("save-content")}>
                     {isPending("save-content") ? "提交中…" : "✓ 保存修改"}
@@ -1151,14 +1207,14 @@ export default function Production() {
                 )}
 
                 <div style={{ borderTop: "1px dashed var(--line)", paddingTop: 10 }}>
-                  <div className="panel-title" style={{ fontSize: 12, marginBottom: 6 }}>驳回（记录理由，不自动改草稿状态）</div>
+                  <div className="panel-title" style={{ fontSize: 12, marginBottom: 6 }}>人工驳回（会阻断正常发布；修改后需重新提交审核）</div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <input
-                      value={rejectReason} placeholder="例如：观点与账号定位不符" disabled={selectedContentIsImmutable}
+                      value={rejectReason} placeholder="例如：观点与账号定位不符" disabled={selectedContentIsImmutable || selectedContent.review_rejected}
                       onChange={(e) => setRejectReason(e.target.value)}
                       style={{ flex: 1 }}
                     />
-                    <button className="btn" onClick={handleReject} disabled={selectedContentIsImmutable || isPending("reject-content")}>
+                    <button className="btn" onClick={handleReject} disabled={selectedContentIsImmutable || selectedContent.review_rejected || isPending("reject-content")}>
                       {isPending("reject-content") ? "提交中…" : "✕ 驳回"}
                     </button>
                   </div>
