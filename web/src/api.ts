@@ -428,6 +428,15 @@ export interface TenantListResponse {
   restart_required: boolean;
   items: TenantItem[];
 }
+export interface MediaUsageTarget {
+  id: string;
+  title: string;
+  platform: Platform;
+  round_id: number;
+  created_at: string | null;
+  draft_status: "draft_pending" | "draft_saved";
+}
+
 export interface MediaAsset {
   id: number;
   title: string;
@@ -1169,6 +1178,11 @@ export const api = {
     fetchJson<MediaAsset>("/api/media", { method: "POST", body: JSON.stringify(data) }),
   archiveMediaAsset: (id: number) =>
     fetchJson<{ id: number; status: string; already_archived: boolean }>(`/api/media/${id}/archive`, { method: "POST" }),
+  mediaUsageTargets: () => fetchJson<{ items: MediaUsageTarget[] }>("/api/media/targets"),
+  useMediaAsset: (asset_id: number, content_id: string, usage_role: "cover" | "illustration" | "background" = "illustration") =>
+    fetchJson<{ asset_id: number; content_id: string; platform: Platform; image_assigned: boolean; message: string }>(
+      `/api/media/${asset_id}/use`, { method: "POST", body: JSON.stringify({ content_id, usage_role }) },
+    ),
   // === G-13 内容资产 / 字段映射 ===
   assets: (asset_type?: AssetType) =>
     fetchJson<{ items: AssetItem[]; total: number }>(
