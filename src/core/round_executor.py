@@ -188,8 +188,18 @@ class RoundExecutor:
         except Exception as exc:  # noqa: BLE001 — 执行器兜底，必须留痕
             logger.exception("轮次 %s 执行异常", round_id)
             report["errors"].append(f"执行异常: {exc}")
-            self.sm_round.transition(round_id, "failed", f"执行异常: {exc}")
             report["final_status"] = "failed"
+            # 状态迁移本身也可能因数据库/状态机异常失败；不能让它覆盖原始异常，
+            # 否则下方 task_runs 收尾和 run_report 持久化都不会执行。
+            try:
+                transitioned = self.sm_round.transition(
+                    round_id, "failed", f"执行异常: {exc}",
+                )
+                if not transitioned:
+                    report["errors"].append("失败收尾：轮次状态未能迁移到 failed")
+            except Exception as cleanup_exc:  # noqa: BLE001 — 尽力收尾，不遮盖原始错误
+                logger.exception("轮次失败状态收尾异常 round=%s", round_id)
+                report["errors"].append(f"失败状态收尾异常: {cleanup_exc}")
 
         if report["final_status"] == "failed":
             self._finish_task_run(task_run_id, "failed", "；".join(report["errors"]) or None)
