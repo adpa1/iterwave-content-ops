@@ -206,9 +206,7 @@ def install_auth(app: FastAPI) -> None:
                     403,
                     "首次设置口令需从本机直连，或在服务器配置 ITERWAVE_BOOTSTRAP_TOKEN 后提交引导口令",
                 )
-            _clear_fails(ip)
-        else:
-            _clear_fails(ip)
+        _clear_fails(ip)
         set_env_secret(TOKEN_ENV, new)
         _set_cookie(response, new, request)
         return {"ok": True, "required": True}
