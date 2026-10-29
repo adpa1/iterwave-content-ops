@@ -660,6 +660,42 @@ def test_rejected_content_must_pass_g2_before_resubmission(client):
     assert audit["reason"] == "已修改并通过目标检查"
 
 
+def test_content_mutations_are_rejected_while_round_is_running(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="producing")
+    draft_id = seed.draft(
+        round_id, platform="xhs", draft_status="draft_pending", fetch_status=None,
+    )
+    content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    api_main._running_rounds.add(round_id)
+    try:
+        edit = tc.patch(
+            f"/api/contents/{content_id}",
+            json={"title": "并发修改", "reason": "回归测试"},
+        )
+        reject = tc.post(
+            f"/api/contents/{content_id}/reject",
+            json={"reason": "并发驳回"},
+        )
+        delete = tc.delete(f"/api/contents/{content_id}")
+    finally:
+        api_main._running_rounds.discard(round_id)
+
+    assert edit.status_code == 409
+    assert reject.status_code == 409
+    assert delete.status_code == 409
+    row = conn.execute(
+        "SELECT title, review_rejected FROM contents WHERE id = ?", (content_id,)
+    ).fetchone()
+    assert row["title"] == "T"
+    assert row["review_rejected"] == 0
+    assert conn.execute(
+        "SELECT 1 FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone() is not None
+
+
 def test_published_content_cannot_be_manually_rejected(client):
     tc, conn, seed = client
     round_id = seed.round(status="collecting_metrics")
