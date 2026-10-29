@@ -63,17 +63,6 @@ class Database:
         conn.execute("PRAGMA synchronous = NORMAL;")    # WAL 下足够安全
         conn.execute("PRAGMA timeout = 30000;")        # 忙等 30s
         conn.row_factory = sqlite3.Row                  # 列名访问
-        # 数据库包含内容、账号和运营记录。尽量限制同机其他用户读取主库及 WAL 文件。
-        for protected in (
-            self.db_path,
-            Path(str(self.db_path) + "-wal"),
-            Path(str(self.db_path) + "-shm"),
-        ):
-            if protected.exists():
-                try:
-                    protected.chmod(0o600)
-                except OSError:
-                    logger.warning("无法收紧数据库文件权限：%s", protected.name)
         return conn
 
     # ------------------------------------------------------------------
@@ -177,12 +166,7 @@ class Database:
         for suffix in ("", "-wal", "-shm"):
             src = self.db_path.with_name(self.db_path.name + suffix)
             if src.exists():
-                target = dest.with_name(dest.name + suffix)
-                shutil.copy2(src, target)
-                try:
-                    target.chmod(0o600)
-                except OSError:
-                    logger.warning("无法收紧数据库备份文件权限：%s", target.name)
+                shutil.copy2(src, dest.with_name(dest.name + suffix))
         logger.info("数据库已备份: %s", dest)
 
         # 保留最近 10 份

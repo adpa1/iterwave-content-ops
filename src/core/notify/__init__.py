@@ -58,14 +58,14 @@ from ..redact import redact as _redact  # noqa: F401 — 对外兼容 _redact �
 
 def _as_escape(text: str) -> str:
     """转义 AppleScript 字符串字面量，避免通知文本中的换行逃逸出字符串。"""
-    text = str(text or "").replace("\\r", " ").replace("\\n", " ").replace("\\t", " ")
+    text = str(text or "").replace("\r", " ").replace("\n", " ").replace("\t", " ")
     return text.replace("\\", "\\\\").replace('"', '\\"')
 
-
 def macos_available() -> bool:
-    """macOS 原生通知只在 macOS 上可用（Linux 服务器上没有 osascript）。"""
+    """macOS 通知只在 macOS 上可用；Linux/Windows 部署自动跳过（可移植）。"""
     import shutil
     import sys
+
     return sys.platform == "darwin" and shutil.which("osascript") is not None
 
 
@@ -193,23 +193,6 @@ class Notifier:
     # 通道自检（R4：系统设置「发送测试通知」）
     # ------------------------------------------------------------------
 
-    def channels_status(self) -> dict:
-        """各通道状态：available（本机能用）/ enabled / configured（webhook 已填）。"""
-        out = {}
-        for channel in ("macos", "wecom", "feishu"):
-            ccfg = self.channels.get(channel)
-            enabled = bool(ccfg and ccfg.enabled)
-            if channel == "macos":
-                out[channel] = {"available": macos_available(), "enabled": enabled, "configured": True}
-            else:
-                env = (ccfg.webhook_url_env if ccfg else None) or f"{channel.upper()}_WEBHOOK_URL"
-                out[channel] = {"available": True, "enabled": enabled,
-                                "configured": bool(os.environ.get(env)), "env": env}
-        out["any_ready"] = any(
-            v["enabled"] and v["available"] and v["configured"] for v in out.values() if isinstance(v, dict)
-        )
-        return out
-
     def send_test(self) -> dict:
         """逐通道发一条测试通知，**不写 notifications 表**（不污染 R16 去重窗口）。
 
@@ -220,11 +203,11 @@ class Notifier:
         results: dict[str, str] = {}
         for channel in ("macos", "wecom", "feishu"):
             ccfg = self.channels.get(channel)
-            if channel == "macos" and not macos_available():
-                results[channel] = "unavailable"
-                continue
             if ccfg is None or not ccfg.enabled:
                 results[channel] = "disabled"
+                continue
+            if channel == "macos" and not macos_available():
+                results[channel] = "unavailable"
                 continue
             try:
                 ok = (
@@ -253,7 +236,7 @@ class Notifier:
             capture_output=True, text=True, timeout=5, check=False,
         )
         if proc.returncode != 0:
-            logger.warning("macOS 通知失败: %s", (proc.stderr or "").strip())
+            logger.warning("macOS 通知失败: %s", _redact((proc.stderr or "").strip()))
             return False
         return True
 
@@ -269,19 +252,12 @@ class Notifier:
             logger.info("%s webhook 未设置（.env 缺少 %s），跳过", channel, url_env)
             return False
 
-        # UI 设置会限制目标域名；发送前仍按服务端配置校验，防止手工改 .env 后变成 SSRF。
-        from ..safe_http import SafeFetchError, validate_public_url
-        allowed_hosts = {
-            "wecom": {"qyapi.weixin.qq.com"},
-            "feishu": {"open.feishu.cn", "open.larksuite.com"},
-        }
+        # .env 可能由人工维护；发送前再次检查目标，不能只依赖设置页面的校验。
         try:
-            parsed = validate_public_url(url)
-            if parsed.scheme.lower() != "https" or (parsed.hostname or "").lower() not in allowed_hosts.get(channel, set()):
-                logger.warning("%s webhook 目标主机不在允许列表，已拒绝", channel)
-                return False
-        except (SafeFetchError, ValueError) as exc:
-            logger.warning("%s webhook 目标校验失败：%s", channel, exc)
+            from ..kb_sources import _validate_remote_url
+            _validate_remote_url(url)
+        except ValueError as exc:
+            logger.warning("%s webhook 目标被安全校验拒绝：%s", channel, exc)
             return False
 
         text = f"【{title}】{body}"
@@ -290,7 +266,7 @@ class Notifier:
         else:  # feishu
             payload = {"msg_type": "text", "content": {"text": text}}
 
-        resp = httpx.post(url, json=payload, timeout=5, follow_redirects=False)
+        resp = httpx.post(url, json=payload, timeout=5)
         if resp.status_code >= 300:
             logger.warning("%s webhook 返回 %s（URL 已脱敏不打印）",
                            channel, resp.status_code)

@@ -35,6 +35,8 @@ import threading
 import time
 from pathlib import Path
 
+from .redact import redact
+
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -72,7 +74,7 @@ _EXPORTING: set[str] = set()
 
 
 def _ensure_dirs() -> None:
-    # Chromium profile / storage state 含可复用登录 Cookie，目录必须仅允许当前用户访问。
+    # 浏览器 profile 包含可复用的社交平台 Cookie；目录权限必须阻止同机其他用户遍历。
     for d in (LOGIN_DIR, PROFILE_BASE, STORAGE_STATE_DIR):
         d.mkdir(parents=True, exist_ok=True)
         try:
@@ -210,12 +212,7 @@ def submit_sms_code(platform: str, code: str) -> dict:
     if not 4 <= len(digits) <= 8:
         raise ValueError("验证码应为 4-8 位数字")
     _ensure_dirs()
-    code_path = _files(platform)["code"]
-    code_path.write_text(digits, encoding="utf-8")
-    try:
-        code_path.chmod(0o600)
-    except OSError:
-        logger.warning("无法收紧短信验证码文件权限：%s", code_path.name)
+    _files(platform)["code"].write_text(digits, encoding="utf-8")
     return {"ok": True, "platform": platform}
 
 
@@ -253,13 +250,13 @@ def get_login_status(platform: str) -> dict:
     f = _files(platform)
     raw = _read_status_file(f["status"])
     state = raw.get("state", "unknown")
-    message = raw.get("message", "")
+    message = redact(str(raw.get("message") or ""))
 
     proc = _LOGIN_PROCESSES.get(platform)
     proc_alive = proc is not None and proc.poll() is None
     if proc is not None and not proc_alive and state not in TERMINAL_STATES:
         # 与 Easel 一致：runner 没写终态就退出 → 明确的 error，而不是无限转圈的 unknown
-        tail = _last_log_line(f["log"])
+        tail = redact(_last_log_line(f["log"]))
         state, message = "error", f"登录程序异常退出（退出码 {proc.returncode}）" + (f"：{tail}" if tail else "")
     elif proc_alive and state == "unknown":
         state, message = "starting", "正在启动浏览器并准备二维码…"
@@ -365,7 +362,7 @@ def export_storage_state(platform: str, timeout: int = 90) -> bool:
         logger.warning("导出 %s 登录态超时", platform)
         return False
     if r.returncode != 0:
-        logger.warning("导出 %s 登录态失败：%s", platform, (r.stderr or r.stdout)[-300:])
+        logger.warning("导出 %s 登录态失败：%s", platform, redact((r.stderr or r.stdout)[-300:]))
         return False
     logger.info("✅ %s 登录态已导出到 %s", platform, out)
     return True
