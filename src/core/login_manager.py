@@ -60,10 +60,10 @@ async def get_or_create_context(browser: Browser, platform: Platform) -> Browser
 def save_context_state(context: BrowserContext, platform: Platform) -> Path:
     """把当前 context 的 storage_state 保存到文件。"""
     LOGIN_DIR.mkdir(parents=True, exist_ok=True)
+    # 先锁目录再写文件，避免刚创建的 storage_state 在 chmod 前短暂暴露。
+    os.chmod(LOGIN_DIR, 0o700)
     path = _platform_state_path(platform)
     context.storage_state(path=str(path))
-    # R23 安全：chmod 600 / 700
-    os.chmod(LOGIN_DIR, 0o700)
     os.chmod(path, 0o600)
     logger.info("✅ %s 登录态已保存: %s (权限 600)", platform.value, path)
     return path
