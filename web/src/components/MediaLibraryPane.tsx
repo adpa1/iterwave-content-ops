@@ -80,6 +80,7 @@ export default function MediaLibraryPane() {
     }
     await withPending("media:upload", async () => {
       let succeeded = 0;
+      let duplicates = 0;
       let failed = 0;
       const failedFiles: File[] = [];
       const customTags = tagsText.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean);
@@ -93,8 +94,8 @@ export default function MediaLibraryPane() {
             tags: Array.from(new Set([purpose, ...customTags])).slice(0, 30),
             data_base64: data,
           });
-          succeeded += 1;
-          if (result.duplicate) succeeded += 0;
+          if (result.duplicate) duplicates += 1;
+          else succeeded += 1;
         } catch (e) {
           failed += 1;
           failedFiles.push(item);
@@ -102,7 +103,7 @@ export default function MediaLibraryPane() {
         }
       }
       showToast(
-        `批量导入完成：成功 ${succeeded} 张，失败 ${failed} 张。${failed ? "失败项请检查网络或服务日志后重试。" : ""}`,
+        `批量导入完成：新增 ${succeeded} 张，重复复用 ${duplicates} 张，失败 ${failed} 张。${failed ? "失败项已保留，可直接重试。" : ""}`,
         failed ? "info" : "success",
       );
       setFiles(failedFiles);
