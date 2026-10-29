@@ -370,6 +370,14 @@ def test_upload_rejects_oversized_base64_before_decode(monkeypatch):
         kb_sources._decode_upload("tiny.csv", "A" * 20)
 
 
+def test_upload_rejects_malformed_base64_and_normalizes_filename():
+    with pytest.raises(ValueError, match="合法 base64"):
+        kb_sources._decode_upload("tiny.csv", "Z G==")
+    filename, data = kb_sources._decode_upload(r"..\tiny.csv", base64.b64encode(b"title").decode())
+    assert filename == "tiny.csv"
+    assert data == b"title"
+
+
 def test_sqlite_topic_rows_are_bounded(tmp_path, monkeypatch):
     path = tmp_path / "topics.db"
     conn = sqlite3.connect(path)
@@ -688,3 +696,26 @@ def test_media_upload_stream_limit_matches_declared_limit(api_client, tmp_path):
         json={"filename": "invalid.png", "data_base64": base64.b64encode(b"x" * (6 * 1024 * 1024)).decode("ascii")},
     )
     assert response.status_code == 422
+
+
+def test_sqlite_backup_files_are_private(tmp_path):
+    from src.core.db import Database
+
+    db_path = tmp_path / "source.sqlite3"
+    db_path.write_bytes(b"database")
+    db_path.chmod(0o644)
+    Path(str(db_path) + "-wal").write_bytes(b"wal")
+    Path(str(db_path) + "-wal").chmod(0o644)
+    Path(str(db_path) + "-shm").write_bytes(b"shm")
+    Path(str(db_path) + "-shm").chmod(0o644)
+
+    database = object.__new__(Database)
+    database.db_path = db_path
+    database.backup_dir = tmp_path / "backups"
+
+    backup = database._backup()
+
+    for path in (backup, Path(str(backup) + "-wal"), Path(str(backup) + "-shm")):
+        assert path.stat().st_mode & 0o777 == 0o600
+
+

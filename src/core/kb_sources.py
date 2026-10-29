@@ -779,20 +779,24 @@ def _validate_name(name: str) -> str:
 
 
 def _decode_upload(filename: str, content_b64: str) -> tuple[str, bytes]:
-    encoded = content_b64.split(",", 1)[-1]
+    encoded = str(content_b64 or "").split(",", 1)[-1]
     # 先限制编码字符串长度，避免在 base64 解码前为超大输入分配额外内存。
     max_encoded_chars = 4 * ((MAX_UPLOAD_BYTES + 2) // 3)
     if len(encoded) > max_encoded_chars:
         raise ValueError("上传文件超过 20MB 上限")
     try:
-        data = base64.b64decode(encoded, validate=False)
+        data = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError) as exc:
-        raise ValueError(f"文件内容不是合法 base64：{exc}") from exc
+        raise ValueError("文件内容不是合法 base64") from exc
     if len(data) > MAX_UPLOAD_BYTES:
         raise ValueError("上传文件超过 20MB 上限")
-    safe = Path(filename or "upload.csv").name
-    if not safe or safe.startswith("."):
+    # 同时处理 POSIX 和 Windows 路径分隔符，避免文件名因运行平台不同而变化。
+    raw_name = str(filename or "upload.csv").replace("\\", "/")
+    safe = raw_name.rsplit("/", 1)[-1].strip()
+    if not safe or safe in (".", "..") or safe.startswith("."):
         raise ValueError("文件名不合法")
+    if len(safe) > 120 or any(ord(ch) < 32 or ord(ch) == 127 for ch in safe):
+        raise ValueError("文件名过长或包含控制字符")
     return safe, data
 
 
