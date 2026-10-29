@@ -106,7 +106,7 @@ def fetch_public_bytes(
 
                     if response.status_code in (401, 403):
                         raise SafeFetchError("远程地址拒绝访问，请检查鉴权设置")
-                    if response.status_code >= 400:
+                    if response.status_code < 200 or response.status_code >= 300:
                         raise SafeFetchError(f"远程地址返回错误（HTTP {response.status_code}）")
 
                     content_length = response.headers.get("content-length")
