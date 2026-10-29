@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import xml.etree.ElementTree as ET
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -32,7 +33,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 UPLOAD_EXTS = {".csv", ".jsonl", ".ndjson", ".json", ".db", ".sqlite", ".sqlite3", ".xlsx"}
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_REMOTE_BYTES = 20 * 1024 * 1024
+MAX_LOCAL_SOURCE_BYTES = 100 * 1024 * 1024
 MAX_TOPIC_ROWS = 100_000
+MAX_XLSX_EXPANDED_BYTES = 40 * 1024 * 1024
+MAX_XLSX_ENTRIES = 1000
 REMOTE_TIMEOUT = 30
 
 
@@ -393,6 +397,16 @@ def parse_feed(body: bytes | str, *, default_dimension: str = "综合", source: 
 # ---------------------------------------------------------------------------
 
 def read_xlsx_rows(p: Path) -> tuple[list[str], list[dict]]:
+    # XLSX 是 ZIP；仅限制压缩文件大小不足以防止 ZIP bomb。
+    try:
+        with zipfile.ZipFile(p) as archive:
+            entries = archive.infolist()
+            if len(entries) > MAX_XLSX_ENTRIES:
+                raise KbSourceError("Excel 文件包含过多压缩条目")
+            if sum(item.file_size for item in entries) > MAX_XLSX_EXPANDED_BYTES:
+                raise KbSourceError("Excel 展开后超过 40MB 上限")
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise KbSourceError("Excel 文件不是有效的 XLSX 压缩包") from exc
     try:
         from openpyxl import load_workbook
     except ImportError as exc:  # pragma: no cover
@@ -409,4 +423,7 @@ def read_xlsx_rows(p: Path) -> tuple[list[str], list[dict]]:
         if r is None or all(v is None or str(v).strip() == "" for v in r):
             continue
         rows.append({cols[i]: ("" if v is None else str(v)) for i, v in enumerate(r) if i < len(cols)})
+        if len(rows) > MAX_TOPIC_ROWS:
+            raise KbSourceError(f"选题库超过 {MAX_TOPIC_ROWS:,} 行上限")
+    wb.close()
     return cols, rows
