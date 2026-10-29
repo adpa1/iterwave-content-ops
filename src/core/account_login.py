@@ -72,8 +72,13 @@ _EXPORTING: set[str] = set()
 
 
 def _ensure_dirs() -> None:
+    # Chromium profile / storage state 含可复用登录 Cookie，目录必须仅允许当前用户访问。
     for d in (LOGIN_DIR, PROFILE_BASE, STORAGE_STATE_DIR):
         d.mkdir(parents=True, exist_ok=True)
+        try:
+            d.chmod(0o700)
+        except OSError:
+            logger.warning("无法收紧登录数据目录权限：%s", d.name)
 
 
 def _headed() -> bool:
@@ -205,7 +210,12 @@ def submit_sms_code(platform: str, code: str) -> dict:
     if not 4 <= len(digits) <= 8:
         raise ValueError("验证码应为 4-8 位数字")
     _ensure_dirs()
-    _files(platform)["code"].write_text(digits, encoding="utf-8")
+    code_path = _files(platform)["code"]
+    code_path.write_text(digits, encoding="utf-8")
+    try:
+        code_path.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧短信验证码文件权限：%s", code_path.name)
     return {"ok": True, "platform": platform}
 
 
