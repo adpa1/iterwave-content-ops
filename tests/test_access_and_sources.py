@@ -210,6 +210,24 @@ def test_server_source_and_path_redaction(cfg, tmp_path):
         kb_sources.add_server(cfg, path=str(tmp_path / "missing.csv"))
 
 
+def test_public_remote_source_redacts_url_credentials(cfg):
+    public = kb_sources._public_source(cfg, {
+        "id": "kb-test",
+        "kind": "remote",
+        "name": "私有远程源",
+        "url": "https://user:password@example.com/private/token?access_token=SECRET#fragment",
+        "headers": {"Authorization": "Bearer SECRET"},
+        "field_mapping": {},
+    })
+    rendered = json.dumps(public, ensure_ascii=False)
+    assert "url" not in public
+    assert "SECRET" not in rendered
+    assert "password" not in rendered
+    assert "access_token" not in rendered
+    assert public["display_path"] == "https://example.com/…"
+    assert public["header_keys"] == ["Authorization"]
+
+
 def test_remote_source_rejects_private_destinations(monkeypatch):
     # 字面 IP 直接拦截；域名解析到内网地址也必须拦截，不能发出 HTTP 请求。
     with pytest.raises(ValueError, match="内网|本机|保留"):
