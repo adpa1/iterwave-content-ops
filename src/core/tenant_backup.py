@@ -122,6 +122,15 @@ def create_backup(db_path: Path | str, data_dir: Path | str,
                         raise BackupError(f"卡片图片超过备份上限：{name}")
                     output_files[name] = {"sha256": _sha256(candidate), "size": size}
 
+        aggregate_size = (
+            snapshot_db.stat().st_size
+            + sum(int(item["size"]) for item in media_files.values())
+            + sum(int(item["size"]) for item in output_files.values())
+            + (overrides.stat().st_size if overrides.is_file() else 0)
+        )
+        if aggregate_size > MAX_BACKUP_BYTES:
+            raise BackupError("备份内容总大小超过 2GB 上限")
+
         manifest = {
             "version": 1,
             "tenant_id": tenant_id,
@@ -175,6 +184,11 @@ def restore_backup(backup_path: Path | str, db_path: Path | str, data_dir: Path 
                 infos = archive.infolist()
                 if sum(info.file_size for info in infos) > MAX_BACKUP_BYTES:
                     raise BackupError("备份解压后超过 2GB 上限")
+                names_in_archive = [info.filename for info in infos]
+                if len(names_in_archive) != len(set(names_in_archive)):
+                    raise BackupError("备份包含重复文件条目")
+                if "manifest.json" not in names_in_archive or "easel.db" not in names_in_archive:
+                    raise BackupError("备份缺少清单或数据库快照")
                 allowed = {"manifest.json", "easel.db", "config_overrides.json"}
                 for info in infos:
                     name = PurePosixPath(info.filename)
@@ -186,8 +200,21 @@ def restore_backup(backup_path: Path | str, db_path: Path | str, data_dir: Path 
                     ):
                         raise BackupError(f"备份包含不允许的文件：{info.filename}")
                 manifest = json.loads(archive.read("manifest.json"))
+                if not isinstance(manifest, dict):
+                    raise BackupError("备份清单格式无效")
                 if manifest.get("version") != 1 or manifest.get("tenant_id") != tenant_id:
                     raise BackupError("备份版本或账号组标识不匹配")
+                media_manifest = manifest.get("media_files", {})
+                output_manifest = manifest.get("output_files", {})
+                if not isinstance(media_manifest, dict) or not isinstance(output_manifest, dict):
+                    raise BackupError("备份清单中的文件列表格式无效")
+                expected_names = {"manifest.json", "easel.db"}
+                if "config_overrides.json" in names_in_archive:
+                    expected_names.add("config_overrides.json")
+                expected_names.update(f"media/{name}" for name in media_manifest)
+                expected_names.update(f"outputs/{name}" for name in output_manifest)
+                if set(names_in_archive) != expected_names:
+                    raise BackupError("备份文件与清单不一致")
                 db_bytes = archive.read("easel.db")
                 db_stage = stage / "easel.db"
                 db_stage.write_bytes(db_bytes)
@@ -203,8 +230,10 @@ def restore_backup(backup_path: Path | str, db_path: Path | str, data_dir: Path 
 
                 stage_media = stage / "media"
                 stage_media.mkdir()
-                expected = manifest.get("media_files") or {}
+                expected = media_manifest
                 for filename, metadata in expected.items():
+                    if not isinstance(metadata, dict):
+                        raise BackupError("备份清单中的素材元数据格式无效")
                     safe_name = Path(filename).name
                     if safe_name != filename or Path(safe_name).suffix.lower() not in ALLOWED_IMAGE_SUFFIXES:
                         raise BackupError("备份清单包含非法素材文件名")
@@ -218,8 +247,10 @@ def restore_backup(backup_path: Path | str, db_path: Path | str, data_dir: Path 
                         raise BackupError(f"素材校验失败：{safe_name}")
                 stage_outputs = stage / "outputs"
                 stage_outputs.mkdir()
-                expected_outputs = manifest.get("output_files") or {}
+                expected_outputs = output_manifest
                 for filename, metadata in expected_outputs.items():
+                    if not isinstance(metadata, dict):
+                        raise BackupError("备份清单中的卡片图片元数据格式无效")
                     safe_name = Path(filename).name
                     if safe_name != filename or Path(safe_name).suffix.lower() not in ALLOWED_IMAGE_SUFFIXES:
                         raise BackupError("备份清单包含非法卡片图片文件名")
@@ -233,10 +264,10 @@ def restore_backup(backup_path: Path | str, db_path: Path | str, data_dir: Path 
                 config_stage = stage / "config_overrides.json"
                 if "config_overrides.json" in archive.namelist():
                     config_stage.write_bytes(archive.read("config_overrides.json"))
-        except (zipfile.BadZipFile, KeyError, json.JSONDecodeError, OSError) as exc:
-            if isinstance(exc, BackupError):
-                raise
-            raise BackupError(f"备份读取失败：{exc}") from exc
+        except BackupError:
+            raise
+        except (zipfile.BadZipFile, KeyError, json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
+            raise BackupError(f"备份读取失败：{type(exc).__name__}") from exc
 
         # 先保留回滚副本；数据库 WAL/SHM 在停机恢复前一并移走。
         db_rollback = backup_dir / f"pre_restore_{tenant_id}_{ts}.db"
