@@ -1323,11 +1323,14 @@ def _register_routes(app: FastAPI) -> None:
         ).fetchone()
         if content is None:
             raise HTTPException(404, "目标内容不存在")
-        # 中文内容以连续字符片段和分词后的英文/数字作为候选关键词，不调用外部模型。
+        # 中文按 2–4 字滑动片段匹配，英文/数字按词匹配；这是轻量启发式，不调用外部模型。
         import re
         source_text = " ".join(str(content[key] or "") for key in ("title", "body")).lower()
-        tokens = set(re.findall(r"[a-z0-9]{2,}|[\u4e00-\u9fff]{2,}", source_text))
-        stopwords = {"我们", "你们", "他们", "这个", "那个", "可以", "如何", "因为", "所以", "以及", "但是", "如果", "门店", "内容"}
+        tokens = set(re.findall(r"[a-z0-9]{2,}", source_text))
+        for run in re.findall(r"[\u4e00-\u9fff]+", source_text):
+            for size in (2, 3, 4):
+                tokens.update(run[index:index + size] for index in range(max(0, len(run) - size + 1)))
+        stopwords = {"我们", "你们", "他们", "这个", "那个", "可以", "如何", "因为", "所以", "以及", "但是", "如果", "门店", "内容", "介绍", "推荐"}
         tokens = {token for token in tokens if token not in stopwords}
         rows = conn.execute(
             "SELECT id, title, original_filename, alt_text, tags, quality_score, width, height "
