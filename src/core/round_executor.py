@@ -130,6 +130,7 @@ class RoundExecutor:
             "steps": [],
             "contents_created": 0,
             "drafts_created": 0,
+            "degraded_visuals": 0,
             "drafts_saved": 0,
             "drafts_failed": 0,
             "guard_rejected": 0,
@@ -767,13 +768,15 @@ class RoundExecutor:
                 content_id = f"content-{uuid.uuid4().hex[:12]}"
                 self.conn.execute(
                     "INSERT INTO contents (id, round_id, topic_id, platform, title, body, "
-                    "tags, image_paths, word_count, card_style, guard_outcome, guard_reason) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "tags, image_paths, word_count, card_style, guard_outcome, guard_reason, "
+                    "visual_status, visual_reason) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'degraded', ?)",
                     (
                         content_id, round_id, topic.id, platform.value, title, body,
                         json.dumps(tags, ensure_ascii=False),
                         json.dumps([str(image_path)] if image_path else [], ensure_ascii=False),
                         len(body), "knowledge", outcome.result.value, outcome.reason,
+                        "仅使用本地模板卡片的文字排版与渐变背景，尚未选用正式视觉素材",
                     ),
                 )
 
@@ -796,6 +799,7 @@ class RoundExecutor:
                     "image_path": str(image_path) if image_path else None,
                 })
                 report["contents_created"] += 1
+                report["degraded_visuals"] = int(report.get("degraded_visuals") or 0) + 1
                 report["drafts_created"] += 1
 
             variant_summary.append({
