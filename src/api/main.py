@@ -2037,6 +2037,11 @@ def _register_routes(app: FastAPI) -> None:
         url = str((req or {}).get("url") or "").strip()
         if url and not url.startswith(("https://", "http://")):
             raise HTTPException(422, "Webhook 地址必须是 http(s) URL")
+        if url:
+            try:
+                kb_sources._validate_remote_url(url)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
         cfg = _g()["cfg"]
         ccfg = cfg.notifications.channels.get(channel)
         env_name = (getattr(ccfg, "webhook_url_env", None) or
