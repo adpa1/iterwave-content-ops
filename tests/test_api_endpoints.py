@@ -218,6 +218,33 @@ def test_failed_metrics_fetch_does_not_make_published_history_deletable(client):
     ).fetchone() is not None
 
 
+def test_round_business_states_cannot_be_set_manually(client):
+    tc, conn, seed = client
+    created_round = seed.round(status="created")
+    response = tc.post(
+        f"/api/rounds/{created_round}/transition",
+        json={"target_status": "producing", "reason": "回归测试"},
+    )
+    assert response.status_code == 409
+    assert "业务流程自动推进" in response.json()["detail"]
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (created_round,)
+    ).fetchone()[0] == "created"
+
+    producing_round = seed.round(status="producing")
+    seed.draft(
+        producing_round, platform="xhs", draft_status="draft_pending", fetch_status=None,
+    )
+    response = tc.post(
+        f"/api/rounds/{producing_round}/transition",
+        json={"target_status": "awaiting_publish", "reason": "跳过存草稿"},
+    )
+    assert response.status_code == 409
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (producing_round,)
+    ).fetchone()[0] == "producing"
+
+
 def test_round_cancel_rejected_while_run_is_active(client):
     tc, conn, seed = client
     round_id = seed.round(status="producing")
