@@ -166,21 +166,30 @@ def request_token(cookie_token: Optional[str], headers) -> Optional[str]:
     return cookie_token or header_token or None
 
 
-def is_authenticated(cookie_token: Optional[str], headers) -> bool:
+def is_authenticated(cookie_token: Optional[str], headers, ip: Optional[str] = None) -> bool:
     if not password_configured():
         return True
-    candidate = request_token(cookie_token, headers)
+    # Cookie 只接受服务端签发的会话 token；无效 Cookie 不再触发 PBKDF2 口令校验。
+    if _session_valid(cookie_token):
+        return True
+
+    # 脚本口令只能从明确的认证请求头传入，并且与登录接口共用失败计数/限速。
+    candidate = request_token(None, headers)
     if not candidate:
         return False
-    if _session_valid(candidate):
+    client_ip = ip or "unknown"
+    if is_rate_limited(client_ip):
+        return False
+    if verify_password(candidate):
+        clear_failures(client_ip)
         return True
-    # 脚本直接带口令（常量时间比较）
-    return verify_password(candidate)
+    record_failure(client_ip)
+    return False
 
 
-def status(cookie_token: Optional[str], headers) -> dict:
+def status(cookie_token: Optional[str], headers, ip: Optional[str] = None) -> dict:
     configured = password_configured()
-    authenticated = is_authenticated(cookie_token, headers)
+    authenticated = is_authenticated(cookie_token, headers, ip=ip)
     return {
         "configured": configured,
         "authenticated": authenticated,
