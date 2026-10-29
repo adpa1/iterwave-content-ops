@@ -31,7 +31,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from .redact import redact_path
+from .redact import redact, redact_path
 from .scoring.topic_eval import TopicItem
 
 logger = logging.getLogger(__name__)
@@ -570,10 +570,11 @@ def sync_all_remote(cfg) -> dict:
             source.update({k: v for k, v in info.items() if k != "cache_path"})
             results[source["id"]] = "ok"
         except Exception as exc:  # noqa: BLE001 — 单源失败不影响其它来源
-            source["last_error"] = str(exc)[:200]
+            safe_error = redact(str(exc)[:200])
+            source["last_error"] = safe_error
             source["last_sync_at"] = datetime.now().isoformat(timespec="seconds")
             results[source["id"]] = "failed"
-            logger.warning("选题库远程同步失败 %s: %s", source.get("name"), exc)
+            logger.warning("选题库远程同步失败 %s: %s", redact(str(source.get("name") or "")), safe_error)
     save_registry(cfg, sources)
     return results
 
@@ -638,8 +639,9 @@ def read_source(cfg, source: dict) -> dict:
             base["status"] = "empty"
         return base
     except Exception as exc:  # noqa: BLE001 — 单源失败不影响其它来源
-        base.update(status="error", error=str(exc)[:240])
-        logger.warning("选题库来源读取失败 %s: %s", source.get("name"), exc)
+        safe_error = redact(str(exc)[:240])
+        base.update(status="error", error=safe_error)
+        logger.warning("选题库来源读取失败 %s: %s", redact(str(source.get("name") or "")), safe_error)
         return base
 
 
@@ -716,6 +718,8 @@ def _public_source(cfg, source: dict) -> dict:
             out["name"] = _redact_remote_url(raw_name)
     else:
         out["display_path"] = redact_path(_source_path(cfg, source))
+    if out.get("last_error"):
+        out["last_error"] = redact(str(out["last_error"]))
     out["header_keys"] = sorted((source.get("headers") or {}).keys())
     return out
 
