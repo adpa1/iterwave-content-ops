@@ -938,8 +938,10 @@ export const api = {
   login: (token: string) =>
     fetchJson<{ ok: boolean }>("/api/auth/login", { method: "POST", body: JSON.stringify({ token }) }),
   authLogout: () => fetchJson<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
-  setupAuth: (token: string, old_token?: string) =>
-    fetchJson<{ ok: boolean }>("/api/auth/setup", { method: "POST", body: JSON.stringify({ token, old_token }) }),
+  setupAuth: (token: string, old_token?: string, bootstrap_token?: string) =>
+    fetchJson<{ ok: boolean }>("/api/auth/setup", {
+      method: "POST", body: JSON.stringify({ token, old_token, bootstrap_token }),
+    }),
   status: () => fetchJson<SystemStatus>("/api/status"),
   goals: () => fetchJson<Goal[]>("/api/goals"),
   /** 总体目标进度（后端统一计算等权平均，前端只展示） */
