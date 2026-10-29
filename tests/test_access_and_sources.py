@@ -11,6 +11,7 @@ import csv
 import io
 import json
 import os
+import sqlite3
 import zipfile
 from pathlib import Path
 
@@ -262,6 +263,25 @@ def test_upload_xlsx(cfg):
     items, report = kb_sources.read_all(cfg)
     assert any(i.title == "Excel 选题一" for i in items)
     assert report["errors"] == 0
+
+
+def test_upload_rejects_oversized_base64_before_decode(monkeypatch):
+    monkeypatch.setattr(kb_sources, "MAX_UPLOAD_BYTES", 3)
+    with pytest.raises(ValueError, match="20MB"):
+        kb_sources._decode_upload("tiny.csv", "A" * 20)
+
+
+def test_sqlite_topic_rows_are_bounded(tmp_path, monkeypatch):
+    path = tmp_path / "topics.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE topics (title TEXT)")
+    conn.executemany("INSERT INTO topics (title) VALUES (?)", [("one",), ("two",), ("three",)])
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(kb_sources, "MAX_TOPIC_ROWS", 2)
+    with pytest.raises(ValueError, match="行上限"):
+        kb_sources.parse_sqlite(path, "topics")
 
 
 def test_upload_rejects_bad_file(cfg):
