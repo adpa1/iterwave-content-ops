@@ -249,8 +249,8 @@ def _build_app() -> FastAPI:
                         status_code=413,
                     )
         if path.startswith("/api/") and path not in ("/api/auth/status", "/api/auth/login"):
-            # 本机直连（localhost / 127.0.0.1 / ::1）且无反向代理头 → 跳过首次设置和登录要求。
-            # 公网部署通过 Host 头或反代转发请求时仍然强制认证（R23 安全）。
+            # 未设置口令时，仅显式启用本机引导且确认无代理头的 loopback 请求可跳过初始化认证。
+            # 其它访问必须通过首次设置引导口令；设置口令后所有请求仍需认证。
             local_direct = auth.is_trusted_local_setup(request)
 
             if not auth.password_configured() and path != "/api/auth/password":
