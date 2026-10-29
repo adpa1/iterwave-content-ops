@@ -532,10 +532,24 @@ class PlatformStyleUpdate(BaseModel):
 
 
 class PublishConfirmRequest(BaseModel):
-    """发布确认补充：笔记链接；质检未通过但已真实发布时可提供例外登记原因。"""
+    """发布确认补充：笔记链接；质检/人工审核/平台版本异常均需单独说明例外原因。"""
 
     note_url: Optional[str] = Field(None, max_length=500)
     quality_override_reason: Optional[str] = Field(None, max_length=500)
+    platform_sync_override_reason: Optional[str] = Field(None, max_length=500)
+
+
+class PlatformSyncConfirmRequest(BaseModel):
+    """用户确认已在平台端手动同步为当前本地文案版本。"""
+
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("平台版本同步说明不能为空")
+        return value
 
 
 class TransitionRequest(BaseModel):
@@ -1282,8 +1296,8 @@ def _register_routes(app: FastAPI) -> None:
     ):
         conn = _g()["conn"]
         sql = (
-            "SELECT d.*, c.title, c.round_id, c.topic_id, c.platform as cfg_platform, "
-            "c.guard_outcome AS guard_outcome, c.guard_reason AS guard_reason, "
+            "SELECT d.*, c.title, c.body, c.tags, c.image_paths, c.round_id, c.topic_id, "
+            "c.platform as cfg_platform, c.guard_outcome AS guard_outcome, c.guard_reason AS guard_reason, "
             "c.review_rejected AS review_rejected, "
             "c.review_rejection_reason AS review_rejection_reason "
             "FROM drafts d LEFT JOIN contents c ON d.content_id = c.id"
@@ -1303,6 +1317,7 @@ def _register_routes(app: FastAPI) -> None:
         from src.core.content_pipeline import _llm_available
         llm_available = _llm_available(_g()["cfg"])
         items = []
+        from src.core.content_version import content_version_hash, parse_json_list
         for item in rows:
             result = dict(item)
             outcome = result.get("guard_outcome")
@@ -1311,6 +1326,23 @@ def _register_routes(app: FastAPI) -> None:
                 not result["review_rejected"]
                 and (outcome == "pass" or (outcome == "warn" and not llm_available))
             )
+            if result.get("status") == "draft_pending":
+                result["platform_content_sync"] = "local_only"
+            elif result.get("status") == "draft_saved":
+                tags = parse_json_list(result.get("tags"))
+                stored_images = parse_json_list(result.get("image_paths"))
+                payload_images = [str(stored_images[0])] if stored_images and stored_images[0] else []
+                current_hash = content_version_hash(
+                    result.get("title"), result.get("body"), tags, payload_images,
+                )
+                saved_hash = result.get("saved_content_hash")
+                result["platform_content_sync"] = (
+                    "unknown" if not saved_hash
+                    else "matched" if saved_hash == current_hash
+                    else "stale"
+                )
+            else:
+                result["platform_content_sync"] = None
             items.append(result)
         return items
 
