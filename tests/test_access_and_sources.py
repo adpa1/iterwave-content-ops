@@ -152,6 +152,19 @@ def _xlsx_bytes() -> bytes:
     return buf.getvalue()
 
 
+def test_xlsx_expansion_limit_blocks_zip_bombs(tmp_path, monkeypatch):
+    monkeypatch.setattr(kb_sources, "MAX_XLSX_EXPANDED_BYTES", 1024)
+    path = tmp_path / "oversized.xlsx"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "xl/worksheets/sheet1.xml",
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData /></worksheet>',
+        )
+        zf.writestr("oversized.xml", "x" * 2048)
+    with pytest.raises(ValueError, match="展开后"):
+        kb_sources.parse_xlsx(path)
+
+
 def test_upload_csv_and_read(cfg):
     b64 = "data:text/csv;base64," + base64.b64encode(_csv_bytes()).decode()
     source = kb_sources.add_upload(cfg, filename="topics.csv", content_b64=b64)
