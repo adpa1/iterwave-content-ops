@@ -65,20 +65,20 @@ def test_redact_masks_bearer_tokens_and_signed_urls():
 
 def test_public_first_password_setup_requires_bootstrap_token(api_client, monkeypatch):
     monkeypatch.setenv("ITERWAVE_BOOTSTRAP_TOKEN", "bootstrap-secret")
-    with TestClient(api_main._build_app(), base_url="https://eduplay.cloud") as public_client:
-        assert public_client.post(
-            "/api/auth/password", json={"password": "secret123"}
-        ).status_code == 403
-        assert public_client.post(
-            "/api/auth/password",
-            json={"password": "secret123", "bootstrap_token": "wrong"},
-        ).status_code == 403
-        ok = public_client.post(
-            "/api/auth/password",
-            json={"password": "secret123", "bootstrap_token": "bootstrap-secret"},
-        )
-        assert ok.status_code == 200
-        assert ok.json()["configured"] is True
+    public_client = TestClient(api_main._build_app(), base_url="https://eduplay.cloud")
+    assert public_client.post(
+        "/api/auth/password", json={"password": "secret123"}
+    ).status_code == 403
+    assert public_client.post(
+        "/api/auth/password",
+        json={"password": "secret123", "bootstrap_token": "wrong"},
+    ).status_code == 403
+    ok = public_client.post(
+        "/api/auth/password",
+        json={"password": "secret123", "bootstrap_token": "bootstrap-secret"},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["configured"] is True
 
 
 def test_password_lifecycle(tmp_path):
