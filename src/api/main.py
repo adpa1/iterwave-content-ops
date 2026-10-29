@@ -1600,10 +1600,18 @@ def _register_routes(app: FastAPI) -> None:
             title != row["title"] or body != row["body"] or tags_json != row["tags"]
         )
 
-        conn.execute(
-            "UPDATE contents SET title = ?, body = ?, tags = ?, word_count = ? WHERE id = ?",
-            (title, body, tags_json, len(body or ""), content_id),
-        )
+        if changed:
+            # G2 结果绑定的是具体文案版本。修改标题/正文/标签后，旧的 PASS 不能继续显示为有效。
+            conn.execute(
+                "UPDATE contents SET title = ?, body = ?, tags = ?, word_count = ?, "
+                "guard_outcome = NULL, guard_reason = NULL WHERE id = ?",
+                (title, body, tags_json, len(body or ""), content_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE contents SET title = ?, body = ?, tags = ?, word_count = ? WHERE id = ?",
+                (title, body, tags_json, len(body or ""), content_id),
+            )
         if changed:
             conn.execute(
                 "INSERT INTO user_override (round_id, override_field, original_value, "
