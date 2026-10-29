@@ -40,12 +40,10 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   if (st.required && !st.authed) {
     return <LoginScreen onDone={check} />;
   }
-  return (
-    <>
-      {!st.required && <OpenModeBanner onDone={check} />}
-      {children}
-    </>
-  );
+  if (!st.required) {
+    return <OpenModeBanner onDone={check} />;
+  }
+  return <>{children}</>;
 }
 
 function LoginScreen({ onDone }: { onDone: () => void }) {
@@ -87,41 +85,50 @@ function LoginScreen({ onDone }: { onDone: () => void }) {
 }
 
 function OpenModeBanner({ onDone }: { onDone: () => void }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const [token, setToken] = useState("");
   const [token2, setToken2] = useState("");
+  const [bootstrapToken, setBootstrapToken] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const save = async () => {
+  const save = async (e?: React.FormEvent) => {
+    e?.preventDefault();
     if (token.length < 8) { setErr("口令至少 8 位"); return; }
     if (token !== token2) { setErr("两次输入不一致"); return; }
     setBusy(true);
     setErr(null);
     try {
-      await api.setupAuth(token);
-      onDone();
+      await api.setupAuth(token, undefined, bootstrapToken.trim() || undefined);
+      await onDone();
     } catch (e) {
-      setErr(e instanceof Error ? e.message.replace(/^\d+\s*/, "") : String(e));
+      setErr(e instanceof Error ? e.message.replace(/^\\d+\\s*/, "") : String(e));
     } finally {
       setBusy(false);
     }
   };
   return (
-    <div className="open-banner" role="alert">
-      <span><b>未设置访问口令：</b>知道这个地址的任何人都能操作你的平台账号和配置。部署到公网前请先设置。</span>
-      {!open ? (
-        <button className="btn sm" onClick={() => setOpen(true)}>设置访问口令</button>
-      ) : (
-        <span className="open-banner-form">
-          <input type="password" placeholder="新口令（至少 8 位）" value={token}
-            onChange={(e) => setToken(e.target.value)} autoComplete="new-password" />
-          <input type="password" placeholder="再输入一次" value={token2}
-            onChange={(e) => setToken2(e.target.value)} autoComplete="new-password" />
-          <button className="btn sm primary" disabled={busy} onClick={save}>{busy ? "保存中…" : "保存"}</button>
-          <button className="btn sm ghost" onClick={() => setOpen(false)}>取消</button>
-          {err && <span className="auth-err">{err}</span>}
-        </span>
-      )}
+    <div className="auth-screen">
+      <form className="auth-card" onSubmit={save}>
+        <div className="auth-title">IterWave</div>
+        <div className="auth-sub">首次安全设置</div>
+        <p className="auth-hint">设置访问口令后才能使用业务功能。公网域名或反向代理部署必须先在服务器配置 ITERWAVE_BOOTSTRAP_TOKEN，并在下方输入该引导口令；本机直连可留空。</p>
+        <label className="sr-only" htmlFor="iwSetupToken">新访问口令</label>
+        <input id="iwSetupToken" type="password" autoFocus autoComplete="new-password"
+          className="auth-input" value={token} onChange={(e) => setToken(e.target.value)}
+          placeholder="新访问口令（至少 8 位）" />
+        <label className="sr-only" htmlFor="iwSetupToken2">确认新访问口令</label>
+        <input id="iwSetupToken2" type="password" autoComplete="new-password"
+          className="auth-input" value={token2} onChange={(e) => setToken2(e.target.value)}
+          placeholder="再次输入新访问口令" />
+        <label className="sr-only" htmlFor="iwBootstrapToken">服务器引导口令</label>
+        <input id="iwBootstrapToken" type="password" autoComplete="off"
+          className="auth-input" value={bootstrapToken} onChange={(e) => setBootstrapToken(e.target.value)}
+          placeholder="服务器引导口令（公网部署必填）" />
+        {err && <div className="auth-err" role="alert">{err}</div>}
+        <button className="btn primary" type="submit" disabled={busy}>
+          {busy ? "保存中…" : "设置访问口令"}
+        </button>
+      </form>
     </div>
   );
 }
