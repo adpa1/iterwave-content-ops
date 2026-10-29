@@ -15,7 +15,12 @@ _HOME = Path.home()
 
 # cookie / token / api_key 类
 _SECRET_PATTERN = re.compile(
-    r"(?i)\b(cookie|token|authorization|api[_-]?key)\b\s*[:=]\s*([^\s,;]+)"
+    r"(?i)\b(cookie|token|authorization|api[_-]?key)\b\s*[:=]\s*(?:bearer\s+)?([^\s,;]+)"
+)
+# URL userinfo（https://user:password@host）与常见签名/令牌查询参数
+_URL_USERINFO_PATTERN = re.compile(r"(?i)(https?://)[^/@\s]+@")
+_URL_SECRET_PARAM_PATTERN = re.compile(
+    r"(?i)([?&][^=&#\s]*(?:access[_-]?token|refresh[_-]?token|token|secret|password|signature|sig|credential|api[_-]?key|auth)[^=&#\s]*=)[^&#\s]+"
 )
 # 手机号（11 位 1[3-9]...）
 _PHONE_PATTERN = re.compile(r"(?<!\d)(1[3-9]\d)(\d{4})(\d{4})(?!\d)")
@@ -39,6 +44,8 @@ def redact(text: str) -> str:
         if len(value) <= 4:
             return f"{key}=***"
         return f"{key}={value[:4]}***"
+    text = _URL_USERINFO_PATTERN.sub(r"\1***@", text)
+    text = _URL_SECRET_PARAM_PATTERN.sub(r"\1***", text)
     text = _SECRET_PATTERN.sub(_repl_secret, text)
 
     def _repl_phone(m: re.Match) -> str:
