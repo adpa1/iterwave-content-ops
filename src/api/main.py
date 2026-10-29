@@ -234,6 +234,20 @@ def _build_app() -> FastAPI:
             current_root = str(request.scope.get("root_path") or "").rstrip("/")
             request.scope["root_path"] = f"{current_root}{prefix}"
         path = request.scope.get("path", "/")
+        if path.startswith("/api/"):
+            # 上传接口的 base64 JSON 约 28MB；其它 API 不应接受无限大的请求体。
+            max_body_bytes = 30 * 1024 * 1024 if path == "/api/kb/sources/upload" else 5 * 1024 * 1024
+            content_length = request.headers.get("content-length")
+            if content_length:
+                try:
+                    declared_size = int(content_length)
+                except ValueError:
+                    return JSONResponse({"detail": "Content-Length 不合法"}, status_code=400)
+                if declared_size < 0 or declared_size > max_body_bytes:
+                    return JSONResponse(
+                        {"detail": f"请求体超过 {max_body_bytes // (1024 * 1024)}MB 上限"},
+                        status_code=413,
+                    )
         if path.startswith("/api/") and path not in ("/api/auth/status", "/api/auth/login"):
             # 未完成首次访问保护配置时，只允许设置口令；业务 API 默认关闭，避免公网匿名访问。
             if not auth.password_configured() and path != "/api/auth/password":
