@@ -361,3 +361,50 @@ details[open] > summary::before { content: "▾ "; }
   .dashboard-partial-warning { align-items: flex-start; flex-direction: column; }
   .dashboard-partial-warning .btn { align-self: flex-start; }
 }
+
+
+/* ===== 全局账号组切换器 ===== */
+.tenant-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 4px 7px 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.tenant-switcher-label {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.tenant-switcher select {
+  max-width: 150px;
+  min-width: 90px;
+  border: 0;
+  outline-offset: 2px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  padding: 5px 20px 5px 2px;
+}
+.tenant-switcher select:disabled { opacity: .6; }
+.tenant-switcher-pending {
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: var(--orange-weak);
+  color: var(--orange);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+@media (max-width: 900px) {
+  .tenant-switcher-label { display: none; }
+  .tenant-switcher select { max-width: 120px; min-width: 72px; }
+}
+@media (max-width: 640px) {
+  .tenant-switcher { gap: 3px; padding: 3px 5px; }
+  .tenant-switcher select { max-width: 92px; min-width: 60px; font-size: 11px; }
+}
