@@ -829,9 +829,21 @@ class RoundExecutor:
                     platform, row["title"], result.error_msg or "存草稿失败",
                 )
 
+        # 恢复存草稿可能是分批执行；不能用本次成功的 ID 覆盖此前已存成功的草稿关联。
+        round_row = self.conn.execute(
+            "SELECT draft_ids FROM spiral_rounds WHERE id = ?", (round_id,)
+        ).fetchone()
+        existing_ids: list[str] = []
+        try:
+            decoded_ids = json.loads(round_row["draft_ids"] or "[]") if round_row else []
+            if isinstance(decoded_ids, list):
+                existing_ids = [str(value) for value in decoded_ids if value]
+        except (TypeError, ValueError):
+            logger.warning("轮次 %s 的 draft_ids 不可解析，保存本次可确认的关联", round_id)
+        merged_ids = list(dict.fromkeys([*existing_ids, *saved_draft_ids]))
         self.conn.execute(
             "UPDATE spiral_rounds SET draft_ids = ? WHERE id = ?",
-            (json.dumps(saved_draft_ids, ensure_ascii=False), round_id),
+            (json.dumps(merged_ids, ensure_ascii=False), round_id),
         )
         self.conn.commit()
         report["steps"].append({
