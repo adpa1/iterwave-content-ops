@@ -816,13 +816,20 @@ def _register_routes(app: FastAPI) -> None:
             local_direct = host in local_hosts and client_host in local_hosts and not forwarded
             bootstrap = os.getenv("ITERWAVE_BOOTSTRAP_TOKEN", "")
             provided = str((payload or {}).get("bootstrap_token") or "")
-            if not local_direct and (
-                not bootstrap or not provided or not hmac.compare_digest(provided, bootstrap)
-            ):
-                raise HTTPException(
-                    status_code=403,
-                    detail="首次设置口令需本机访问，或先在服务器配置 ITERWAVE_BOOTSTRAP_TOKEN 后提交引导口令",
-                )
+            if not local_direct:
+                client_ip = request.client.host if request.client else "unknown"
+                if auth.is_rate_limited(client_ip):
+                    raise HTTPException(status_code=429, detail="引导口令尝试次数过多，请 10 分钟后再试")
+                valid_bootstrap = bool(bootstrap and provided) and hmac.compare_digest(provided, bootstrap)
+                if not valid_bootstrap:
+                    auth.record_failure(client_ip)
+                    if auth.is_rate_limited(client_ip):
+                        raise HTTPException(status_code=429, detail="引导口令尝试次数过多，请 10 分钟后再试")
+                    raise HTTPException(
+                        status_code=403,
+                        detail="首次设置口令需本机访问，或先在服务器配置 ITERWAVE_BOOTSTRAP_TOKEN 后提交引导口令",
+                    )
+                auth.clear_failures(client_ip)
         try:
             auth.set_password(str((payload or {}).get("password") or ""))
         except ValueError as exc:
