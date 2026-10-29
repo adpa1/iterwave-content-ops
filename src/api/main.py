@@ -32,6 +32,7 @@ POST /api/hot_topics/refresh  触发后台采集 + 标签匹配
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import io
@@ -350,7 +351,11 @@ def _build_app() -> FastAPI:
         # Content-Length 可被省略或伪造；已通过认证的写请求还要按实际流量限额，
         # 避免 chunked 上传绕过大小限制后耗尽内存。
         if path.startswith("/api/") and request.method in ("POST", "PUT", "PATCH"):
-            max_body_bytes = 30 * 1024 * 1024 if path == "/api/kb/sources/upload" else 5 * 1024 * 1024
+            max_body_bytes = (
+                30 * 1024 * 1024 if path == "/api/kb/sources/upload"
+                else 17 * 1024 * 1024 if path == "/api/media"
+                else 5 * 1024 * 1024
+            )
             chunks: list[bytes] = []
             received = 0
             async for chunk in request.stream():
