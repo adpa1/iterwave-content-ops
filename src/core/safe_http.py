@@ -112,11 +112,11 @@ def fetch_public_bytes(
                     content_length = response.headers.get("content-length")
                     if content_length:
                         try:
-                            if int(content_length) > max_bytes:
-                                raise SafeFetchError("远程响应超过大小上限")
+                            declared_size = int(content_length)
                         except ValueError:
-                            # 非数字 Content-Length 由流式读取及 HTTP 客户端处理。
-                            pass
+                            declared_size = None
+                        if declared_size is not None and declared_size > max_bytes:
+                            raise SafeFetchError("远程响应超过大小上限")
 
                     chunks: list[bytes] = []
                     size = 0
