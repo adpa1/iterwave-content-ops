@@ -485,6 +485,14 @@ class TenantSelectRequest(BaseModel):
     tenant_id: str = Field(min_length=1, max_length=48)
 
 
+class PlatformAccountRequest(BaseModel):
+    platform: str = Field(pattern="^(xhs|douyin|kuaishou|wechat_channels)$")
+    account_handle: str = Field(min_length=1, max_length=160)
+    display_name: str = Field(default="", max_length=160)
+    status: str = Field(default="active", pattern="^(active|inactive)$")
+    notes: str = Field(default="", max_length=500)
+
+
 class CreateGoalRequest(BaseModel):
     """R21：口径 5 字段必须齐备，缺一即 422（不接受默认值兜底）。"""
 
@@ -4386,6 +4394,71 @@ def _register_routes(app: FastAPI) -> None:
     def list_accounts():
         """四平台账号状态汇总（Accounts 页顶部四卡片用）。"""
         return {"accounts": _get_all_accounts()}
+
+
+    @app.get("/api/platform-accounts")
+    def list_registered_platform_accounts():
+        rows = _g()["conn"].execute(
+            "SELECT id, platform, account_handle, display_name, status, notes, created_at, updated_at "
+            "FROM platform_accounts ORDER BY platform, status DESC, display_name, account_handle"
+        ).fetchall()
+        items = [dict(row) for row in rows]
+        return {"items": items, "total": len(items),
+                "active_total": sum(1 for row in items if row["status"] == "active"),
+                "source": "user_registered"}
+
+    @app.post("/api/platform-accounts", status_code=201)
+    def create_registered_platform_account(req: PlatformAccountRequest):
+        handle = req.account_handle.strip()
+        normalized = handle.casefold()
+        if not handle:
+            raise HTTPException(422, "平台账号标识不能为空")
+        conn = _g()["conn"]
+        try:
+            cur = conn.execute(
+                "INSERT INTO platform_accounts (platform, account_handle, normalized_handle, display_name, status, notes) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (req.platform, handle, normalized, req.display_name.strip(), req.status, req.notes.strip()),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(409, "该平台账号标识已登记；同一平台的账号标识不允许重复") from exc
+        row = conn.execute(
+            "SELECT id, platform, account_handle, display_name, status, notes, created_at, updated_at "
+            "FROM platform_accounts WHERE id = ?", (cur.lastrowid,),
+        ).fetchone()
+        return dict(row)
+
+    @app.put("/api/platform-accounts/{account_id}")
+    def update_registered_platform_account(account_id: int, req: PlatformAccountRequest):
+        handle = req.account_handle.strip()
+        if not handle:
+            raise HTTPException(422, "平台账号标识不能为空")
+        conn = _g()["conn"]
+        exists = conn.execute("SELECT id FROM platform_accounts WHERE id = ?", (account_id,)).fetchone()
+        if not exists:
+            raise HTTPException(404, "登记的平台账号不存在")
+        try:
+            conn.execute(
+                "UPDATE platform_accounts SET platform=?, account_handle=?, normalized_handle=?, display_name=?, status=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (req.platform, handle, handle.casefold(), req.display_name.strip(), req.status, req.notes.strip(), account_id),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(409, "该平台账号标识已登记；同一平台的账号标识不允许重复") from exc
+        return dict(conn.execute(
+            "SELECT id, platform, account_handle, display_name, status, notes, created_at, updated_at FROM platform_accounts WHERE id=?",
+            (account_id,),
+        ).fetchone())
+
+    @app.delete("/api/platform-accounts/{account_id}", status_code=204)
+    def delete_registered_platform_account(account_id: int):
+        conn = _g()["conn"]
+        cur = conn.execute("DELETE FROM platform_accounts WHERE id = ?", (account_id,))
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(404, "登记的平台账号不存在")
+        return Response(status_code=204)
 
     @app.post("/api/accounts/{platform}/login")
     def start_platform_login(platform: str, restart: bool = Query(False)):
