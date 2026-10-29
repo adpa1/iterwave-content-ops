@@ -595,6 +595,17 @@ def _kb_source(cfg: Config) -> dict[str, Any]:
     return out
 
 
+def _public_custom_feeds(feeds: list[dict]) -> list[dict]:
+    from .kb_sources import _mask_url
+
+    public: list[dict] = []
+    for feed in feeds:
+        row = dict(feed)
+        row["url"] = _mask_url(str(row.get("url") or ""))
+        public.append(row)
+    return public
+
+
 def current_config_view(cfg: Config, conn) -> dict[str, Any]:
     """Settings 页展示 + 编辑所需的白名单字段当前值。"""
     enabled = cfg.platforms.enabled_keys()
@@ -633,7 +644,10 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
                     "time_filter_enabled", True
                 ),
                 "general_lists_enabled": getattr(cfg.hot_topics, "general_lists_enabled", True),
-                "custom_feeds": list(getattr(cfg.hot_topics, "custom_feeds", []) or []),
+                # 自定义热点源 URL 可能含路径令牌或签名；配置展示只返回脱敏后的 origin。
+                "custom_feeds": _public_custom_feeds(
+                    list(getattr(cfg.hot_topics, "custom_feeds", []) or [])
+                ),
             },
         },
         # R22 两道硬锁：只展示、不可改；前端无关闭入口
