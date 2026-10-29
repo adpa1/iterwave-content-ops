@@ -260,8 +260,8 @@ def _build_app() -> FastAPI:
                         {"detail": "请先完成访问口令设置", "code": "setup_required"},
                         status_code=403,
                     )
-            # 本机直连且未设密码时保留开发便利。
-            # 公网首次设口令交给该端点校验引导令牌，不能先要求已有登录态。
+            # 仅显式启用本机引导时，未设密码的 loopback 请求可跳过初始化认证。
+            # 其它首次设置交给该端点校验服务器引导令牌，不能先要求已有登录态。
             if not auth.password_configured() and local_direct:
                 pass
             elif not auth.password_configured() and path == "/api/auth/password":
