@@ -765,6 +765,12 @@ def test_saved_platform_draft_version_mismatch_requires_explicit_override(client
     item = next(d for d in listed if d["id"] == draft_id)
     assert item["platform_content_sync"] == "stale"
     assert item["guard_confirmation_allowed"] is True
+    # 列表 API 只返回版本状态，不返回正文、原始标签、绝对图片路径或内部指纹。
+    assert "body" not in item
+    assert "tags" not in item
+    assert "image_paths" not in item
+    assert "saved_content_hash" not in item
+    assert "saved_platform_title" not in item
 
     response = tc.post(
         f"/api/drafts/{draft_id}/publish_confirm",
