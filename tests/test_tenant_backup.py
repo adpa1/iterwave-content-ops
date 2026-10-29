@@ -11,8 +11,10 @@ def test_tenant_backup_restores_database_media_and_overrides(tmp_path: Path) -> 
     data_dir = tmp_path / "tenants" / "brand_a" / "data"
     backup_dir = tmp_path / "tenants" / "brand_a" / "backups"
     media_dir = data_dir / "media"
+    output_dir = data_dir / "outputs"
     data_dir.mkdir(parents=True)
     media_dir.mkdir()
+    output_dir.mkdir()
     backup_dir.mkdir(parents=True)
     db_path = data_dir / "easel.db"
 
@@ -24,11 +26,18 @@ def test_tenant_backup_restores_database_media_and_overrides(tmp_path: Path) -> 
             status TEXT NOT NULL
         );
         CREATE TABLE state (value TEXT NOT NULL);
+        CREATE TABLE contents (id TEXT PRIMARY KEY, image_paths TEXT);
         INSERT INTO state VALUES ('before');
         INSERT INTO media_assets VALUES (1, 'image_a.png', 'active');
     """)
     conn.close()
     (media_dir / "image_a.png").write_bytes(b"image-original")
+    card_path = output_dir / "card_a.png"
+    card_path.write_bytes(b"card-original")
+    conn = sqlite3.connect(db_path)
+    conn.execute("INSERT INTO contents VALUES (?, ?)", ("content-a", json.dumps([str(card_path)])))
+    conn.commit()
+    conn.close()
     (data_dir / "config_overrides.json").write_text('{"quota": 10}', encoding="utf-8")
 
     archive = create_backup(db_path, data_dir, backup_dir, "brand_a")
@@ -38,6 +47,7 @@ def test_tenant_backup_restores_database_media_and_overrides(tmp_path: Path) -> 
     conn.commit()
     conn.close()
     (media_dir / "image_a.png").write_bytes(b"image-changed")
+    card_path.write_bytes(b"card-changed")
     (data_dir / "config_overrides.json").write_text('{"quota": 99}', encoding="utf-8")
 
     result = restore_backup(archive, db_path, data_dir, backup_dir, "brand_a")
@@ -47,5 +57,6 @@ def test_tenant_backup_restores_database_media_and_overrides(tmp_path: Path) -> 
     assert conn.execute("SELECT value FROM state").fetchone()[0] == "before"
     conn.close()
     assert (media_dir / "image_a.png").read_bytes() == b"image-original"
+    assert card_path.read_bytes() == b"card-original"
     assert json.loads((data_dir / "config_overrides.json").read_text(encoding="utf-8")) == {"quota": 10}
     assert Path(result["rollback_db"]).is_file()
