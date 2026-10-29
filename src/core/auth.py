@@ -33,7 +33,11 @@ LOGIN_WINDOW_SECONDS = 10 * 60
 
 
 def is_trusted_local_setup(request) -> bool:
-    """仅在显式启用时允许本机首次设置；不信任转发头或伪造的 Host。"""
+    """仅限直连本机开发环境的首次设置旁路。
+
+    该开关不能安全地用于反向代理/公网部署：代理后端可能表现为 loopback，
+    而 Host 由请求方控制。生产或代理部署应使用 ITERWAVE_BOOTSTRAP_TOKEN。
+    """
     if os.getenv("ITERWAVE_ALLOW_LOCAL_BOOTSTRAP", "").strip().lower() not in ("1", "true", "yes"):
         return False
     if any(request.headers.get(name) for name in (
