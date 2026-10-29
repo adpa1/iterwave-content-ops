@@ -1193,6 +1193,8 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(422, "素材文件路径无效")
         title = req.title.strip() or Path(req.filename).name[:200]
         tags = list(dict.fromkeys(tag.strip()[:60] for tag in req.tags if tag.strip()))[:30]
+        from src.core.media_quality import score_image
+        quality = score_image(raw)
         target.write_bytes(raw)
         try:
             target.chmod(0o600)
@@ -1202,12 +1204,13 @@ def _register_routes(app: FastAPI) -> None:
             cur = conn.execute(
                 "INSERT INTO media_assets "
                 "(title, original_filename, stored_filename, mime_type, byte_size, sha256, "
-                "width, height, alt_text, tags, source_type, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upload', 'active')",
+                "width, height, alt_text, tags, source_type, status, quality_score, quality_details) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upload', 'active', ?, ?)",
                 (
-                    title, Path(req.filename).name[:255], stored_filename, mime_type,
+                    title, Path(req.filename.replace("\\\\", "/")).name[:255], stored_filename, mime_type,
                     len(raw), digest, width, height, req.alt_text.strip(),
-                    json.dumps(tags, ensure_ascii=False),
+                    json.dumps(tags, ensure_ascii=False), quality["score"],
+                    json.dumps(quality, ensure_ascii=False),
                 ),
             )
             conn.commit()
@@ -1221,6 +1224,7 @@ def _register_routes(app: FastAPI) -> None:
             "width": width, "height": height, "alt_text": req.alt_text.strip(),
             "tags": tags, "source_type": "upload", "status": "active",
             "review_status": "approved", "review_note": None,
+            "quality_score": quality["score"], "quality_details": quality,
             "duplicate": False, "file_url": f"/api/media/{cur.lastrowid}/file",
         }
 
