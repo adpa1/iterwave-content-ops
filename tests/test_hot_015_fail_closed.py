@@ -13,6 +13,7 @@ from src.core.tenant_switch_gate import TenantSwitchGate
 def test_hot_015_route_keeps_gate_closed_when_runtime_rollback_fails(monkeypatch):
     gate = TenantSwitchGate()
     monkeypatch.setattr(api_main, "_tenant_switch_gate", gate)
+    monkeypatch.setattr(api_main, "_tenant_hot_switch_enabled", lambda: True)
 
     async def fail_switch(tenant_id):
         raise api_main.TenantRuntimeRollbackError("rollback failed")
