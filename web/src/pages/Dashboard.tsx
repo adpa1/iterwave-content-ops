@@ -115,11 +115,13 @@ export default function Dashboard() {
   );
   const latestRound = rounds[0];
   const failed = new Set(failedSources);
+  const visibleActions = failed.has("待处理事项") ? [] : actions;
+  const draftsStatusAvailable = !failed.has("平台进度");
 
   /** 主按钮直达用户当前需要处理的子页面，不把“跳转”伪装成“执行” */
   const primaryAction = failed.has("轮次")
     ? { label: "检查轮次数据", page: "production", tab: "rounds" }
-    : savedDrafts > 0
+    : draftsStatusAvailable && savedDrafts > 0
       ? { label: `去审核（${savedDrafts} 篇待确认）`, page: "production", tab: "review" }
       : latestRound?.status === "awaiting_publish"
         ? { label: "继续审核发布", page: "production", tab: "review" }
@@ -237,11 +239,18 @@ export default function Dashboard() {
             </div>
             <button type="button" className="btn sm" onClick={() => go("operations")}>全部处理 →</button>
           </div>
-          {actions.length === 0 && awaitingRounds.length === 0 ? (
-            <EmptyHint next="Agent 产出待确认内容或出现告警时会出现在这里">暂无需要你决策的事项</EmptyHint>
+          {failed.has("待处理事项") && (
+            <div className="note orange" role="status" style={{ marginBottom: 10 }}>
+              待处理事项接口加载失败。下方不会展示该接口的旧数据；轮次待发布状态仍单独显示。
+            </div>
+          )}
+          {visibleActions.length === 0 && awaitingRounds.length === 0 ? (
+            <EmptyHint next={failed.has("待处理事项") ? "点击上方「重试加载」重新读取" : "Agent 产出待确认内容或出现告警时会出现在这里"}>
+              {failed.has("待处理事项") ? "待处理事项暂不可用，不能判断当前是否有待处理任务。" : "暂无需要你决策的事项"}
+            </EmptyHint>
           ) : (
             <div className="list">
-              {[...actions].sort(byPriority).slice(0, 6).map((it) => (
+              {[...visibleActions].sort(byPriority).slice(0, 6).map((it) => (
                 <div key={it.id} className="task-row">
                   <i className={`task-prio ${priorityTone(it.priority)}`} aria-hidden="true" />
                   <div className="task-main">
@@ -253,7 +262,7 @@ export default function Dashboard() {
                   </div>
                 </div>
               ))}
-              {awaitingRounds.slice(0, Math.max(0, 6 - actions.length)).map((r) => (
+              {awaitingRounds.slice(0, Math.max(0, 6 - visibleActions.length)).map((r) => (
                 <div key={`r${r.id}`} className="task-row">
                   <i className="task-prio" aria-hidden="true" />
                   <div className="task-main">
