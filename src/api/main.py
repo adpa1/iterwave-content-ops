@@ -1308,6 +1308,34 @@ def _register_routes(app: FastAPI) -> None:
         if row is None:
             raise HTTPException(404, f"草稿 {draft_id} 不存在")
 
+        note_url = (req.note_url or "").strip() if req else ""
+        if note_url and not note_url.startswith(("http://", "https://")):
+            raise HTTPException(422, "note_url 必须是完整的 http(s) 链接")
+
+        # 重复确认应幂等：不重新注册采集任务，不重复推进轮次；已发布记录保留原状态。
+        if row["status"] in ("user_published", "data_fetching", "published"):
+            if note_url:
+                conn.execute(
+                    "UPDATE drafts SET platform_note_url = COALESCE(platform_note_url, ?) WHERE id = ?",
+                    (note_url, draft_id),
+                )
+                conn.commit()
+            current_url = conn.execute(
+                "SELECT platform_note_url FROM drafts WHERE id = ?", (draft_id,)
+            ).fetchone()
+            return {
+                "draft_id": draft_id,
+                "status": row["status"],
+                "note_url": current_url["platform_note_url"] if current_url else None,
+                "already_confirmed": True,
+            }
+
+        if row["status"] not in ("draft_saved", "draft_pending"):
+            raise HTTPException(
+                409,
+                f"草稿当前状态为 {row['status']}，不能确认发布；仅待存内容和平台草稿可确认",
+            )
+
         # 发布确认记录的是用户已经在外部平台完成的动作：正常路径须有当前质检结果；
         # 若发布事实上已发生但质检失效/失败，允许显式登记原因以保留真实发布与采集闭环。
         from src.core.content_pipeline import _llm_available
@@ -1325,9 +1353,6 @@ def _register_routes(app: FastAPI) -> None:
                 "如果尚未发布，请先重新过目标检查；如果已在平台真实发布并需登记，请填写质检例外原因后重试",
             )
 
-        note_url = (req.note_url or "").strip() if req else ""
-        if note_url and not note_url.startswith(("http://", "https://")):
-            raise HTTPException(422, "note_url 必须是完整的 http(s) 链接")
         sched = _g().get("scheduler")
         if sched is not None and getattr(sched, "conn", None) is not None and getattr(sched, "sm_draft", None) is not None:
             # 统一入口：改状态 + 回写链接 + 注册发布后数据采集 + 推进轮次（与轮询识别完全一致）
