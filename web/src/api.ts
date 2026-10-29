@@ -434,6 +434,8 @@ export interface MediaUsageTarget {
   platform: Platform;
   round_id: number;
   created_at: string | null;
+  visual_status: "degraded" | "media_asset" | "generated";
+  visual_reason: string | null;
   draft_status: "draft_pending" | "draft_saved";
 }
 
