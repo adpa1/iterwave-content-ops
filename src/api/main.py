@@ -249,26 +249,42 @@ def _build_app() -> FastAPI:
                         status_code=413,
                     )
         if path.startswith("/api/") and path not in ("/api/auth/status", "/api/auth/login"):
-            # 未完成首次访问保护配置时，只允许设置口令；业务 API 默认关闭，避免公网匿名访问。
-            if not auth.password_configured() and path != "/api/auth/password":
-                return JSONResponse(
-                    {"detail": "请先完成访问口令设置", "code": "setup_required"},
-                    status_code=403,
-                )
-            cookie_token = request.cookies.get(auth.COOKIE_NAME)
-            client_ip = request.client.host if request.client else "unknown"
-            has_token_header = bool(request.headers.get("x-access-token")) or (
-                (request.headers.get("authorization") or "").lower().startswith("bearer ")
+            # 本机直连（localhost / 127.0.0.1 / ::1）且无反向代理头 → 跳过首次设置和登录要求。
+            # 公网部署通过 Host 头或反代转发请求时仍然强制认证（R23 安全）。
+            host = (request.url.hostname or "").strip("[]").lower()
+            client_host = (request.client.host if request.client else "").strip("[]").lower()
+            local_hosts = ("localhost", "127.0.0.1", "::1")
+            forwarded = any(
+                request.headers.get(name)
+                for name in ("x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host")
             )
-            limited_before = has_token_header and auth.is_rate_limited(client_ip)
-            if not auth.is_authenticated(cookie_token, request.headers, ip=client_ip):
-                return JSONResponse(
-                    {
-                        "detail": "认证尝试次数过多，请 10 分钟后再试" if limited_before else "需要登录",
-                        "code": "auth_rate_limited" if limited_before else "auth_required",
-                    },
-                    status_code=429 if limited_before else 401,
+            local_direct = host in local_hosts and client_host in local_hosts and not forwarded
+
+            if not auth.password_configured() and path != "/api/auth/password":
+                # 未设密码 + 本机直连 → 放行（方便本地开发）；公网部署 → 拦截 403
+                if not local_direct:
+                    return JSONResponse(
+                        {"detail": "请先完成访问口令设置", "code": "setup_required"},
+                        status_code=403,
+                    )
+            # 已设密码 → 强制认证；本机直连且未设密码 → 放行方便本地开发
+            if not auth.password_configured() and local_direct:
+                pass
+            else:
+                cookie_token = request.cookies.get(auth.COOKIE_NAME)
+                client_ip = request.client.host if request.client else "unknown"
+                has_token_header = bool(request.headers.get("x-access-token")) or (
+                    (request.headers.get("authorization") or "").lower().startswith("bearer ")
                 )
+                limited_before = has_token_header and auth.is_rate_limited(client_ip)
+                if not auth.is_authenticated(cookie_token, request.headers, ip=client_ip):
+                    return JSONResponse(
+                        {
+                            "detail": "认证尝试次数过多，请 10 分钟后再试" if limited_before else "需要登录",
+                            "code": "auth_rate_limited" if limited_before else "auth_required",
+                        },
+                        status_code=429 if limited_before else 401,
+                    )
 
         # Content-Length 可被省略或伪造；已通过认证的写请求还要按实际流量限额，
         # 避免 chunked 上传绕过大小限制后耗尽内存。
