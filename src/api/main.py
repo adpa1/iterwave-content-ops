@@ -1185,8 +1185,8 @@ def _register_routes(app: FastAPI) -> None:
         if image_format not in format_map:
             raise HTTPException(415, "仅支持 JPEG、PNG、WebP、GIF 图片")
         mime_type, suffix = format_map[image_format]
-        if width < 1 or height < 1 or width > 20000 or height > 20000:
-            raise HTTPException(422, "图片尺寸不在允许范围内")
+        if width < 1 or height < 1 or width > 20000 or height > 20000 or width * height > 40_000_000:
+            raise HTTPException(422, "图片尺寸不在允许范围内（单边不超过 20000 像素，总像素不超过 4000 万）")
         stored_filename = f"{uuid.uuid4().hex}{suffix}"
         target = (paths.media_dir / stored_filename).resolve()
         if not target.is_relative_to(paths.media_dir.resolve()):
