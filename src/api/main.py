@@ -1287,8 +1287,28 @@ def _register_routes(app: FastAPI) -> None:
         """
         conn = _g()["conn"]
         row = conn.execute(
-            "SELECT platform FROM drafts WHERE id = ?", (draft_id,)
+            "SELECT d.platform, d.status, c.guard_outcome, c.guard_reason "
+            "FROM drafts d JOIN contents c ON c.id = d.content_id WHERE d.id = ?",
+            (draft_id,),
         ).fetchone()
+        if row is None:
+            raise HTTPException(404, f"草稿 {draft_id} 不存在")
+
+        # 编辑内容会使 guard_outcome 失效；禁止跳过复检直接把这版内容登记为已发布。
+        # 只有 PASS 可通过；模板降级模式下与生产流程一致，允许 WARN 但保留告警。
+        guard_outcome = row["guard_outcome"]
+        guard_accepted = guard_outcome == "pass"
+        if guard_outcome == "warn":
+            from src.core.content_pipeline import _llm_available
+            guard_accepted = not _llm_available(_g()["cfg"])
+        if not guard_accepted:
+            reason = row["guard_reason"] or "当前文案尚未通过目标检查"
+            raise HTTPException(
+                409,
+                f"不能确认发布：当前文案质检状态为 {guard_outcome or '未检查'}。"
+                f"{reason}。请到「内容编辑与审核」重新过目标检查后再确认",
+            )
+
         note_url = (req.note_url or "").strip() if req else ""
         if note_url and not note_url.startswith(("http://", "https://")):
             raise HTTPException(422, "note_url 必须是完整的 http(s) 链接")
