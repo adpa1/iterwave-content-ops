@@ -32,6 +32,8 @@ from urllib.parse import urljoin
 
 import httpx
 
+from .redact import redact
+
 logger = logging.getLogger(__name__)
 
 # 各平台热度单位（不同平台 hot_value 口径不同，不能混算）
@@ -244,8 +246,10 @@ class HotTopicCollector:
 
         for key, (label, result) in results.items():
             if isinstance(result, Exception):
-                logger.warning("热点采集失败 %s: %s", key, result)
-                self._record_failure(key, label, str(result))
+                safe_key = redact(str(key))
+                safe_error = redact(str(result))
+                logger.warning("热点采集失败 %s: %s", safe_key, safe_error)
+                self._record_failure(key, label, safe_error)
                 report[key] = "failed"
                 continue
             if not result:
