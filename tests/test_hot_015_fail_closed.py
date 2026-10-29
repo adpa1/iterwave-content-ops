@@ -36,3 +36,35 @@ def test_hot_015_route_keeps_gate_closed_when_runtime_rollback_fails(monkeypatch
         asyncio.run(run())
     finally:
         gate.end_switch()
+
+
+
+def test_hot_switch_is_opt_in_and_defaults_to_restart_required(monkeypatch):
+    class Registry:
+        active = "brand_a"
+
+        def get(self, tenant_id):
+            if tenant_id not in ("brand_a", "brand_b"):
+                raise api_main.TenantError("账号组不存在")
+            return {"id": tenant_id, "name": tenant_id}
+
+        def select_active(self, tenant_id):
+            self.active = tenant_id
+            return {"id": tenant_id, "name": tenant_id}
+
+    registry = Registry()
+    monkeypatch.setattr(api_main, "_tenant_hot_switch_enabled", lambda: False)
+    monkeypatch.setattr(api_main, "_g_ctx", {
+        "tenant_registry": registry,
+        "runtime_tenant_id": "brand_a",
+    })
+    route = next(
+        item for item in api_main.app.routes
+        if getattr(item, "path", None) == "/api/tenants/select"
+    )
+
+    result = asyncio.run(route.endpoint(api_main.TenantSelectRequest(tenant_id="brand_b")))
+    assert result["restart_required"] is True
+    assert result["runtime_tenant_id"] == "brand_a"
+    assert registry.active == "brand_b"
+    assert result["switch_status"] if "switch_status" in result else True
