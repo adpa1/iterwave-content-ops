@@ -159,7 +159,9 @@ export interface Draft {
   platform_note_url?: string | null;
   guard_outcome?: "pass" | "warn" | "fail" | "error" | null;
   guard_reason?: string | null;
-  /** 当前文案是否可按正常路径确认发布；不通过时必须显式填写质检例外原因。 */
+  review_rejected?: boolean;
+  review_rejection_reason?: string | null;
+  /** 当前文案是否可按正常路径确认发布；质检/人工审核未放行时需要显式例外原因。 */
   guard_confirmation_allowed?: boolean;
 }
 
@@ -740,6 +742,8 @@ export interface ContentItem {
   draft_saved_at: string | null;
   /** 首次用户确认发布的时间；即使后续采集失败变为 failed，也仍属于不可变历史内容。 */
   draft_user_confirmed_at?: string | null;
+  review_rejected: boolean;
+  review_rejection_reason: string | null;
 }
 
 export interface RecheckResult {
@@ -1277,8 +1281,16 @@ export const api = {
   recheckContent: (id: string) =>
     fetchJson<RecheckResult>(`/api/contents/${id}/recheck`, { method: "POST" }),
   rejectContent: (id: string, reason: string) =>
-    fetchJson<{ id: string; affected_drafts: number; message: string }>(
+    fetchJson<{
+      id: string; affected_drafts: number; review_rejected: boolean;
+      platform_drafts_left: number; message: string;
+    }>(
       `/api/contents/${id}/reject`, { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  resubmitContent: (id: string, reason: string) =>
+    fetchJson<{ id: string; review_rejected: boolean; message: string }>(
+      `/api/contents/${id}/resubmit`,
+      { method: "POST", body: JSON.stringify({ reason }) },
     ),
   pipeline: (roundId: number) =>
     fetchJson<PipelineResponse>(`/api/rounds/${roundId}/pipeline`),
