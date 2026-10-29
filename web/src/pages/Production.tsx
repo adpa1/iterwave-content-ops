@@ -62,7 +62,12 @@ export default function Production() {
   const [tab, setTab] = useUrlTab<TabKey>(TABS.map((t) => t.key), "plan");
 
   const [rounds, setRounds] = useState<SpiralRound[]>([]);
-  const [currentRoundId, setCurrentRoundId] = useState<number | null>(null);
+  // 全局搜索可传入目标轮次，使跨页面跳转后选中正确轮次，而不是永远回到最新轮。
+  const [currentRoundId, setCurrentRoundId] = useState<number | null>(() => {
+    const raw = new URLSearchParams(window.location.search).get("focusRound");
+    const parsed = raw ? Number(raw) : NaN;
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  });
   const [roundDetail, setRoundDetail] = useState<(SpiralRound & { drafts: Draft[] }) | null>(null);
 
   // 总计划
@@ -81,7 +86,11 @@ export default function Production() {
 
   // 内容编辑与审核
   const [contents, setContents] = useState<ContentItem[]>([]);
-  const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
+  // 搜索结果可带目标内容 ID；加载轮次内容后自动选中并填入编辑区。
+  const [selectedContentId, setSelectedContentId] = useState<string | null>(() => {
+    const value = new URLSearchParams(window.location.search).get("focusContent");
+    return value || null;
+  });
   const [editTitle, setEditTitle] = useState("");
   const [editBody, setEditBody] = useState("");
   const [editTags, setEditTags] = useState("");
