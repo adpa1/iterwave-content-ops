@@ -900,6 +900,194 @@ def _register_routes(app: FastAPI) -> None:
     def health():
         return {"status": "ok", "version": "0.1.0", "timestamp": datetime.now().isoformat()}
 
+    def _generate_media_asset(req: MediaGenerationRequest, source_asset_id: int | None = None):
+        registry = _g().get("tenant_registry")
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        conn = _g()["conn"]
+        if registry is None:
+            raise HTTPException(503, "账号组注册表尚未初始化")
+        settings_row = conn.execute(
+            "SELECT enabled, monthly_quota, prompt_prefix, model, size "
+            "FROM media_generation_settings WHERE id = 1"
+        ).fetchone()
+        settings = dict(settings_row) if settings_row else {
+            "enabled": 0, "monthly_quota": 20, "prompt_prefix": "",
+            "model": os.getenv("ITERWAVE_IMAGE_MODEL", "gpt-image-1"),
+            "size": "1024x1024",
+        }
+        if not settings["enabled"]:
+            raise HTTPException(409, "AI 配图功能尚未启用，请先在图片素材库设置中启用")
+        prompt = req.prompt.strip()
+        final_prompt = "\n\n".join(
+            part for part in (str(settings.get("prompt_prefix") or "").strip(), prompt) if part
+        )
+        model = str(settings.get("model") or os.getenv("ITERWAVE_IMAGE_MODEL", "gpt-image-1"))
+        size = str(settings.get("size") or "1024x1024")
+        paths = registry.paths(tenant_id, create=True)
+        source_path = None
+        source_mime = None
+        source_filename = None
+        if source_asset_id is not None:
+            source = conn.execute(
+                "SELECT stored_filename, original_filename, mime_type, status, review_status "
+                "FROM media_assets WHERE id = ?", (source_asset_id,),
+            ).fetchone()
+            if source is None or source["status"] != "active" or source["review_status"] != "approved":
+                raise HTTPException(409, "只能基于已审核通过且未归档的素材进行改图")
+            source_path = (paths.media_dir / source["stored_filename"]).resolve()
+            if not source_path.is_relative_to(paths.media_dir.resolve()) or not source_path.is_file():
+                raise HTTPException(404, "原始素材文件不存在")
+            source_mime = source["mime_type"]
+            source_filename = source["original_filename"]
+
+        # 整个配额检查与调用串行化，避免并发请求同时越过月度上限。
+        with _media_generation_lock:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+            used = int(conn.execute(
+                "SELECT COUNT(*) FROM media_generation_jobs WHERE created_at >= ?", (month_start,),
+            ).fetchone()[0])
+            quota = int(settings.get("monthly_quota") or 0)
+            if quota <= 0 or used >= quota:
+                raise HTTPException(429, f"本账号组本月 AI 配图额度已用完（{used}/{quota}）")
+            cur = conn.execute(
+                "INSERT INTO media_generation_jobs (prompt, final_prompt, model, status, created_at) "
+                "VALUES (?, ?, ?, 'running', ?)",
+                (prompt, final_prompt, model, now),
+            )
+            job_id = int(cur.lastrowid)
+            conn.commit()
+            target = None
+            try:
+                from src.core.media_generation import ImageGenerationError, generate_image_bytes
+                raw, mime_type, suffix, width, height = generate_image_bytes(
+                    final_prompt, model=model, size=size, source_path=source_path,
+                    source_mime_type=source_mime, source_filename=source_filename,
+                )
+                stored_filename = f"{uuid.uuid4().hex}{suffix}"
+                target = (paths.media_dir / stored_filename).resolve()
+                if not target.is_relative_to(paths.media_dir.resolve()):
+                    raise HTTPException(422, "生成文件路径无效")
+                target.write_bytes(raw)
+                try:
+                    target.chmod(0o600)
+                except OSError:
+                    pass
+                title = req.title.strip() or prompt[:80]
+                tags = list(dict.fromkeys(tag.strip()[:60] for tag in req.tags if tag.strip()))[:30]
+                source_ref = f"job:{job_id}" if source_asset_id is None else f"job:{job_id};edit_of:{source_asset_id}"
+                asset_cur = conn.execute(
+                    "INSERT INTO media_assets "
+                    "(title, original_filename, stored_filename, mime_type, byte_size, sha256, "
+                    "width, height, alt_text, tags, source_type, source_ref, status, review_status) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, 'active', 'pending_review')",
+                    (
+                        title, stored_filename, stored_filename, mime_type, len(raw),
+                        hashlib.sha256(raw).hexdigest(), width, height, req.alt_text.strip(),
+                        json.dumps(tags, ensure_ascii=False), source_ref,
+                    ),
+                )
+                asset_id = int(asset_cur.lastrowid)
+                conn.execute(
+                    "UPDATE media_generation_jobs SET status = 'succeeded', output_asset_id = ?, "
+                    "completed_at = ? WHERE id = ?",
+                    (asset_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
+                )
+                conn.commit()
+                return {
+                    "id": asset_id, "title": title, "original_filename": stored_filename,
+                    "mime_type": mime_type, "byte_size": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+                    "width": width, "height": height, "alt_text": req.alt_text.strip(),
+                    "tags": tags, "source_type": "generated", "source_ref": source_ref,
+                    "status": "active", "review_status": "pending_review",
+                    "duplicate": False, "file_url": f"/api/media/{asset_id}/file",
+                    "job_id": job_id, "review_required": True,
+                }
+            except HTTPException:
+                if target is not None:
+                    target.unlink(missing_ok=True)
+                conn.execute(
+                    "UPDATE media_generation_jobs SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?",
+                    ("图片生成请求未完成", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
+                )
+                conn.commit()
+                raise
+            except Exception as exc:  # noqa: BLE001 — 保存失败必须记账并留审计
+                if target is not None:
+                    target.unlink(missing_ok=True)
+                conn.execute(
+                    "UPDATE media_generation_jobs SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?",
+                    (str(exc)[:500], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
+                )
+                conn.commit()
+                logger.exception("AI 配图任务失败 job=%s", job_id)
+                from src.core.media_generation import ImageGenerationError
+                if isinstance(exc, ImageGenerationError):
+                    raise HTTPException(502, str(exc)) from exc
+                raise HTTPException(500, "图片生成失败，任务已记录") from exc
+
+    @app.get("/api/media/generation-settings")
+    def get_media_generation_settings():
+        conn = _g()["conn"]
+        row = conn.execute(
+            "SELECT enabled, monthly_quota, prompt_prefix, model, size, updated_at "
+            "FROM media_generation_settings WHERE id = 1"
+        ).fetchone()
+        settings = dict(row) if row else {
+            "enabled": False, "monthly_quota": 20, "prompt_prefix": "",
+            "model": os.getenv("ITERWAVE_IMAGE_MODEL", "gpt-image-1"),
+            "size": "1024x1024", "updated_at": None,
+        }
+        settings["enabled"] = bool(settings["enabled"])
+        month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        settings["used_this_month"] = int(conn.execute(
+            "SELECT COUNT(*) FROM media_generation_jobs WHERE created_at >= ?", (month_start,),
+        ).fetchone()[0])
+        key_env = os.getenv("ITERWAVE_IMAGE_API_KEY_ENV", "OPENAI_API_KEY").strip()
+        settings["provider_configured"] = bool(key_env and os.getenv(key_env))
+        settings["api_base_url"] = os.getenv("ITERWAVE_IMAGE_API_BASE_URL", "https://api.openai.com/v1")
+        settings["api_key_env"] = key_env
+        return settings
+
+    @app.put("/api/media/generation-settings")
+    def put_media_generation_settings(req: MediaGenerationSettingsRequest):
+        conn = _g()["conn"]
+        conn.execute(
+            "INSERT INTO media_generation_settings (id, enabled, monthly_quota, prompt_prefix, model, size, updated_at) "
+            "VALUES (1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled, monthly_quota=excluded.monthly_quota, "
+            "prompt_prefix=excluded.prompt_prefix, model=excluded.model, size=excluded.size, updated_at=CURRENT_TIMESTAMP",
+            (int(req.enabled), req.monthly_quota, req.prompt_prefix.strip(), req.model.strip(), req.size),
+        )
+        conn.commit()
+        return get_media_generation_settings()
+
+    @app.post("/api/media/generate", status_code=201)
+    def generate_media_asset(req: MediaGenerationRequest):
+        return _generate_media_asset(req)
+
+    @app.post("/api/media/{asset_id}/edit", status_code=201)
+    def edit_media_asset(asset_id: int, req: MediaGenerationRequest):
+        return _generate_media_asset(req, source_asset_id=asset_id)
+
+    @app.post("/api/media/{asset_id}/review")
+    def review_media_asset(asset_id: int, req: MediaAssetReviewRequest):
+        conn = _g()["conn"]
+        row = conn.execute(
+            "SELECT id, review_status, status FROM media_assets WHERE id = ?", (asset_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "图片素材不存在")
+        conn.execute(
+            "UPDATE media_assets SET review_status = ?, review_note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (req.decision, req.note.strip(), asset_id),
+        )
+        conn.commit()
+        return {
+            "id": asset_id, "review_status": req.decision, "review_note": req.note.strip(),
+            "previous_review_status": row["review_status"],
+        }
+
     @app.get("/api/media")
     def list_media_assets(
         query: Optional[str] = Query(None, max_length=200),
