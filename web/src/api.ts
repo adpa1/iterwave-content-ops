@@ -161,6 +161,9 @@ export interface Draft {
   guard_reason?: string | null;
   review_rejected?: boolean;
   review_rejection_reason?: string | null;
+  saved_content_hash?: string | null;
+  /** draft_pending=仅本地；draft_saved=matched / stale / unknown。 */
+  platform_content_sync?: "local_only" | "matched" | "stale" | "unknown" | null;
   /** 当前文案是否可按正常路径确认发布；质检/人工审核未放行时需要显式例外原因。 */
   guard_confirmation_allowed?: boolean;
 }
@@ -1035,16 +1038,27 @@ export const api = {
     return fetchJson<Draft[]>(`/api/drafts?${p}`);
   },
   /** noteUrl：已发布笔记链接（可选；不填则该篇跳过被动评论轮询） */
-  confirmPublish: (draftId: string, noteUrl?: string, qualityOverrideReason?: string) =>
-    fetchJson<{ draft_id: string; status: string; note_url?: string | null }>(
+  confirmPublish: (
+    draftId: string,
+    noteUrl?: string,
+    qualityOverrideReason?: string,
+    platformSyncOverrideReason?: string,
+  ) =>
+    fetchJson<{ draft_id: string; status: string; note_url?: string | null; already_confirmed?: boolean }>(
       `/api/drafts/${draftId}/publish_confirm`,
       {
         method: "POST",
         body: JSON.stringify({
           note_url: noteUrl ?? null,
           quality_override_reason: qualityOverrideReason?.trim() || null,
+          platform_sync_override_reason: platformSyncOverrideReason?.trim() || null,
         }),
       },
+    ),
+  confirmPlatformSync: (draftId: string, reason: string) =>
+    fetchJson<{ draft_id: string; platform_content_sync: string; message: string }>(
+      `/api/drafts/${draftId}/confirm_platform_sync`,
+      { method: "POST", body: JSON.stringify({ reason: reason.trim() }) },
     ),
   /** 「✕ 不发了」：draft_pending / draft_saved → cancelled */
   cancelDraft: (draftId: string) =>
