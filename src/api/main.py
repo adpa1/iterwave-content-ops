@@ -269,6 +269,34 @@ def _build_app() -> FastAPI:
                     },
                     status_code=429 if limited_before else 401,
                 )
+
+        # Content-Length 可被省略或伪造；已通过认证的写请求还要按实际流量限额，
+        # 避免 chunked 上传绕过大小限制后耗尽内存。
+        if path.startswith("/api/") and request.method in ("POST", "PUT", "PATCH"):
+            max_body_bytes = 30 * 1024 * 1024 if path == "/api/kb/sources/upload" else 5 * 1024 * 1024
+            chunks: list[bytes] = []
+            received = 0
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > max_body_bytes:
+                    return JSONResponse(
+                        {"detail": f"请求体超过 {max_body_bytes // (1024 * 1024)}MB 上限"},
+                        status_code=413,
+                    )
+                chunks.append(chunk)
+            body = b"".join(chunks)
+            request._body = body
+            body_sent = False
+
+            async def replay_body():
+                nonlocal body_sent
+                if body_sent:
+                    return {"type": "http.disconnect"}
+                body_sent = True
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            request._receive = replay_body
+
         return await call_next(request)
 
     # === 挂载 React 前端静态文件 (同 origin, 单进程) ===
