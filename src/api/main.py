@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import json
 import os
 import sqlite3
@@ -405,6 +406,14 @@ def _build_app() -> FastAPI:
 # =====================================================================
 # Pydantic 请求模型
 # =====================================================================
+
+class MediaAssetUploadRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    title: str = Field(default="", max_length=200)
+    alt_text: str = Field(default="", max_length=500)
+    tags: list[str] = Field(default_factory=list, max_length=30)
+    data_base64: str = Field(min_length=1)
+
 
 class TenantCreateRequest(BaseModel):
     tenant_id: str = Field(min_length=1, max_length=48)
@@ -859,6 +868,160 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/health")
     def health():
         return {"status": "ok", "version": "0.1.0", "timestamp": datetime.now().isoformat()}
+
+    @app.get("/api/media")
+    def list_media_assets(
+        query: Optional[str] = Query(None, max_length=200),
+        status: str = Query("active", pattern="^(active|archived|all)$"),
+        limit: int = Query(100, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+    ):
+        conn = _g()["conn"]
+        where: list[str] = []
+        params: list = []
+        if status != "all":
+            where.append("status = ?")
+            params.append(status)
+        if query and query.strip():
+            needle = f"%{query.strip()}%"
+            where.append("(title LIKE ? OR original_filename LIKE ? OR alt_text LIKE ? OR tags LIKE ?)")
+            params.extend([needle, needle, needle, needle])
+        sql = (
+            "SELECT id, title, original_filename, mime_type, byte_size, sha256, "
+            "width, height, alt_text, tags, source_type, source_ref, status, created_at, updated_at "
+            "FROM media_assets"
+        )
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = conn.execute(sql, params).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["tags"] = json.loads(item["tags"] or "[]")
+            except (TypeError, ValueError):
+                item["tags"] = []
+            item["file_url"] = f"/api/media/{item['id']}/file"
+            result.append(item)
+        return {"items": result, "limit": limit, "offset": offset}
+
+    @app.post("/api/media", status_code=201)
+    def upload_media_asset(req: MediaAssetUploadRequest):
+        registry = _g().get("tenant_registry")
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        if registry is None:
+            raise HTTPException(503, "账号组注册表尚未初始化")
+        try:
+            paths = registry.paths(tenant_id, create=True)
+            raw = base64.b64decode(req.data_base64, validate=True)
+        except (ValueError, TenantError) as exc:
+            raise HTTPException(422, "图片数据无效或账号组目录不可用") from exc
+        if not raw or len(raw) > 12 * 1024 * 1024:
+            raise HTTPException(413, "图片大小必须大于 0 且不超过 12MB")
+        digest = hashlib.sha256(raw).hexdigest()
+        conn = _g()["conn"]
+        existing = conn.execute(
+            "SELECT id, title, original_filename, mime_type, byte_size, width, height, "
+            "alt_text, tags, status, created_at FROM media_assets WHERE sha256 = ? LIMIT 1",
+            (digest,),
+        ).fetchone()
+        if existing:
+            item = dict(existing)
+            item["tags"] = json.loads(item["tags"] or "[]")
+            item["duplicate"] = True
+            item["file_url"] = f"/api/media/{item['id']}/file"
+            return item
+        from PIL import Image, UnidentifiedImageError
+        try:
+            with Image.open(io.BytesIO(raw)) as image:
+                image.verify()
+            with Image.open(io.BytesIO(raw)) as image:
+                image_format = (image.format or "").upper()
+                width, height = image.size
+        except (UnidentifiedImageError, OSError, ValueError) as exc:
+            raise HTTPException(422, "上传内容不是有效的图片文件") from exc
+        format_map = {
+            "JPEG": ("image/jpeg", ".jpg"),
+            "PNG": ("image/png", ".png"),
+            "WEBP": ("image/webp", ".webp"),
+            "GIF": ("image/gif", ".gif"),
+        }
+        if image_format not in format_map:
+            raise HTTPException(415, "仅支持 JPEG、PNG、WebP、GIF 图片")
+        mime_type, suffix = format_map[image_format]
+        if width < 1 or height < 1 or width > 20000 or height > 20000:
+            raise HTTPException(422, "图片尺寸不在允许范围内")
+        stored_filename = f"{uuid.uuid4().hex}{suffix}"
+        target = (paths.media_dir / stored_filename).resolve()
+        if not target.is_relative_to(paths.media_dir.resolve()):
+            raise HTTPException(422, "素材文件路径无效")
+        title = req.title.strip() or Path(req.filename).name[:200]
+        tags = list(dict.fromkeys(tag.strip()[:60] for tag in req.tags if tag.strip()))[:30]
+        target.write_bytes(raw)
+        try:
+            target.chmod(0o600)
+        except OSError:
+            pass
+        try:
+            cur = conn.execute(
+                "INSERT INTO media_assets "
+                "(title, original_filename, stored_filename, mime_type, byte_size, sha256, "
+                "width, height, alt_text, tags, source_type, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upload', 'active')",
+                (
+                    title, Path(req.filename).name[:255], stored_filename, mime_type,
+                    len(raw), digest, width, height, req.alt_text.strip(),
+                    json.dumps(tags, ensure_ascii=False),
+                ),
+            )
+            conn.commit()
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        return {
+            "id": cur.lastrowid, "title": title,
+            "original_filename": Path(req.filename).name[:255],
+            "mime_type": mime_type, "byte_size": len(raw), "sha256": digest,
+            "width": width, "height": height, "alt_text": req.alt_text.strip(),
+            "tags": tags, "source_type": "upload", "status": "active",
+            "duplicate": False, "file_url": f"/api/media/{cur.lastrowid}/file",
+        }
+
+    @app.get("/api/media/{asset_id}/file")
+    def get_media_asset_file(asset_id: int):
+        registry = _g().get("tenant_registry")
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        if registry is None:
+            raise HTTPException(503, "账号组注册表尚未初始化")
+        row = _g()["conn"].execute(
+            "SELECT stored_filename, mime_type, status FROM media_assets WHERE id = ?",
+            (asset_id,),
+        ).fetchone()
+        if row is None or row["status"] != "active":
+            raise HTTPException(404, "图片素材不存在或已归档")
+        paths = registry.paths(tenant_id)
+        target = (paths.media_dir / row["stored_filename"]).resolve()
+        if not target.is_relative_to(paths.media_dir.resolve()) or not target.is_file():
+            raise HTTPException(404, "图片文件不存在")
+        return FileResponse(
+            target, media_type=row["mime_type"],
+            headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @app.post("/api/media/{asset_id}/archive")
+    def archive_media_asset(asset_id: int):
+        conn = _g()["conn"]
+        row = conn.execute("SELECT id, status FROM media_assets WHERE id = ?", (asset_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "图片素材不存在")
+        conn.execute(
+            "UPDATE media_assets SET status = 'archived', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (asset_id,),
+        )
+        conn.commit()
+        return {"id": asset_id, "status": "archived", "already_archived": row["status"] == "archived"}
 
     @app.get("/api/tenants")
     def list_tenants():
