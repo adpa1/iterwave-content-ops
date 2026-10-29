@@ -246,6 +246,10 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
           : result.message,
         result.restart_required ? "info" : "success",
       );
+      if (!result.restart_required && result.switch_status === "completed") {
+        // 其他页面持有旧账号组的查询结果；切换成功后重新加载整个工作台，避免显示旧租户数据。
+        window.setTimeout(() => window.location.reload(), 800);
+      }
     } catch (error) {
       showToast(error instanceof Error ? error.message : "切换账号组失败", "error");
       await loadTenants();
