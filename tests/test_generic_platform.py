@@ -215,8 +215,16 @@ def test_webhook_saved_to_env_and_validated(env):
 def test_config_redacts_custom_feed_urls_and_preserves_them_on_other_updates(env):
     client, cfg, _ = env
     secret_url = "https://feeds.example.com/private/token?access_token=TOPSECRET"
-    cfg.hot_topics.custom_feeds = [{"name": "私有行业源", "url": secret_url}]
+    first = client.patch("/api/config", json={"updates": {
+        "hot_topics.custom_feeds": [{"name": "私有行业源", "url": secret_url}],
+        "hot_topics.general_lists_enabled": False,
+    }})
+    assert first.status_code == 200, first.text
+    assert "TOPSECRET" not in first.text
+    assert "/private/token" not in first.text
+    assert cfg.hot_topics.custom_feeds[0]["url"] == secret_url
 
+    # 配置、覆盖文件和审计列表都不应通过 GET 接口泄露 URL 中的密钥。
     response = client.get("/api/config")
     assert response.status_code == 200
     feeds = response.json()["editable"]["hot_topics"]["custom_feeds"]
@@ -227,10 +235,13 @@ def test_config_redacts_custom_feed_urls_and_preserves_them_on_other_updates(env
     # 模拟设置页回传脱敏地址，同时修改另一个配置项；后端应恢复未变更的原 URL。
     updated = client.patch("/api/config", json={"updates": {
         "hot_topics.custom_feeds": feeds,
-        "hot_topics.general_lists_enabled": False,
+        "hot_topics.general_lists_enabled": True,
     }})
     assert updated.status_code == 200, updated.text
+    assert "TOPSECRET" not in updated.text
     assert cfg.hot_topics.custom_feeds[0]["url"] == secret_url
+
+
 
 
 def test_custom_feeds_config_validation(env):
