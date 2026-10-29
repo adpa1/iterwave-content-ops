@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useApp } from "../AppContext";
-import { api, MediaAsset } from "../api";
+import { api, MediaAsset, MediaUsageTarget } from "../api";
 
 function fileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -25,6 +25,8 @@ function formatBytes(bytes: number): string {
 export default function MediaLibraryPane() {
   const { showToast, withPending, isPending } = useApp();
   const [items, setItems] = useState<MediaAsset[]>([]);
+  const [targets, setTargets] = useState<MediaUsageTarget[]>([]);
+  const [selectedContentId, setSelectedContentId] = useState("");
   const [query, setQuery] = useState("");
   const [filename, setFilename] = useState("");
   const [title, setTitle] = useState("");
@@ -38,8 +40,13 @@ export default function MediaLibraryPane() {
     setLoading(true);
     setError("");
     try {
-      const result = await api.mediaAssets(query);
+      const [result, targetResult] = await Promise.all([api.mediaAssets(query), api.mediaUsageTargets()]);
       setItems(result.items);
+      setTargets(targetResult.items);
+      setSelectedContentId((current) => (
+        current && targetResult.items.some((item) => item.id === current)
+          ? current : targetResult.items[0]?.id ?? ""
+      ));
     } catch (e) {
       const message = e instanceof Error ? e.message : "图片素材加载失败";
       setError(message);
@@ -83,6 +90,22 @@ export default function MediaLibraryPane() {
         await load();
       } catch (e) {
         showToast(e instanceof Error ? e.message : "图片上传失败", "error");
+      }
+    });
+  };
+
+  const assignToContent = async (item: MediaAsset) => {
+    if (!selectedContentId) {
+      showToast("没有可选的待存草稿或平台草稿", "error");
+      return;
+    }
+    await withPending("media:use:" + item.id, async () => {
+      try {
+        const result = await api.useMediaAsset(item.id, selectedContentId, "illustration");
+        showToast(result.message, "success");
+        await load();
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : "图片分配失败", "error");
       }
     });
   };
@@ -147,6 +170,19 @@ export default function MediaLibraryPane() {
             <button className="btn sm" onClick={() => void load()} disabled={loading}>刷新</button>
           </div>
         </div>
+        {targets.length > 0 && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+            <span className="field-label">手动配图目标</span>
+            <select value={selectedContentId} onChange={(event) => setSelectedContentId(event.target.value)} style={{ minWidth: 260, maxWidth: "100%" }}>
+              {targets.map((target) => (
+                <option value={target.id} key={target.id}>
+                  {target.title} · {target.platform} · {target.draft_status} · #{target.id}
+                </option>
+              ))}
+            </select>
+            <span className="panel-sub">选择一篇尚未发布的内容，再点击素材卡片中的「配给此内容」。</span>
+          </div>
+        )}
         {error && <div className="panel-sub" style={{ color: "var(--red)" }}>{error}</div>}
         {loading ? <div className="empty-state">正在加载素材…</div> : items.length === 0 ? (
           <div className="empty-state">暂无图片素材。上传一张图片后，可在此查看和管理。</div>
@@ -164,7 +200,10 @@ export default function MediaLibraryPane() {
                   {item.tags.length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 }}>{item.tags.map((tag) => <span className="tag gray" key={tag}>{tag}</span>)}</div>}
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 10 }}>
                     <a href={item.file_url} target="_blank" rel="noreferrer">查看原图</a>
-                    <button className="btn sm" onClick={() => void archive(item)} disabled={isPending(`media:archive:${item.id}`)}>归档</button>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <button className="btn sm primary" onClick={() => void assignToContent(item)} disabled={!selectedContentId || isPending("media:use:" + item.id)}>配给此内容</button>
+                      <button className="btn sm" onClick={() => void archive(item)} disabled={isPending(`media:archive:${item.id}`)}>归档</button>
+                    </div>
                   </div>
                 </div>
               </article>
