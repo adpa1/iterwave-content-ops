@@ -125,13 +125,15 @@ class TenantRegistry:
             if any(isinstance(item, dict) and item.get("id") == tenant_id
                    for item in registry["tenants"]):
                 raise TenantError(f"账号组标识已存在：{tenant_id}")
+            # 先验证并创建隔离目录，再登记账号组；路径逃逸失败时不能留下损坏注册项。
+            paths = self.paths(tenant_id, name=name, create=True)
             registry["tenants"].append({
                 "id": tenant_id,
                 "name": name,
                 "created_at": datetime.now().isoformat(timespec="seconds"),
             })
             self._write_registry(registry)
-            return self.paths(tenant_id, name=name, create=True)
+            return paths
 
     def select_active(self, tenant_id: str) -> dict[str, Any]:
         tenant_id = self._validate_id(tenant_id)
