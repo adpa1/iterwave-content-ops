@@ -224,7 +224,16 @@ def _build_app() -> FastAPI:
     # === 访问保护（P0）：口令设置后 /api/* 必须登录；脚本可带 X-Access-Token ===
     @app.middleware("http")
     async def access_guard_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
-        path = request.url.path
+        # Vite 子路径构建会把 API 地址也加上 /<base>；这里在路由分发前剥离前缀，
+        # 同时设置 root_path 保留外部 URL，兼容直连子路径与反向代理已剥离前缀两种部署。
+        base_prefix = (os.getenv("APP_BASE_PATH") or os.getenv("VITE_BASE") or "").strip("/")
+        raw_path = request.scope.get("path", "/")
+        prefix = f"/{base_prefix}" if base_prefix else ""
+        if prefix and (raw_path == prefix or raw_path.startswith(prefix + "/")):
+            request.scope["path"] = raw_path[len(prefix):] or "/"
+            current_root = str(request.scope.get("root_path") or "").rstrip("/")
+            request.scope["root_path"] = f"{current_root}{prefix}"
+        path = request.scope.get("path", "/")
         if path.startswith("/api/") and path not in ("/api/auth/status", "/api/auth/login"):
             # 未完成首次访问保护配置时，只允许设置口令；业务 API 默认关闭，避免公网匿名访问。
             if not auth.password_configured() and path != "/api/auth/password":
@@ -275,7 +284,7 @@ def _build_app() -> FastAPI:
             # 只对 GET/HEAD + 404 做 SPA 兜底，其余原样返回
             if request.method not in ("GET", "HEAD") or response.status_code != 404:
                 return response
-            path = request.url.path
+            path = request.scope.get("path", "/")
             # API/文档等保留路径不兜底（返回 FastAPI 原始 404 JSON）
             if path.startswith(_SPA_PROTECTED_PREFIXES):
                 return response
