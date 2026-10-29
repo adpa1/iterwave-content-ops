@@ -85,7 +85,6 @@ function LoginScreen({ onDone }: { onDone: () => void }) {
 }
 
 function OpenModeBanner({ onDone }: { onDone: () => void }) {
-  const [open, setOpen] = useState(true);
   const [token, setToken] = useState("");
   const [token2, setToken2] = useState("");
   const [bootstrapToken, setBootstrapToken] = useState("");
@@ -101,7 +100,7 @@ function OpenModeBanner({ onDone }: { onDone: () => void }) {
       await api.setupAuth(token, undefined, bootstrapToken.trim() || undefined);
       await onDone();
     } catch (e) {
-      setErr(e instanceof Error ? e.message.replace(/^\\d+\\s*/, "") : String(e));
+      setErr(e instanceof Error ? e.message.replace(/^\d+\s*/, "") : String(e));
     } finally {
       setBusy(false);
     }
