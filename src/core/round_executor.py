@@ -990,12 +990,14 @@ class RoundExecutor:
         )
 
     def _finalize_round(self, round_id: int, report: dict, save_drafts: bool = True) -> None:
-        """全部草稿落定 → awaiting_publish；全军覆没 → failed；仍有待存则留在 producing。"""
+        """按仍可执行的草稿收口：待存留 producing；有已保存草稿则等发布；无可发布内容则失败/取消。"""
         row = self.conn.execute(
             "SELECT COUNT(*) AS total, "
             "SUM(CASE WHEN d.status = 'draft_saved' THEN 1 ELSE 0 END) AS saved, "
             "SUM(CASE WHEN d.status = 'failed' THEN 1 ELSE 0 END) AS failed, "
-            "SUM(CASE WHEN d.status = 'draft_pending' THEN 1 ELSE 0 END) AS pending "
+            "SUM(CASE WHEN d.status = 'draft_pending' THEN 1 ELSE 0 END) AS pending, "
+            "SUM(CASE WHEN d.status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled, "
+            "SUM(CASE WHEN d.status = 'expired' THEN 1 ELSE 0 END) AS expired "
             "FROM drafts d JOIN contents c ON d.content_id = c.id WHERE c.round_id = ?",
             (round_id,),
         ).fetchone()
@@ -1004,6 +1006,8 @@ class RoundExecutor:
         saved = row["saved"] or 0
         failed = row["failed"] or 0
         pending = row["pending"] or 0
+        cancelled = row["cancelled"] or 0
+        expired = row["expired"] or 0
 
         if total == 0:
             self.sm_round.transition(round_id, "failed", "本轮无任何内容产出")
@@ -1024,10 +1028,27 @@ class RoundExecutor:
                 })
             return
 
-        if saved == 0 and failed == total:
-            self.sm_round.transition(round_id, "failed", "全部草稿存失败")
+        # 仅有 draft_saved 才代表还有内容等待用户发布。
+        if saved > 0:
+            self.sm_round.transition(round_id, "awaiting_publish", "草稿已存，等待用户发布")
+            report["final_status"] = "awaiting_publish"
+            return
+
+        if failed > 0:
+            # 没有可发布草稿且至少一篇因执行失败 → 整轮失败（即便其它篇被取消/过期）。
+            self.sm_round.transition(round_id, "failed", "没有剩余可发布草稿，且存在存草稿失败")
             report["final_status"] = "failed"
             return
 
-        self.sm_round.transition(round_id, "awaiting_publish", "草稿已存，等待用户发布")
-        report["final_status"] = "awaiting_publish"
+        if cancelled + expired == total:
+            # 所有草稿均被用户取消或超时；不能错误地进入 awaiting_publish。
+            reason = "所有草稿均已取消" if expired == 0 else (
+                "所有草稿均已过期" if cancelled == 0 else "所有草稿均已取消或过期"
+            )
+            self.sm_round.transition(round_id, "cancelled", reason)
+            report["final_status"] = "cancelled"
+            return
+
+        # 仍存在不属于生产收尾范围的状态时 fail closed，避免进入无草稿可发的等待态。
+        self.sm_round.transition(round_id, "failed", "未发现可发布草稿，且存在未预期的草稿状态组合")
+        report["final_status"] = "failed"
