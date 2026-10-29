@@ -148,15 +148,19 @@ def _build_app() -> FastAPI:
             cfg.paths.log_dir = str(tenant_paths.log_dir)
             # 选题库及浏览器登录态均按账号组隔离；平台账号 key 不与 default 共用。
             cfg.topic_kb.path = str(tenant_paths.kb_dir / "topics.csv")
-            for platform_cfg in cfg.platforms.model_dump().keys():
-                item = getattr(cfg.platforms, platform_cfg)
-                item.account_key = f"{active_tenant_id}__{item.account_key}"
         # G-13：先套用 Web 端持久化的覆盖值（租户各自的 data/config_overrides.json），
         # 再构造各模块 —— 保证 scheduler/adapter/ops 拿到的是同一份生效配置
         applied_overrides = apply_overrides(cfg, load_overrides(cfg))
         if applied_overrides:
             logger.info("⚙️ 已套用 %d 项运行时配置覆盖：%s",
                         len(applied_overrides), applied_overrides)
+        if active_tenant_id != "default":
+            # 在覆盖值应用后再次强制命名空间化，避免旧配置覆盖把登录态指回 default。
+            for platform_cfg in cfg.platforms.model_dump().keys():
+                item = getattr(cfg.platforms, platform_cfg)
+                prefix = f"{active_tenant_id}__"
+                if not item.account_key.startswith(prefix):
+                    item.account_key = f"{prefix}{item.account_key}"
         db = Database(cfg)
         db.initialize()
         # 线程安全包装：路由线程池 / 调度器 / 执行器共用这一个连接
