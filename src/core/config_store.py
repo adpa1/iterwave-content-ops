@@ -531,6 +531,10 @@ def _save_overrides(overrides: dict[str, Any]) -> None:
         json.dumps(overrides, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    try:
+        OVERRIDES_FILE.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧运行时配置覆盖文件权限：%s", OVERRIDES_FILE.name)
 
 
 def apply_overrides(cfg: Config, overrides: dict[str, Any]) -> list[str]:
@@ -593,6 +597,35 @@ def _kb_source(cfg: Config) -> dict[str, Any]:
     if out.get("source_type") == "remote":
         out["remote_meta"] = remote_meta(cfg)
     return out
+
+
+def _redact_override_value(key: str, value: Any) -> Any:
+    """API 展示用覆盖值脱敏；不修改内存中的真实运行配置。"""
+    from .kb_sources import _mask_url
+
+    if key == "topic_kb.remote_url":
+        return _mask_url(str(value or "")) if value else value
+    if key == "hot_topics.custom_feeds" and isinstance(value, list):
+        return _public_custom_feeds(value)
+    return value
+
+
+def _redact_audit_value(key: str, value: Any) -> Any:
+    """审计记录中的配置值经过 str() 落库，因此要在响应层恢复结构后再脱敏。"""
+    if value is None:
+        return None
+    if key not in ("topic_kb.remote_url", "hot_topics.custom_feeds"):
+        return value
+    if key == "topic_kb.remote_url":
+        from .kb_sources import _mask_url
+        raw = str(value)
+        return _mask_url(raw) if raw else raw
+    import ast
+    try:
+        parsed = ast.literal_eval(str(value))
+    except (ValueError, SyntaxError):
+        return "[已脱敏]"
+    return str(_redact_override_value(key, parsed))
 
 
 def _public_custom_feeds(feeds: list[dict]) -> list[dict]:
@@ -711,9 +744,16 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             },
         },
         "overrides_file": str(OVERRIDES_FILE),
-        "overrides": load_overrides(),
+        "overrides": {
+            key: _redact_override_value(key, value)
+            for key, value in load_overrides().items()
+        },
         "audit": [
-            dict(r)
+            {
+                **dict(r),
+                "old_value": _redact_audit_value(r["key"], r["old_value"]),
+                "new_value": _redact_audit_value(r["key"], r["new_value"]),
+            }
             for r in conn.execute(
                 "SELECT id, key, old_value, new_value, changed_at "
                 "FROM config_changes ORDER BY id DESC LIMIT 20"
