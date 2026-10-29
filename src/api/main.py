@@ -778,13 +778,17 @@ def _register_routes(app: FastAPI) -> None:
         # 本机直连允许首次设置；公网域名/反向代理部署必须通过服务端环境变量提供的一次性引导口令。
         if not auth.password_configured():
             host = (request.url.hostname or "").strip("[]").lower()
-            remote_or_proxied = host not in ("localhost", "127.0.0.1", "::1") or any(
+            client_host = (request.client.host if request.client else "").strip("[]").lower()
+            local_hosts = ("localhost", "127.0.0.1", "::1")
+            forwarded = any(
                 request.headers.get(name)
                 for name in ("x-forwarded-for", "x-real-ip", "forwarded")
             )
+            # Host 头可由客户端伪造；仅凭 Host=localhost 不应允许公网访客跳过引导口令。
+            local_direct = host in local_hosts and client_host in local_hosts and not forwarded
             bootstrap = os.getenv("ITERWAVE_BOOTSTRAP_TOKEN", "")
             provided = str((payload or {}).get("bootstrap_token") or "")
-            if remote_or_proxied and (
+            if not local_direct and (
                 not bootstrap or not provided or not hmac.compare_digest(provided, bootstrap)
             ):
                 raise HTTPException(
