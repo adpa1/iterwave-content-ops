@@ -998,96 +998,101 @@ def _register_routes(app: FastAPI) -> None:
             source_filename = source["original_filename"]
 
         # 整个配额检查与调用串行化，避免并发请求同时越过月度上限。
-        with _media_generation_lock:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
-            used = int(conn.execute(
-                "SELECT COUNT(*) FROM media_generation_jobs WHERE created_at >= ? AND status = 'succeeded'", (month_start,),
-            ).fetchone()[0])
-            quota = int(settings.get("monthly_quota") or 0)
-            if quota <= 0 or used >= quota:
-                raise HTTPException(429, f"本账号组本月 AI 配图额度已用完（{used}/{quota}）")
-            cur = conn.execute(
-                "INSERT INTO media_generation_jobs (prompt, final_prompt, model, status, created_at) "
-                "VALUES (?, ?, ?, 'running', ?)",
-                (prompt, final_prompt, model, now),
-            )
-            job_id = int(cur.lastrowid)
-            conn.commit()
-            target = None
-            try:
-                from src.core.media_generation import ImageGenerationError, generate_image_bytes
-                from src.core.media_quality import score_image
-                raw, mime_type, suffix, width, height = generate_image_bytes(
-                    final_prompt, model=model, size=size, source_path=source_path,
-                    source_mime_type=source_mime, source_filename=source_filename,
+        if not _media_generation_lock.acquire(blocking=False):
+            raise HTTPException(409, "已有图片生成任务正在执行，请稍后重试")
+        try:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+                used = int(conn.execute(
+                    "SELECT COUNT(*) FROM media_generation_jobs WHERE created_at >= ? AND status = 'succeeded'", (month_start,),
+                ).fetchone()[0])
+                quota = int(settings.get("monthly_quota") or 0)
+                if quota <= 0 or used >= quota:
+                    raise HTTPException(429, f"本账号组本月 AI 配图额度已用完（{used}/{quota}）")
+                cur = conn.execute(
+                    "INSERT INTO media_generation_jobs (prompt, final_prompt, model, status, created_at) "
+                    "VALUES (?, ?, ?, 'running', ?)",
+                    (prompt, final_prompt, model, now),
                 )
-                stored_filename = f"{uuid.uuid4().hex}{suffix}"
-                target = (paths.media_dir / stored_filename).resolve()
-                if not target.is_relative_to(paths.media_dir.resolve()):
-                    raise HTTPException(422, "生成文件路径无效")
-                target.write_bytes(raw)
+                job_id = int(cur.lastrowid)
+                conn.commit()
+                target = None
                 try:
-                    target.chmod(0o600)
-                except OSError:
-                    pass
-                title = req.title.strip() or prompt[:80]
-                tags = list(dict.fromkeys(tag.strip()[:60] for tag in req.tags if tag.strip()))[:30]
-                source_ref = f"job:{job_id}" if source_asset_id is None else f"job:{job_id};edit_of:{source_asset_id}"
-                quality = score_image(raw)
-                asset_cur = conn.execute(
-                    "INSERT INTO media_assets "
-                    "(title, original_filename, stored_filename, mime_type, byte_size, sha256, "
-                    "width, height, alt_text, tags, source_type, source_ref, status, review_status, "
-                    "quality_score, quality_details) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, 'active', 'pending_review', ?, ?)",
-                    (
-                        title, stored_filename, stored_filename, mime_type, len(raw),
-                        hashlib.sha256(raw).hexdigest(), width, height, req.alt_text.strip(),
-                        json.dumps(tags, ensure_ascii=False), source_ref, quality["score"],
-                        json.dumps(quality, ensure_ascii=False),
-                    ),
-                )
-                asset_id = int(asset_cur.lastrowid)
-                conn.execute(
-                    "UPDATE media_generation_jobs SET status = 'succeeded', output_asset_id = ?, "
-                    "completed_at = ? WHERE id = ?",
-                    (asset_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
-                )
-                conn.commit()
-                return {
-                    "id": asset_id, "title": title, "original_filename": stored_filename,
-                    "mime_type": mime_type, "byte_size": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
-                    "width": width, "height": height, "alt_text": req.alt_text.strip(),
-                    "tags": tags, "source_type": "generated", "source_ref": source_ref,
-                    "quality_score": quality["score"], "quality_details": quality,
-                    "status": "active", "review_status": "pending_review", "review_note": None,
-                    "duplicate": False, "file_url": f"/api/media/{asset_id}/file",
-                    "job_id": job_id, "review_required": True,
-                }
-            except HTTPException:
-                if target is not None:
-                    target.unlink(missing_ok=True)
-                conn.execute(
-                    "UPDATE media_generation_jobs SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?",
-                    ("图片生成失败", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
-                )
-                conn.commit()
-                raise
-            except Exception as exc:  # noqa: BLE001 — 保存失败必须记账并留审计
-                if target is not None:
-                    target.unlink(missing_ok=True)
-                conn.execute(
-                    "UPDATE media_generation_jobs SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?",
-                    ("图片生成失败，详细原因仅记录在服务端日志", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
-                )
-                conn.commit()
-                logger.exception("AI 配图任务失败 job=%s", job_id)
-                from src.core.media_generation import ImageGenerationError
-                if isinstance(exc, ImageGenerationError):
-                    # 服务商原文可能包含内部地址或认证信息，不向客户端透传。
-                    raise HTTPException(502, "图片生成服务暂时不可用，请检查服务配置后重试") from exc
-                raise HTTPException(500, "图片生成失败，请稍后重试；如持续失败请联系管理员") from exc
+                    from src.core.media_generation import ImageGenerationError, generate_image_bytes
+                    from src.core.media_quality import score_image
+                    raw, mime_type, suffix, width, height = generate_image_bytes(
+                        final_prompt, model=model, size=size, source_path=source_path,
+                        source_mime_type=source_mime, source_filename=source_filename,
+                    )
+                    stored_filename = f"{uuid.uuid4().hex}{suffix}"
+                    target = (paths.media_dir / stored_filename).resolve()
+                    if not target.is_relative_to(paths.media_dir.resolve()):
+                        raise HTTPException(422, "生成文件路径无效")
+                    target.write_bytes(raw)
+                    try:
+                        target.chmod(0o600)
+                    except OSError:
+                        pass
+                    title = req.title.strip() or prompt[:80]
+                    tags = list(dict.fromkeys(tag.strip()[:60] for tag in req.tags if tag.strip()))[:30]
+                    source_ref = f"job:{job_id}" if source_asset_id is None else f"job:{job_id};edit_of:{source_asset_id}"
+                    quality = score_image(raw)
+                    asset_cur = conn.execute(
+                        "INSERT INTO media_assets "
+                        "(title, original_filename, stored_filename, mime_type, byte_size, sha256, "
+                        "width, height, alt_text, tags, source_type, source_ref, status, review_status, "
+                        "quality_score, quality_details) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, 'active', 'pending_review', ?, ?)",
+                        (
+                            title, stored_filename, stored_filename, mime_type, len(raw),
+                            hashlib.sha256(raw).hexdigest(), width, height, req.alt_text.strip(),
+                            json.dumps(tags, ensure_ascii=False), source_ref, quality["score"],
+                            json.dumps(quality, ensure_ascii=False),
+                        ),
+                    )
+                    asset_id = int(asset_cur.lastrowid)
+                    conn.execute(
+                        "UPDATE media_generation_jobs SET status = 'succeeded', output_asset_id = ?, "
+                        "completed_at = ? WHERE id = ?",
+                        (asset_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
+                    )
+                    conn.commit()
+                    return {
+                        "id": asset_id, "title": title, "original_filename": stored_filename,
+                        "mime_type": mime_type, "byte_size": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+                        "width": width, "height": height, "alt_text": req.alt_text.strip(),
+                        "tags": tags, "source_type": "generated", "source_ref": source_ref,
+                        "quality_score": quality["score"], "quality_details": quality,
+                        "status": "active", "review_status": "pending_review", "review_note": None,
+                        "duplicate": False, "file_url": f"/api/media/{asset_id}/file",
+                        "job_id": job_id, "review_required": True,
+                    }
+                except HTTPException:
+                    if target is not None:
+                        target.unlink(missing_ok=True)
+                    conn.execute(
+                        "UPDATE media_generation_jobs SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?",
+                        ("图片生成失败", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
+                    )
+                    conn.commit()
+                    raise
+                except Exception as exc:  # noqa: BLE001 — 保存失败必须记账并留审计
+                    if target is not None:
+                        target.unlink(missing_ok=True)
+                    conn.execute(
+                        "UPDATE media_generation_jobs SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?",
+                        ("图片生成失败，详细原因仅记录在服务端日志", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
+                    )
+                    conn.commit()
+                    logger.exception("AI 配图任务失败 job=%s", job_id)
+                    from src.core.media_generation import ImageGenerationError
+                    if isinstance(exc, ImageGenerationError):
+                        # 服务商原文可能包含内部地址或认证信息，不向客户端透传。
+                        raise HTTPException(502, "图片生成服务暂时不可用，请检查服务配置后重试") from exc
+                    raise HTTPException(500, "图片生成失败，请稍后重试；如持续失败请联系管理员") from exc
+
+        finally:
+            _media_generation_lock.release()
 
     @app.get("/api/media/generation-settings")
     def get_media_generation_settings():
