@@ -90,3 +90,25 @@ def test_restore_rejects_non_object_manifest(tmp_path: Path) -> None:
         archive.writestr("easel.db", b"not a database")
     with pytest.raises(BackupError, match="清单格式无效"):
         restore_backup(archive_path, tmp_path / "easel.db", tmp_path / "data", backup_dir, "brand_a")
+
+
+def test_create_backup_counts_manifest_overhead_in_aggregate_limit(tmp_path: Path, monkeypatch) -> None:
+    import pytest
+    from src.core import tenant_backup
+    from src.core.tenant_backup import BackupError
+
+    data_dir = tmp_path / "data"
+    backup_dir = tmp_path / "backups"
+    data_dir.mkdir()
+    backup_dir.mkdir()
+    db_path = data_dir / "easel.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE state (value TEXT)")
+    conn.commit()
+    conn.close()
+
+    # Database bytes alone fit, but the required manifest pushes the complete snapshot over the cap.
+    monkeypatch.setattr(tenant_backup, "MAX_BACKUP_BYTES", db_path.stat().st_size)
+    with pytest.raises(BackupError, match="总大小"):
+        create_backup(db_path, data_dir, backup_dir, "brand_a")
+    assert not list(backup_dir.glob("*.zip"))
