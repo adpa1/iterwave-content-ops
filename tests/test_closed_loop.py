@@ -106,6 +106,64 @@ def test_round_review_waits_until_remaining_saved_drafts_expire(cfg, conn, seed)
     ).fetchone()[0] == "partial_completed"
 
 
+def test_awaiting_publish_timeout_waits_for_late_saved_draft_expiry(cfg, conn, seed):
+    now = datetime.now()
+    round_id = seed.round(status="awaiting_publish")
+    old_round_start = (now - timedelta(hours=130)).isoformat()
+    conn.execute(
+        "UPDATE spiral_rounds SET transition_log = ? WHERE id = ?",
+        (
+            '[{"from":"producing","to":"awaiting_publish","at":"'
+            + old_round_start
+            + '","reason":"test"}]',
+            round_id,
+        ),
+    )
+    # 早期草稿已经超过 120h，可先过期；后保存的草稿尚在单篇有效期内。
+    old_draft = seed.draft(
+        round_id, platform="xhs", draft_status="draft_saved",
+        saved_at=(now - timedelta(hours=125)).isoformat(),
+        fetch_status=None, topic_id="old-saved",
+    )
+    late_draft = seed.draft(
+        round_id, platform="douyin", draft_status="draft_saved",
+        saved_at=(now - timedelta(hours=80)).isoformat(),
+        fetch_status=None, topic_id="late-saved",
+    )
+    conn.commit()
+
+    eng = _engine(cfg, conn, {})
+    asyncio.run(eng._job_round_timeout_sweeper())
+
+    # 早期单篇过期，但整轮不能因为 130h 的旧轮次计时取消后保存草稿。
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (old_draft,)
+    ).fetchone()[0] == "expired"
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (late_draft,)
+    ).fetchone()[0] == "draft_saved"
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "awaiting_publish"
+    assert conn.execute(
+        "SELECT awaiting_publish_ended_at FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] is None
+
+    # 后保存草稿走完自己的 timeout+grace 后，整轮方可安全取消。
+    conn.execute(
+        "UPDATE drafts SET saved_at = ? WHERE id = ?",
+        ((now - timedelta(hours=121)).isoformat(), late_draft),
+    )
+    conn.commit()
+    asyncio.run(eng._job_round_timeout_sweeper())
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (late_draft,)
+    ).fetchone()[0] == "expired"
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "cancelled"
+
+
 def test_manual_confirm_path_schedules_fetch(cfg, conn, seed):
     """手动确认与轮询走同一入口：必须注册数据采集（之前手动确认后数据永远不来）。"""
     r = seed.round(status="awaiting_publish")

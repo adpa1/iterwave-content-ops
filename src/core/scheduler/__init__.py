@@ -987,6 +987,19 @@ class SchedulerEngine:
 
             reason = f"{status} 超时 {limit_hours}h（已 {elapsed.total_seconds() / 3600:.1f}h）"
             if status == "awaiting_publish":
+                # 整轮计时从首次进入 awaiting_publish 开始，但草稿可分批保存/恢复。
+                # 只要还存在未到单篇 timeout+grace 的 draft_saved，就不能先取消整轮。
+                waiting = self.conn.execute(
+                    "SELECT COUNT(*) FROM drafts d JOIN contents c ON d.content_id = c.id "
+                    "WHERE c.round_id = ? AND d.status = 'draft_saved'",
+                    (row["id"],),
+                ).fetchone()[0]
+                if waiting:
+                    logger.info(
+                        "[APS] 轮次 %s awaiting_publish 阶段超时暂缓：%d 篇平台草稿尚未到单篇过期时间",
+                        row["id"], waiting,
+                    )
+                    continue
                 self.conn.execute(
                     "UPDATE spiral_rounds SET awaiting_publish_ended_at = ? WHERE id = ?",
                     (now.isoformat(timespec="seconds"), row["id"]),
