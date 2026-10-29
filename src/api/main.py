@@ -2500,7 +2500,11 @@ def _register_routes(app: FastAPI) -> None:
         public = []
         for item in items or []:
             row = dict(item)
-            row["url"] = kb_sources._redact_remote_url(str(row.get("url") or ""))
+            raw_url = str(row.get("url") or "")
+            row["url"] = kb_sources._redact_remote_url(raw_url) if raw_url else ""
+            raw_name = str(row.get("name") or "")
+            if raw_name.startswith(("http://", "https://")):
+                row["name"] = kb_sources._redact_remote_url(raw_name)
             public.append(row)
         return public
 
@@ -2511,8 +2515,14 @@ def _register_routes(app: FastAPI) -> None:
         for incoming in items or []:
             row = dict(incoming)
             for old in current or []:
+                old_name = str(old.get("name") or "")
+                incoming_name = str(row.get("name") or "")
+                same_name = old_name == incoming_name or (
+                    old_name.startswith(("http://", "https://"))
+                    and kb_sources._redact_remote_url(old_name) == incoming_name
+                )
                 same_key = (
-                    str(old.get("name") or "") == str(row.get("name") or "")
+                    same_name
                     and str(old.get("type") or "aggregate") == str(row.get("type") or "aggregate")
                     and str(old.get("platform") or "") == str(row.get("platform") or "")
                     and tuple(old.get("platforms") or []) == tuple(row.get("platforms") or [])
