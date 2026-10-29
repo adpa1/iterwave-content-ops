@@ -69,6 +69,15 @@ def publish_from_tenant(conn) -> int:
             "COALESCE(raw_hot_topics.last_seen_at, raw_hot_topics.discovered_at, '')",
             [tuple(row[field] for field in RAW_FIELDS) for row in rows],
         )
+        # 同一来源恢复成功后，清除旧失败占位，避免把旧失败状态带到其他账号组。
+        shared.execute(
+            "DELETE FROM raw_hot_topics WHERE evidence_status = 'failed' AND EXISTS ("
+            "SELECT 1 FROM raw_hot_topics AS fresh "
+            "WHERE fresh.source = raw_hot_topics.source "
+            "AND fresh.evidence_status = 'collected' "
+            "AND COALESCE(fresh.last_seen_at, fresh.discovered_at, '') >= "
+            "COALESCE(raw_hot_topics.last_seen_at, raw_hot_topics.discovered_at, ''))"
+        )
         shared.commit()
         return len(rows)
     finally:
