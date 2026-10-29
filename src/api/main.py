@@ -1355,8 +1355,9 @@ def _register_routes(app: FastAPI) -> None:
         """
         conn = _g()["conn"]
         row = conn.execute(
-            "SELECT d.platform, d.status, d.error_msg, c.round_id, c.guard_outcome, c.guard_reason, "
-            "c.review_rejected, c.review_rejection_reason "
+            "SELECT d.platform, d.status, d.error_msg, d.saved_content_hash, "
+            "c.id AS content_id, c.round_id, c.title, c.body, c.tags, c.image_paths, "
+            "c.guard_outcome, c.guard_reason, c.review_rejected, c.review_rejection_reason "
             "FROM drafts d JOIN contents c ON c.id = d.content_id WHERE d.id = ?",
             (draft_id,),
         ).fetchone()
@@ -1420,6 +1421,38 @@ def _register_routes(app: FastAPI) -> None:
                 + "。未发布时请先修改并重新提交审核；如果已在平台真实发布，"
                 "需填写例外原因才能登记真实发布与数据采集",
             )
+
+        # 已存平台草稿的真实载荷必须与当前本地版本一致；旧记录无指纹按 unknown 处理。
+        # 若用户尚未发布，应先在平台同步草稿；若已发布旧版，则需要单独说明例外原因。
+        platform_sync_state = None
+        platform_sync_override_reason = (
+            (req.platform_sync_override_reason or "").strip() if req else ""
+        )
+        current_hash = None
+        if row["status"] == "draft_saved":
+            from src.core.content_version import content_version_hash, parse_json_list
+            stored_images = parse_json_list(row["image_paths"])
+            payload_images = [str(stored_images[0])] if stored_images and stored_images[0] else []
+            current_hash = content_version_hash(
+                row["title"], row["body"], parse_json_list(row["tags"]), payload_images,
+            )
+            saved_hash = row["saved_content_hash"]
+            platform_sync_state = (
+                "unknown" if not saved_hash
+                else "matched" if saved_hash == current_hash
+                else "stale"
+            )
+            if platform_sync_state != "matched" and not platform_sync_override_reason:
+                sync_desc = (
+                    "历史平台草稿没有保存版本指纹，无法证明平台稿与本地稿一致"
+                    if platform_sync_state == "unknown"
+                    else "本地文案已不同于上次存入平台的版本"
+                )
+                raise HTTPException(
+                    409,
+                    f"{sync_desc}。尚未发布时，请先在平台端更新草稿并点击「确认平台版本已同步」；"
+                    "如果实际发布的就是平台旧版本，请填写平台版本例外原因后再登记",
+                )
 
         sched = _g().get("scheduler")
         if sched is not None and getattr(sched, "conn", None) is not None and getattr(sched, "sm_draft", None) is not None:
