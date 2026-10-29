@@ -81,7 +81,8 @@ def test_redact_masks_bearer_tokens_and_signed_urls():
     assert "bearer-secret-value" not in safe
     assert "password@" not in safe
     assert "URLSECRET" not in safe
-    assert "keep=visible" in safe
+    assert "https://example.com/…" in safe
+    assert "keep=visible" not in safe
 
 
 # =====================================================================
