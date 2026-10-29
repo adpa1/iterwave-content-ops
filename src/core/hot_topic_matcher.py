@@ -160,11 +160,15 @@ class HotTopicMatcher:
         return self.persona.signature() + (":llm" if self.llm_fn else ":kw")
 
     def pending(self, limit: int = MAX_PER_RUN) -> list[dict]:
+        """只研判当前榜单（每个数据源最近一次快照），历史热点不参与研判。"""
         rows = self.conn.execute(
-            "SELECT id, title FROM hot_topics WHERE evidence_status = 'collected' "
-            "AND title IS NOT NULL AND duplicate_of IS NULL "
-            "AND (match_version IS NULL OR match_version != ?) "
-            "ORDER BY heat_score DESC NULLS LAST LIMIT ?",
+            "SELECT id, title FROM hot_topics t WHERE t.evidence_status = 'collected' "
+            "AND t.title IS NOT NULL AND t.duplicate_of IS NULL "
+            "AND (t.match_version IS NULL OR t.match_version != ?) "
+            "AND COALESCE(t.last_seen_at, t.discovered_at) = ("
+            "  SELECT MAX(COALESCE(x.last_seen_at, x.discovered_at)) FROM hot_topics x "
+            "  WHERE x.source = t.source AND x.evidence_status = 'collected'"
+            ") ORDER BY t.heat_score DESC NULLS LAST LIMIT ?",
             (self.version, limit),
         ).fetchall()
         return [dict(r) for r in rows]

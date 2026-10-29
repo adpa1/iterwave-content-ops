@@ -202,8 +202,9 @@ ops_targets:
 notifications:
   channels:
     # macOS 原生通知（terminal-notifier）
+    # 本地服务常驻运行时全部静音：只写 notifications 表（通知中心可查），不弹系统横幅
     macos:
-      enabled: true
+      enabled: false
     # 企业微信 webhook
     wecom:
       enabled: false
@@ -240,8 +241,9 @@ notifications:
 hot_topics:
   enabled: true
   # 采集频率见下方 scheduler.jobs.hot_topics_refresh
-  # 保留与去重：同平台同标题只更新、不新增；跨平台同一事件合并展示；过期热点按天清理 + 总量上限
-  retention_days: 7               # last_seen_at 早于 N 天的热点删除
+  # 保留与去重：同平台同标题只更新、不新增；跨平台同一事件合并展示；
+  # 滚动：每次采集只保留当前榜单（本轮没再上榜的旧热点立即删除，不展示也不参与研判）
+  retention_days: 7               # 兜底清理：last_seen_at 早于 N 天的残留行删除（采集失败占位等）
   max_rows: 5000                  # hot_topics 总行数硬上限（超出从最旧的删）
   dedup:
     cross_platform_similarity: 0.8   # 跨平台标题相似度阈值（字符二元组 Jaccard，0.5–1.0）

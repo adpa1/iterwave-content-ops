@@ -479,8 +479,9 @@ def make_card(
     output_dir: Path,
     platform: Platform = Platform.XHS,
     footer: str = "",
+    page_text: str = "",
 ) -> Path:
-    """生成 1080×1440 图文卡片（渐变背景 + 折行标题 + 维度标签 + 页脚）。
+    """生成 1080×1440 图文封面卡（渐变背景 + 折行标题 + 维度标签 + 页脚 + 页码）。
 
     纯 Pillow 实现，无外部字体下载依赖。R6.5：Pillow 已有，无需自造图像引擎。
     """
@@ -543,6 +544,101 @@ def make_card(
             fill=(255, 255, 255), font=footer_font,
         )
 
+    # 页码（多图卡组时显示「1/6」，单图不显示）
+    if page_text:
+        page_font = _load_font(34)
+        draw.text(
+            (width - margin - draw.textlength(page_text, font=page_font),
+             height - margin - 56),
+            page_text, fill=(255, 255, 255), font=page_font,
+        )
+
     img.save(str(output_path), format="PNG", optimize=True)
     logger.info("🖼️ 图片卡片生成: %s (%dx%d)", output_path, width, height)
     return output_path
+
+
+def _render_body_page(
+    lines: list[str], output_dir: Path, platform: Platform, footer: str, page_text: str,
+) -> Path:
+    """正文分页卡：同色系渐变背景 + 大字号正文 + 页脚 + 页码（1080×1440）。"""
+    from PIL import Image, ImageDraw
+
+    output_path = output_dir / f"card_{platform.value}_{uuid.uuid4().hex[:8]}.png"
+    width, height = CARD_SIZE
+    top_color, bottom_color = _PLATFORM_PALETTE.get(platform, _PLATFORM_PALETTE[Platform.XHS])
+    img = Image.new("RGB", (width, height))
+    draw = ImageDraw.Draw(img)
+    for y in range(height):
+        ratio = y / (height - 1)
+        color = tuple(
+            int(top_color[i] + (bottom_color[i] - top_color[i]) * ratio) for i in range(3)
+        )
+        draw.line([(0, y), (width, y)], fill=color)
+
+    margin = 96
+    body_font = _load_font(52)
+    # 内容少时垂直居中，避免整页文字堆在顶部、下半页空白
+    block_height = len(lines) * 82
+    y_cursor = max(margin + 40, (height - block_height) // 2 - 60)
+    for line in lines:
+        draw.text((margin, y_cursor), line, fill=(255, 255, 255), font=body_font)
+        y_cursor += 82
+
+    if footer.strip():
+        footer_font = _load_font(36)
+        draw.text((margin, height - margin - 60), footer, fill=(255, 255, 255), font=footer_font)
+    page_font = _load_font(34)
+    draw.text(
+        (width - margin - draw.textlength(page_text, font=page_font), height - margin - 56),
+        page_text, fill=(255, 255, 255), font=page_font,
+    )
+
+    img.save(str(output_path), format="PNG", optimize=True)
+    logger.info("🖼️ 正文卡片生成: %s", output_path)
+    return output_path
+
+
+def card_footer(cfg, platform: Platform) -> str:
+    """卡片页脚跟随账号画像：优先本平台账号名 + 定位，其次全局定位。
+
+    留空则卡片不画页脚（不写死任何垂类文案）。生成与重生成卡片共用。
+    """
+    goal = cfg.ultimate_goal
+    persona = goal.platform_personas.get(platform.value)
+    name = (persona.account_name if persona else "").strip()
+    positioning = (
+        (persona.positioning if persona else "").strip() or goal.positioning.strip()
+    )
+    text = " · ".join(part for part in (name, positioning) if part)
+    return text[:30]
+
+
+def make_card_set(
+    title: str,
+    subtitle: str,
+    body: str,
+    output_dir: Path,
+    platform: Platform = Platform.XHS,
+    footer: str = "",
+    max_pages: int = 9,
+) -> list[Path]:
+    """生成一组图文卡片：1 张封面 + N 张正文分页（首页图 + 内容图，最多 max_pages 张）。
+
+    之前每篇只出 1 张标题封面，正文全在文案里，发出来是「只有文没有图」的观感。
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    body_font = _load_font(52)
+    lines = _wrap_cjk(_strip_emoji(body), body_font, CARD_SIZE[0] - 192)
+    per_page = 12
+    pages = [lines[i:i + per_page] for i in range(0, len(lines), per_page)] or [[]]
+    if len(pages) > max_pages - 1:
+        pages = pages[:max_pages - 1]
+        pages[-1] = pages[-1][-11:] + ["…（更多内容见正文）"]
+
+    total = len(pages) + 1
+    paths = [make_card(title, subtitle, output_dir, platform, footer, page_text=f"1/{total}")]
+    for idx, page_lines in enumerate(pages, start=2):
+        paths.append(_render_body_page(page_lines, output_dir, platform, footer, f"{idx}/{total}"))
+    return paths

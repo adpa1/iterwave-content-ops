@@ -532,6 +532,16 @@ class CreateGoalRequest(BaseModel):
             raise ValueError("target_value 必须大于 0")
         return v
 
+    @field_validator("target_platform")
+    @classmethod
+    def _platform_enum(cls, v: Optional[str]) -> Optional[str]:
+        """平台决定统计口径：只接受四平台，空串归一为 None（= 全平台汇总）。"""
+        if v is None or not str(v).strip():
+            return None
+        if v not in ("xhs", "douyin", "kuaishou", "wechat_channels"):
+            raise ValueError("target_platform 必须是 xhs / douyin / kuaishou / wechat_channels，或留空表示全平台")
+        return v
+
 
 class GoalUpdateRequest(BaseModel):
     """编辑阶段目标：只允许改口径字段与状态；current_value 由采集回写（R21）。"""
@@ -587,6 +597,15 @@ class GoalUpdateRequest(BaseModel):
         allowed = ("active", "completed", "failed", "cancelled", "paused")
         if v is not None and v not in allowed:
             raise ValueError(f"status 只能是 {' / '.join(allowed)}")
+        return v
+
+    @field_validator("target_platform")
+    @classmethod
+    def _platform_enum(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or not str(v).strip():
+            return None
+        if v not in ("xhs", "douyin", "kuaishou", "wechat_channels"):
+            raise ValueError("target_platform 必须是 xhs / douyin / kuaishou / wechat_channels，或留空表示全平台")
         return v
 
 
@@ -2591,8 +2610,11 @@ def _register_routes(app: FastAPI) -> None:
         return {"round_id": round_id, "items": items}
 
     @app.get("/api/contents/{content_id}/images/{index}")
-    def get_content_image(content_id: str, index: int):
-        """G-36：下载已生成的卡片图（只允许该内容登记过、且在本项目 output 目录下的文件）。"""
+    def get_content_image(content_id: str, index: int, download: bool = Query(False)):
+        """G-36：读取已生成的卡片图（只允许该内容登记过、且在本项目 output 目录下的文件）。
+
+        默认 inline 返回，浏览器可直接预览；download=1 时才带 attachment 触发下载。
+        """
         conn = _g()["conn"]
         cfg = _g()["cfg"]
         row = _content_row(conn, content_id)
@@ -2606,7 +2628,9 @@ def _register_routes(app: FastAPI) -> None:
         path = Path(str(paths[index])).resolve()
         if root not in path.parents or not path.is_file():
             raise HTTPException(404, "图片文件不存在（可能已被清理）")
-        return FileResponse(str(path), filename=path.name, media_type="image/png")
+        if download:
+            return FileResponse(str(path), filename=path.name, media_type="image/png")
+        return FileResponse(str(path), media_type="image/png")
 
     @app.patch("/api/contents/{content_id}")
     def update_content(content_id: str, req: UpdateContentRequest):
@@ -2669,6 +2693,49 @@ def _register_routes(app: FastAPI) -> None:
             "id": content_id, "changed": changed, "title": title, "body": body,
             "tags": json.loads(tags_json) if tags_json else [],
         }
+
+    @app.post("/api/contents/{content_id}/cards")
+    def regenerate_cards(content_id: str):
+        """按当前标题/正文重新出图（封面 + 正文分页），补上历史内容的「只有文没有图」。"""
+        conn = _g()["conn"]
+        cfg = _g()["cfg"]
+        row = _content_row(conn, content_id)
+        try:
+            title, body = row["title"] or "", row["body"] or ""
+            platform = Platform(row["platform"])
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(400, f"内容平台非法：{content_id}") from exc
+        dimension = ""
+        try:
+            topic = conn.execute(
+                "SELECT dimension FROM topics WHERE id = ?", (row["topic_id"],)
+            ).fetchone()
+            dimension = (topic["dimension"] if topic else "") or ""
+        except Exception:  # noqa: BLE001 — 维度只是装饰，取不到不影响出图
+            dimension = ""
+
+        from ..core.content_pipeline import make_card_set, card_footer
+        output_dir = cfg.resolve_path(cfg.paths.output_dir)
+        paths = make_card_set(title, dimension or "知识卡片", body, output_dir,
+                              platform, card_footer(cfg, platform))
+        old = []
+        try:
+            old = json.loads(row["image_paths"] or "[]")
+        except (TypeError, ValueError):
+            old = []
+        conn.execute(
+            "UPDATE contents SET image_paths = ? WHERE id = ?",
+            (json.dumps([str(p) for p in paths], ensure_ascii=False), content_id),
+        )
+        conn.commit()
+        # 旧图（旧版单封面）顺手清掉，避免 output 目录里堆孤儿文件
+        for p in old:
+            try:
+                Path(str(p)).unlink()
+            except OSError:
+                pass
+        return {"id": content_id, "image_count": len(paths),
+                "image_paths": [p.name for p in paths]}
 
     @app.post("/api/contents/{content_id}/recheck")
     def recheck_content(content_id: str):
@@ -3141,6 +3208,10 @@ def _register_routes(app: FastAPI) -> None:
             hot_topic_service.trigger_background(cfg, trigger="manual")
         data = HotTopicCollector(cfg, conn).overview()
         data["refresh_job"] = hot_topic_service.status()
+        data["research_job"] = hot_topic_service.research_status()
+        # 研判依赖大模型：未启用时前端把「研判热点」按钮置灰并提示去系统设置开启
+        from ..core.hot_topic_matcher import default_llm_fn
+        data["research_ready"] = default_llm_fn(cfg) is not None
         # 多平台画像：标出每条热点适合哪些平台的账号（不同平台可能是不同定位）
         from ..core.persona import matching_platforms
         if cfg.ultimate_goal.goal_mode != "unified":
@@ -3159,6 +3230,20 @@ def _register_routes(app: FastAPI) -> None:
         if cfg.hot_topics.enabled is False:
             raise HTTPException(409, "热点采集已在配置中关闭（hot_topics.enabled=false）")
         return hot_topic_service.trigger_background(cfg, trigger="manual")
+
+    @app.post("/api/hot_topics/research", status_code=202)
+    def hot_topics_research():
+        """手动触发大模型研判（只研判当前榜单，历史热点不参与），立即返回任务状态。
+
+        前端轮询 GET /api/hot_topics 的 research_job 判断是否完成。
+        """
+        from ..core import hot_topic_service
+        from ..core.hot_topic_matcher import default_llm_fn
+
+        cfg = _g()["cfg"]
+        if default_llm_fn(cfg) is None:
+            raise HTTPException(409, "大模型未启用：请到「系统设置」开启主模型并配置 API Key")
+        return hot_topic_service.trigger_research(cfg)
 
     @app.post("/api/hot_topics/import")
     def import_hot_topic(req: dict):
@@ -3666,6 +3751,16 @@ def _register_routes(app: FastAPI) -> None:
             return kb_sources.delete_source(_g()["cfg"], source_id)
         except KeyError:
             raise HTTPException(404, "来源不存在")
+
+    @app.post("/api/kb/import")
+    async def kb_import_to_pool():
+        """立即把选题库来源并入选题池（与每天 6:00 的 kb_scan 同一逻辑，手动触发一次）。"""
+        sched = _g()["scheduler"]
+        conn = _g()["conn"]
+        before = conn.execute("SELECT COUNT(*) FROM topic_index").fetchone()[0]
+        await sched._job_kb_scan()
+        total = conn.execute("SELECT COUNT(*) FROM topic_index").fetchone()[0]
+        return {"total": total, "inserted": total - before}
 
     @app.post("/api/kb/sources/{source_id}/sync")
     def kb_source_sync(source_id: str):

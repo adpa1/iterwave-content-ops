@@ -33,7 +33,7 @@ from .config import PROJECT_ROOT
 from .kb_reader import KbReader  # noqa: F401 — 兼容旧引用
 from .topic_pool import load_pool
 from .orchestration import Orchestration, step_status_from_report
-from .content_pipeline import generate_copy_content, make_card, _llm_available
+from .content_pipeline import generate_copy_content, make_card_set, _llm_available
 from .plan_version import PlanVersionManager
 from .guard.ultimate_goal_checker import CheckOutcome, CheckResult
 from ..adapters.base import Platform, ContentToPublish
@@ -635,18 +635,8 @@ class RoundExecutor:
     # ------------------------------------------------------------------
 
     def _card_footer(self, platform: Platform) -> str:
-        """卡片页脚跟随账号画像：优先本平台账号名 + 定位，其次全局定位。
-
-        留空则 make_card 不画页脚（不写死任何垂类文案）。
-        """
-        goal = self.cfg.ultimate_goal
-        persona = goal.platform_personas.get(platform.value)
-        name = (persona.account_name if persona else "").strip()
-        positioning = (
-            (persona.positioning if persona else "").strip() or goal.positioning.strip()
-        )
-        text = " · ".join(part for part in (name, positioning) if part)
-        return text[:30]
+        from .content_pipeline import card_footer
+        return card_footer(self.cfg, platform)
 
     async def _produce_contents(
         self, round_id: int, scored: list, platforms: list[Platform], report: dict,
@@ -684,7 +674,7 @@ class RoundExecutor:
                 # ③ 文案生成 + ④ G2 终极目标检查（R2：FAIL 丢弃重生成，最多 2 次；
                 #    ERROR 不能默认通过）
                 accepted = None
-                image_path = None
+                image_paths: list = []
                 reject_reason: Optional[str] = None
                 for attempt in range(MAX_GUARD_RETRIES + 1):
                     # LLM 为阻塞调用，放到线程池避免卡住事件循环
@@ -697,8 +687,8 @@ class RoundExecutor:
                     )
                     if card_first:
                         # 编排把出图排在质量门之前：每个候选版本都先出图再质检
-                        image_path = await asyncio.to_thread(
-                            make_card, title, topic.dimension, output_dir, platform,
+                        image_paths = await asyncio.to_thread(
+                            make_card_set, title, topic.dimension, body, output_dir, platform,
                             self._card_footer(platform),
                         )
 
@@ -757,10 +747,10 @@ class RoundExecutor:
 
                 # ⑤ 图片卡片（编排可关闭；可调到质量门之前——此时被拦重写的版本也会出图）
                 if not card_first:
-                    image_path = None
+                    image_paths = []
                     if make_cards:
-                        image_path = await asyncio.to_thread(
-                            make_card, title, topic.dimension, output_dir, platform,
+                        image_paths = await asyncio.to_thread(
+                            make_card_set, title, topic.dimension, body, output_dir, platform,
                             self._card_footer(platform),
                         )
 
@@ -774,7 +764,7 @@ class RoundExecutor:
                     (
                         content_id, round_id, topic.id, platform.value, title, body,
                         json.dumps(tags, ensure_ascii=False),
-                        json.dumps([str(image_path)] if image_path else [], ensure_ascii=False),
+                        json.dumps([str(p) for p in image_paths], ensure_ascii=False),
                         len(body), "knowledge", outcome.result.value, outcome.reason,
                         "仅使用本地模板卡片的文字排版与渐变背景，尚未选用正式视觉素材",
                     ),
@@ -796,7 +786,7 @@ class RoundExecutor:
                     "title": title,
                     "body": body,
                     "tags": tags,
-                    "image_path": str(image_path) if image_path else None,
+                    "image_paths": [str(p) for p in image_paths],
                 })
                 report["contents_created"] += 1
                 report["degraded_visuals"] = int(report.get("degraded_visuals") or 0) + 1
@@ -866,7 +856,7 @@ class RoundExecutor:
                 platform=platform,
                 title=row["title"],
                 body=row["body"],
-                image_paths=[row["image_path"]] if row["image_path"] else [],
+                image_paths=row["image_paths"],
                 tags=row["tags"],
             )
             try:

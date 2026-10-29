@@ -31,6 +31,18 @@ const DATA_SOURCES = [
   { value: "manual", label: "人工录入" },
 ];
 
+/** 目标描述 → 平台识别：写「小红书涨粉 500」时自动选中小红书，避免落到「全平台」统计口径 */
+const PLATFORM_KEYWORDS: { re: RegExp; platform: Platform }[] = [
+  { re: /小红书|红书|xhs/i, platform: "xhs" },
+  { re: /抖音|douyin/i, platform: "douyin" },
+  { re: /快手|kuaishou/i, platform: "kuaishou" },
+  { re: /视频号|微信视频号|channels/i, platform: "wechat_channels" },
+];
+
+function detectPlatform(text: string): Platform | null {
+  return PLATFORM_KEYWORDS.find((k) => k.re.test(text))?.platform ?? null;
+}
+
 function todayStr(offsetDays = 0): string {
   const d = new Date();
   d.setDate(d.getDate() + offsetDays);
@@ -67,6 +79,8 @@ export default function Goals() {
   const [summary, setSummary] = useState<GoalSummary | null>(null);
   const [cfgView, setCfgView] = useState<SystemConfigView | null>(null);
   const [newGoal, setNewGoal] = useState({ ...EMPTY_GOAL });
+  /** 用户是否手动选过平台：没选过时按目标描述自动识别 */
+  const [platformTouched, setPlatformTouched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [creating, setCreating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -92,6 +106,11 @@ export default function Goals() {
 
   const handleCreate = async () => {
     if (!newGoal.goal_text.trim()) { showToast("请填写目标描述", "error"); return; }
+    // 平台是统计口径的前提：不知道是哪个平台，「涨粉 500」就没法算进度
+    if (newGoal.goal_level === "platform" && !newGoal.target_platform) {
+      showToast("请选择目标平台（决定只统计哪个平台的数据）", "error");
+      return;
+    }
     setSubmitting(true);
     try {
       // G-11：withPending 同步去重，连点 3 次只会发 1 个请求
@@ -100,7 +119,7 @@ export default function Goals() {
           goal_text: newGoal.goal_text,
           target_metric: newGoal.target_metric,
           target_value: newGoal.target_value,
-          target_platform: (newGoal.target_platform || null) as any,
+          target_platform: newGoal.target_platform === "all" ? null : (newGoal.target_platform || null) as any,
           metric_scope: newGoal.metric_scope,
           baseline_value: newGoal.baseline_value,
           baseline_at: newGoal.baseline_at,
@@ -117,6 +136,7 @@ export default function Goals() {
         showToast("✓ 目标已创建");
         await load();
         setNewGoal({ ...EMPTY_GOAL });
+        setPlatformTouched(false);
         setCreating(false);
       }
     } catch (e: any) { showToast(`创建失败: ${e.message}`, "error"); }
@@ -396,7 +416,17 @@ export default function Goals() {
           <div>
             <label className="form-label">目标描述 *</label>
             <input className="field" placeholder="如：小红书涨粉 500"
-              value={newGoal.goal_text} onChange={(e) => setNewGoal({ ...newGoal, goal_text: e.target.value })} />
+              value={newGoal.goal_text}
+              onChange={(e) => {
+                const text = e.target.value;
+                const detected = detectPlatform(text);
+                setNewGoal((g) => ({
+                  ...g,
+                  goal_text: text,
+                  // 用户没手动改过平台时，按描述里的平台名自动选中
+                  target_platform: !platformTouched && detected ? detected : g.target_platform,
+                }));
+              }} />
           </div>
           <div>
             <label className="form-label">指标 *</label>
@@ -451,14 +481,22 @@ export default function Goals() {
           </div>
           {newGoal.goal_level === "platform" && (
             <div>
-              <label className="form-label">平台（空=全平台）</label>
-              <select className="field" value={newGoal.target_platform} onChange={(e) => setNewGoal({ ...newGoal, target_platform: e.target.value })}>
-                <option value="">全平台</option>
-                <option value="xhs">小红书</option>
-                <option value="douyin">抖音</option>
-                <option value="kuaishou">快手</option>
-                <option value="wechat_channels">视频号</option>
+              <label className="form-label">目标平台 *（决定统计口径）</label>
+              <select className="field" value={newGoal.target_platform}
+                onChange={(e) => { setPlatformTouched(true); setNewGoal({ ...newGoal, target_platform: e.target.value }); }}>
+                <option value="" disabled>请选择平台</option>
+                {ALL_PLATFORMS.map((p) => (
+                  <option key={p} value={p}>{platformMeta(p).label}</option>
+                ))}
+                <option value="all">全平台（跨平台汇总）</option>
               </select>
+              <div className="tiny" style={{ marginTop: 4 }}>
+                {newGoal.target_platform === "all"
+                  ? "汇总各平台数据：基线要填各平台合计值，涨粉类目标按各平台粉丝数之和计算"
+                  : newGoal.target_platform
+                    ? `只统计「${platformMeta(newGoal.target_platform as Platform).label}」的数据，涨粉目标用该平台粉丝数快照`
+                    : "未选平台时无法确定只统计哪个平台，进度会算错"}
+              </div>
             </div>
           )}
           {newGoal.goal_level === "platform" && northStars.length > 0 && mode !== "per_platform" && (
@@ -556,10 +594,10 @@ export default function Goals() {
               </select>
             </div>
             <div>
-              <label className="form-label">平台（空=全平台）</label>
+              <label className="form-label">目标平台 *（决定统计口径）</label>
               <select className="field" value={editing.target_platform ?? ""}
                 onChange={(e) => setEditing({ ...editing, target_platform: (e.target.value || null) as any })}>
-                <option value="">全平台</option>
+                <option value="">全平台（跨平台汇总）</option>
                 <option value="xhs">小红书</option>
                 <option value="douyin">抖音</option>
                 <option value="kuaishou">快手</option>

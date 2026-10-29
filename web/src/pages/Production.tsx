@@ -9,13 +9,12 @@ import DemoBadge from "../components/DemoBadge";
 import EmptyHint from "../components/EmptyHint";
 
 const ROUND_STATUSES = ["created", "producing", "awaiting_publish", "collecting_metrics", "analyzing", "completed", "partial_completed", "failed", "cancelled"];
-// 业务推进状态不能从 UI 手工跳转；这里只展示安全取消入口。
 const ROUND_TARGETABLE: Record<string, string[]> = {
-  created: ["cancelled"],
-  producing: ["cancelled"],
-  awaiting_publish: ["cancelled"],
-  collecting_metrics: ["cancelled"],
-  analyzing: [],
+  created: ["producing", "cancelled"],
+  producing: ["awaiting_publish", "failed", "cancelled"],
+  awaiting_publish: ["collecting_metrics", "cancelled"],
+  collecting_metrics: ["analyzing", "cancelled"],
+  analyzing: ["completed", "partial_completed", "failed"],
 };
 
 const STATUS_CLS: Record<string, string> = {
@@ -97,14 +96,16 @@ export default function Production() {
   const [editTags, setEditTags] = useState("");
   const [recheck, setRecheck] = useState<RecheckResult | null>(null);
   const [rejectReason, setRejectReason] = useState("");
-  const [resubmitReason, setResubmitReason] = useState("");
+  /** 卡片图加载失败的序号（避免破图静默留白，明确提示文件缺失） */
+  const [brokenCards, setBrokenCards] = useState<Record<number, true>>({});
+  /** 当前弹层预览的卡片序号（null = 不展示预览层） */
+  const [previewCard, setPreviewCard] = useState<number | null>(null);
 
   // 运行本轮
   const [topicCount, setTopicCount] = useState(5);
   const [selPlatforms, setSelPlatforms] = useState<Platform[]>(ALL_PLATFORMS);
   const [saveDrafts, setSaveDrafts] = useState(true);
   const [running, setRunning] = useState(false);
-  const [savingPending, setSavingPending] = useState(false);
   const [report, setReport] = useState<RunRoundReport | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [noLogin, setNoLogin] = useState<Platform[]>([]);
@@ -198,6 +199,8 @@ export default function Production() {
 
   // 选中内容 → 填充编辑器
   useEffect(() => {
+    setBrokenCards({});
+    setPreviewCard(null);
     const item = contents.find((c) => c.id === selectedContentId);
     if (!item) { setEditTitle(""); setEditBody(""); setEditTags(""); return; }
     setEditTitle(item.title);
@@ -205,6 +208,14 @@ export default function Production() {
     setEditTags(item.tags.join(" "));
     setRecheck(null);
   }, [selectedContentId, contents]);
+
+  // 卡片大图预览层：Esc 关闭
+  useEffect(() => {
+    if (previewCard === null) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPreviewCard(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [previewCard]);
 
   // ---------------------------------------------------------------- 操作
   const handleCreateRound = async () => {
@@ -247,36 +258,6 @@ export default function Production() {
     }
   };
 
-  const handleSavePendingDrafts = async () => {
-    if (!currentRoundId || savingPending || running) return;
-    setSavingPending(true);
-    setRunError(null);
-    setReport(null);
-    try {
-      const result = await api.savePendingDrafts(currentRoundId);
-      if (result.final_status === "awaiting_publish") {
-        showToast(
-          `✓ 已恢复存草稿：成功 ${result.drafts_saved} 篇，失败 ${result.drafts_failed} 篇`,
-          result.drafts_failed > 0 ? "info" : "success",
-        );
-      } else if (result.final_status === "failed") {
-        showToast("✕ 恢复存草稿失败，请查看各篇草稿错误原因", "error");
-      } else {
-        showToast(
-          `已尝试 ${result.drafts_attempted} 篇：成功 ${result.drafts_saved}，失败 ${result.drafts_failed}，仍待存 ${result.pending_drafts}`,
-          "info",
-        );
-      }
-      await refresh();
-      await loadRoundData(currentRoundId);
-    } catch (e: any) {
-      setRunError(e?.message ?? "恢复待存草稿失败");
-      showToast(`恢复存草稿失败：${e?.message ?? "未知错误"}`, "error");
-    } finally {
-      setSavingPending(false);
-    }
-  };
-
   const handleTransition = async (target: string) => {
     if (!currentRoundId) return;
     try {
@@ -298,15 +279,9 @@ export default function Production() {
 
   /** 「✕ 不发了」：draft_pending / draft_saved → cancelled（R9：不冻结未发布草稿） */
   const cancelDraft = async (draftId: string) => {
-    const draft = roundDetail?.drafts?.find((item) => item.id === draftId);
     try {
       await api.cancelDraft(draftId);
-      showToast(
-        draft?.status === "draft_saved"
-          ? "本地状态已取消；平台端草稿仍存在，请到平台端手动清理"
-          : "已取消本地待存草稿",
-        draft?.status === "draft_saved" ? "info" : "success",
-      );
+      showToast("已取消该草稿");
       await refresh();
       if (currentRoundId) await loadRoundData(currentRoundId);
     } catch (e: any) { showToast(`取消失败: ${e.message}`, "error"); }
@@ -401,6 +376,20 @@ export default function Production() {
     }
   };
 
+  /** 按当前标题/正文重新出图：封面 + 正文分页（历史内容也能补图） */
+  const handleRegenerateCards = async () => {
+    if (!selectedContentId) return;
+    await withPending("regen-cards", async () => {
+      try {
+        const res = await api.regenerateContentCards(selectedContentId);
+        showToast(`✓ 已生成 ${res.image_count} 张卡片`, "success");
+        await loadRoundData(currentRoundId!);
+      } catch (e: any) {
+        showToast(`生成卡片失败: ${e.message}`, "error");
+      }
+    });
+  };
+
   const handleRecheck = async () => {
     if (!selectedContentId) return;
     await withPending("recheck-content", async () => {
@@ -424,30 +413,11 @@ export default function Production() {
     await withPending("reject-content", async () => {
       try {
         const res = await api.rejectContent(selectedContentId, rejectReason.trim());
-        const platformNote = res.platform_drafts_left > 0
-          ? `；其中 ${res.platform_drafts_left} 篇平台草稿仍需你到平台端手动清理`
-          : "";
-        showToast(`✕ 已驳回，正常发布/存草稿已阻断，影响 ${res.affected_drafts} 条${platformNote}`, "success");
+        showToast(`✕ 已驳回，影响草稿 ${res.affected_drafts} 条`, "success");
         setRejectReason("");
         await loadRoundData(currentRoundId!);
       } catch (e: any) {
         showToast(`驳回失败: ${e.message}`, "error");
-      }
-    });
-  };
-
-  const handleResubmit = async () => {
-    if (!selectedContentId) return;
-    if (!resubmitReason.trim()) { showToast("请填写重新提交审核的理由", "error"); return; }
-    await withPending("resubmit-content", async () => {
-      try {
-        const res = await api.resubmitContent(selectedContentId, resubmitReason.trim());
-        showToast(res.message, "success");
-        setResubmitReason("");
-        setRecheck(null);
-        await loadRoundData(currentRoundId!);
-      } catch (e: any) {
-        showToast(`重新提交审核失败: ${e.message}`, "error");
       }
     });
   };
@@ -510,19 +480,6 @@ export default function Production() {
 
   const canRun = !!roundDetail && roundDetail.status === "created" && !running && (usePlan || selPlatforms.length > 0);
   const selectedContent = contents.find((c) => c.id === selectedContentId) ?? null;
-  const selectedContentIsImmutable = !!selectedContent &&
-    (!!selectedContent.draft_user_confirmed_at ||
-      ["user_published", "data_fetching", "published"].includes(selectedContent.draft_status ?? ""));
-  const roundDrafts = roundDetail?.drafts ?? [];
-  const roundHasPublishHistory = roundDrafts.some((d) =>
-    !!d.user_confirmed_at || ["user_published", "data_fetching", "published"].includes(d.status),
-  );
-  const roundHasSavedPlatformDraft = roundDrafts.some((d) => d.status === "draft_saved");
-  const roundCancelBlockReason = roundHasPublishHistory
-    ? "本轮存在已确认发布或有发布历史的内容；请让数据采集与复盘正常收口"
-    : roundHasSavedPlatformDraft
-      ? "本轮仍有已存入平台的草稿；请先逐篇取消并到平台端手动清理"
-      : null;
 
   // ---------------------------------------------------------------- 渲染
   return (
@@ -885,38 +842,7 @@ export default function Production() {
 
                 {roundDetail.status !== "created" && (
                   <div className="note" style={{ marginTop: 8 }}>
-                    {roundDetail.status === "producing" &&
-                    (roundDetail.drafts ?? []).some((d) => d.status === "draft_pending") ? (
-                      (() => {
-                        const pendingDrafts = (roundDetail.drafts ?? []).filter((d) => d.status === "draft_pending");
-                        const saveableDrafts = pendingDrafts.filter((d) => !d.review_rejected);
-                        const rejectedDrafts = pendingDrafts.filter((d) => d.review_rejected);
-                        return (
-                          <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
-                            <span>
-                              {saveableDrafts.length > 0
-                                ? `当前有 ${saveableDrafts.length} 篇内容可继续存草稿。`
-                                : "当前没有可存入平台的待存内容。"}
-                              {rejectedDrafts.length > 0 &&
-                                `另有 ${rejectedDrafts.length} 篇被人工驳回；请在审核页修改并重新提交，或取消本轮。`}
-                              {" "}继续存草稿不会重新生成内容。
-                            </span>
-                            {saveableDrafts.length > 0 && (
-                              <button
-                                type="button"
-                                className="btn primary sm"
-                                onClick={handleSavePendingDrafts}
-                                disabled={savingPending || running}
-                              >
-                                {savingPending ? "正在恢复…" : "继续存剩余草稿"}
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })()
-                    ) : (
-                      <>只有 created 状态的轮次可运行（当前 {roundDetail.status}）。如需启动新一轮，请新建一轮。</>
-                    )}
+                    只有 created 状态的轮次可运行（当前 {roundDetail.status}）。如需重跑，请新建一轮。
                   </div>
                 )}
                 {!usePlan && selPlatforms.length === 0 && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>至少选择一个平台</div>}
@@ -1048,15 +974,16 @@ export default function Production() {
 
       {/* ============ ④ 内容编辑与审核 ============ */}
       {tab === "review" && (
-        <div className="grid two">
-          <div className="panel" style={{ marginBottom: 0 }}>
+        <div className="review-layout">
+          {/* 左：本轮内容列表 */}
+          <div className="panel">
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">✎</span>本轮内容（{contents.length}）</div>
                 <div className="panel-sub">点击选择后可编辑 / 重检 / 驳回</div>
               </div>
-              <RoundPicker rounds={rounds} value={currentRoundId} onChange={setCurrentRoundId} />
             </div>
+            <RoundPicker rounds={rounds} value={currentRoundId} onChange={setCurrentRoundId} />
             <div className="list">
               {contents.length === 0 && (
                 <EmptyHint next="到「③ 生产线」选中本轮并点「▶ 运行本轮」">本轮暂无内容</EmptyHint>
@@ -1075,7 +1002,7 @@ export default function Production() {
                   <div className="task-main">
                     <div className="task-title">{c.title}</div>
                     <div className="task-desc">
-                      {PLATFORM_NAME[c.platform]} · 检查 {c.guard_outcome ?? "—"}
+                      {PLATFORM_NAME[c.platform]} · 检查 {c.guard_outcome ?? "—"} · 卡片 {c.image_count} 张
                       {c.draft_status && <> · <span className={`tag ${STATUS_CLS[c.draft_status] ?? "gray"}`}>{c.draft_status}</span></>}
                     </div>
                   </div>
@@ -1084,7 +1011,8 @@ export default function Production() {
             </div>
           </div>
 
-          <div className="panel" style={{ marginBottom: 0 }}>
+          {/* 中：文案编辑 */}
+          <div className="panel">
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">⌕</span>编辑与重检</div>
@@ -1105,91 +1033,41 @@ export default function Production() {
                   )}
                 </div>
 
-                {selectedContentIsImmutable ? (
-                  <div className="note" style={{ marginBottom: 10, borderLeft: "4px solid var(--orange)", paddingLeft: 8 }}>
-                    该内容已确认发布或进入数据采集。为保留真实发布版本与历史数据，此处只读；如需修改，请新建一篇修订内容。
-                  </div>
-                ) : selectedContent.draft_status === "draft_saved" ? (
-                  <div className="note" style={{ marginBottom: 10, borderLeft: "4px solid var(--orange)", paddingLeft: 8 }}>
-                    该内容已存入平台草稿。这里的修改只更新本地记录，不会自动同步到平台；保存后请复制文案并在平台端更新草稿，再重新过目标检查。
-                  </div>
-                ) : null}
-
                 <label style={{ fontSize: 12, color: "var(--muted)" }}>标题</label>
-                <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} disabled={selectedContentIsImmutable} style={{ width: "100%", marginBottom: 8 }} />
+                <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
 
                 <label style={{ fontSize: 12, color: "var(--muted)" }}>正文</label>
                 <textarea
                   value={editBody}
                   onChange={(e) => setEditBody(e.target.value)}
-                  disabled={selectedContentIsImmutable}
-                  rows={10}
+                  rows={12}
                   style={{ width: "100%", marginBottom: 8, fontFamily: "inherit", resize: "vertical" }}
                 />
 
                 <label style={{ fontSize: 12, color: "var(--muted)" }}>标签（空格或逗号分隔）</label>
-                <input value={editTags} onChange={(e) => setEditTags(e.target.value)} disabled={selectedContentIsImmutable} style={{ width: "100%", marginBottom: 10 }} />
+                <input value={editTags} onChange={(e) => setEditTags(e.target.value)} style={{ width: "100%", marginBottom: 10 }} />
 
-                {/* G-36：复制文案 + 下载卡片，补齐小红书本地草稿的发布闭环 */}
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                  <button className="btn primary" onClick={handleSaveContent} disabled={isPending("save-content")}>
+                    {isPending("save-content") ? "提交中…" : "✓ 保存修改"}
+                  </button>
+                  <button className="btn" onClick={handleRecheck} disabled={isPending("recheck-content")}>
+                    {isPending("recheck-content") ? "重检中…" : "⌕ 重新过目标检查"}
+                  </button>
                   <button className="btn" onClick={handleCopy}>☷ 复制文案</button>
-                  {Array.from({ length: selectedContent.image_count }, (_, i) => (
-                    <a
-                      key={i}
-                      className="btn sm"
-                      href={api.contentImageUrl(selectedContent.id, i)}
-                      download
-                      style={{ textDecoration: "none" }}
-                    >
-                      ⬇ 下载卡片 {i + 1}
-                    </a>
-                  ))}
-                  {selectedContent.image_count === 0 && (
-                    <span style={{ fontSize: 12, color: "var(--subtle)" }}>本篇无卡片图</span>
-                  )}
+                  <button className="btn danger" style={{ marginLeft: "auto" }} onClick={handleDeleteContent}
+                    disabled={isPending("delete-content") || ["user_published", "data_fetching", "published"].includes(selectedContent.draft_status ?? "")}
+                    title="已发布（有数据）的内容不能删除">
+                    {isPending("delete-content") ? "删除中…" : "删除这篇"}
+                  </button>
                 </div>
+
                 {(selectedContent.platform === "xhs" || selectedContent.platform === "douyin") && (
                   <div className="note" style={{ marginBottom: 10, fontSize: 12 }}>
                     ● {selectedContent.platform === "xhs" ? "小红书「暂存离开」" : "抖音「暂存离开」"}草稿存于发布浏览器本地（localStorage `publish_cache`），浏览器关闭即消失（G-36）。
                     用「复制文案」+「下载卡片」在自己的 App 里手动发布即可。
                   </div>
                 )}
-
-                {selectedContent.review_rejected && (
-                  <div className="note" style={{ marginBottom: 10, borderLeft: "4px solid var(--red)", paddingLeft: 8 }}>
-                    <b>人工审核已驳回：</b>{selectedContent.review_rejection_reason || "未提供原因"}。
-                    正常存草稿与发布确认已阻断。修改内容后请先「重新过目标检查」，检查通过后再显式提交审核解除驳回状态。
-                    <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                      <input
-                        value={resubmitReason}
-                        onChange={(e) => setResubmitReason(e.target.value)}
-                        placeholder="重新提交审核的说明（必填）"
-                        disabled={selectedContentIsImmutable || running || savingPending || isPending("resubmit-content")}
-                        style={{ flex: 1, minWidth: 220 }}
-                      />
-                      <button
-                        className="btn primary"
-                        onClick={handleResubmit}
-                        disabled={selectedContentIsImmutable || running || savingPending || isPending("resubmit-content") || !resubmitReason.trim()}
-                      >
-                        {isPending("resubmit-content") ? "提交中…" : "重新提交审核"}
-                      </button>
-                    </div>
-                  </div>
-                )}
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-                  <button className="btn primary" onClick={handleSaveContent} disabled={selectedContentIsImmutable || running || savingPending || isPending("save-content")}>
-                    {isPending("save-content") ? "提交中…" : "✓ 保存修改"}
-                  </button>
-                  <button className="btn" onClick={handleRecheck} disabled={selectedContentIsImmutable || running || savingPending || isPending("recheck-content")}>
-                    {isPending("recheck-content") ? "重检中…" : "⌕ 重新过目标检查"}
-                  </button>
-                  <button className="btn danger" style={{ marginLeft: "auto" }} onClick={handleDeleteContent}
-                    disabled={isPending("delete-content") || selectedContentIsImmutable || running || savingPending}
-                    title="已确认发布或有发布历史的内容不能删除">
-                    {isPending("delete-content") ? "删除中…" : "删除这篇"}
-                  </button>
-                </div>
 
                 {recheck && (
                   <div
@@ -1207,14 +1085,14 @@ export default function Production() {
                 )}
 
                 <div style={{ borderTop: "1px dashed var(--line)", paddingTop: 10 }}>
-                  <div className="panel-title" style={{ fontSize: 12, marginBottom: 6 }}>人工驳回（会阻断正常发布；修改后需重新提交审核）</div>
+                  <div className="panel-title" style={{ fontSize: 12, marginBottom: 6 }}>驳回（记录理由，不自动改草稿状态）</div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <input
-                      value={rejectReason} placeholder="例如：观点与账号定位不符" disabled={selectedContentIsImmutable || selectedContent.review_rejected || running || savingPending}
+                      value={rejectReason} placeholder="例如：观点与账号定位不符"
                       onChange={(e) => setRejectReason(e.target.value)}
                       style={{ flex: 1 }}
                     />
-                    <button className="btn" onClick={handleReject} disabled={selectedContentIsImmutable || selectedContent.review_rejected || running || savingPending || isPending("reject-content")}>
+                    <button className="btn" onClick={handleReject} disabled={isPending("reject-content")}>
                       {isPending("reject-content") ? "提交中…" : "✕ 驳回"}
                     </button>
                   </div>
@@ -1228,6 +1106,113 @@ export default function Production() {
               </>
             )}
           </div>
+
+          {/* 右：卡片图预览 */}
+          <div className="panel review-cardcol">
+            <div className="panel-head">
+              <div>
+                <div className="panel-title">
+                  <span className="icon">▤</span>卡片预览（{selectedContent?.image_count ?? 0}）
+                </div>
+                <div className="panel-sub">封面 + 正文分页，点图看原图</div>
+              </div>
+              {selectedContent && (
+                <button className="btn sm" onClick={handleRegenerateCards} disabled={isPending("regen-cards")}>
+                  {isPending("regen-cards") ? "生成中…" : "↻ 重新生成"}
+                </button>
+              )}
+            </div>
+
+            {!selectedContent && (
+              <EmptyHint next="在左侧「本轮内容」列表点击一篇文案">尚未选择内容</EmptyHint>
+            )}
+
+            {selectedContent && selectedContent.image_count === 0 && (
+              <EmptyHint next="点右上角「↻ 重新生成」，按当前标题/正文出图">本篇还没有卡片图</EmptyHint>
+            )}
+
+            {selectedContent && selectedContent.image_count > 0 && (
+              <>
+                <div className="card-grid">
+                  {Array.from({ length: selectedContent.image_count }, (_, i) => {
+                    const url = api.contentImageUrl(selectedContent.id, i);
+                    return (
+                      <div className="card-item" key={i}>
+                        {brokenCards[i] ? (
+                          <div className="card-thumb is-broken">
+                            图片文件已丢失<br />点右上角重新生成
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="card-thumb"
+                            onClick={() => setPreviewCard(i)}
+                            title={`预览第 ${i + 1} 张`}
+                          >
+                            <img
+                              src={url}
+                              alt={`卡片 ${i + 1}`}
+                              onError={() => setBrokenCards((prev) => ({ ...prev, [i]: true }))}
+                            />
+                          </button>
+                        )}
+                        <div className="card-meta">
+                          <span>第 {i + 1} 张</span>
+                          <a
+                            className="btn sm"
+                            href={api.contentImageUrl(selectedContent.id, i, true)}
+                            download
+                            style={{ textDecoration: "none" }}
+                          >⬇ 下载</a>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="note" style={{ marginTop: 10, fontSize: 12 }}>
+                  点缩略图可看大图预览；卡片图按当前标题 / 正文生成，改完文案后点「↻ 重新生成」，发布时按顺序上传。
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* 卡片大图预览层（点击缩略图打开，Esc / 点遮罩关闭） */}
+          {selectedContent && previewCard !== null && (
+            <div className="card-lightbox" onClick={() => setPreviewCard(null)} role="dialog" aria-modal="true">
+              <div className="card-lightbox-inner" onClick={(e) => e.stopPropagation()}>
+                <div className="card-lightbox-head">
+                  <span>
+                    {PLATFORM_NAME[selectedContent.platform]} · 第 {previewCard + 1} / {selectedContent.image_count} 张
+                  </span>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    {selectedContent.image_count > 1 && (
+                      <>
+                        <button
+                          className="btn sm"
+                          onClick={() => setPreviewCard((previewCard - 1 + selectedContent.image_count) % selectedContent.image_count)}
+                        >‹ 上一张</button>
+                        <button
+                          className="btn sm"
+                          onClick={() => setPreviewCard((previewCard + 1) % selectedContent.image_count)}
+                        >下一张 ›</button>
+                      </>
+                    )}
+                    <a
+                      className="btn sm"
+                      href={api.contentImageUrl(selectedContent.id, previewCard, true)}
+                      download
+                      style={{ textDecoration: "none" }}
+                    >⬇ 下载这张</a>
+                    <button className="btn sm" onClick={() => setPreviewCard(null)}>✕ 关闭</button>
+                  </div>
+                </div>
+                <img
+                  src={api.contentImageUrl(selectedContent.id, previewCard)}
+                  alt={`卡片 ${previewCard + 1}`}
+                />
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1305,27 +1290,12 @@ export default function Production() {
                 </div>
 
                 <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  <span style={{ fontSize: 11, color: "var(--muted)", marginRight: 4 }}>人工操作：</span>
+                  <span style={{ fontSize: 11, color: "var(--muted)", marginRight: 4 }}>可迁移到：</span>
                   {(ROUND_TARGETABLE[roundDetail.status] || []).map((t) => (
-                    <button
-                      key={t}
-                      className="btn sm"
-                      onClick={() => handleTransition(t)}
-                      disabled={t === "cancelled" && (running || savingPending || !!roundCancelBlockReason)}
-                      title={t === "cancelled"
-                        ? (running || savingPending
-                          ? "本轮操作仍在执行，不能中途取消"
-                          : roundCancelBlockReason ?? "取消轮次并清理本地待存草稿")
-                        : undefined}
-                    >→ {t}</button>
+                    <button key={t} className="btn sm" onClick={() => handleTransition(t)}>→ {t}</button>
                   ))}
                   {(ROUND_TARGETABLE[roundDetail.status] || []).length === 0 && (
-                    <span style={{ fontSize: 12, color: "var(--subtle)" }}>当前状态不支持手工跳转；请通过业务操作推进或查看终态</span>
-                  )}
-                  {roundCancelBlockReason && (ROUND_TARGETABLE[roundDetail.status] || []).includes("cancelled") && (
-                    <div className="note" style={{ flexBasis: "100%", marginTop: 4 }}>
-                      暂不能取消轮次：{roundCancelBlockReason}
-                    </div>
+                    <span style={{ fontSize: 12, color: "var(--subtle)" }}>当前状态无合法迁移（终态）</span>
                   )}
                   <button className="btn sm danger" style={{ marginLeft: "auto" }} onClick={handleDeleteRound}
                     disabled={isPending("delete-round") || ["producing", "collecting_metrics", "analyzing"].includes(roundDetail.status)}

@@ -280,6 +280,14 @@ export interface HotTopicItem {
   match_reason?: string | null;
   match_method?: "keyword" | "llm" | null;
   last_seen_at?: string | null;
+  /** 本轮采集到这条热点的时间（= 最后一次上榜时间） */
+  collected_at?: string | null;
+  /** 热度趋势辅助判断：爆发 / 持续爆发 / 降温中 / 已降温 / 平稳 */
+  trend?: "爆发" | "持续爆发" | "降温中" | "已降温" | "平稳";
+  trend_reason?: string;
+  heat_prev?: number | null;
+  heat_peak?: number | null;
+  platform?: string;
   /** 被采集到的次数（去重后同一条只更新、不新增） */
   seen_count?: number;
   /** 跨平台同一事件（去重规则 2 合并到本条） */
@@ -359,6 +367,21 @@ export interface HotSourceStatus {
   discovered_at: string | null;
 }
 
+export interface HotRefreshProgress {
+  stage: "fetching" | "saving" | "dedup" | "matching" | "done" | "failed";
+  label: string;
+  percent: number;
+  message?: string | null;
+  /** 各数据源实时状态（抓取阶段逐条更新） */
+  sources?: {
+    key: string;
+    label: string;
+    status: "pending" | "collected" | "failed";
+    items?: number;
+  }[];
+  updated_at?: string;
+}
+
 export interface HotRefreshJob {
   running: boolean;
   started_at: string | null;
@@ -367,6 +390,18 @@ export interface HotRefreshJob {
   report: Record<string, string> | null;
   match: Record<string, unknown> | null;
   error: string | null;
+  /** 采集进度：服务端后台线程实时写入，切换页签不影响采集 */
+  progress?: HotRefreshProgress | null;
+}
+
+export interface HotResearchJob {
+  running: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  report: Record<string, unknown> | null;
+  error: string | null;
+  /** 采集中时不重复启动，返回原因 */
+  reason?: string;
 }
 
 export interface HotTopicsResponse {
@@ -377,6 +412,10 @@ export interface HotTopicsResponse {
   stale?: boolean;
   /** 后台采集任务状态（GET 只读库，采集由定时任务 / POST refresh 完成） */
   refresh_job?: HotRefreshJob;
+  /** 大模型研判任务状态（POST research 触发） */
+  research_job?: HotResearchJob;
+  /** 大模型是否可用（未启用时「研判热点」按钮置灰） */
+  research_ready?: boolean;
   match?: { threshold: number; matched: number; rejected: number; pending: number; method: string | null };
   refresh_interval_minutes?: number | null;
   refresh_schedule?: string;
@@ -1136,6 +1175,9 @@ export const api = {
   /** 触发后台采集 + 标签匹配（立即返回，202） */
   refreshHotTopics: () =>
     fetchJson<HotRefreshJob & { started: boolean }>("/api/hot_topics/refresh", { method: "POST" }),
+  /** 触发后台大模型研判（立即返回，202），只研判当前榜单 */
+  researchHotTopics: () =>
+    fetchJson<HotResearchJob & { started: boolean }>("/api/hot_topics/research", { method: "POST" }),
   hotTopics: (refresh = false) =>
     fetchJson<HotTopicsResponse>(`/api/hot_topics${refresh ? "?refresh=true" : ""}`),
   gaps: (roundId?: number) =>
@@ -1261,6 +1303,9 @@ export const api = {
   syncKbSource: (id: string) =>
     fetchJson<{ id: string; synced_at: string; rows: number }>(`/api/kb/sources/${id}/sync`, { method: "POST" }),
   previewKbSource: (id: string) => fetchJson<KbPreview>(`/api/kb/sources/${id}/preview?limit=5`),
+  /** 立即把全部来源并入选题池（等价于每天 6:00 的 kb_scan，手动触发一次） */
+  importKbToPool: () =>
+    fetchJson<{ total: number; inserted: number }>("/api/kb/import", { method: "POST" }),
   // === 行业模板 / 热点源 ===
   presets: () => fetchJson<{ items: IndustryPreset[] }>("/api/presets"),
   applyPreset: (key: string) =>
@@ -1396,14 +1441,20 @@ export const api = {
     if (platform) p.set("platform", platform);
     return fetchJson<{ round_id: number; items: ContentItem[] }>(`/api/contents?${p}`);
   },
-  /** G-36：已生成卡片图的下载地址（后端校验文件在 output 目录内） */
-  contentImageUrl: (id: string, index: number) => `/api/contents/${id}/images/${index}`,
+  /** G-36：卡片图地址；默认 inline 可直接预览，download=true 才触发下载 */
+  contentImageUrl: (id: string, index: number, download = false) =>
+    `${API}/api/contents/${id}/images/${index}${download ? "?download=1" : ""}`,
   updateContent: (id: string, data: { title?: string; body?: string; tags?: string[]; reason?: string }) =>
     fetchJson<{ id: string; changed: boolean; title: string; body: string; tags: string[] }>(
       `/api/contents/${id}`, { method: "PATCH", body: JSON.stringify(data) },
     ),
   recheckContent: (id: string) =>
     fetchJson<RecheckResult>(`/api/contents/${id}/recheck`, { method: "POST" }),
+  /** 按当前标题/正文重新出图（封面 + 正文分页） */
+  regenerateContentCards: (id: string) =>
+    fetchJson<{ id: string; image_count: number; image_paths: string[] }>(
+      `/api/contents/${id}/cards`, { method: "POST" },
+    ),
   rejectContent: (id: string, reason: string) =>
     fetchJson<{
       id: string; affected_drafts: number; review_rejected: boolean;

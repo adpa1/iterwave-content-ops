@@ -50,6 +50,17 @@ def has_login_state(platform: Platform) -> bool:
     return _platform_state_path(platform).exists()
 
 
+def background_headless() -> bool:
+    """后台任务（拉数据/评论轮询/存草稿/熔断探测）默认无头，不弹窗口。
+
+    调试时设 `ITERWAVE_BROWSER_HEADED=1` 临时改回有头；扫码登录不走这里，
+    始终有头（用户要看见二维码）。
+    """
+    return os.environ.get("ITERWAVE_BROWSER_HEADED", "").strip().lower() not in (
+        "1", "true", "yes", "on",
+    )
+
+
 async def get_or_create_context(browser: Browser, platform: Platform) -> BrowserContext:
     """为某平台创建 BrowserContext，恢复登录态（如有）。
 

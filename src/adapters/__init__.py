@@ -58,12 +58,13 @@ def new_context_for_platform(platform: Platform):
     """
     from contextlib import asynccontextmanager
     from playwright.async_api import async_playwright
-    from ..core.login_manager import get_or_create_context
+    from ..core.login_manager import background_headless, get_or_create_context
 
     @asynccontextmanager
     async def _ctx():
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False)
+            # 后台任务默认无头（不弹窗口）；ITERWAVE_BROWSER_HEADED=1 仅用于调试
+            browser = await p.chromium.launch(headless=background_headless())
             ctx = await get_or_create_context(browser, platform)
             try:
                 yield ctx

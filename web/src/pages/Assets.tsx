@@ -23,7 +23,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: "sources", label: "外部参考" },
   { key: "voice", label: "个人观点与画像" },
   { key: "templates", label: "内容模板" },
-  { key: "mapping", label: "字段映射检查" },
+  { key: "mapping", label: "知识库来源" },
 ];
 
 export default function Assets() {

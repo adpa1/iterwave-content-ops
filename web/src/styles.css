@@ -288,6 +288,56 @@ details[open] > summary::before { content: "▾ "; }
 .dashboard-partial-copy span { font-size: 11px; line-height: 1.6; }
 .dashboard-partial-warning .btn { flex: 0 0 auto; }
 
+/* ===== 内容生产 · 编辑与审核（三栏：内容列表 / 文案编辑 / 卡片预览）===== */
+.review-layout {
+  display: grid;
+  grid-template-columns: minmax(210px, 260px) minmax(0, 1fr) minmax(240px, 320px);
+  gap: 14px;
+  align-items: start;
+}
+.review-layout > .panel { margin-bottom: 0; min-width: 0; }
+.card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.card-item { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.card-thumb {
+  display: block; width: 100%; padding: 0; border: 1px solid var(--line); border-radius: 10px;
+  overflow: hidden; background: #fff; line-height: 0; cursor: zoom-in;
+}
+.card-thumb img { width: 100%; height: auto; display: block; }
+.card-thumb.is-broken {
+  display: grid; place-items: center; aspect-ratio: 3 / 4;
+  padding: 8px; text-align: center; font-size: 11px; line-height: 1.6;
+  color: var(--subtle); background: var(--surface-2);
+}
+.card-meta { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 11px; color: var(--muted); }
+
+/* 卡片大图预览层 */
+.card-lightbox {
+  position: fixed; inset: 0; z-index: 200; padding: 24px;
+  background: #0b1524cc; display: flex; align-items: center; justify-content: center;
+}
+.card-lightbox-inner {
+  background: #fff; border-radius: 14px; padding: 12px; max-width: min(760px, 94vw);
+  max-height: 92vh; display: flex; flex-direction: column; gap: 10px;
+  box-shadow: 0 24px 64px #0b15244d;
+}
+.card-lightbox-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  font-size: 12px; color: var(--muted); flex-wrap: wrap;
+}
+.card-lightbox-inner img {
+  display: block; margin: 0 auto; max-width: 100%;
+  max-height: calc(92vh - 110px); object-fit: contain; border-radius: 8px;
+}
+@media (max-width: 1500px) {
+  .review-layout { grid-template-columns: minmax(200px, 240px) minmax(0, 1fr); }
+  .review-cardcol { grid-column: 1 / -1; }
+  .card-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+}
+@media (max-width: 950px) {
+  .review-layout { grid-template-columns: 1fr; }
+  .review-cardcol { grid-column: auto; }
+}
+
 @media (max-width: 1100px) {
   .global-search .search { width: 190px; min-width: 140px; }
   .top-actions { gap: 7px; }

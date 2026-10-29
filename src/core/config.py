@@ -293,7 +293,8 @@ class HotTopicsConfig(BaseModel):
     refresh_interval_minutes: Optional[int] = None
     sources: list[dict] = Field(default_factory=list)
     filters: dict[str, object] = Field(default_factory=dict)
-    # 保留：last_seen_at 早于 N 天的热点删除；max_rows 为总量硬上限（超出按 last_seen_at 从旧到新删）
+    # 滚动：每次采集只保留当前榜单（本轮没再上榜的旧热点立即删除，不展示也不参与研判）
+    # retention_days / max_rows 仅做兜底清理（采集失败占位、异常残留）
     retention_days: int = Field(7, ge=1, le=365)
     max_rows: int = Field(5000, ge=100, le=1_000_000)
     dedup: HotTopicDedupConfig = Field(default_factory=HotTopicDedupConfig)

@@ -10,6 +10,28 @@ type TabKey = "all" | "matched" | "urgent" | "unknown";
 const PAGE_TABS = ["list", "logic"] as const;
 type PageTab = typeof PAGE_TABS[number];
 
+/** 趋势标签配色：爆发/持续爆发偏热，降温偏冷 */
+const TREND_CLASS: Record<string, string> = {
+  爆发: "orange",
+  持续爆发: "red",
+  降温中: "blue",
+  已降温: "gray",
+  平稳: "gray",
+};
+
+/** 采集时间：今天的显示「今天 15:32」，其余显示「10-28 09:12」 */
+function fmtCollected(v?: string | null): string {
+  if (!v) return "—";
+  const d = new Date(v.replace(" ", "T"));
+  if (Number.isNaN(d.getTime())) return v;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const now = new Date();
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const today = d.getFullYear() === now.getFullYear()
+    && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return today ? `今天 ${hm}` : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}`;
+}
+
 export default function HotTopics() {
   const { showToast, withPending, isPending } = useApp();
   const [tab, setTab] = useState<TabKey>("all");
@@ -20,6 +42,7 @@ export default function HotTopics() {
   const [hot, setHot] = useState<HotTopicsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [researching, setResearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // G-24：4 道门限（热度/时效可调；维度匹配/可发布性为 R22 硬锁，不可关）
   const [cfgView, setCfgView] = useState<SystemConfigView | null>(null);
@@ -53,6 +76,7 @@ export default function HotTopics() {
       const data = await api.hotTopics();
       setHot(data);
       setRefreshing(!!data.refresh_job?.running);
+      setResearching(!!data.research_job?.running);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -71,20 +95,44 @@ export default function HotTopics() {
     }
   }
 
+  /** 手动研判：调用大模型研判当前榜单热点（历史热点已在采集时清理，不参与研判） */
+  async function triggerResearch() {
+    if (hot?.research_ready === false) {
+      showToast("大模型未启用：请到「系统设置」开启主模型并配置 API Key", "info");
+      return;
+    }
+    setResearching(true);
+    try {
+      const res = await api.researchHotTopics();
+      if (!res.started) {
+        setResearching(false);
+        showToast(res.reason ?? "已有研判任务在运行", "info");
+      }
+    } catch (e: any) {
+      showToast(`触发研判失败: ${e?.message ?? e}`, "error");
+      setResearching(false);
+    }
+  }
+
   useEffect(() => {
-    if (!refreshing) return;
+    if (!refreshing && !researching) return;
     const t = setInterval(async () => {
       try {
         const data = await api.hotTopics();
         setHot(data);
-        if (!data.refresh_job?.running) {
+        if (refreshing && !data.refresh_job?.running) {
           setRefreshing(false);
           if (data.refresh_job?.error) showToast(`采集失败: ${data.refresh_job.error}`, "error");
         }
+        if (researching && !data.research_job?.running) {
+          setResearching(false);
+          if (data.research_job?.error) showToast(`研判失败: ${data.research_job.error}`, "error");
+          else showToast("✓ 研判完成", "success");
+        }
       } catch { /* 下次轮询重试 */ }
-    }, 3000);
+    }, 2000);
     return () => clearInterval(t);
-  }, [refreshing]);
+  }, [refreshing, researching]);
 
   useEffect(() => {
     loadHot();
@@ -160,6 +208,7 @@ export default function HotTopics() {
   const matched = hot?.match?.matched ?? items.filter((h) => h.dimension_match === true).length;
   const pending = hot?.match?.pending ?? items.filter((h) => h.dimension_match === null).length;
   const urgent = items.filter((h) => h.time_sensitive === 1).length;
+  const prog = hot?.refresh_job?.progress;
 
   return (
     <>
@@ -168,12 +217,22 @@ export default function HotTopics() {
           <div className="eyebrow">DISCOVER & TREND RIDING</div>
           <h1 className="page-title">热点雷达</h1>
           <div className="page-desc">
-            后台定时采集各平台热榜（{hot?.refresh_enabled === false ? "已关闭" : hot?.refresh_schedule ?? "按配置"}），先判断是否服务于账号定位，再决定转选题、观察或放弃。
+            后台定时采集各平台热榜（{hot?.refresh_enabled === false ? "已关闭" : hot?.refresh_schedule ?? "按配置"}），先判断是否服务于账号定位，再决定转选题、观察或放弃。每次采集只保留当前榜单，旧热点自动清理。
           </div>
         </div>
         <div className="head-actions">
           {hot?.stale && !refreshing && <span className="tag orange">数据已过刷新间隔</span>}
           <button className="btn" onClick={() => setPageTab("logic")}>筛选逻辑</button>
+          <button
+            className="btn"
+            onClick={triggerResearch}
+            disabled={researching || refreshing}
+            title={hot?.research_ready === false
+              ? "大模型未启用：请到「系统设置」开启主模型并配置 API Key"
+              : "调用大模型研判当前榜单热点（只研判当前榜单，不研判历史热点）"}
+          >
+            {researching ? "研判中…" : "研判热点"}
+          </button>
           <button className="btn primary" onClick={triggerRefresh} disabled={refreshing}>
             {refreshing ? "后台采集中…" : "↻ 立即采集"}
           </button>
@@ -189,7 +248,10 @@ export default function HotTopics() {
         <div className="metric">
           <div className="metric-top"><span className="metric-label">与定位关联</span><span className="metric-icon" style={{ background: "var(--teal-weak)", color: "var(--teal)" }} aria-hidden="true">◎</span></div>
           <div className="metric-val">{matched} <span className="metric-unit">条</span></div>
-          <div className="metric-foot">{pending > 0 ? `${pending} 条待研判` : "已全部研判"}{hot?.match?.method === "keyword" ? " · 仅关键词匹配" : ""}</div>
+          <div className="metric-foot">
+            {pending > 0 ? `${pending} 条待研判` : "已全部研判"}
+            {hot?.research_ready === false ? " · 大模型未启用" : hot?.match?.method === "keyword" ? " · 仅关键词匹配" : ""}
+          </div>
         </div>
         <div className="metric">
           <div className="metric-top"><span className="metric-label">窗口短</span><span className="metric-icon" style={{ background: "var(--orange-weak)", color: "var(--orange)" }} aria-hidden="true">◷</span></div>
@@ -204,6 +266,35 @@ export default function HotTopics() {
           </div>
         </div>
       </div>
+
+      {refreshing && (
+        <div className="panel" style={{ marginBottom: 15 }}>
+          <div className="panel-head">
+            <div>
+              <div className="panel-title"><span className="icon">↻</span>{prog?.label ?? "正在后台采集"}</div>
+              <div className="panel-sub">
+                {prog?.message ?? "采集在服务端后台运行"} · 切换页签或其他页面都不会中断采集
+              </div>
+            </div>
+            <div className="metric-foot" style={{ fontWeight: 600 }}>{prog?.percent ?? 0}%</div>
+          </div>
+          <div className="progress">
+            <span style={{ width: `${Math.max(2, Math.min(100, prog?.percent ?? 2))}%` }} />
+          </div>
+          {prog?.sources && prog.sources.length > 0 && (
+            <div className="flex wrap" style={{ gap: 6, marginTop: 10 }}>
+              {prog.sources.map((s) => (
+                <span key={s.key}
+                  className={`tag ${s.status === "collected" ? "green" : s.status === "failed" ? "red" : "gray"}`}>
+                  {platformLabel(s.label)}
+                  {s.status === "collected" ? ` · ${s.items ?? 0} 条`
+                    : s.status === "failed" ? " 采集失败" : " 等待中"}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="tabs page-tabs">
         <button type="button" className={`tab ${pageTab === "list" ? "active" : ""}`} onClick={() => setPageTab("list")}>热点列表与筛选</button>
@@ -271,7 +362,7 @@ export default function HotTopics() {
         <div className="panel-head">
           <div>
             <div className="panel-title"><span className="icon">⌁</span>数据源状态</div>
-            <div className="panel-sub">同一平台同一标题只更新不新增；跨平台同一事件合并展示；热点保留 {hot?.storage?.retention_days ?? "-"} 天</div>
+            <div className="panel-sub">同一平台同一标题只更新不新增；跨平台同一事件合并展示；每次采集按当前榜单滚动，不再上榜的旧热点自动清理（采集失败记录保留 {hot?.storage?.retention_days ?? "-"} 天）</div>
           </div>
         </div>
         <div className="table-wrap">
@@ -348,12 +439,19 @@ export default function HotTopics() {
                     : h.time_sensitive === null ? <span className="tag gray">时效未知</span>
                     : <span className="tag green">可跟进</span>}
                   <span className="tag gray">{platformLabel(h.source.split("/").pop() || h.source)}</span>
+                  {h.trend && (
+                    <span className={`tag ${TREND_CLASS[h.trend]}`} title={h.trend_reason}>
+                      {h.trend}
+                    </span>
+                  )}
                   {h.also_on && h.also_on.length > 0 && <span className="tag blue">多平台 · {h.also_on.length + 1}</span>}
                 </div>
                 <span className="metric-foot">{h.heat !== null ? `热度 ${h.heat.toLocaleString()}` : "热度未知"}</span>
               </div>
               <div className="hot-title">{h.title}</div>
               <div className="hot-meta">
+                <span>采集 {fmtCollected(h.collected_at)}</span>
+                {(h.seen_count ?? 1) > 1 && <span>连续在榜 {h.seen_count} 轮</span>}
                 <span>定位关联 {h.match_score != null ? `${Math.round(h.match_score)}/100` : h.dimension_match === null ? "待研判" : "—"}</span>
                 {h.dimension && <span>维度 {h.dimension}</span>}
                 {h.fit_platforms && <span>适合账号：{h.fit_platforms.length ? h.fit_platforms.map((p) => platformLabel(p)).join(" / ") : "暂无匹配平台"}</span>}

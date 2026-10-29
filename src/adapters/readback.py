@@ -158,13 +158,16 @@ def read_works_sync(platform: Platform, limit: int = 20) -> list[dict]:
         raise ReadbackUnavailable(err)
 
     from playwright.sync_api import sync_playwright
-    from ..core.login_manager import _platform_state_path, has_login_state
+    from ..core.login_manager import (
+        _platform_state_path, background_headless, has_login_state,
+    )
 
     if not has_login_state(platform):
         raise ReadbackUnavailable(f"{platform.display_name} 无登录态文件，请先扫码登录")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        # 定时采集默认无头（不弹窗口）；ITERWAVE_BROWSER_HEADED=1 仅用于调试
+        browser = p.chromium.launch(headless=background_headless())
         try:
             ctx = browser.new_context(storage_state=str(_platform_state_path(platform)))
             page = ctx.new_page()

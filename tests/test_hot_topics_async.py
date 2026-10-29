@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from src.api import main as api_main
 from src.core import hot_topic_service
+from src.core.hot_topic_dedup import topic_id
 from src.core.hot_topic_matcher import HotTopicMatcher, MATCH_THRESHOLD, dimension_match_of
 from src.core.hot_topics import HotTopicCollector, _fetch_public_text
 
@@ -66,6 +67,39 @@ def test_refresh_endpoint_runs_in_background(client, monkeypatch):
                         lambda cfg, trigger="manual": started.append(trigger) or {"started": True})
     r = tc.post("/api/hot_topics/refresh")
     assert r.status_code == 202 and started == ["manual"]
+
+
+def test_research_endpoint_rejects_without_llm(client, monkeypatch):
+    tc, _ = client
+    monkeypatch.setattr("src.core.hot_topic_matcher.default_llm_fn", lambda cfg: None)
+    r = tc.post("/api/hot_topics/research")
+    assert r.status_code == 409
+    assert "大模型未启用" in r.json()["detail"]
+
+
+def test_research_endpoint_starts_background(client, monkeypatch):
+    tc, _ = client
+    monkeypatch.setattr("src.core.hot_topic_matcher.default_llm_fn", lambda cfg: lambda s, u: ("", {}))
+    started = []
+    monkeypatch.setattr(hot_topic_service, "trigger_research",
+                        lambda cfg: started.append(1) or {"started": True, "running": True})
+    r = tc.post("/api/hot_topics/research")
+    assert r.status_code == 202 and started == [1]
+    body = tc.get("/api/hot_topics").json()
+    assert "research_job" in body and "research_ready" in body
+
+
+def test_upsert_rolls_current_board_only(cfg, conn):
+    """采集是「当前榜单快照」：本轮没再上榜的旧热点直接清理，不累积。"""
+    c = HotTopicCollector(cfg, conn)
+    def batch(title):
+        return [{"id": topic_id("weibo", title), "title": title, "raw_url": "https://x",
+                 "heat_score": 100, "heat_unit": "热度", "time_sensitive": None}]
+    c._upsert("weibo", batch("三天前的旧热点"))
+    c._upsert("weibo", batch("今天的新热点"))
+    titles = {r["title"] for r in conn.execute(
+        "SELECT title FROM hot_topics WHERE evidence_status = 'collected'").fetchall()}
+    assert titles == {"今天的新热点"}
 
 
 def test_keyword_mode_never_scores_unmatched_as_zero(cfg, conn):
@@ -128,13 +162,66 @@ def test_overview_shows_latest_batch_and_match_fields(cfg, conn, monkeypatch):
     assert data["match"]["matched"] == 1
 
 
+def test_trend_labels():
+    """趋势辅助判断：新上榜看同源中位数，老条目看上轮/峰值回撤。"""
+    from src.core.hot_topics import _trend_of
+
+    # 首次上榜 + 热度是同源中位数 2 倍 → 爆发
+    assert _trend_of({"heat": 100, "heat_prev": None, "heat_peak": 100, "seen_count": 1}, 50)[0] == "爆发"
+    # 首次上榜但热度一般 → 平稳
+    assert _trend_of({"heat": 50, "heat_prev": None, "heat_peak": 50, "seen_count": 1}, 50)[0] == "平稳"
+    # 连续在榜仍在峰值 90% 以上 → 持续爆发
+    assert _trend_of({"heat": 98, "heat_prev": 100, "heat_peak": 100, "seen_count": 3}, 40)[0] == "持续爆发"
+    # 较峰值回撤 40% 以上 → 已降温
+    assert _trend_of({"heat": 55, "heat_prev": 80, "heat_peak": 100, "seen_count": 3}, 40)[0] == "已降温"
+    # 比上轮降了 10%+ 但未到回撤线 → 降温中
+    assert _trend_of({"heat": 80, "heat_prev": 100, "heat_peak": 100, "seen_count": 2}, 40)[0] == "降温中"
+    # 热度 NULL 不编趋势（R3）
+    label, reason = _trend_of({"heat": None, "heat_prev": None, "heat_peak": None, "seen_count": 1}, None)
+    assert label == "平稳" and "无法判断" in reason
+
+
+def test_upsert_tracks_prev_and_peak(cfg, conn):
+    """第二轮采集记录上轮热度与峰值，供趋势判断使用。"""
+    c = HotTopicCollector(cfg, conn)
+    item = [{"id": "t1", "title": "某热点", "raw_url": "https://x",
+             "heat_score": 100, "heat_unit": "热度", "time_sensitive": None}]
+    c._upsert("60s.viki.moe/weibo", "weibo", item)
+    item[0]["heat_score"] = 70
+    c._upsert("60s.viki.moe/weibo", "weibo", item)
+    row = conn.execute("SELECT heat_score, heat_prev, heat_peak, seen_count FROM hot_topics WHERE id='t1'").fetchone()
+    assert row["heat_score"] == 70 and row["heat_prev"] == 100 and row["heat_peak"] == 100
+    assert row["seen_count"] == 2
+
+
 def test_run_once_is_single_flight(cfg, conn, monkeypatch):
     hot_topic_service.reset_for_tests()
-    monkeypatch.setattr(HotTopicCollector, "refresh", lambda self: {"weibo": "collected"})
+    monkeypatch.setattr(HotTopicCollector, "refresh",
+                        lambda self, on_progress=None: {"weibo": "collected"})
     res = hot_topic_service.run_once(cfg, conn, trigger="test")
     assert res["running"] is False and res["report"] == {"weibo": "collected"}
+    assert res["progress"]["stage"] == "done" and res["progress"]["percent"] == 100
     hot_topic_service._STATE["running"] = True
     try:
         assert hot_topic_service.run_once(cfg, conn)["skipped"] is True
     finally:
         hot_topic_service.reset_for_tests()
+
+
+def test_refresh_reports_progress(cfg, conn, monkeypatch):
+    """采集过程按数据源上报进度，供前端轮询展示（与页面是否停留无关）。"""
+    events = []
+    c = HotTopicCollector(cfg, conn)
+    monkeypatch.setattr(c, "_fetch_platform",
+                        lambda *a, **k: [{"id": f"hot-{a[0]}", "title": f"{a[0]} 热点",
+                                          "raw_url": "https://x", "heat_score": 100,
+                                          "heat_unit": "热度", "time_sensitive": None}])
+    c.aggregate_sources = [{"name": "60s.viki.moe", "platforms": ["weibo", "douyin"]}]
+    c.custom_sources = []
+    c.refresh(on_progress=events.append)
+    stages = [e["stage"] for e in events]
+    assert stages[0] == "fetching" and stages[-1] == "dedup"
+    fetch_done = [e for e in events if e["stage"] == "fetching"][-1]
+    assert fetch_done["percent"] <= 60
+    assert [s["status"] for s in fetch_done["sources"]] == ["collected", "collected"]
+    assert {s["items"] for s in fetch_done["sources"]} == {1}

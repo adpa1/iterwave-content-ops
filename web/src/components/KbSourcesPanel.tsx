@@ -132,6 +132,18 @@ export default function KbSourcesPanel() {
     }
   };
 
+  const importToPool = async () => {
+    setBusy("import");
+    try {
+      const res = await api.importKbToPool();
+      showToast(`已并入选题池：新增 ${res.inserted} 条，当前共 ${res.total} 条`, "success");
+    } catch (e) {
+      showToast((e as Error).message, "error");
+    } finally {
+      setBusy("");
+    }
+  };
+
   const openPreview = async (source: KbSource) => {
     setBusy(source.id);
     try {
@@ -232,6 +244,9 @@ export default function KbSourcesPanel() {
           </div>
         </div>
         <div className="head-actions">
+          <button className="btn sm primary" type="button" onClick={importToPool} disabled={busy === "import"}>
+            {busy === "import" ? "导入中…" : "⇣ 导入到选题池"}
+          </button>
           <button className="btn sm" type="button" onClick={addEmpty} disabled={busy === "default"}>建空库</button>
           <button className="btn sm" type="button" onClick={load} disabled={loading}>↻ 刷新</button>
         </div>

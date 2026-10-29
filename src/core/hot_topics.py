@@ -22,11 +22,19 @@
 from __future__ import annotations
 
 import json
+import statistics
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+<<<<<<< HEAD
 from typing import Optional
+=======
+from typing import Callable, Optional
+from urllib.parse import urljoin
+
+import httpx
+>>>>>>> 7f4f9e0 (chore: auth middleware localhost 放行 + auth/status 同步返回 configured=true)
 
 from .redact import redact
 
@@ -122,6 +130,31 @@ def _parse_event_ts(raw: dict) -> Optional[datetime]:
     return None
 
 
+def _trend_of(it: dict, median: float | None) -> tuple[str, str]:
+    """趋势辅助标签：爆发 / 持续爆发 / 降温中 / 已降温 / 平稳。
+
+    只用库里的真实数据判断：没有上轮数据（seen_count=1）绝不编「降温」，热度为 NULL 不判（R3）。
+    """
+    heat, prev, peak = it["heat"], it["heat_prev"], it["heat_peak"]
+    seen = it["seen_count"] or 1
+    if heat is None:
+        return "平稳", "热度暂无数字，无法判断趋势"
+    peak = peak or heat
+    if not peak or peak <= 0:
+        return "平稳", "缺少峰值数据"
+    if seen <= 1:
+        if median and heat >= median * 1.5:
+            return "爆发", f"首次上榜，热度是同源中位数的 {heat / median:.1f} 倍"
+        return "平稳", "首次上榜，热度未明显高于同源中位数"
+    if seen >= 3 and heat <= peak * 0.6:
+        return "已降温", f"较峰值 {peak:.0f} 已回落 {(1 - heat / peak) * 100:.0f}%"
+    if seen >= 3 and heat >= peak * 0.9:
+        return "持续爆发", f"连续 {seen} 轮在榜，热度仍在峰值 90% 以上"
+    if prev is not None and prev > 0 and heat <= prev * 0.9:
+        return "降温中", f"较上轮 {prev:.0f} 下降 {(1 - heat / prev) * 100:.0f}%"
+    return "平稳", "热度与前几轮基本持平"
+
+
 class HotTopicCollector:
     """热点采集器 — 按 profile 抓取、缓存、落 hot_topics 表。"""
 
@@ -195,8 +228,12 @@ class HotTopicCollector:
             "method": next((i["match_method"] for i in items if i.get("match_method")), None),
         }
 
-    def refresh(self) -> dict:
-        """并发抓取综合热榜平台 + 自定义 RSS/JSON 行业源 → 落库。返回各来源采集结果。"""
+    def refresh(self, on_progress: Optional[Callable[[dict], None]] = None) -> dict:
+        """并发抓取综合热榜平台 + 自定义 RSS/JSON 行业源 → 落库。返回各来源采集结果。
+
+        on_progress：进度回调（stage / label / percent / sources / message）。
+        采集全程在后台线程执行，进度只写入状态，与前端页面是否停留在本页无关。
+        """
         report: dict[str, str] = {}
         # 综合热榜：顺序抓 5 个平台 × 15s 超时会把接口拖到 1 分钟以上，改并发
         jobs: list[tuple[str, str, object]] = []   # (报告键, 展示来源, 可调用)
@@ -210,15 +247,42 @@ class HotTopicCollector:
             label = src.get("platform") or src.get("name") or "行业源"
             jobs.append((label, label, lambda s=src, l=label: self._fetch_custom(s, l)))
 
-        with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:
-            futures = {key: (label, pool.submit(fn)) for key, label, fn in jobs}
+        total = len(jobs)
+        src_state: list[dict] = [
+            {"key": key, "label": label, "status": "pending", "items": 0}
+            for key, label, _fn in jobs
+        ]
+
+        def emit(stage: str, label: str, percent: int, *, message: Optional[str] = None) -> None:
+            if on_progress is None:
+                return
+            on_progress({"stage": stage, "label": label, "percent": percent,
+                         "sources": [dict(s) for s in src_state], "message": message})
+
+        emit("fetching", "抓取平台热榜", 5, message=f"共 {total} 个数据源")
+
+        with ThreadPoolExecutor(max_workers=max(1, total)) as pool:
+            futures = {pool.submit(fn): (key, label) for key, label, fn in jobs}
             results: dict[str, tuple[str, list[dict] | Exception]] = {}
-            for key, (label, fut) in futures.items():
+            done = 0
+            for fut in as_completed(futures):
+                key, label = futures[fut]
                 try:
                     results[key] = (label, fut.result())
                 except Exception as exc:  # noqa: BLE001 — 单来源失败不影响其他来源
                     results[key] = (label, exc)
+                done += 1
+                state = next(s for s in src_state if s["key"] == key)
+                payload = results[key][1]
+                if isinstance(payload, Exception) or not payload:
+                    state["status"] = "failed"
+                else:
+                    state["status"] = "collected"
+                    state["items"] = len(payload)
+                emit("fetching", "抓取平台热榜", 5 + int(55 * done / max(1, total)),
+                     message=f"已完成 {done}/{total} 个数据源")
 
+        saved = 0
         for key, (label, result) in results.items():
             if isinstance(result, Exception):
                 safe_key = redact(str(key))
@@ -226,17 +290,19 @@ class HotTopicCollector:
                 logger.warning("热点采集失败 %s: %s", safe_key, safe_error)
                 self._record_failure(key, label, safe_error)
                 report[key] = "failed"
-                continue
-            if not result:
+            elif not result:
                 self._record_failure(key, label, "接口返回空列表")
                 report[key] = "failed"
-                continue
-
-            self._upsert(key, label, result)
-            report[key] = "collected"
-            logger.info("🔥 热点采集成功 %s：%d 条", key, len(result))
+            else:
+                self._upsert(key, label, result)
+                report[key] = "collected"
+                logger.info("🔥 热点采集成功 %s：%d 条", key, len(result))
+            saved += 1
+            emit("saving", "写入热点库", 60 + int(25 * saved / max(1, len(results))),
+                 message=f"已写入 {saved}/{len(results)} 个数据源")
 
         self.apply_dedup_and_retention(report)
+        emit("dedup", "去重与旧热点清理", 90, message="跨平台合并 + 旧热点滚动清理完成")
         return report
 
     def apply_dedup_and_retention(self, report: Optional[dict] = None) -> dict:
@@ -375,23 +441,40 @@ class HotTopicCollector:
             seen_in_batch.add(r["id"])
             self.conn.execute(
                 "INSERT INTO hot_topics (id, source, raw_url, discovered_at, last_seen_at, evidence_status, "
-                "title, heat_score, heat_unit, time_sensitive, dimension, platform, title_norm, seen_count) "
-                "VALUES (?, ?, ?, ?, ?, 'collected', ?, ?, ?, ?, NULL, ?, ?, 1) "
+                "title, heat_score, heat_unit, time_sensitive, dimension, platform, title_norm, seen_count, "
+                "heat_prev, heat_peak) "
+                "VALUES (?, ?, ?, ?, ?, 'collected', ?, ?, ?, ?, NULL, ?, ?, 1, NULL, ?) "
                 "ON CONFLICT(id) DO UPDATE SET "
                 "source=excluded.source, raw_url=excluded.raw_url, "
                 "last_seen_at=excluded.last_seen_at, evidence_status='collected', "
-                "title=excluded.title, heat_score=excluded.heat_score, heat_unit=excluded.heat_unit, "
+                "title=excluded.title, heat_prev=hot_topics.heat_score, "
+                "heat_score=excluded.heat_score, heat_unit=excluded.heat_unit, "
+                "heat_peak=MAX(COALESCE(hot_topics.heat_peak, hot_topics.heat_score), excluded.heat_score), "
                 "time_sensitive=excluded.time_sensitive, seen_count=hot_topics.seen_count + 1",
                 (
                     r["id"], source, r["raw_url"], now, now, r["title"],
                     r["heat_score"], r["heat_unit"], r["time_sensitive"],
-                    platform, normalize_title(r["title"]),
+                    platform, normalize_title(r["title"]), r["heat_score"],
                 ),
             )
         # 该平台之前的失败占位行清理掉
         self.conn.execute(
             "DELETE FROM hot_topics WHERE source = ? AND evidence_status = 'failed'",
             (source,),
+        )
+        # 滚动：热榜是「本轮快照」，本轮没再出现的条目直接删除（不展示、不参与研判），
+        # 避免停运几天后旧热点一直累积在库里。按 id 判定，避免同一秒内两次采集的边界问题。
+        if seen_in_batch:
+            placeholders = ",".join("?" * len(seen_in_batch))
+            self.conn.execute(
+                f"DELETE FROM hot_topics WHERE source = ? AND evidence_status = 'collected' "
+                f"AND id NOT IN ({placeholders})",
+                (source, *seen_in_batch),
+            )
+        # 主条目被删后，指向它的去重指针会悬挂
+        self.conn.execute(
+            "UPDATE hot_topics SET duplicate_of = NULL WHERE duplicate_of IS NOT NULL "
+            "AND duplicate_of NOT IN (SELECT id FROM hot_topics)"
         )
         self.conn.commit()
 
@@ -533,9 +616,14 @@ class HotTopicCollector:
                 "id": row["id"],
                 "title": title,
                 "source": redact(source),
+                "platform": redact(platform),
                 "discovered_at": row["discovered_at"],
                 "last_seen_at": row["last_seen_at"],
+                # 采集时间（本轮在榜时间）：前端展示「这条热点是哪次采到的」
+                "collected_at": row["last_seen_at"] or row["discovered_at"],
                 "seen_count": row["seen_count"],
+                "heat_prev": row["heat_prev"],
+                "heat_peak": row["heat_peak"],
                 "url": row["raw_url"],
                 "heat": heat,
                 "heat_unit": row["heat_unit"],
@@ -553,6 +641,15 @@ class HotTopicCollector:
                 "publishable": not hit_redline and not (fresh and row["forbidden_hit"]),
                 "redline_hits": hit_redline,
             })
+
+        # 📈 趋势辅助判断：以「同数据源本轮热度中位数」为基准，且必须有上一轮数据才判趋势（R3）
+        heats_by_platform: dict[str, list[float]] = {}
+        for it in items:
+            if it["heat"] is not None:
+                heats_by_platform.setdefault(it["platform"], []).append(float(it["heat"]))
+        medians = {p: statistics.median(v) for p, v in heats_by_platform.items() if v}
+        for it in items:
+            it["trend"], it["trend_reason"] = _trend_of(it, medians.get(it["platform"]))
 
         for it in items:
             it["also_on"] = also_on.get(it["id"], [])

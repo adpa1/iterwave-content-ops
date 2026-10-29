@@ -127,6 +127,45 @@ def test_platform_progress_returns_all_platforms_with_enabled(client):
         assert v["enabled"] is (p in enabled)
 
 
+# ---------------------------------------------------------------- 目标平台口径
+def _goal_body(**kw):
+    body = {
+        "goal_text": "小红书涨粉 500",
+        "target_metric": "followers_gained",
+        "target_value": 500,
+        "target_platform": "xhs",
+        "metric_scope": "delta",
+        "baseline_value": 1200,
+        "baseline_at": "2026-10-01",
+        "metric_period_start": "2026-10-01",
+        "metric_period_end": "2026-11-01",
+        "data_source": "account_stats",
+    }
+    body.update(kw)
+    return body
+
+
+def test_create_goal_rejects_unknown_platform(client):
+    """平台决定统计口径：不认识的平台码必须 422，不能静默落库。"""
+    tc, _ = client
+    r = tc.post("/api/goals", json=_goal_body(target_platform="weibo"))
+    assert r.status_code == 422
+
+
+def test_create_goal_keeps_platform(client):
+    tc, conn = client
+    r = tc.post("/api/goals", json=_goal_body())
+    assert r.status_code == 200 and r.json()["target_platform"] == "xhs"
+    row = conn.execute("SELECT target_platform FROM goals WHERE id = ?", (r.json()["id"],)).fetchone()
+    assert row["target_platform"] == "xhs"
+
+
+def test_create_goal_blank_platform_means_all(client):
+    tc, _ = client
+    r = tc.post("/api/goals", json=_goal_body(target_platform=""))
+    assert r.status_code == 200 and r.json()["target_platform"] is None
+
+
 # ---------------------------------------------------------------- 比率类指标单位
 def test_rate_metric_current_value_in_percent(client, conn):
     _, _ = client
