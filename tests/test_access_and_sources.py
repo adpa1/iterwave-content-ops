@@ -193,16 +193,22 @@ def test_api_rejects_oversized_chunked_body_without_content_length(api_client):
 
 
 def test_prefixed_api_routes_are_normalized(unconfigured_api_client, monkeypatch):
+    # 本机直连允许访问未配置口令的开发实例；这里验证子路径仍被正确归一化。
     monkeypatch.setenv("APP_BASE_PATH", "/iterwave/")
     response = unconfigured_api_client.get("/iterwave/api/topics")
-    assert response.status_code == 403
-    assert response.json()["code"] == "setup_required"
+    assert response.status_code == 200
+
+
+def test_public_or_proxied_unconfigured_api_still_requires_setup(unconfigured_api_client):
+    for headers in ({"Host": "public.example"}, {"X-Forwarded-For": "198.51.100.10"}):
+        response = unconfigured_api_client.get("/api/topics", headers=headers)
+        assert response.status_code == 403
+        assert response.json()["code"] == "setup_required"
 
 
 def test_middleware_requires_login_only_after_password_set(unconfigured_api_client):
-    blocked = unconfigured_api_client.get("/api/topics")
-    assert blocked.status_code == 403
-    assert blocked.json()["code"] == "setup_required"
+    # 本机直连在首次设置前允许使用开发实例；设置口令后才强制登录。
+    assert unconfigured_api_client.get("/api/topics").status_code == 200
 
     assert unconfigured_api_client.post("/api/auth/password", json={"password": "secret123"}).status_code == 200
     assert unconfigured_api_client.get("/api/auth/status").json()["needs_login"] is True
