@@ -432,3 +432,30 @@ details[open] > summary::before { content: "▾ "; }
   .review-filters { grid-template-columns: 1fr 1fr; }
   .review-filters input { grid-column: 1 / -1; }
 }
+
+
+/* ===== 跨账号组全局监控 ===== */
+.global-monitor-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.global-monitor-kpi { min-width: 0; }
+.global-monitor-value {
+  font-size: clamp(24px, 2.2vw, 34px);
+  font-weight: 750;
+  letter-spacing: -.04em;
+  line-height: 1.25;
+  margin: 8px 0 5px;
+  font-variant-numeric: tabular-nums;
+}
+.global-monitor-page .table-wrap { overflow-x: auto; }
+.global-monitor-page table { min-width: 760px; }
+@media (max-width: 1000px) {
+  .global-monitor-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 520px) {
+  .global-monitor-kpis { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .global-monitor-kpi { padding: 12px; }
+}
