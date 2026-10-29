@@ -1548,8 +1548,9 @@ def _register_routes(app: FastAPI) -> None:
         """用户确认已在平台端手动更新草稿，使其与当前本地文案版本一致。"""
         conn = _g()["conn"]
         row = conn.execute(
-            "SELECT d.status, d.saved_content_hash, c.id AS content_id, c.round_id, "
-            "c.title, c.body, c.tags, c.image_paths, c.guard_outcome, c.guard_reason, "
+            "SELECT d.status, d.saved_content_hash, d.saved_platform_title, "
+            "c.id AS content_id, c.round_id, c.title, c.body, c.tags, c.image_paths, "
+            "c.guard_outcome, c.guard_reason, "
             "c.review_rejected, c.review_rejection_reason "
             "FROM drafts d JOIN contents c ON c.id = d.content_id WHERE d.id = ?",
             (draft_id,),
@@ -1596,8 +1597,8 @@ def _register_routes(app: FastAPI) -> None:
                 "message": "平台草稿版本已与当前本地文案一致，无需重复登记",
             }
         conn.execute(
-            "UPDATE drafts SET saved_content_hash = ? WHERE id = ?",
-            (current_hash, draft_id),
+            "UPDATE drafts SET saved_content_hash = ?, saved_platform_title = ? WHERE id = ?",
+            (current_hash, row["title"], draft_id),
         )
         conn.execute(
             "INSERT INTO user_override (round_id, override_field, original_value, "
