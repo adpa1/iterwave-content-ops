@@ -1504,10 +1504,36 @@ def _register_routes(app: FastAPI) -> None:
             except Exception:  # noqa: BLE001 — 采集链路优先，审计写失败留日志
                 logger.exception("发布质检例外审计写入失败 draft=%s", draft_id)
 
+        platform_sync_override_recorded = False
+        if platform_sync_state and platform_sync_state != "matched" and platform_sync_override_reason:
+            try:
+                conn.execute(
+                    "INSERT INTO user_override (round_id, override_field, original_value, "
+                    "override_value, reason, overridden_by, overridden_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        row["round_id"], "platform_content_sync_override",
+                        json.dumps({
+                            "state": platform_sync_state,
+                            "saved_content_hash": row["saved_content_hash"],
+                            "current_content_hash": current_hash,
+                        }, ensure_ascii=False)[:500],
+                        json.dumps({"status": "user_published"}, ensure_ascii=False),
+                        platform_sync_override_reason, "publish-confirm-ui",
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    ),
+                )
+                conn.commit()
+                platform_sync_override_recorded = True
+            except Exception:  # noqa: BLE001 — 已发生的外部发布不能因审计写失败丢失采集
+                logger.exception("平台内容版本例外审计写入失败 draft=%s", draft_id)
+
         # G-15 场景：发布确认留痕（用户手动确认，非系统自动发布）
         message = f"草稿 {draft_id} 已由用户确认发布，进入数据采集"
         if quality_override_recorded:
-            message += f"（质检例外登记：{override_reason[:80]}）"
+            message += f"（质检/审核例外登记：{override_reason[:80]}）"
+        if platform_sync_override_recorded:
+            message += f"（平台内容版本例外登记：{platform_sync_override_reason[:80]}）"
         _g()["notifier"].emit(
             "publish_confirmed",
             message,
