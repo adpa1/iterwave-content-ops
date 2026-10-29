@@ -92,6 +92,13 @@ def test_redact_masks_bearer_tokens_and_signed_urls():
 def test_public_first_password_setup_requires_bootstrap_token(unconfigured_api_client, monkeypatch):
     monkeypatch.setenv("ITERWAVE_BOOTSTRAP_TOKEN", "bootstrap-secret")
     public_client = TestClient(api_main._build_app(), base_url="https://eduplay.cloud")
+    # 即使外部请求伪造 Host: localhost，也不能绕过引导口令。
+    spoofed_host = public_client.post(
+        "/api/auth/password",
+        headers={"Host": "localhost"},
+        json={"password": "secret123"},
+    )
+    assert spoofed_host.status_code == 403
     assert public_client.post(
         "/api/auth/password", json={"password": "secret123"}
     ).status_code == 403
@@ -147,6 +154,13 @@ def test_login_rate_limit():
         auth.login("secret123", "1.2.3.4")
     # 其它 IP 不受影响
     assert auth.login("secret123", "5.6.7.8")
+
+
+def test_api_rejects_oversized_declared_body(api_client):
+    body = b"x" * (5 * 1024 * 1024 + 1)
+    response = api_client.post("/api/topics", content=body,
+                               headers={"Content-Type": "application/json"})
+    assert response.status_code == 413
 
 
 def test_prefixed_api_routes_are_normalized(unconfigured_api_client, monkeypatch):
