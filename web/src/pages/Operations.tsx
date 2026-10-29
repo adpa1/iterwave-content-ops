@@ -427,6 +427,7 @@ function PublishPane() {
   // 实际发布已发生但质检失败/失效时，要求显式说明例外原因，保留数据闭环与审计记录。
   const [qualityOverrideReasons, setQualityOverrideReasons] = useState<Record<string, string>>({});
   const [platformSyncReasons, setPlatformSyncReasons] = useState<Record<string, string>>({});
+  const [platformSyncOverrideReasons, setPlatformSyncOverrideReasons] = useState<Record<string, string>>({});
 
   const fetchDrafts = async () => {
     try {
@@ -451,7 +452,7 @@ function PublishPane() {
       // G-11：同一草稿的确认按钮在请求中禁用，重复点击被 withPending 拦截
       const noteUrl = (noteUrls[id] ?? "").trim();
       const overrideReason = (qualityOverrideReasons[id] ?? "").trim();
-      const platformSyncOverrideReason = (platformSyncReasons[id] ?? "").trim();
+      const platformSyncOverrideReason = (platformSyncOverrideReasons[id] ?? "").trim();
       const res = await withPending(
         `publish:${id}`,
         () => api.confirmPublish(
@@ -593,10 +594,10 @@ function PublishPane() {
                         <input
                           value={platformSyncReasons[d.id] ?? ""}
                           onChange={(e) => setPlatformSyncReasons((prev) => ({ ...prev, [d.id]: e.target.value }))}
-                          placeholder="版本不一致/未知：若已发布需说明原因（必填）"
-                          style={{ width: 260, fontSize: 12 }}
+                          placeholder="尚未发布：说明已在平台同步为当前版本（必填）"
+                          style={{ width: 280, fontSize: 12 }}
                           disabled={pending !== null}
-                          aria-label={`${d.title ?? d.id} 的平台版本例外原因`}
+                          aria-label={`${d.title ?? d.id} 的平台版本同步说明`}
                         />
                         <button
                           className="btn sm"
@@ -610,6 +611,14 @@ function PublishPane() {
                         >
                           已在平台同步当前版本
                         </button>
+                        <input
+                          value={platformSyncOverrideReasons[d.id] ?? ""}
+                          onChange={(e) => setPlatformSyncOverrideReasons((prev) => ({ ...prev, [d.id]: e.target.value }))}
+                          placeholder="已发布的是旧版：填写例外原因（必填）"
+                          style={{ width: 280, fontSize: 12 }}
+                          disabled={pending !== null}
+                          aria-label={`${d.title ?? d.id} 的平台版本例外原因`}
+                        />
                       </>
                     )}
                     <button
@@ -618,7 +627,7 @@ function PublishPane() {
                         pending !== null ||
                         (d.guard_confirmation_allowed !== true && !(qualityOverrideReasons[d.id] ?? "").trim()) ||
                         (d.status === "draft_saved" && d.platform_content_sync !== "matched" &&
-                          !(platformSyncReasons[d.id] ?? "").trim())
+                          !(platformSyncOverrideReasons[d.id] ?? "").trim())
                       }
                       onClick={() => confirm(d.id)}
                     >
