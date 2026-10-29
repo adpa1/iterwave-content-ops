@@ -69,6 +69,7 @@ export default function GlobalMonitor() {
     ["失败草稿", total?.drafts_failed ?? "—", "按失败状态记录统计"],
     ["可用图片素材", total?.media_active ?? "—", "各账号组素材库合计"],
     ["素材使用关系", total?.media_usage ?? "—", "记录配图分配关系"],
+    ["已登记平台账号", data?.totals.registered_accounts_active ?? "—", "所有可读取账号组中人工登记且启用的账号"],
   ] as const;
 
   return (
@@ -176,7 +177,7 @@ export default function GlobalMonitor() {
           </section>
 
           <div className="note" style={{ marginTop: 12 }}>
-            统计说明：内容产出量依据 contents.created_at；草稿按 drafts.status 分类；“待存草稿”不代表人工审核队列；“发布及后续”包含已发布、数据采集中和已采集状态。当前数据模型没有可去重的平台账号身份字段，因此本页不把平台数或账号快照数冒充账号数。
+            统计说明：内容产出量依据 contents.created_at；草稿按 drafts.status 分类；“待存草稿”不代表人工审核队列；“发布及后续”包含已发布、数据采集中和已采集状态。平台账号数量仅统计各账号组中人工登记且启用的账号标识；未登记的账号不计入，不能据此推断平台实际全部账号。
           </div>
         </>
       )}
