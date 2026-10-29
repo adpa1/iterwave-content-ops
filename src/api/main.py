@@ -226,10 +226,18 @@ def _build_app() -> FastAPI:
         path = request.url.path
         if path.startswith("/api/") and path not in ("/api/auth/status", "/api/auth/login"):
             cookie_token = request.cookies.get(auth.COOKIE_NAME)
-            if not auth.is_authenticated(cookie_token, request.headers):
+            client_ip = request.client.host if request.client else "unknown"
+            if not auth.is_authenticated(cookie_token, request.headers, ip=client_ip):
+                has_token_header = bool(request.headers.get("x-access-token")) or (
+                    (request.headers.get("authorization") or "").lower().startswith("bearer ")
+                )
+                limited = has_token_header and auth.is_rate_limited(client_ip)
                 return JSONResponse(
-                    {"detail": "需要登录", "code": "auth_required"},
-                    status_code=401,
+                    {
+                        "detail": "认证尝试次数过多，请 10 分钟后再试" if limited else "需要登录",
+                        "code": "auth_rate_limited" if limited else "auth_required",
+                    },
+                    status_code=429 if limited else 401,
                 )
         return await call_next(request)
 
@@ -712,7 +720,8 @@ def _register_routes(app: FastAPI) -> None:
     # --- 访问保护（口令 / 会话 / 脚本令牌）---
     @app.get("/api/auth/status")
     def auth_status(request: Request):
-        return auth.status(request.cookies.get(auth.COOKIE_NAME), request.headers)
+        ip = request.client.host if request.client else "unknown"
+        return auth.status(request.cookies.get(auth.COOKIE_NAME), request.headers, ip=ip)
 
     @app.post("/api/auth/login")
     def auth_login(payload: dict, request: Request, response: Response):
