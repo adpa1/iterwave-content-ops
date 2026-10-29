@@ -236,7 +236,8 @@ class RoundExecutor:
 
         pending_rows = self.conn.execute(
             "SELECT d.id AS draft_id, d.content_id, d.platform, "
-            "c.title, c.body, c.tags, c.image_paths "
+            "c.title, c.body, c.tags, c.image_paths, c.review_rejected, "
+            "c.review_rejection_reason "
             "FROM drafts d JOIN contents c ON c.id = d.content_id "
             "WHERE c.round_id = ? AND d.status = 'draft_pending' "
             "ORDER BY c.rowid, d.rowid",
@@ -244,6 +245,14 @@ class RoundExecutor:
         ).fetchall()
         if not pending_rows:
             raise ValueError(f"轮次 {round_id} 没有待存草稿")
+
+        rejected_count = sum(1 for item in pending_rows if bool(item["review_rejected"]))
+        pending_rows = [item for item in pending_rows if not bool(item["review_rejected"])]
+        if not pending_rows:
+            raise ValueError(
+                f"轮次 {round_id} 的 {rejected_count} 篇待存内容均已被人工驳回；"
+                "请修改文案、重新过目标检查并提交审核，或取消本轮。未调用任何平台存草稿操作"
+            )
 
         if self.guard is None:
             raise ValueError("质量门检查器不可用，已拒绝恢复存草稿")
