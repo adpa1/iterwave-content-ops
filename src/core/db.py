@@ -29,6 +29,22 @@ from .config import Config
 
 logger = logging.getLogger(__name__)
 
+
+def _restrict_sqlite_file_permissions(db_path: Path) -> None:
+    """将 SQLite 主库及已存在的 WAL/SHM 辅助文件限制为当前用户可读写。"""
+    for protected in (
+        db_path,
+        Path(str(db_path) + "-wal"),
+        Path(str(db_path) + "-shm"),
+    ):
+        if protected.exists():
+            try:
+                protected.chmod(0o600)
+            except OSError:
+                # 权限收紧失败需要告警，但不能把绝对路径或数据写入日志。
+                logger.warning("无法收紧数据库文件权限：%s", protected.name)
+
+
 # 迁移脚本目录
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent.parent / "migrations"
 
@@ -62,6 +78,7 @@ class Database:
         conn.execute("PRAGMA journal_mode = WAL;")    # 读写并发
         conn.execute("PRAGMA synchronous = NORMAL;")    # WAL 下足够安全
         conn.execute("PRAGMA timeout = 30000;")        # 忙等 30s
+        _restrict_sqlite_file_permissions(self.db_path)
         conn.row_factory = sqlite3.Row                  # 列名访问
         return conn
 

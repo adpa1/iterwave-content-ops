@@ -202,3 +202,64 @@ def test_config_overrides_save_is_atomic_and_private(tmp_path, monkeypatch):
     assert path.stat().st_mode & 0o777 == 0o600
     assert not list(tmp_path.glob(".config_overrides.json.*.tmp"))
 
+
+
+def test_sqlite_main_wal_shm_permissions_are_restricted(tmp_path: Path) -> None:
+    import stat
+
+    db_path = tmp_path / "private.sqlite3"
+    paths = [
+        db_path,
+        Path(str(db_path) + "-wal"),
+        Path(str(db_path) + "-shm"),
+    ]
+    for path in paths:
+        path.write_text("private", encoding="utf-8")
+        path.chmod(0o644)
+
+    from src.core.db import _restrict_sqlite_file_permissions
+
+    _restrict_sqlite_file_permissions(db_path)
+
+    for path in paths:
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_webhook_rejects_non_official_hosts_without_network(monkeypatch) -> None:
+    from src.core import safe_http
+    from src.core.notify import Notifier
+
+    monkeypatch.setenv("TEST_WECOM_WEBHOOK", "https://attacker.example/hook")
+    called = False
+
+    def fake_post(*args, **kwargs):
+        nonlocal called
+        called = True
+        return 200, b'{"errcode":0}', "application/json"
+
+    monkeypatch.setattr(safe_http, "post_public_json", fake_post)
+    notifier = object.__new__(Notifier)
+
+    assert notifier._send_webhook("wecom", "TEST_WECOM_WEBHOOK", "title", "body") is False
+    monkeypatch.setenv("TEST_WECOM_WEBHOOK", "https://qyapi.weixin.qq.com:8443/hook")
+    assert notifier._send_webhook("wecom", "TEST_WECOM_WEBHOOK", "title", "body") is False
+    assert called is False
+
+
+def test_webhook_allows_official_host_via_safe_transport(monkeypatch) -> None:
+    from src.core import safe_http
+    from src.core.notify import Notifier
+
+    monkeypatch.setenv("TEST_FEISHU_WEBHOOK", "https://open.feishu.cn/open-apis/bot/v2/hook/test")
+    calls = []
+
+    def fake_post(url, payload, **kwargs):
+        calls.append((url, payload, kwargs))
+        return 200, b'{"code":0}', "application/json"
+
+    monkeypatch.setattr(safe_http, "post_public_json", fake_post)
+    notifier = object.__new__(Notifier)
+
+    assert notifier._send_webhook("feishu", "TEST_FEISHU_WEBHOOK", "title", "body") is True
+    assert len(calls) == 1
+    assert calls[0][0].startswith("https://open.feishu.cn/")
