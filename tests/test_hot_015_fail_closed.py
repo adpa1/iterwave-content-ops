@@ -67,4 +67,4 @@ def test_hot_switch_is_opt_in_and_defaults_to_restart_required(monkeypatch):
     assert result["restart_required"] is True
     assert result["runtime_tenant_id"] == "brand_a"
     assert registry.active == "brand_b"
-    assert result["switch_status"] if "switch_status" in result else True
+    assert not api_main._tenant_switch_gate.switching
