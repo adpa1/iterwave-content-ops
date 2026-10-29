@@ -532,6 +532,7 @@ function _str(v: number | null | undefined): string {
 function AccessNotifyPanel({ view, onSaved }: { view: SystemConfigView; onSaved: () => void }) {
   const { auth, refreshAuth, showToast } = useApp();
   const [password, setPassword] = useState("");
+  const [bootstrapToken, setBootstrapToken] = useState("");
   const [wecom, setWecom] = useState("");
   const [feishu, setFeishu] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -547,8 +548,9 @@ function AccessNotifyPanel({ view, onSaved }: { view: SystemConfigView; onSaved:
     }
     setBusy("password");
     try {
-      await api.setPassword(password);
+      await api.setPassword(password, bootstrapToken);
       setPassword("");
+      setBootstrapToken("");
       showToast("访问口令已更新，请重新登录", "success");
       await refreshAuth();
     } catch (e) {
@@ -595,13 +597,21 @@ function AccessNotifyPanel({ view, onSaved }: { view: SystemConfigView; onSaved:
         <div>
           <div className="field-label">访问口令</div>
           <div className="note" style={{ marginBottom: 8 }}>
-            {auth?.configured ? "已设置口令，接口需要登录后才能调用" : "尚未设置，公网部署前请先设置"}
+            {auth?.configured
+              ? "已设置口令，接口需要登录后才能调用"
+              : "首次设置仅允许本机直连；公网域名或反向代理部署需先在服务器配置 ITERWAVE_BOOTSTRAP_TOKEN，再在此输入引导口令。"}
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input
               className="field" type="password" placeholder="新口令（至少 6 位）"
               value={password} onChange={(e) => setPassword(e.target.value)}
             />
+            {!auth?.configured && (
+              <input
+                className="field" type="password" placeholder="首次设置引导口令（公网部署）"
+                value={bootstrapToken} onChange={(e) => setBootstrapToken(e.target.value)}
+              />
+            )}
             <button className="btn sm" type="button" disabled={busy === "password"} onClick={changePassword}>
               {auth?.configured ? "修改口令" : "设置口令"}
             </button>
