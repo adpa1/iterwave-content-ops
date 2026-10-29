@@ -252,6 +252,14 @@ class Notifier:
             logger.info("%s webhook 未设置（.env 缺少 %s），跳过", channel, url_env)
             return False
 
+        # .env 可能由人工维护；发送前再次检查目标，不能只依赖设置页面的校验。
+        try:
+            from ..kb_sources import _validate_remote_url
+            _validate_remote_url(url)
+        except ValueError as exc:
+            logger.warning("%s webhook 目标被安全校验拒绝：%s", channel, exc)
+            return False
+
         text = f"【{title}】{body}"
         if channel == "wecom":
             payload = {"msgtype": "text", "text": {"content": text}}
