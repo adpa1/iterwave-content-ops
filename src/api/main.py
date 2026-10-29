@@ -774,7 +774,7 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/auth/password")
     def auth_set_password(payload: dict, request: Request):
-        # 首次设置前，所有 API 默认开放；若公网访客可以调用此接口，就能抢先设置口令并锁定管理员。
+        # 首次设置前仅初始化路由可用；仍需防止公网访客抢先设置口令并锁定管理员。
         # 本机直连允许首次设置；公网域名/反向代理部署必须通过服务端环境变量提供的一次性引导口令。
         if not auth.password_configured():
             host = (request.url.hostname or "").strip("[]").lower()
