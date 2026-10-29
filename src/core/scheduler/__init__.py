@@ -284,7 +284,8 @@ class SchedulerEngine:
             return
 
         rows = self.conn.execute(
-            "SELECT d.id, d.platform, d.draft_id, d.saved_at, c.round_id AS round_id, c.title, "
+            "SELECT d.id, d.platform, d.draft_id, d.saved_at, c.round_id AS round_id, "
+            "COALESCE(d.saved_platform_title, c.title) AS poll_title, "
             "c.review_rejected AS review_rejected, "
             "c.review_rejection_reason AS review_rejection_reason "
             "FROM drafts d JOIN contents c ON d.content_id = c.id "
@@ -311,7 +312,8 @@ class SchedulerEngine:
                 continue
 
             async with self.platform_locks[platform]:
-                snap = await adapter.fetch_metrics(row["draft_id"], row["title"] or "")
+                # 标题匹配要使用成功存稿时的快照，而非可能已经被用户本地修改的标题。
+                snap = await adapter.fetch_metrics(row["draft_id"], row["poll_title"] or "")
 
             if snap.fetch_status.value not in ("success", "partial"):
                 continue  # 平台侧没看到 → 用户还没发
