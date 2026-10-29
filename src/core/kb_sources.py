@@ -37,6 +37,7 @@ from .scoring.topic_eval import TopicItem
 logger = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_TOPIC_ROWS = 100_000
 # XLSX 本质是 ZIP。压缩文件小于 20MB 不代表展开后的 XML 安全；限制总展开体积与条目数，防止 ZIP bomb。
 MAX_XLSX_EXPANDED_BYTES = 40 * 1024 * 1024
 MAX_XLSX_ENTRIES = 1000
@@ -438,6 +439,10 @@ def parse_rss(text: str) -> tuple[list[str], list[dict]]:
     return ["title", "link", "summary", "date", "source"], rows
 
 
+def _quote_sqlite_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
 def parse_sqlite(path: Path, table_name: Optional[str]) -> tuple[list[str], list[dict]]:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
@@ -452,12 +457,17 @@ def parse_sqlite(path: Path, table_name: Optional[str]) -> tuple[list[str], list
             counts = []
             for t in tables:
                 try:
-                    counts.append((conn.execute(f"SELECT COUNT(*) FROM [{t}]").fetchone()[0], t))
+                    quoted = _quote_sqlite_identifier(t)
+                    counts.append((conn.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0], t))
                 except sqlite3.Error:
                     continue
             table = max(counts)[1] if counts else tables[0]
-        columns = [r[1] for r in conn.execute(f"PRAGMA table_info([{table}])").fetchall()]
-        rows = [dict(r) for r in conn.execute(f"SELECT * FROM [{table}]").fetchall()]
+        quoted = _quote_sqlite_identifier(table)
+        row_count = int(conn.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0])
+        if row_count > MAX_TOPIC_ROWS:
+            raise ValueError(f"SQLite 选题库超过 {MAX_TOPIC_ROWS:,} 行上限")
+        columns = [r[1] for r in conn.execute(f"PRAGMA table_info({quoted})").fetchall()]
+        rows = [dict(r) for r in conn.execute(f"SELECT * FROM {quoted}").fetchall()]
         return columns, rows
     finally:
         conn.close()
@@ -469,17 +479,22 @@ def read_table(path: Path, fmt: str, table_name: Optional[str] = None) -> tuple[
     if path.stat().st_size > MAX_UPLOAD_BYTES:
         raise ValueError("选题库文件超过 20MB 上限")
     if fmt == "xlsx":
-        return parse_xlsx(path)
-    if fmt == "sqlite":
-        return parse_sqlite(path, table_name)
-    text = _read_text(path)
-    if fmt == "json":
-        return parse_json(text)
-    if fmt == "jsonl":
-        return parse_jsonl(text)
-    if fmt == "rss":
-        return parse_rss(text)
-    return parse_csv(text)
+        columns, rows = parse_xlsx(path)
+    elif fmt == "sqlite":
+        columns, rows = parse_sqlite(path, table_name)
+    else:
+        text = _read_text(path)
+        if fmt == "json":
+            columns, rows = parse_json(text)
+        elif fmt == "jsonl":
+            columns, rows = parse_jsonl(text)
+        elif fmt == "rss":
+            columns, rows = parse_rss(text)
+        else:
+            columns, rows = parse_csv(text)
+    if len(rows) > MAX_TOPIC_ROWS:
+        raise ValueError(f"选题库超过 {MAX_TOPIC_ROWS:,} 行上限")
+    return columns, rows
 
 
 # ----------------------------------------------------------------------
@@ -760,8 +775,12 @@ def _validate_name(name: str) -> str:
 
 
 def _decode_upload(filename: str, content_b64: str) -> tuple[str, bytes]:
+    encoded = str(content_b64 or "").split(",", 1)[-1]
+    max_encoded_chars = ((MAX_UPLOAD_BYTES + 2) // 3) * 4
+    if len(encoded) > max_encoded_chars:
+        raise ValueError("上传文件超过 20MB 上限")
     try:
-        data = base64.b64decode(content_b64.split(",", 1)[-1], validate=False)
+        data = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise ValueError(f"文件内容不是合法 base64：{exc}") from exc
     if len(data) > MAX_UPLOAD_BYTES:
