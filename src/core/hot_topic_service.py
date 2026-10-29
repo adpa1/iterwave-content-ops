@@ -186,6 +186,17 @@ def is_stale(cfg, conn) -> bool:
         return True
 
 
+def reset_runtime_state() -> None:
+    """账号组切换后清除进程级 UI 状态；只允许在采集/研判均空闲时调用。"""
+    with _LOCK:
+        if _STATE["running"] or _RESEARCH_STATE["running"]:
+            raise RuntimeError("热点后台任务仍在执行，不能清理账号组运行状态")
+        _STATE.update(running=False, started_at=None, finished_at=None, trigger=None,
+                      report=None, match=None, error=None, progress=None)
+        _RESEARCH_STATE.update(running=False, started_at=None, finished_at=None,
+                               report=None, error=None)
+
+
 def reset_for_tests() -> None:
     with _LOCK:
         _STATE.update(running=False, started_at=None, finished_at=None, trigger=None,
@@ -195,4 +206,4 @@ def reset_for_tests() -> None:
 
 
 __all__ = ["status", "research_status", "run_once", "run_research", "trigger_background",
-           "trigger_research", "is_stale", "reset_for_tests"]
+           "trigger_research", "is_stale", "reset_runtime_state", "reset_for_tests"]
