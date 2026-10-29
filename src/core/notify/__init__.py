@@ -57,7 +57,8 @@ from ..redact import redact as _redact  # noqa: F401 — 对外兼容 _redact �
 
 
 def _as_escape(text: str) -> str:
-    """转义 AppleScript 字符串字面量（反斜杠 + 双引号）。"""
+    """转义 AppleScript 字符串字面量，避免通知文本中的换行逃逸出字符串。"""
+    text = str(text or "").replace("\\r", " ").replace("\\n", " ").replace("\\t", " ")
     return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
@@ -236,7 +237,7 @@ class Notifier:
             capture_output=True, text=True, timeout=5, check=False,
         )
         if proc.returncode != 0:
-            logger.warning("macOS 通知失败: %s", (proc.stderr or "").strip())
+            logger.warning("macOS 通知失败: %s", _redact((proc.stderr or "").strip()))
             return False
         return True
 
