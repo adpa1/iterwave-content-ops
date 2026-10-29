@@ -96,6 +96,21 @@ def test_xlsx_column_coordinate_is_bounded():
     else:
         raise AssertionError("expected excessive Excel column coordinate to be rejected")
 
+def test_local_text_source_reads_are_size_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(kb_sources, "MAX_UPLOAD_BYTES", 8)
+    path = tmp_path / "small.csv"
+    path.write_bytes(b"title\na")
+    assert kb_sources._read_text(path) == "title\na"
+
+    path.write_bytes(b"title\n12345")
+    try:
+        kb_sources._read_text(path)
+    except ValueError as exc:
+        assert "大小上限" in str(exc)
+    else:
+        raise AssertionError("oversized local text sources must be rejected")
+
+
 def test_topic_parsers_enforce_row_limits(monkeypatch):
     monkeypatch.setattr(kb_sources, "MAX_TOPIC_ROWS", 2)
 
