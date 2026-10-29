@@ -715,6 +715,121 @@ def test_published_content_cannot_be_manually_rejected(client):
     ).fetchone()[0] == 0
 
 
+def _current_platform_payload_hash(conn, content_id: str) -> str:
+    from src.core.content_version import content_version_hash, parse_json_list
+
+    row = conn.execute(
+        "SELECT title, body, tags, image_paths FROM contents WHERE id = ?",
+        (content_id,),
+    ).fetchone()
+    images = parse_json_list(row["image_paths"])
+    payload_images = [str(images[0])] if images and images[0] else []
+    return content_version_hash(
+        row["title"], row["body"], parse_json_list(row["tags"]), payload_images,
+    )
+
+
+def test_saved_platform_draft_version_mismatch_requires_explicit_override(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="awaiting_publish")
+    draft_id = seed.draft(
+        round_id, platform="xhs", draft_status="draft_saved", fetch_status=None,
+    )
+    content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    old_hash = _current_platform_payload_hash(conn, content_id)
+    conn.execute(
+        "UPDATE drafts SET saved_content_hash = ? WHERE id = ?", (old_hash, draft_id)
+    )
+    conn.execute(
+        "UPDATE contents SET title = ?, guard_outcome = 'pass', guard_reason = ? WHERE id = ?",
+        ("本地改过的新标题", "G2 复检通过", content_id),
+    )
+    conn.commit()
+
+    listed = tc.get("/api/drafts").json()
+    item = next(d for d in listed if d["id"] == draft_id)
+    assert item["platform_content_sync"] == "stale"
+    assert item["guard_confirmation_allowed"] is True
+
+    response = tc.post(
+        f"/api/drafts/{draft_id}/publish_confirm",
+        json={"note_url": "https://www.xiaohongshu.com/explore/old-version"},
+    )
+    assert response.status_code == 409
+    assert "本地文案已不同于上次存入平台的版本" in response.json()["detail"]
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "draft_saved"
+
+    # 若外部发布事实上已发生，保留真实采集，但要求单独说明平台版本差异并审计。
+    response = tc.post(
+        f"/api/drafts/{draft_id}/publish_confirm",
+        json={
+            "note_url": "https://www.xiaohongshu.com/explore/old-version",
+            "platform_sync_override_reason": "实际发布的是平台旧版本，保留真实运营数据",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "user_published"
+    audit = conn.execute(
+        "SELECT override_field, reason FROM user_override "
+        "WHERE round_id = ? ORDER BY id DESC LIMIT 1", (round_id,)
+    ).fetchone()
+    assert audit["override_field"] == "platform_content_sync_override"
+    assert audit["reason"] == "实际发布的是平台旧版本，保留真实运营数据"
+
+
+def test_legacy_platform_draft_requires_sync_attestation_before_normal_confirm(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="awaiting_publish")
+    draft_id = seed.draft(
+        round_id, platform="xhs", draft_status="draft_saved", fetch_status=None,
+    )
+    content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE drafts SET saved_content_hash = NULL WHERE id = ?", (draft_id,)
+    )
+    conn.execute(
+        "UPDATE contents SET guard_outcome = 'pass', guard_reason = 'G2 通过' WHERE id = ?",
+        (content_id,),
+    )
+    conn.commit()
+
+    listed = tc.get("/api/drafts").json()
+    item = next(d for d in listed if d["id"] == draft_id)
+    assert item["platform_content_sync"] == "unknown"
+    blocked = tc.post(f"/api/drafts/{draft_id}/publish_confirm", json={})
+    assert blocked.status_code == 409
+    assert "没有保存版本指纹" in blocked.json()["detail"]
+
+    synced = tc.post(
+        f"/api/drafts/{draft_id}/confirm_platform_sync",
+        json={"reason": "已人工核对平台草稿并更新为当前版本"},
+    )
+    assert synced.status_code == 200
+    assert synced.json()["platform_content_sync"] == "matched"
+    expected_hash = _current_platform_payload_hash(conn, content_id)
+    saved_hash = conn.execute(
+        "SELECT saved_content_hash FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    assert saved_hash == expected_hash
+
+    confirmed = tc.post(f"/api/drafts/{draft_id}/publish_confirm", json={})
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "user_published"
+    audit = conn.execute(
+        "SELECT override_field, reason FROM user_override "
+        "WHERE round_id = ? AND override_field = 'platform_content_sync_confirmed' "
+        "ORDER BY id DESC LIMIT 1", (round_id,)
+    ).fetchone()
+    assert audit is not None
+    assert audit["reason"] == "已人工核对平台草稿并更新为当前版本"
+
+
 # ---------------------------------------------------------------- R-5 KPI 窗口
 def test_ops_kpi_days_param(client):
     tc, _, seed = client
