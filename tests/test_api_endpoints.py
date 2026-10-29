@@ -413,6 +413,63 @@ def test_cancel_round_cancels_local_pending_drafts_together(client):
     ).fetchone()[0] == "cancelled"
 
 
+def test_publish_confirmation_requires_current_quality_gate(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="awaiting_publish")
+    draft_id = seed.draft(
+        round_id, platform="xhs", draft_status="draft_saved", fetch_status=None,
+    )
+    content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+
+    # 首次未检查：不能进入 user_published。
+    response = tc.post(
+        f"/api/drafts/{draft_id}/publish_confirm",
+        json={"note_url": "https://www.xiaohongshu.com/explore/123"},
+    )
+    assert response.status_code == 409
+    assert "未检查" in response.json()["detail"]
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "draft_saved"
+
+    # 失败或异常的最新质检结果同样不能被绕过。
+    conn.execute(
+        "UPDATE contents SET guard_outcome = 'fail', guard_reason = '红线命中' WHERE id = ?",
+        (content_id,),
+    )
+    conn.commit()
+    response = tc.post(
+        f"/api/drafts/{draft_id}/publish_confirm",
+        json={"note_url": "https://www.xiaohongshu.com/explore/123"},
+    )
+    assert response.status_code == 409
+    assert "红线命中" in response.json()["detail"]
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "draft_saved"
+
+    # 重新检查通过后才能确认；正常路径推进到数据采集。
+    conn.execute(
+        "UPDATE contents SET guard_outcome = 'pass', guard_reason = '检查通过' WHERE id = ?",
+        (content_id,),
+    )
+    conn.commit()
+    response = tc.post(
+        f"/api/drafts/{draft_id}/publish_confirm",
+        json={"note_url": "https://www.xiaohongshu.com/explore/123"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "user_published"
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "user_published"
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "collecting_metrics"
+
+
 # ---------------------------------------------------------------- R-5 KPI 窗口
 def test_ops_kpi_days_param(client):
     tc, _, seed = client
