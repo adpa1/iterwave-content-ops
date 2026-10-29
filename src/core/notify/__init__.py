@@ -58,9 +58,8 @@ from ..redact import redact as _redact  # noqa: F401 — 对外兼容 _redact �
 
 def _as_escape(text: str) -> str:
     """转义 AppleScript 字符串字面量，避免通知文本中的换行逃逸出字符串。"""
-    text = str(text or "").replace("\\r", " ").replace("\\n", " ").replace("\\t", " ")
+    text = str(text or "").replace("\r", " ").replace("\n", " ").replace("\t", " ")
     return text.replace("\\", "\\\\").replace('"', '\\"')
-
 
 def macos_available() -> bool:
     """macOS 通知只在 macOS 上可用；Linux/Windows 部署自动跳过（可移植）。"""
