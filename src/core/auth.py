@@ -189,12 +189,12 @@ def status(cookie_token: Optional[str], headers) -> dict:
     }
 
 
-def session_cookie_header(token: str) -> str:
-    """HttpOnly + SameSite=Lax；本地 HTTP 不加 Secure，避免 http:// 下丢 Cookie。"""
-    return (
-        f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; "
-        f"Max-Age={SESSION_TTL_SECONDS}"
-    )
+def session_cookie_header(token: str, *, secure: bool = False) -> str:
+    """生成会话 Cookie；HTTPS 部署附加 Secure，纯 HTTP 本地开发仍可登录。"""
+    attrs = f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax"
+    if secure:
+        attrs += "; Secure"
+    return f"{attrs}; Max-Age={SESSION_TTL_SECONDS}"
 
 
 def clear_cookie_header() -> str:
