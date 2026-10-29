@@ -1,11 +1,9 @@
-"""访问口令保护（部署到公网时必须开启）。
+"""访问口令保护。
 
-- 口令存在 config/.env 的 ITERWAVE_ACCESS_TOKEN（不进配置文件、不进日志）
-- 设置口令后，所有 /api/*（除 /api/auth/*）都要求登录：
-  浏览器走 HttpOnly Cookie；脚本 / 监控可用 `Authorization: Bearer <口令>`
-- 未设置口令时为开放模式：接口照常可用，页面顶部持续警告，并允许在页面上设置口令
-  （设置后立即生效，之后只能凭旧口令修改）
-- 登录失败按 IP 限速，防止暴力猜测
+- 未设置口令时只允许查询认证状态与执行首次设置，其它业务 API 返回 setup_required。
+- 公网首次设置必须使用服务器端 ITERWAVE_BOOTSTRAP_TOKEN；本机直连可留空。
+- 设置口令后，所有非认证 API 都要求登录；浏览器使用 HttpOnly Cookie，脚本可用 Bearer 口令。
+- 登录和脚本 Bearer 认证失败共用按来源 IP 进行的 10 分钟限速。
 """
 
 from __future__ import annotations
