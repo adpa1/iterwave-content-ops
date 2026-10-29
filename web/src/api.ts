@@ -467,6 +467,8 @@ export interface TenantListResponse {
   runtime_tenant_id: string;
   selected_tenant_id: string;
   restart_required: boolean;
+  /** 即时切换需在服务端显式设置 ITERWAVE_ENABLE_TENANT_HOT_SWITCH=true。 */
+  hot_switch_enabled?: boolean;
   items: TenantItem[];
 }
 export interface GlobalMonitorTenant {
@@ -1301,7 +1303,7 @@ export const api = {
       "/api/tenant-backup/restore", { method: "POST", body: JSON.stringify({ backup_name, confirm }) },
     ),
   selectTenant: (tenant_id: string) =>
-    fetchJson<{ selected: { id: string; name: string }; runtime_tenant_id: string; restart_required: boolean; message: string }>(
+    fetchJson<{ selected: { id: string; name: string }; runtime_tenant_id: string; restart_required: boolean; switch_status?: "completed" | "unchanged"; message: string }>(
       "/api/tenants/select", { method: "POST", body: JSON.stringify({ tenant_id }) },
     ),
   // === 图片素材库 ===

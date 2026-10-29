@@ -208,6 +208,52 @@ def cancel_login(platform: str) -> dict:
     return {"ok": True, "platform": platform}
 
 
+def stop_all_logins(timeout_seconds: float = 10.0) -> None:
+    """账号组切换前终止旧账号组的扫码登录子进程，并等待登录态导出线程退出。"""
+    deadline = time.monotonic() + max(0.1, timeout_seconds)
+    with _PROCESS_LOCK:
+        active = [(platform, proc) for platform, proc in _LOGIN_PROCESSES.items()]
+        completed_before_stop = {
+            platform: proc.poll() is not None for platform, proc in active
+        }
+        for _, proc in active:
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                except OSError:
+                    logger.warning("终止登录子进程失败")
+        for platform, proc in active:
+            try:
+                proc.wait(timeout=max(0.1, min(3.0, deadline - time.monotonic())))
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    raise TimeoutError(f"平台 {platform} 的登录子进程未能退出")
+            _LOGIN_PROCESSES.pop(platform, None)
+
+    # 已完成登录但尚未导出的状态先触发导出；不能因切换目录而丢失刚完成的登录态。
+    for platform, proc in active:
+        if completed_before_stop.get(platform) and _read_status_file(_files(platform)["status"]).get("state") == "success":
+            _schedule_export(platform)
+
+    while True:
+        with _EXPORT_LOCK:
+            exporting = bool(_EXPORTING)
+        if not exporting:
+            break
+        if time.monotonic() >= deadline:
+            raise TimeoutError("登录态导出仍在执行，拒绝切换账号组目录")
+        time.sleep(0.05)
+
+    # 登录态导出完成后再清除旧扫码临时文件；已保存的 storage_state / profile 保留。
+    for platform, _ in active:
+        f = _files(platform)
+        for key in ("qr", "status", "code"):
+            f[key].unlink(missing_ok=True)
+
+
 def clear_login(platform: str) -> dict:
     """注销：删持久化 profile、storage_state 和登录标记（下次需重新扫码）。"""
     cancel_login(platform)
