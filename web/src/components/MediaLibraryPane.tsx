@@ -80,6 +80,7 @@ export default function MediaLibraryPane() {
     await withPending("media:upload", async () => {
       let succeeded = 0;
       let failed = 0;
+      const failedFiles: File[] = [];
       const customTags = tagsText.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean);
       for (const item of files) {
         try {
@@ -95,6 +96,7 @@ export default function MediaLibraryPane() {
           if (result.duplicate) succeeded += 0;
         } catch (e) {
           failed += 1;
+          failedFiles.push(item);
           console.error("media upload failed:", item.name, e);
         }
       }
@@ -102,7 +104,7 @@ export default function MediaLibraryPane() {
         `批量导入完成：成功 ${succeeded} 张，失败 ${failed} 张。${failed ? "失败项请检查网络或服务日志后重试。" : ""}`,
         failed ? "info" : "success",
       );
-      setFiles([]);
+      setFiles(failedFiles);
       setTitle("");
       setAltText("");
       setTagsText("");
