@@ -300,12 +300,23 @@ def test_preview_and_delete(cfg):
 # Webhook 写 .env
 # =====================================================================
 
-def test_webhook_written_to_env(api_client, tmp_path):
+def test_webhook_written_to_env(api_client, tmp_path, monkeypatch):
+    # 该测试不依赖外网 DNS；模拟该 webhook 域名解析到公网地址。
+    monkeypatch.setattr(
+        kb_sources.socket,
+        "getaddrinfo",
+        lambda host, port, **kwargs: [
+            (kb_sources.socket.AF_INET, kb_sources.socket.SOCK_STREAM, 6, "", ("8.8.8.8", port))
+        ],
+    )
     r = api_client.post("/api/notify/webhook",
                         json={"channel": "wecom", "url": "https://qy.example/hook", "enabled": True})
     assert r.status_code == 200
     assert env_store.read_env("WECOM_WEBHOOK_URL") == "https://qy.example/hook"
     assert "WECOM_WEBHOOK_URL" in (tmp_path / ".env").read_text(encoding="utf-8")
+    # 内网目标不能被注册为服务端主动请求的 webhook。
+    assert api_client.post("/api/notify/webhook",
+                           json={"channel": "feishu", "url": "http://127.0.0.1/admin"}).status_code == 422
     # 非 http(s) 地址被拒
     assert api_client.post("/api/notify/webhook",
                            json={"channel": "feishu", "url": "ftp://x"}).status_code == 422
