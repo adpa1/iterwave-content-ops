@@ -293,6 +293,10 @@ details[open] > summary::before { content: "▾ "; }
   .top-actions { gap: 7px; }
 }
 @media (max-width: 760px) {
+  .topbar { height: auto; min-height: 58px; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 12px; }
+  .crumb { flex: 1 1 auto; min-width: 120px; }
+  .top-actions { flex: 1 1 100%; width: 100%; min-width: 0; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+  .top-actions > .btn { white-space: nowrap; }
   .global-search .search { display: none; }
   .global-search .mobile-search-toggle {
     display: inline-flex; align-items: center; justify-content: center;
