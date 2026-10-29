@@ -19,7 +19,7 @@ from src.core.state_machine import DraftStateMachine
 
 
 @pytest.fixture()
-def client(cfg, conn, seed):
+def client(cfg, conn, seed, test_auth):
     """注入临时依赖的 TestClient（不执行 lifespan）。"""
     saved = dict(api_main._g_ctx)
     api_main._g_ctx.clear()
@@ -32,7 +32,7 @@ def client(cfg, conn, seed):
     })
     app = api_main._build_app()
     try:
-        yield TestClient(app), conn, seed
+        yield TestClient(app, headers={"Authorization": f"Bearer {test_auth}"}), conn, seed
     finally:
         api_main._g_ctx.clear()
         api_main._g_ctx.update(saved)
