@@ -244,6 +244,7 @@ def test_public_remote_source_redacts_url_credentials(cfg):
         "url": "https://user:password@example.com/private/token?access_token=SECRET#fragment",
         "headers": {"Authorization": "Bearer SECRET"},
         "field_mapping": {},
+        "last_error": "request failed https://example.com/feed?access_token=SECRET",
     })
     rendered = json.dumps(public, ensure_ascii=False)
     assert "url" not in public
