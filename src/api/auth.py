@@ -124,6 +124,17 @@ def install_auth(app: FastAPI) -> None:
         if not path.startswith("/api/") or request.method == "OPTIONS":
             return await call_next(request)
 
+        if path == "/api/kb/upload":
+            # Multipart 请求会先被 Starlette 解析；在解析前拒绝声明体积超限的上传。
+            content_length = request.headers.get("content-length")
+            if content_length:
+                try:
+                    size = int(content_length)
+                except ValueError:
+                    return JSONResponse({"detail": "Content-Length 不合法"}, status_code=400)
+                if size < 0 or size > 22 * 1024 * 1024:
+                    return JSONResponse({"detail": "上传请求体超过 22MB 上限"}, status_code=413)
+
         if not current_token():
             # 首次初始化时关闭业务 API，只开放状态查询与设置口令；不能因为尚未设密而匿名管理平台。
             if path not in ("/api/auth/status", "/api/auth/setup", "/api/auth/login"):
