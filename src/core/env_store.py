@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -22,7 +23,7 @@ def env_file() -> Path:
 
 
 def write_env(key: str, value: str) -> Path:
-    """写入 / 删除（value 为空）一个环境变量；保留其它行。"""
+    """原子写入 / 删除一个环境变量，保留其它行并尽量避免半写入密钥文件。"""
     path = env_file()
     lines: list[str] = []
     if path.exists():
@@ -38,9 +39,37 @@ def write_env(key: str, value: str) -> Path:
         out.append(line)
     if value and not replaced:
         out.append(f"{key}={value}")
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(out) + "\n", encoding="utf-8")
-    path.chmod(0o600)
+    content = "\n".join(out) + "\n"
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            try:
+                os.fchmod(tmp.fileno(), 0o600)
+            except (AttributeError, OSError):
+                os.chmod(tmp_path, 0o600)
+            tmp.write(content)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_path, path)
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
     if value:
         os.environ[key] = value
     else:
