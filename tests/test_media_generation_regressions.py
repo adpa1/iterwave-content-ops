@@ -55,6 +55,39 @@ def test_failed_image_generation_does_not_consume_monthly_quota(
         api_main._g_ctx.update(saved)
 
 
+def test_concurrent_image_generation_is_rejected_without_creating_a_job(
+    conn, cfg, test_auth, tmp_path
+):
+    registry = TenantRegistry(tmp_path / "workspace")
+    registry.initialize()
+    conn.execute(
+        "INSERT INTO media_generation_settings (id, enabled, monthly_quota, prompt_prefix, model, size) "
+        "VALUES (1, 1, 5, '', 'test-model', '1024x1024') "
+        "ON CONFLICT(id) DO UPDATE SET enabled=1, monthly_quota=5, model='test-model', size='1024x1024'"
+    )
+    conn.commit()
+    saved = dict(api_main._g_ctx)
+    api_main._g_ctx.clear()
+    api_main._g_ctx.update({
+        "conn": conn,
+        "cfg": cfg,
+        "tenant_registry": registry,
+        "runtime_tenant_id": "default",
+    })
+    api_main._media_generation_lock.acquire()
+    try:
+        response = _client(test_auth).post(
+            "/api/media/generate", json={"prompt": "a detailed test image prompt"}
+        )
+        assert response.status_code == 409
+        assert "正在执行" in response.json()["detail"]
+        assert conn.execute("SELECT COUNT(*) FROM media_generation_jobs").fetchone()[0] == 0
+    finally:
+        api_main._media_generation_lock.release()
+        api_main._g_ctx.clear()
+        api_main._g_ctx.update(saved)
+
+
 def test_media_generation_settings_do_not_expose_provider_url_or_key_variable(
     conn, test_auth, monkeypatch
 ):
