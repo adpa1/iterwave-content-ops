@@ -32,6 +32,7 @@ POST /api/hot_topics/refresh  触发后台采集 + 标签匹配
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -61,6 +62,7 @@ from starlette.responses import Response
 from src.core.config import load_config, get_config, DEFAULT_ENV_PATH
 from src.core.config import PROJECT_ROOT
 from src.core.tenant_registry import TenantRegistry, TenantError
+from src.core.tenant_switch_gate import TenantSwitchGate, TenantSwitchInProgress
 from src.core.db import Database
 from src.core.state_machine import RoundStateMachine, DraftStateMachine
 from src.core.scoring.topic_eval import ScoringEngine, TopicItem
@@ -98,6 +100,12 @@ logger = logging.getLogger(__name__)
 # =====================================================================
 
 _g_ctx: dict = {}
+_tenant_switch_gate = TenantSwitchGate()
+
+
+class TenantRuntimeRollbackError(RuntimeError):
+    """切换失败且旧运行时无法恢复；闸门必须保持关闭。"""
+
 
 # G-22：正在执行的轮次集合。同一轮次并发触发会被拒绝（409），避免重复产出草稿
 _running_rounds: set[int] = set()
@@ -125,6 +133,202 @@ def _dedupe_once(key: str, produce: Callable[[], dict]) -> tuple[dict, bool]:
         result = produce()
         _dedupe_cache[key] = (now, result)
         return result, False
+
+
+
+def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: str) -> dict:
+    """为指定账号组构造完整运行时；不启动调度器、不修改当前活动上下文。"""
+    cfg = load_config()
+    tenant = tenant_registry.get(tenant_id)
+    tenant_paths = None
+    if tenant_id != "default":
+        tenant_paths = tenant_registry.paths(
+            tenant_id, name=str(tenant.get("name") or tenant_id), create=True,
+        )
+        cfg.paths.data_dir = str(tenant_paths.data_dir)
+        cfg.paths.db_file = str(tenant_paths.db_file)
+        cfg.paths.backup_dir = str(tenant_paths.backup_dir)
+        cfg.paths.output_dir = str(tenant_paths.output_dir)
+        cfg.paths.screenshot_dir = str(tenant_paths.screenshot_dir)
+        cfg.paths.log_dir = str(tenant_paths.log_dir)
+        cfg.topic_kb.path = str(tenant_paths.kb_dir / "topics.csv")
+
+    runtime_data_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
+    pending_restore = runtime_data_dir / ".pending_restore.json"
+    if pending_restore.exists():
+        raise RuntimeError("目标账号组存在待恢复快照，请先重启服务完成恢复，再执行热切换")
+
+    applied_overrides = apply_overrides(cfg, load_overrides(cfg))
+    if applied_overrides:
+        logger.info("账号组热切换已应用 %d 项配置覆盖 tenant=%s", len(applied_overrides), tenant_id)
+    if tenant_id != "default":
+        for platform_cfg in cfg.platforms.model_dump().keys():
+            item = getattr(cfg.platforms, platform_cfg)
+            prefix = f"{tenant_id}__"
+            if not item.account_key.startswith(prefix):
+                item.account_key = f"{prefix}{item.account_key}"
+        cfg.topic_kb.path = str(tenant_paths.kb_dir / "topics.csv")
+
+    db = Database(cfg)
+    conn = None
+    scheduler = None
+    try:
+        db.initialize()
+        from src.core.db import LockedConnection
+        conn = LockedConnection(db.connect())
+        adapters = get_adapters(cfg, conn)
+        cb = CircuitBreakerEngine(cfg, conn, adapters)
+        rhythm = RhythmController(cfg)
+        sm_round = RoundStateMachine(conn)
+        sm_draft = DraftStateMachine(conn)
+        scoring = ScoringEngine(cfg, conn)
+        guard = UltimateGoalChecker(cfg)
+        normalizer = Normalizer(conn)
+        spiral = SpiralEngine(cfg, conn)
+        scheduler = SchedulerEngine(cfg, cfg.resolve_path(cfg.paths.db_file))
+        ops = OperationsEngine(cfg, conn, adapters, cb, rhythm)
+        notifier = Notifier(cfg, conn)
+        executor = RoundExecutor(
+            cfg, conn, scoring, guard, adapters, sm_round, sm_draft,
+            circuit_breaker=cb, notifier=notifier,
+        )
+        goal_progress = GoalProgressUpdater(cfg, conn)
+        insights = PlatformInsightsEngine(cfg, conn)
+        scheduler.wire(
+            conn=conn, adapters=adapters, sm_draft=sm_draft, sm_round=sm_round,
+            circuit_breaker=cb, notifier=notifier, ops=ops, kb_reader=None,
+            spiral=spiral, scoring=scoring, goal_progress=goal_progress, guard=guard,
+        )
+        recovery_report = RecoveryManager(cfg, conn, scheduler).recover()
+        pvm = PlanVersionManager(cfg, conn)
+        invalidation = pvm.invalidate_changed_plans()
+        if invalidation["stale_rounds"]:
+            logger.warning(
+                "账号组热切换计划签名检查 tenant=%s stale_rounds=%d",
+                tenant_id, len(invalidation["stale_rounds"]),
+            )
+        from ..core.autogrow import AutogrowController
+        autogrow = AutogrowController(
+            cfg, conn, executor, goal_progress=goal_progress,
+            notifier=notifier, guard=guard, pvm=pvm,
+        )
+        scheduler.autogrow = autogrow
+        return {
+            "tenant_registry": tenant_registry, "runtime_tenant_id": tenant_id,
+            "cfg": cfg, "db": db, "conn": conn, "adapters": adapters,
+            "cb": cb, "rhythm": rhythm, "sm_round": sm_round, "sm_draft": sm_draft,
+            "scoring": scoring, "guard": guard, "normalizer": normalizer,
+            "spiral": spiral, "scheduler": scheduler, "ops": ops,
+            "executor": executor, "notifier": notifier, "goal_progress": goal_progress,
+            "insights": insights, "recovery": recovery_report,
+            "plan_version_manager": pvm, "autogrow": autogrow,
+        }
+    except Exception:
+        if scheduler is not None:
+            try:
+                scheduler.shutdown()
+            except Exception:
+                logger.exception("清理未启动的账号组调度器失败 tenant=%s", tenant_id)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                logger.exception("清理未提交的账号组数据库连接失败 tenant=%s", tenant_id)
+        raise
+
+
+async def _switch_tenant_runtime(tenant_id: str) -> dict:
+    """安全切换完整运行时；任何失败都尝试恢复原账号组。调用方必须持有切换闸门。"""
+    registry = _g_ctx.get("tenant_registry")
+    if registry is None:
+        raise HTTPException(503, "账号组注册表尚未初始化")
+    old_tenant_id = _g_ctx.get("runtime_tenant_id", "default")
+    if tenant_id == old_tenant_id:
+        registry.select_active(tenant_id)
+        return {"selected": {"id": tenant_id, "name": registry.get(tenant_id).get("name") or tenant_id},
+                "runtime_tenant_id": tenant_id, "restart_required": False,
+                "switch_status": "unchanged", "message": "当前账号组已是运行中的账号组。"}
+    if _running_rounds:
+        raise HTTPException(409, "当前仍有轮次在执行，不能切换账号组")
+    try:
+        registry.get(tenant_id)
+    except TenantError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    old_context = dict(_g_ctx)
+    old_scheduler = old_context.get("scheduler")
+    old_conn = old_context.get("conn")
+    new_context = _build_tenant_runtime_context(registry, tenant_id)
+    old_stopped = False
+    new_started = False
+    try:
+        if old_scheduler is not None:
+            old_scheduler.shutdown()
+            old_stopped = True
+            # APScheduler 的异步 shutdown 通过当前事件循环完成 executor 收尾。
+            await asyncio.sleep(0.05)
+
+        from src.core import account_login, login_manager
+        new_data_dir = new_context["cfg"].resolve_path(new_context["cfg"].paths.data_dir)
+        account_login.configure_data_dir(new_data_dir)
+        login_manager.configure_data_dir(new_data_dir)
+
+        new_context["scheduler"].start()
+        new_started = True
+        selected = registry.select_active(tenant_id)
+        set_active_notifier(new_context["notifier"])
+        _g_ctx.clear()
+        _g_ctx.update(new_context)
+        if old_conn is not None:
+            try:
+                old_conn.close()
+            except Exception:
+                logger.exception("关闭旧账号组连接失败 tenant=%s", old_tenant_id)
+        logger.info("账号组运行时热切换成功 from=%s to=%s", old_tenant_id, tenant_id)
+        return {
+            "selected": selected, "runtime_tenant_id": tenant_id,
+            "restart_required": False, "switch_status": "completed",
+            "message": f"已切换到账号组「{selected['name']}」，运行时已重建。",
+        }
+    except Exception as exc:
+        logger.exception("账号组热切换失败 from=%s to=%s", old_tenant_id, tenant_id)
+        if new_started:
+            try:
+                new_context["scheduler"].shutdown()
+                await asyncio.sleep(0.05)
+            except Exception:
+                logger.exception("关闭失败的新账号组调度器失败 tenant=%s", tenant_id)
+        try:
+            new_context["conn"].close()
+        except Exception:
+            logger.exception("关闭失败的新账号组连接失败 tenant=%s", tenant_id)
+
+        if not old_stopped:
+            raise HTTPException(500, f"账号组初始化失败，原运行时未变更：{type(exc).__name__}") from exc
+
+        try:
+            # 旧调度器已停止，重新构造旧账号组而非复用可能已关闭的调度器实例。
+            rollback_context = _build_tenant_runtime_context(registry, old_tenant_id)
+            from src.core import account_login, login_manager
+            old_data_dir = rollback_context["cfg"].resolve_path(rollback_context["cfg"].paths.data_dir)
+            account_login.configure_data_dir(old_data_dir)
+            login_manager.configure_data_dir(old_data_dir)
+            rollback_context["scheduler"].start()
+            registry.select_active(old_tenant_id)
+            set_active_notifier(rollback_context["notifier"])
+            _g_ctx.clear()
+            _g_ctx.update(rollback_context)
+            if old_conn is not None:
+                try:
+                    old_conn.close()
+                except Exception:
+                    pass
+        except Exception as rollback_exc:
+            logger.exception("账号组热切换回滚失败 from=%s to=%s", tenant_id, old_tenant_id)
+            raise TenantRuntimeRollbackError(
+                f"切换失败且旧账号组恢复失败（{type(rollback_exc).__name__}）；为避免串租，系统已阻止新业务请求"
+            ) from rollback_exc
+        raise HTTPException(500, f"切换失败，已恢复账号组「{old_tenant_id}」：{type(exc).__name__}") from exc
 
 
 def _build_app() -> FastAPI:
@@ -379,7 +583,21 @@ def _build_app() -> FastAPI:
 
             request._receive = replay_body
 
-        return await call_next(request)
+        tracked_request = path.startswith("/api/") and path != "/api/tenants/select"
+        if tracked_request:
+            try:
+                _tenant_switch_gate.enter_request()
+            except TenantSwitchInProgress as exc:
+                return JSONResponse(
+                    {"detail": str(exc), "code": "tenant_switch_in_progress", "retryable": True},
+                    status_code=503,
+                    headers={"Retry-After": "2"},
+                )
+        try:
+            return await call_next(request)
+        finally:
+            if tracked_request:
+                _tenant_switch_gate.leave_request()
 
     # === 挂载 React 前端静态文件 (同 origin, 单进程) ===
     dist_dir = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
@@ -1613,27 +1831,24 @@ def _register_routes(app: FastAPI) -> None:
         }
 
     @app.post("/api/tenants/select")
-    def select_tenant(req: TenantSelectRequest):
-        registry = _g().get("tenant_registry")
-        if registry is None:
-            raise HTTPException(503, "账号组注册表尚未初始化")
+    async def select_tenant(req: TenantSelectRequest):
         if _running_rounds:
             raise HTTPException(409, "当前仍有轮次在执行，不能切换账号组")
         try:
-            selected = registry.select_active(req.tenant_id)
+            await _tenant_switch_gate.begin_switch(timeout_seconds=30.0)
+        except TenantSwitchInProgress as exc:
+            raise HTTPException(409, str(exc)) from exc
+        keep_gate_closed = False
+        try:
+            return await _switch_tenant_runtime(req.tenant_id)
+        except TenantRuntimeRollbackError as exc:
+            keep_gate_closed = True
+            raise HTTPException(503, str(exc)) from exc
         except TenantError as exc:
             raise HTTPException(404, str(exc)) from exc
-        runtime_id = _g().get("runtime_tenant_id", "default")
-        return {
-            "selected": selected,
-            "runtime_tenant_id": runtime_id,
-            "restart_required": selected["id"] != runtime_id,
-            "message": (
-                "账号组已选择。当前进程仍使用旧账号组；请重启服务后切换才会生效。"
-                if selected["id"] != runtime_id
-                else "当前账号组已是运行中的账号组。"
-            ),
-        }
+        finally:
+            if not keep_gate_closed:
+                _tenant_switch_gate.end_switch()
 
     @app.get("/api/global-monitor")
     def global_monitor(days: int = Query(30, ge=1, le=365)):
