@@ -430,6 +430,18 @@ export interface TenantListResponse {
   restart_required: boolean;
   items: TenantItem[];
 }
+export interface MediaGenerationSettings {
+  enabled: boolean;
+  monthly_quota: number;
+  prompt_prefix: string;
+  model: string;
+  size: "1024x1024" | "1024x1536" | "1536x1024";
+  updated_at: string | null;
+  used_this_month: number;
+  provider_configured: boolean;
+  api_base_url: string;
+  api_key_env: string;
+}
 export interface MediaUsageTarget {
   id: string;
   title: string;
@@ -455,6 +467,8 @@ export interface MediaAsset {
   source_type: "upload" | "generated" | "imported";
   source_ref?: string | null;
   status: "active" | "archived";
+  review_status: "pending_review" | "approved" | "rejected";
+  review_note?: string | null;
   created_at?: string;
   updated_at?: string;
   file_url: string;
@@ -1186,6 +1200,17 @@ export const api = {
   useMediaAsset: (asset_id: number, content_id: string, usage_role: "cover" | "illustration" | "background" = "illustration") =>
     fetchJson<{ asset_id: number; content_id: string; platform: Platform; image_assigned: boolean; message: string }>(
       `/api/media/${asset_id}/use`, { method: "POST", body: JSON.stringify({ content_id, usage_role }) },
+    ),
+  mediaGenerationSettings: () => fetchJson<MediaGenerationSettings>("/api/media/generation-settings"),
+  saveMediaGenerationSettings: (data: Pick<MediaGenerationSettings, "enabled" | "monthly_quota" | "prompt_prefix" | "model" | "size">) =>
+    fetchJson<MediaGenerationSettings>("/api/media/generation-settings", { method: "PUT", body: JSON.stringify(data) }),
+  generateMediaAsset: (data: { prompt: string; title?: string; alt_text?: string; tags?: string[] }) =>
+    fetchJson<MediaAsset>("/api/media/generate", { method: "POST", body: JSON.stringify(data) }),
+  editMediaAsset: (id: number, data: { prompt: string; title?: string; alt_text?: string; tags?: string[] }) =>
+    fetchJson<MediaAsset>(`/api/media/${id}/edit`, { method: "POST", body: JSON.stringify(data) }),
+  reviewMediaAsset: (id: number, decision: "approved" | "rejected", note = "") =>
+    fetchJson<{ id: number; review_status: string; review_note: string; previous_review_status: string }>(
+      `/api/media/${id}/review`, { method: "POST", body: JSON.stringify({ decision, note }) },
     ),
   // === G-13 内容资产 / 字段映射 ===
   assets: (asset_type?: AssetType) =>
