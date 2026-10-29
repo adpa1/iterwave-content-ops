@@ -74,9 +74,10 @@ def test_missing_metrics_adapter_records_failure_and_retries(cfg, conn, seed) ->
     # attempt 1：缺少适配器也要形成 failed metrics，且注册 attempt 2。
     asyncio.run(eng._job_data_fetch(draft_id, attempt=1))
     metrics = conn.execute(
-        "SELECT fetch_status, raw_response FROM metrics WHERE draft_id = ?", (draft_id,)
+        "SELECT fetch_status, raw_response, error_msg FROM metrics WHERE draft_id = ?", (draft_id,)
     ).fetchone()
     assert metrics["fetch_status"] == FetchStatus.FAILED.value
+    assert "适配器未启用" in metrics["error_msg"]
     assert conn.execute(
         "SELECT status FROM drafts WHERE id = ?", (draft_id,)
     ).fetchone()[0] == "user_published"
@@ -145,6 +146,11 @@ def test_data_fetch_failure_schedules_retry(cfg, conn, seed) -> None:
         sm_draft=DraftStateMachine(conn),
     )
     asyncio.run(eng._job_data_fetch(draft_id, attempt=1))
+
+    persisted_error = conn.execute(
+        "SELECT error_msg FROM metrics WHERE draft_id = ?", (draft_id,)
+    ).fetchone()[0]
+    assert persisted_error == "平台超时"
 
     ids = {j.id for j in eng.scheduler.get_jobs()}
     assert f"data_fetch_{draft_id}_a2" in ids
