@@ -88,27 +88,9 @@ def run_once(cfg, conn=None, *, trigger: str = "manual") -> dict:
         publish_from_tenant(conn)
         reused_shared = False
         if cfg.hot_topics.enabled is not False:
-<<<<<<< HEAD
-            interval = collector.refresh_interval_minutes() or 24 * 60
-            if trigger != "manual" and shared_snapshot_fresh(interval):
-                # 新账号组复用原始采集，不复用其他账号组的匹配分、排序或分析结果。
-                sync_result = import_to_tenant(conn)
-                report = {"shared_snapshot_reused": True, "tenant_sync": sync_result}
-                reused_shared = True
-            else:
-                report = collector.refresh()
-                publish_from_tenant(conn)
-        else:
-            sync_result = import_to_tenant(conn)
-            report = {"collection_disabled": True, "tenant_sync": sync_result}
-        if reused_shared or cfg.hot_topics.enabled is False:
-            # 去重、跨平台归并与保留策略属于账号组加工结果，必须在本组重新计算。
-            collector.apply_dedup_and_retention(report)
-=======
             report = HotTopicCollector(cfg, conn).refresh(on_progress=on_progress)
         on_progress({"stage": "matching", "label": "标签匹配 / 研判", "percent": 92,
                      "message": "按账号画像匹配定位关联"})
->>>>>>> 7f4f9e0 (chore: auth middleware localhost 放行 + auth/status 同步返回 configured=true)
         try:
             match = HotTopicMatcher(cfg, conn).run()
         except Exception as exc:  # noqa: BLE001 — 匹配失败不回滚采集结果

@@ -27,14 +27,10 @@ import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-<<<<<<< HEAD
-from typing import Optional
-=======
 from typing import Callable, Optional
 from urllib.parse import urljoin
 
 import httpx
->>>>>>> 7f4f9e0 (chore: auth middleware localhost 放行 + auth/status 同步返回 configured=true)
 
 from .redact import redact
 
