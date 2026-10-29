@@ -68,6 +68,14 @@ def test_password_lifecycle(tmp_path):
     assert auth.password_configured() is False
 
 
+def test_session_cookie_marks_https_as_secure():
+    http_cookie = auth.session_cookie_header("session-token")
+    https_cookie = auth.session_cookie_header("session-token", secure=True)
+    assert "HttpOnly" in http_cookie and "SameSite=Lax" in http_cookie
+    assert "Secure" not in http_cookie
+    assert "; Secure;" in https_cookie
+
+
 def test_login_rate_limit():
     auth.set_password("secret123")
     for _ in range(auth.LOGIN_MAX_FAILURES):
