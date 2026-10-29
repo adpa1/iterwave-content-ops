@@ -280,7 +280,7 @@ llm:
   #   /api/v3      → 按量付费通道
   #   /api/plan/v3 → 专属 Agent Plan 通道（Agent Plan 只支持套餐内模型，
   #                  e.g. doubao-seed-2.1-lite / doubao-seed-2.0-mini / deepseek-v4.1-flash-economy）
-  base_url: "https://ark.cn-beijing.volces.com/api/v3"
+  base_url: "https://ark.cn-beijing.volces.com/api/plan/v3"
   model: "doubao-seed-2.1-lite"
   fallback_model: "doubao-seed-2.0-mini"   # 主模型失败时兜底；空 = 不启用（可在「系统设置」在线改）
   api_key_env: "ARK_API_KEY"

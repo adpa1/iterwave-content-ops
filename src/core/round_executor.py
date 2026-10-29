@@ -330,8 +330,8 @@ class RoundExecutor:
                 "title": title,
                 "body": body,
                 "tags": tags,
-                "image_paths": image_paths,
-                "image_path": str(image_paths[0]) if image_paths and image_paths[0] else None,
+                "image_paths": [str(p) for p in image_paths if p] if image_paths else [],
+
             })
 
         # 全部待存内容都重新检查后再执行任何平台副作用；任意一篇未通过就整体阻断。
