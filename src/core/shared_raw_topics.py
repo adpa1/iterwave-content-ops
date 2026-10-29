@@ -12,8 +12,7 @@ from .config import PROJECT_ROOT
 
 RAW_FIELDS = (
     "id", "source", "raw_url", "discovered_at", "last_seen_at", "evidence_status",
-    "title", "heat_score", "heat_unit", "time_sensitive", "platform", "title_norm",
-    "seen_count", "duplicate_of",
+    "title", "heat_score", "heat_unit", "time_sensitive", "platform",
 )
 
 
@@ -38,9 +37,7 @@ def _connect() -> sqlite3.Connection:
             heat_unit TEXT,
             time_sensitive INTEGER,
             platform TEXT,
-            title_norm TEXT,
-            seen_count INTEGER NOT NULL DEFAULT 1,
-            duplicate_of TEXT
+            platform TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_raw_hot_topics_seen
             ON raw_hot_topics(last_seen_at);
@@ -113,7 +110,8 @@ def import_to_tenant(conn) -> dict[str, int]:
         # 只重置本账号组加工字段；不复制任何账号组的匹配结果。
         conn.execute(
             f"UPDATE hot_topics SET {assignments}, "
-            "dimension = NULL, match_score = NULL, match_dimension = NULL, "
+            "dimension = NULL, title_norm = NULL, seen_count = 1, duplicate_of = NULL, "
+            "match_score = NULL, match_dimension = NULL, "
             "match_angle = NULL, match_reason = NULL, match_method = NULL, "
             "match_version = NULL, matched_at = NULL, forbidden_hit = NULL "
             "WHERE id = ?",
