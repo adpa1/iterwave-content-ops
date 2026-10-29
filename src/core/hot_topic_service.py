@@ -67,6 +67,9 @@ def run_once(cfg, conn=None, *, trigger: str = "manual") -> dict:
         else:
             sync_result = import_to_tenant(conn)
             report = {"collection_disabled": True, "tenant_sync": sync_result}
+        if reused_shared or cfg.hot_topics.enabled is False:
+            # 去重、跨平台归并与保留策略属于账号组加工结果，必须在本组重新计算。
+            collector.apply_dedup_and_retention(report)
         try:
             match = HotTopicMatcher(cfg, conn).run()
         except Exception as exc:  # noqa: BLE001 — 匹配失败不回滚采集结果
