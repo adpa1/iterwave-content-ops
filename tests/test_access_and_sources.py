@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from src.api import main as api_main
 from src.core import auth, config_store, env_store, kb_sources
+from src.core.db import Database
 from src.core.notify import _as_escape
 from src.core.redact import redact
 
@@ -105,6 +106,11 @@ def test_public_first_password_setup_requires_bootstrap_token(unconfigured_api_c
     )
     assert ok.status_code == 200
     assert ok.json()["configured"] is True
+
+
+def test_database_file_permissions_are_private(cfg, conn):
+    db = Database(cfg)
+    assert oct(db.db_path.stat().st_mode)[-3:] == "600"
 
 
 def test_password_lifecycle(tmp_path):
