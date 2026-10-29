@@ -103,6 +103,12 @@ _g_ctx: dict = {}
 _tenant_switch_gate = TenantSwitchGate()
 
 
+def _tenant_hot_switch_enabled() -> bool:
+    """即时热切换默认关闭；只有完成部署环境验收后才显式启用。"""
+    return (os.getenv("ITERWAVE_ENABLE_TENANT_HOT_SWITCH", "").strip().lower()
+            in {"1", "true", "yes", "on"})
+
+
 class TenantRuntimeRollbackError(RuntimeError):
     """切换失败且旧运行时无法恢复；闸门必须保持关闭。"""
 
@@ -1859,6 +1865,7 @@ def _register_routes(app: FastAPI) -> None:
                 "runtime_tenant_id": _g().get("runtime_tenant_id", "default"),
                 "selected_tenant_id": registry.active_id(),
                 "restart_required": registry.active_id() != _g().get("runtime_tenant_id", "default"),
+                "hot_switch_enabled": _tenant_hot_switch_enabled(),
                 "items": registry.list(),
             }
         except TenantError as exc:
@@ -1881,6 +1888,26 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/tenants/select")
     async def select_tenant(req: TenantSelectRequest):
+        if not _tenant_hot_switch_enabled():
+            # 保留安全默认：未显式启用时只保存选择，重启后切换运行时。
+            registry = _g().get("tenant_registry")
+            if registry is None:
+                raise HTTPException(503, "账号组注册表尚未初始化")
+            try:
+                selected = registry.select_active(req.tenant_id)
+            except TenantError as exc:
+                raise HTTPException(404, str(exc)) from exc
+            runtime_id = _g().get("runtime_tenant_id", "default")
+            return {
+                "selected": selected,
+                "runtime_tenant_id": runtime_id,
+                "restart_required": selected["id"] != runtime_id,
+                "message": (
+                    "即时切换尚未启用。账号组已选择，服务重启后生效。"
+                    if selected["id"] != runtime_id
+                    else "当前账号组已是运行中的账号组。"
+                ),
+            }
         try:
             await _tenant_switch_gate.begin_switch(timeout_seconds=30.0)
         except (TenantSwitchInProgress, TimeoutError) as exc:
