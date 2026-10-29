@@ -485,6 +485,14 @@ class TenantSelectRequest(BaseModel):
     tenant_id: str = Field(min_length=1, max_length=48)
 
 
+class PlatformAccountRequest(BaseModel):
+    platform: str = Field(pattern="^(xhs|douyin|kuaishou|wechat_channels)$")
+    account_handle: str = Field(min_length=1, max_length=160)
+    display_name: str = Field(default="", max_length=160)
+    status: str = Field(default="active", pattern="^(active|inactive)$")
+    notes: str = Field(default="", max_length=500)
+
+
 class CreateGoalRequest(BaseModel):
     """R21：口径 5 字段必须齐备，缺一即 422（不接受默认值兜底）。"""
 
@@ -1120,6 +1128,24 @@ def _register_routes(app: FastAPI) -> None:
     def generate_media_asset(req: MediaGenerationRequest):
         return _generate_media_asset(req)
 
+    @app.post("/api/media/generate-for-content/{content_id}", status_code=201)
+    def generate_media_for_content(content_id: str, usage_role: str = Query("cover", pattern="^(cover|illustration|background)$")):
+        """根据现有内容生成候选配图；生成结果进入待审核状态，不自动分配。"""
+        row = _g()["conn"].execute("SELECT id, title, body, platform FROM contents WHERE id = ?", (content_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "目标内容不存在")
+        title = str(row["title"] or "内容配图")
+        body = str(row["body"] or "")
+        role_label = {"cover": "封面主视觉", "illustration": "正文插图", "background": "背景图"}[usage_role]
+        prompt = (f"为当前平台内容生成一张{role_label}。主题：{title}。正文摘要：{body[:900]}。" +
+                  "画面与主题直接相关，构图清晰，适合移动端阅读；不要生成文字、二维码、水印或虚构品牌标识。" +
+                  "优先真实摄影或高质量编辑插画风格，避免与内容无关的装饰。")[:1900]
+        return _generate_media_asset(MediaGenerationRequest(
+            prompt=prompt, title=f"{title} - AI配图候选",
+            alt_text=f"为内容「{title}」生成的{role_label}候选图",
+            tags=[str(row["platform"]), role_label, "内容生成配图"],
+        ))
+
     @app.post("/api/media/{asset_id}/edit", status_code=201)
     def edit_media_asset(asset_id: int, req: MediaGenerationRequest):
         return _generate_media_asset(req, source_asset_id=asset_id)
@@ -1333,7 +1359,7 @@ def _register_routes(app: FastAPI) -> None:
         stopwords = {"我们", "你们", "他们", "这个", "那个", "可以", "如何", "因为", "所以", "以及", "但是", "如果", "门店", "内容", "介绍", "推荐"}
         tokens = {token for token in tokens if token not in stopwords}
         rows = conn.execute(
-            "SELECT id, title, original_filename, alt_text, tags, quality_score, width, height "
+            "SELECT id, title, original_filename, stored_filename, alt_text, tags, quality_score, width, height "
             "FROM media_assets WHERE status = 'active' AND review_status = 'approved' "
             "ORDER BY created_at DESC LIMIT 500"
         ).fetchall()
@@ -1365,11 +1391,54 @@ def _register_routes(app: FastAPI) -> None:
                     + (("；用途：" + "、".join(purpose_hits)) if purpose_hits else ""),
             })
         ranked.sort(key=lambda item: (-item["score"], -(item["quality_score"] or 0), item["asset_id"]))
+        method = "keyword_match"
+        message = "当前使用关键词和用途标签匹配；推荐结果需人工确认。"
+        registry = _g().get("tenant_registry")
+        if registry is not None and rows:
+            try:
+                from src.core.media_semantic import rank_media_with_vision
+                top = ranked[:8]
+                by_id = {int(row["id"]): row for row in rows}
+                if len(top) < min(8, len(rows)):
+                    already = {item["asset_id"] for item in top}
+                    rest = sorted((row for row in rows if int(row["id"]) not in already),
+                                  key=lambda row: (-(row["quality_score"] or 0), -int(row["id"])))
+                    for row in rest[:8 - len(top)]:
+                        top.append({"asset_id": int(row["id"]), "title": row["title"], "score": 0,
+                                    "matched_keywords": [], "purpose_matches": [],
+                                    "quality_score": row["quality_score"], "width": row["width"], "height": row["height"],
+                                    "reason": "候选图片"})
+                candidates = []
+                for item in top:
+                    row = by_id.get(item["asset_id"])
+                    if row is not None:
+                        candidates.append({"asset_id": item["asset_id"], "title": item["title"],
+                                           "stored_filename": row["stored_filename"]})
+                vision = rank_media_with_vision(
+                    title=str(content["title"] or ""), body=str(content["body"] or ""),
+                    usage_role=usage_role, candidates=candidates,
+                    media_dir=registry.paths(_g().get("runtime_tenant_id", "default")).media_dir,
+                )
+                if vision:
+                    indexed = {item["asset_id"]: item for item in top}
+                    ai_items = []
+                    for item in vision:
+                        if item["asset_id"] in indexed:
+                            ranked_item = dict(indexed[item["asset_id"]])
+                            ranked_item["reason"] = item["reason"]
+                            ranked_item["score"] = 1000 - len(ai_items)
+                            ai_items.append(ranked_item)
+                    if ai_items:
+                        ranked = ai_items
+                        method = "vision_model"
+                        message = "已使用视觉模型结合内容文本进行语义匹配；仅展示已审核素材，仍需人工确认。"
+            except Exception as exc:  # noqa: BLE001 — 模型未配置或调用失败时回退关键词
+                logger.warning("vision media ranking failed; using keyword fallback: %s", type(exc).__name__)
         return {
             "content_id": content_id, "usage_role": usage_role,
-            "method": "keyword_match", "automatic_assignment": False,
+            "method": method, "automatic_assignment": False,
             "items": ranked[:limit],
-            "message": "这是基于标题、正文、素材名称和标签的关键词推荐；无匹配项不代表素材不可用。推荐结果不会自动配图。",
+            "message": message + " 不会自动替换内容图片。",
         }
 
     @app.post("/api/media/{asset_id}/use")
@@ -1564,12 +1633,12 @@ def _register_routes(app: FastAPI) -> None:
         from datetime import timedelta
         since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
         tenant_rows = []
-        totals = {"tenants": 0, "available_tenants": 0, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0}
-        platform_totals = {p: {"contents": 0, "drafts": 0} for p in ("xhs", "douyin", "kuaishou", "wechat_channels")}
+        totals = {"tenants": 0, "available_tenants": 0, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0, "registered_accounts": 0, "registered_accounts_active": 0}
+        platform_totals = {p: {"contents": 0, "drafts": 0, "registered_accounts": 0} for p in ("xhs", "douyin", "kuaishou", "wechat_channels")}
         for tenant in registry.list():
             tenant_id = tenant["id"]
             paths = registry.paths(tenant_id, name=str(tenant.get("name") or tenant_id))
-            row = {"tenant_id": tenant_id, "tenant_name": tenant["name"], "created_at": tenant.get("created_at"), "db_available": False, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0, "platforms": {}}
+            row = {"tenant_id": tenant_id, "tenant_name": tenant["name"], "created_at": tenant.get("created_at"), "db_available": False, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0, "registered_accounts": 0, "registered_accounts_active": 0, "platforms": {}}
             db_file = paths.db_file
             if db_file.exists():
                 conn = None
@@ -1605,6 +1674,12 @@ def _register_routes(app: FastAPI) -> None:
                         row["media_active"] = int(conn.execute("SELECT COUNT(*) FROM media_assets WHERE status = 'active'").fetchone()[0])
                     if "media_asset_usages" in tables:
                         row["media_usage"] = int(conn.execute("SELECT COUNT(*) FROM media_asset_usages").fetchone()[0])
+                    if "platform_accounts" in tables:
+                        row["registered_accounts"] = int(conn.execute("SELECT COUNT(*) FROM platform_accounts").fetchone()[0])
+                        row["registered_accounts_active"] = int(conn.execute("SELECT COUNT(*) FROM platform_accounts WHERE status = 'active'").fetchone()[0])
+                        for item in conn.execute("SELECT platform, COUNT(*) AS n FROM platform_accounts WHERE status = 'active' GROUP BY platform").fetchall():
+                            platform = item["platform"]
+                            row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0, "registered_accounts": 0})["registered_accounts"] = int(item["n"])
                     row["db_available"] = True
                 except (sqlite3.Error, OSError) as exc:
                     logger.warning("global monitor skipped tenant=%s: %s", tenant_id, exc)
@@ -1612,9 +1687,12 @@ def _register_routes(app: FastAPI) -> None:
                     if conn is not None: conn.close()
             totals["tenants"] += 1
             if row["db_available"]: totals["available_tenants"] += 1
-            for key in ("contents_period", "contents_all", "drafts_all", "drafts_pending", "drafts_saved", "drafts_published", "drafts_failed", "media_active", "media_usage"): totals[key] += row[key]
+            for key in ("contents_period", "contents_all", "drafts_all", "drafts_pending", "drafts_saved", "drafts_published", "drafts_failed", "media_active", "media_usage", "registered_accounts", "registered_accounts_active"): totals[key] += row[key]
+            for platform, values in row["platforms"].items():
+                if platform in platform_totals:
+                    platform_totals[platform]["registered_accounts"] += int(values.get("registered_accounts", 0))
             tenant_rows.append(row)
-        return {"days": days, "since": since, "totals": totals, "platform_totals": platform_totals, "tenants": tenant_rows, "account_count_note": "当前数据模型未保存可去重的平台账号身份；此处不将平台数或快照数冒充账号数。"}
+        return {"days": days, "since": since, "totals": totals, "platform_totals": platform_totals, "tenants": tenant_rows, "account_count_note": "账号数量来自用户登记的平台账号标识，按账号组和平台去重；未登记的账号不会自动推断计入。"}
 
     # --- 访问保护（口令 / 会话 / 脚本令牌）---
     @app.get("/api/auth/status")
@@ -4386,6 +4464,71 @@ def _register_routes(app: FastAPI) -> None:
     def list_accounts():
         """四平台账号状态汇总（Accounts 页顶部四卡片用）。"""
         return {"accounts": _get_all_accounts()}
+
+
+    @app.get("/api/platform-accounts")
+    def list_registered_platform_accounts():
+        rows = _g()["conn"].execute(
+            "SELECT id, platform, account_handle, display_name, status, notes, created_at, updated_at "
+            "FROM platform_accounts ORDER BY platform, status DESC, display_name, account_handle"
+        ).fetchall()
+        items = [dict(row) for row in rows]
+        return {"items": items, "total": len(items),
+                "active_total": sum(1 for row in items if row["status"] == "active"),
+                "source": "user_registered"}
+
+    @app.post("/api/platform-accounts", status_code=201)
+    def create_registered_platform_account(req: PlatformAccountRequest):
+        handle = req.account_handle.strip()
+        normalized = handle.casefold()
+        if not handle:
+            raise HTTPException(422, "平台账号标识不能为空")
+        conn = _g()["conn"]
+        try:
+            cur = conn.execute(
+                "INSERT INTO platform_accounts (platform, account_handle, normalized_handle, display_name, status, notes) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (req.platform, handle, normalized, req.display_name.strip(), req.status, req.notes.strip()),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(409, "该平台账号标识已登记；同一平台的账号标识不允许重复") from exc
+        row = conn.execute(
+            "SELECT id, platform, account_handle, display_name, status, notes, created_at, updated_at "
+            "FROM platform_accounts WHERE id = ?", (cur.lastrowid,),
+        ).fetchone()
+        return dict(row)
+
+    @app.put("/api/platform-accounts/{account_id}")
+    def update_registered_platform_account(account_id: int, req: PlatformAccountRequest):
+        handle = req.account_handle.strip()
+        if not handle:
+            raise HTTPException(422, "平台账号标识不能为空")
+        conn = _g()["conn"]
+        exists = conn.execute("SELECT id FROM platform_accounts WHERE id = ?", (account_id,)).fetchone()
+        if not exists:
+            raise HTTPException(404, "登记的平台账号不存在")
+        try:
+            conn.execute(
+                "UPDATE platform_accounts SET platform=?, account_handle=?, normalized_handle=?, display_name=?, status=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (req.platform, handle, handle.casefold(), req.display_name.strip(), req.status, req.notes.strip(), account_id),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(409, "该平台账号标识已登记；同一平台的账号标识不允许重复") from exc
+        return dict(conn.execute(
+            "SELECT id, platform, account_handle, display_name, status, notes, created_at, updated_at FROM platform_accounts WHERE id=?",
+            (account_id,),
+        ).fetchone())
+
+    @app.delete("/api/platform-accounts/{account_id}", status_code=204)
+    def delete_registered_platform_account(account_id: int):
+        conn = _g()["conn"]
+        cur = conn.execute("DELETE FROM platform_accounts WHERE id = ?", (account_id,))
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(404, "登记的平台账号不存在")
+        return Response(status_code=204)
 
     @app.post("/api/accounts/{platform}/login")
     def start_platform_login(platform: str, restart: bool = Query(False)):
