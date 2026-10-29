@@ -193,6 +193,18 @@ class TenantRegistry:
         resolved_root = root.resolve()
         if tenant_id != DEFAULT_TENANT_ID and not resolved_root.is_relative_to(allowed_root.resolve()):
             raise TenantError("账号组目录超出允许的隔离根目录")
+        if tenant_id != DEFAULT_TENANT_ID:
+            # 所有子路径必须从已验证的真实根目录派生，避免租户根目录 symlink 逃逸。
+            root = resolved_root
+            data_dir = root / "data"
+            db_file = data_dir / "easel.db"
+            backup_dir = root / "backups"
+            output_dir = data_dir / "outputs"
+            screenshot_dir = data_dir / "screenshots"
+            log_dir = data_dir / "logs"
+            profile_dir = root / "browser_profiles"
+            media_dir = root / "media"
+            kb_dir = root / "kb"
         result = TenantPaths(
             tenant_id=tenant_id,
             name=name or tenant_id,
@@ -213,6 +225,10 @@ class TenantRegistry:
                 result.screenshot_dir, result.log_dir, result.profile_dir,
                 result.media_dir, result.kb_dir,
             ):
+                if tenant_id != DEFAULT_TENANT_ID:
+                    resolved_directory = directory.resolve()
+                    if not resolved_directory.is_relative_to(result.root):
+                        raise TenantError("账号组子目录超出隔离根目录")
                 directory.mkdir(parents=True, exist_ok=True, mode=0o700)
                 try:
                     directory.chmod(0o700)
