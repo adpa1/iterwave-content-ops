@@ -114,6 +114,22 @@ def test_public_first_password_setup_requires_bootstrap_token(unconfigured_api_c
     assert ok.json()["configured"] is True
 
 
+def test_bootstrap_token_guesses_are_rate_limited(monkeypatch):
+    monkeypatch.setenv("ITERWAVE_BOOTSTRAP_TOKEN", "bootstrap-secret")
+    client = TestClient(api_main._build_app(), base_url="https://eduplay.cloud")
+    for _ in range(auth.LOGIN_MAX_FAILURES):
+        response = client.post(
+            "/api/auth/password",
+            json={"password": "secret123", "bootstrap_token": "wrong"},
+        )
+        assert response.status_code == 403
+    blocked = client.post(
+        "/api/auth/password",
+        json={"password": "secret123", "bootstrap_token": "wrong"},
+    )
+    assert blocked.status_code == 429
+
+
 def test_database_file_permissions_are_private(cfg, conn):
     db = Database(cfg)
     assert oct(db.db_path.stat().st_mode)[-3:] == "600"
