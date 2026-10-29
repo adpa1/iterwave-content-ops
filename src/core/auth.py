@@ -14,6 +14,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
+import os
 import logging
 import secrets
 import time
@@ -28,6 +30,27 @@ COOKIE_NAME = "iterwave_session"
 SESSION_TTL_SECONDS = 30 * 24 * 3600
 LOGIN_MAX_FAILURES = 5
 LOGIN_WINDOW_SECONDS = 10 * 60
+
+
+def is_trusted_local_setup(request) -> bool:
+    """仅在显式启用时允许本机首次设置；不信任转发头或伪造的 Host。"""
+    if os.getenv("ITERWAVE_ALLOW_LOCAL_BOOTSTRAP", "").strip().lower() not in ("1", "true", "yes"):
+        return False
+    if any(request.headers.get(name) for name in (
+        "forwarded", "x-forwarded-for", "x-real-ip", "x-forwarded-proto", "x-forwarded-host"
+    )):
+        return False
+    peer = request.client.host if request.client else ""
+    host = (request.url.hostname or "").strip("[]").lower()
+    try:
+        peer_local = ipaddress.ip_address(peer).is_loopback
+    except ValueError:
+        peer_local = peer.lower() == "localhost"
+    try:
+        host_local = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        host_local = host == "localhost"
+    return peer_local and host_local
 
 # 内存会话（重启即失效，对本地单进程足够；不落盘避免多一份密钥）
 _sessions: dict[str, float] = {}
