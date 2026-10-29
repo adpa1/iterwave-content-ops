@@ -34,6 +34,12 @@ logger = logging.getLogger(__name__)
 LOGIN_DIR = PROJECT_ROOT / "data" / "login_states"
 
 
+def configure_data_dir(data_dir: Path | str) -> None:
+    """按当前账号组切换 storage_state 目录；default 保留原有 data/login_states。"""
+    global LOGIN_DIR
+    LOGIN_DIR = Path(data_dir).resolve() / "login_states"
+
+
 def _platform_state_path(platform: Platform) -> Path:
     """某平台 storage_state.json 的路径。"""
     return LOGIN_DIR / f"{platform.value}.json"
