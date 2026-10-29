@@ -58,3 +58,26 @@ def test_local_bootstrap_rejects_forwarded_or_non_loopback_requests(monkeypatch)
     )
     assert not auth.is_trusted_local_setup(_request("203.0.113.10", "localhost"))
     assert not auth.is_trusted_local_setup(_request("127.0.0.1", "example.com"))
+
+
+
+def test_write_env_rejects_invalid_keys_and_multiline_values(tmp_path, monkeypatch):
+    monkeypatch.setenv("ITERWAVE_ENV_FILE", str(tmp_path / ".env"))
+
+    for key in ("bad-key", "LOWERCASE", "A=INJECTED", "A" * 65):
+        try:
+            env_store.write_env(key, "value")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected invalid key to be rejected: {key!r}")
+
+    for value in ("line1\\nINJECTED=yes", "line1\\rINJECTED=yes"):
+        try:
+            env_store.write_env("SAFE_KEY", value)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("expected multiline value to be rejected")
+
+    assert not (tmp_path / ".env").exists()
