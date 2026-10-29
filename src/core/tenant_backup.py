@@ -122,15 +122,6 @@ def create_backup(db_path: Path | str, data_dir: Path | str,
                         raise BackupError(f"卡片图片超过备份上限：{name}")
                     output_files[name] = {"sha256": _sha256(candidate), "size": size}
 
-        aggregate_size = (
-            snapshot_db.stat().st_size
-            + sum(int(item["size"]) for item in media_files.values())
-            + sum(int(item["size"]) for item in output_files.values())
-            + (overrides.stat().st_size if overrides.is_file() else 0)
-        )
-        if aggregate_size > MAX_BACKUP_BYTES:
-            raise BackupError("备份内容总大小超过 2GB 上限")
-
         manifest = {
             "version": 1,
             "tenant_id": tenant_id,
@@ -141,6 +132,16 @@ def create_backup(db_path: Path | str, data_dir: Path | str,
             "includes_config_overrides": overrides.is_file(),
             "excludes": ["login states and browser cookies", "API keys", "shared raw feeds"],
         }
+        # 同时计入清单本身，确保创建成功的备份不会因清单开销超过恢复端上限。
+        aggregate_size = (
+            snapshot_db.stat().st_size
+            + sum(int(item["size"]) for item in media_files.values())
+            + sum(int(item["size"]) for item in output_files.values())
+            + (overrides.stat().st_size if overrides.is_file() else 0)
+            + len(json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
+        )
+        if aggregate_size > MAX_BACKUP_BYTES:
+            raise BackupError("备份内容总大小超过 2GB 上限")
         try:
             with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 archive.write(snapshot_db, "easel.db")
