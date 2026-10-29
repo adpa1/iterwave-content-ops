@@ -58,6 +58,8 @@ def create_backup(db_path: Path | str, data_dir: Path | str,
             source.close()
 
         media_files: dict[str, dict[str, object]] = {}
+        output_files: dict[str, dict[str, object]] = {}
+        output_dir = data_dir / "outputs"
         if media_dir.is_dir():
             try:
                 snapshot = sqlite3.connect(str(snapshot_db))
@@ -68,7 +70,7 @@ def create_backup(db_path: Path | str, data_dir: Path | str,
                 }
                 if names:
                     stored = snapshot.execute(
-                        "SELECT stored_filename FROM media_assets WHERE status='active'"
+                        "SELECT stored_filename FROM media_assets"
                     ).fetchall()
                 else:
                     stored = []
@@ -91,12 +93,42 @@ def create_backup(db_path: Path | str, data_dir: Path | str,
                     "size": size,
                 }
 
+        # 卡片图片位于 outputs/，从快照数据库的 image_paths 取被内容引用的文件。
+        if output_dir.is_dir():
+            snapshot = sqlite3.connect(str(snapshot_db))
+            try:
+                has_contents = snapshot.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='contents'"
+                ).fetchone()
+                content_rows = snapshot.execute("SELECT image_paths FROM contents").fetchall() if has_contents else []
+            finally:
+                snapshot.close()
+            for (raw_paths,) in content_rows:
+                try:
+                    paths = json.loads(raw_paths or "[]")
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(paths, list):
+                    continue
+                for raw_path in paths:
+                    candidate = Path(str(raw_path)).resolve()
+                    if not candidate.is_relative_to(output_dir.resolve()) or not candidate.is_file():
+                        continue
+                    name = candidate.name
+                    if candidate.suffix.lower() not in ALLOWED_IMAGE_SUFFIXES:
+                        continue
+                    size = candidate.stat().st_size
+                    if size > MAX_BACKUP_BYTES:
+                        raise BackupError(f"卡片图片超过备份上限：{name}")
+                    output_files[name] = {"sha256": _sha256(candidate), "size": size}
+
         manifest = {
             "version": 1,
             "tenant_id": tenant_id,
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "database_sha256": _sha256(snapshot_db),
             "media_files": media_files,
+            "output_files": output_files,
             "includes_config_overrides": overrides.is_file(),
             "excludes": ["login states and browser cookies", "API keys", "shared raw feeds"],
         }
@@ -106,6 +138,8 @@ def create_backup(db_path: Path | str, data_dir: Path | str,
                 archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
                 for name in media_files:
                     archive.write(media_dir / name, f"media/{name}")
+                for name in output_files:
+                    archive.write(output_dir / name, f"outputs/{name}")
                 if overrides.is_file():
                     archive.write(overrides, "config_overrides.json")
         except Exception:
