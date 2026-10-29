@@ -671,3 +671,15 @@ def test_hot_sources_config_roundtrip(api_client):
     assert api_client.put(
         "/api/hot_topics/sources", json={"items": [dict(items[1]) for _ in range(21)]}
     ).status_code == 422
+
+
+def test_media_upload_stream_limit_matches_declared_limit(api_client):
+    import base64
+
+    # The 12 MB binary image limit requires roughly 16 MB of base64 JSON.
+    # Six MB of invalid image bytes should reach image validation (422), not the 5 MB middleware cap (413).
+    response = api_client.post(
+        "/api/media",
+        json={"filename": "invalid.png", "data_base64": base64.b64encode(b"x" * (6 * 1024 * 1024)).decode("ascii")},
+    )
+    assert response.status_code == 422
