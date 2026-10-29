@@ -39,7 +39,9 @@ def clean_auth_state(monkeypatch, tmp_path):
 
 
 @pytest.fixture()
-def unconfigured_api_client(cfg, conn):
+def unconfigured_api_client(cfg, conn, monkeypatch):
+    # 本机开发测试显式启用本机引导；公网/代理边界另有负向测试。
+    monkeypatch.setenv("ITERWAVE_ALLOW_LOCAL_BOOTSTRAP", "1")
     saved = dict(api_main._g_ctx)
     api_main._g_ctx.clear()
     api_main._g_ctx.update({"cfg": cfg, "conn": conn})
