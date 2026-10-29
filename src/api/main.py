@@ -1368,9 +1368,9 @@ def _register_routes(app: FastAPI) -> None:
             "ORDER BY created_at DESC LIMIT 500"
         ).fetchall()
         purpose_terms = {
-            "cover": {"封面", "主图", "门头", "产品", "招牌"},
-            "illustration": {"正文", "细节", "环境", "过程", "服务", "产品"},
-            "background": {"背景", "底图", "纹理", "氛围"},
+            "cover": {"封面", "主图", "主体", "产品", "作品", "人物", "场景", "重点"},
+            "illustration": {"正文", "细节", "过程", "步骤", "使用", "功能", "特点", "局部", "说明"},
+            "background": {"背景", "底图", "纹理", "氛围", "色彩", "空间", "抽象"},
         }[usage_role]
         ranked = []
         for row in rows:
@@ -1433,9 +1433,11 @@ def _register_routes(app: FastAPI) -> None:
                             ranked_item["score"] = 1000 - len(ai_items)
                             ai_items.append(ranked_item)
                     if ai_items:
-                        ranked = ai_items
+                        # 视觉模型只重排前 8 个候选；其余关键词结果仍保留，避免开启视觉推荐后列表被截断为 8 条。
+                        reranked_ids = {item["asset_id"] for item in ai_items}
+                        ranked = ai_items + [item for item in ranked if item["asset_id"] not in reranked_ids]
                         method = "vision_model"
-                        message = "已使用视觉模型结合内容文本进行语义匹配；仅展示已审核素材，仍需人工确认。"
+                        message = "已使用视觉模型重排优先候选，并保留其余关键词匹配结果；仅展示已审核素材，仍需人工确认。"
             except Exception as exc:  # noqa: BLE001 — 模型未配置或调用失败时回退关键词
                 logger.warning("vision media ranking failed; using keyword fallback: %s", type(exc).__name__)
         return {
