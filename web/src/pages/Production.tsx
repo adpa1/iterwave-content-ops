@@ -102,6 +102,7 @@ export default function Production() {
   const [selPlatforms, setSelPlatforms] = useState<Platform[]>(ALL_PLATFORMS);
   const [saveDrafts, setSaveDrafts] = useState(true);
   const [running, setRunning] = useState(false);
+  const [savingPending, setSavingPending] = useState(false);
   const [report, setReport] = useState<RunRoundReport | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [noLogin, setNoLogin] = useState<Platform[]>([]);
@@ -814,7 +815,24 @@ export default function Production() {
 
                 {roundDetail.status !== "created" && (
                   <div className="note" style={{ marginTop: 8 }}>
-                    只有 created 状态的轮次可运行（当前 {roundDetail.status}）。如需重跑，请新建一轮。
+                    {roundDetail.status === "producing" &&
+                    (roundDetail.drafts ?? []).some((d) => d.status === "draft_pending") ? (
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+                        <span>
+                          当前轮次有 {(roundDetail.drafts ?? []).filter((d) => d.status === "draft_pending").length} 篇内容已生成但尚未存入平台。继续存草稿不会重新生成内容。
+                        </span>
+                        <button
+                          type="button"
+                          className="btn primary sm"
+                          onClick={handleSavePendingDrafts}
+                          disabled={savingPending || running}
+                        >
+                          {savingPending ? "正在恢复…" : "继续存剩余草稿"}
+                        </button>
+                      </div>
+                    ) : (
+                      <>只有 created 状态的轮次可运行（当前 {roundDetail.status}）。如需启动新一轮，请新建一轮。</>
+                    )}
                   </div>
                 )}
                 {!usePlan && selPlatforms.length === 0 && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>至少选择一个平台</div>}
