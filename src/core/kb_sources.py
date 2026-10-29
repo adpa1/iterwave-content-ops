@@ -708,10 +708,14 @@ def _public_source(cfg, source: dict) -> dict:
         k: v for k, v in source.items()
         if k not in ("headers", "path", "cache_path", "url")
     }
-    out["display_path"] = (
-        _redact_remote_url(source.get("url") or "") if source.get("kind") == "remote"
-        else redact_path(_source_path(cfg, source))
-    )
+    if source.get("kind") == "remote":
+        out["display_path"] = _redact_remote_url(source.get("url") or "")
+        # 旧来源可能曾把完整 URL 自动用作名称，防止名称字段继续泄露凭据。
+        raw_name = str(source.get("name") or "")
+        if urlsplit(raw_name).scheme.lower() in ("http", "https"):
+            out["name"] = _redact_remote_url(raw_name)
+    else:
+        out["display_path"] = redact_path(_source_path(cfg, source))
     out["header_keys"] = sorted((source.get("headers") or {}).keys())
     return out
 
