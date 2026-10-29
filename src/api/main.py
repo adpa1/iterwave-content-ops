@@ -57,6 +57,8 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from src.core.config import load_config, get_config, DEFAULT_ENV_PATH
+from src.core.config import PROJECT_ROOT
+from src.core.tenant_registry import TenantRegistry, TenantError
 from src.core.db import Database
 from src.core.state_machine import RoundStateMachine, DraftStateMachine
 from src.core.scoring.topic_eval import ScoringEngine, TopicItem
@@ -127,7 +129,29 @@ def _build_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         # 启动阶段
         cfg = load_config()
-        # G-13：先套用 Web 端持久化的覆盖值（data/config_overrides.json），
+        # 账号组注册表是共享基础设施；默认组继续使用原有 data/ 与 backups/。
+        tenant_registry = TenantRegistry(PROJECT_ROOT)
+        tenant_registry.initialize()
+        active_tenant_id = tenant_registry.active_id()
+        active_tenant = tenant_registry.get(active_tenant_id)
+        if active_tenant_id != "default":
+            tenant_paths = tenant_registry.paths(
+                active_tenant_id, name=str(active_tenant.get("name") or active_tenant_id),
+                create=True,
+            )
+            # 使用绝对路径覆盖运行时路径，确保 cfg.resolve_path 不把租户目录再拼到项目根。
+            cfg.paths.data_dir = str(tenant_paths.data_dir)
+            cfg.paths.db_file = str(tenant_paths.db_file)
+            cfg.paths.backup_dir = str(tenant_paths.backup_dir)
+            cfg.paths.output_dir = str(tenant_paths.output_dir)
+            cfg.paths.screenshot_dir = str(tenant_paths.screenshot_dir)
+            cfg.paths.log_dir = str(tenant_paths.log_dir)
+            # 选题库及浏览器登录态均按账号组隔离；平台账号 key 不与 default 共用。
+            cfg.topic_kb.path = str(tenant_paths.kb_dir / "topics.csv")
+            for platform_cfg in cfg.platforms.model_dump().keys():
+                item = getattr(cfg.platforms, platform_cfg)
+                item.account_key = f"{active_tenant_id}__{item.account_key}"
+        # G-13：先套用 Web 端持久化的覆盖值（租户各自的 data/config_overrides.json），
         # 再构造各模块 —— 保证 scheduler/adapter/ops 拿到的是同一份生效配置
         applied_overrides = apply_overrides(cfg, load_overrides(cfg))
         if applied_overrides:
@@ -157,7 +181,10 @@ def _build_app() -> FastAPI:
             circuit_breaker=cb, notifier=notifier,
         )
 
+        _g_ctx.clear()
         _g_ctx.update({
+            "tenant_registry": tenant_registry,
+            "runtime_tenant_id": active_tenant_id,
             "cfg": cfg, "db": db, "conn": conn,
             "adapters": adapters, "cb": cb, "rhythm": rhythm,
             "sm_round": sm_round, "sm_draft": sm_draft,
@@ -374,6 +401,15 @@ def _build_app() -> FastAPI:
 # =====================================================================
 # Pydantic 请求模型
 # =====================================================================
+
+class TenantCreateRequest(BaseModel):
+    tenant_id: str = Field(min_length=1, max_length=48)
+    name: str = Field(min_length=1, max_length=80)
+
+
+class TenantSelectRequest(BaseModel):
+    tenant_id: str = Field(min_length=1, max_length=48)
+
 
 class CreateGoalRequest(BaseModel):
     """R21：口径 5 字段必须齐备，缺一即 422（不接受默认值兜底）。"""
@@ -819,6 +855,59 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/health")
     def health():
         return {"status": "ok", "version": "0.1.0", "timestamp": datetime.now().isoformat()}
+
+    @app.get("/api/tenants")
+    def list_tenants():
+        registry = _g().get("tenant_registry")
+        if registry is None:
+            raise HTTPException(503, "账号组注册表尚未初始化")
+        try:
+            return {
+                "runtime_tenant_id": _g().get("runtime_tenant_id", "default"),
+                "selected_tenant_id": registry.active_id(),
+                "restart_required": registry.active_id() != _g().get("runtime_tenant_id", "default"),
+                "items": registry.list(),
+            }
+        except TenantError as exc:
+            raise HTTPException(503, str(exc)) from exc
+
+    @app.post("/api/tenants")
+    def create_tenant(req: TenantCreateRequest):
+        registry = _g().get("tenant_registry")
+        if registry is None:
+            raise HTTPException(503, "账号组注册表尚未初始化")
+        try:
+            paths = registry.create(req.tenant_id, req.name)
+        except TenantError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {
+            "tenant": {"id": req.tenant_id, "name": req.name.strip()},
+            "paths": paths.as_dict(),
+            "restart_required": False,
+        }
+
+    @app.post("/api/tenants/select")
+    def select_tenant(req: TenantSelectRequest):
+        registry = _g().get("tenant_registry")
+        if registry is None:
+            raise HTTPException(503, "账号组注册表尚未初始化")
+        if _running_rounds:
+            raise HTTPException(409, "当前仍有轮次在执行，不能切换账号组")
+        try:
+            selected = registry.select_active(req.tenant_id)
+        except TenantError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        runtime_id = _g().get("runtime_tenant_id", "default")
+        return {
+            "selected": selected,
+            "runtime_tenant_id": runtime_id,
+            "restart_required": selected["id"] != runtime_id,
+            "message": (
+                "账号组已选择。当前进程仍使用旧账号组；请重启服务后切换才会生效。"
+                if selected["id"] != runtime_id
+                else "当前账号组已是运行中的账号组。"
+            ),
+        }
 
     # --- 访问保护（口令 / 会话 / 脚本令牌）---
     @app.get("/api/auth/status")
