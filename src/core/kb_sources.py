@@ -18,8 +18,11 @@ import hashlib
 import io
 import json
 import logging
+import os
 import re
 import sqlite3
+import tempfile
+import threading
 import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime
@@ -31,6 +34,8 @@ from .redact import redact, redact_path
 from .scoring.topic_eval import TopicItem
 
 logger = logging.getLogger(__name__)
+_REGISTRY_LOCK = threading.RLock()
+_SOURCE_ID_RE = re.compile(r"^(?:default|kb-[0-9]{14}-[a-f0-9]{6})$")
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_TOPIC_ROWS = 100_000
@@ -168,14 +173,40 @@ def load_registry(cfg) -> list[dict]:
 def save_registry(cfg, sources: list[dict]) -> None:
     """来源登记含 URL/请求头密钥，目录与文件均限制为当前用户可读。"""
     path = registry_file(cfg)
-    path.write_text(
-        json.dumps({"version": 1, "sources": sources}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    try:
-        path.chmod(0o600)
-    except OSError:
-        logger.warning("无法收紧选题库登记文件权限：%s", path.name)
+    payload = json.dumps({"version": 1, "sources": sources}, ensure_ascii=False, indent=2) + "\n"
+    with _REGISTRY_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", newline="",
+                prefix=f".{path.name}.", suffix=".tmp",
+                dir=path.parent, delete=False,
+            ) as tmp:
+                tmp_path = Path(tmp.name)
+                try:
+                    os.fchmod(tmp.fileno(), 0o600)
+                except (AttributeError, OSError):
+                    os.chmod(tmp_path, 0o600)
+                tmp.write(payload)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            os.replace(tmp_path, path)
+            try:
+                path.chmod(0o600)
+            except OSError:
+                logger.warning("无法收紧选题库登记文件权限：%s", path.name)
+            try:
+                dir_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except OSError:
+                pass
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
 
 
 def _new_id() -> str:
@@ -185,8 +216,11 @@ def _new_id() -> str:
 
 
 def _source_path(cfg, source: dict) -> Path:
+    source_id = str(source.get("id") or "")
+    if not _SOURCE_ID_RE.fullmatch(source_id):
+        raise ValueError("选题库来源 ID 格式不合法")
     if source.get("kind") == "remote":
-        cached = cache_dir(cfg) / f"{source['id']}.{_guess_ext(source)}"
+        cached = cache_dir(cfg) / f"{source_id}.{_guess_ext(source)}"
         return cached
     return _resolve_server_path(cfg, source.get("path") or "")
 
@@ -274,8 +308,12 @@ def _rows_to_dicts(rows: list[list[str]]) -> tuple[list[str], list[dict]]:
 
 
 def parse_csv(text: str) -> tuple[list[str], list[dict]]:
-    reader = list(csv.reader(io.StringIO(text)))
-    return _rows_to_dicts(reader)
+    rows: list[list[str]] = []
+    for row in csv.reader(io.StringIO(text)):
+        rows.append(row)
+        if len(rows) > MAX_TOPIC_ROWS + 1:
+            raise ValueError(f"选题库超过行上限（{MAX_TOPIC_ROWS:,} 行）")
+    return _rows_to_dicts(rows)
 
 
 def parse_json(text: str) -> tuple[list[str], list[dict]]:
@@ -290,6 +328,8 @@ def parse_json(text: str) -> tuple[list[str], list[dict]]:
             rows = [payload]
     if not isinstance(rows, list):
         raise ValueError("JSON 顶层必须是数组，或包含 items/data/rows/topics 数组")
+    if len(rows) > MAX_TOPIC_ROWS:
+        raise ValueError(f"选题库超过行上限（{MAX_TOPIC_ROWS:,} 行）")
     rows = [r for r in rows if isinstance(r, dict)]
     columns: list[str] = []
     for r in rows:
@@ -310,6 +350,8 @@ def parse_jsonl(text: str) -> tuple[list[str], list[dict]]:
         if not isinstance(obj, dict):
             continue
         rows.append(obj)
+        if len(rows) > MAX_TOPIC_ROWS:
+            raise ValueError(f"选题库超过行上限（{MAX_TOPIC_ROWS:,} 行）")
         for k in obj.keys():
             if k not in columns:
                 columns.append(k)
@@ -409,6 +451,8 @@ def parse_rss(text: str) -> tuple[list[str], list[dict]]:
                 "title": title, "link": link, "summary": summary,
                 "date": date, "source": feed_title,
             })
+            if len(rows) > MAX_TOPIC_ROWS:
+                raise ValueError(f"选题库超过行上限（{MAX_TOPIC_ROWS:,} 行）")
     return ["title", "link", "summary", "date", "source"], rows
 
 
@@ -426,7 +470,8 @@ def parse_sqlite(path: Path, table_name: Optional[str]) -> tuple[list[str], list
             counts = []
             for t in tables:
                 try:
-                    counts.append((conn.execute(f"SELECT COUNT(*) FROM [{t}]").fetchone()[0], t))
+                    quoted_name = '"' + t.replace('"', '""') + '"'
+                    counts.append((conn.execute(f"SELECT COUNT(*) FROM {quoted_name}").fetchone()[0], t))
                 except sqlite3.Error:
                     continue
             table = max(counts)[1] if counts else tables[0]
@@ -492,9 +537,12 @@ def fetch_remote(source: dict, timeout: int = 20) -> tuple[list[str], list[dict]
 
 def sync_remote(cfg, source: dict) -> dict:
     """抓取远程来源 → 写缓存文件 → 更新同步状态（每天由定时任务调用）。"""
+    source_id = str(source.get("id") or "")
+    if not _SOURCE_ID_RE.fullmatch(source_id):
+        raise ValueError("选题库来源 ID 格式不合法")
     columns, rows = fetch_remote(source)
     fmt = detect_format(str(source.get("url") or ""), source.get("format") or "auto")
-    cache = cache_dir(cfg) / f"{source['id']}.{_guess_ext({**source, 'format': fmt})}"
+    cache = cache_dir(cfg) / f"{source_id}.{_guess_ext({**source, 'format': fmt})}"
     if fmt == "json":
         cache.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
     elif fmt == "jsonl":
@@ -882,6 +930,8 @@ def preview_source(cfg, source_id: str, limit: int = 5) -> dict:
 
 
 def delete_source(cfg, source_id: str) -> dict:
+    if not isinstance(source_id, str) or not _SOURCE_ID_RE.fullmatch(source_id):
+        raise ValueError("选题库来源 ID 格式不合法")
     sources = load_registry(cfg)
     target = next((s for s in sources if s["id"] == source_id), None)
     if target is None:
