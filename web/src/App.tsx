@@ -4,6 +4,7 @@ import { AppProvider, useApp } from "./AppContext";
 import { api, TenantListResponse } from "./api";
 import { platformMeta } from "./platforms";
 import Dashboard from "./pages/Dashboard";
+import GlobalMonitor from "./pages/GlobalMonitor";
 import HotTopics from "./pages/HotTopics";
 import Goals from "./pages/Goals";
 import Production from "./pages/Production";
@@ -55,6 +56,7 @@ function Router() {
   const render = () => {
     switch (page) {
       case "dashboard": return <Dashboard />;
+      case "global-monitor": return <GlobalMonitor />;
       case "hot": return <HotTopics />;
       case "goals": return <Goals />;
       case "production": return <Production />;
