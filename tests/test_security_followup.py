@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 from src.core import auth, config_store, env_store
 
@@ -31,7 +32,6 @@ def test_load_overrides_restricts_legacy_file_permissions(tmp_path, monkeypatch)
     assert config_store.load_overrides(None) == {"ui.theme": "dark"}
     assert path.stat().st_mode & 0o777 == 0o600
 
-from types import SimpleNamespace
 
 
 def _request(peer: str, host: str, headers: dict[str, str] | None = None):
