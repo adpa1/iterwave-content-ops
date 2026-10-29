@@ -1352,9 +1352,10 @@ def _register_routes(app: FastAPI) -> None:
             searchable = " ".join([str(row["title"] or ""), str(row["original_filename"] or ""), str(row["alt_text"] or ""), *[str(tag) for tag in tags]]).lower()
             matched = sorted(token for token in tokens if token in searchable)
             purpose_hits = sorted(term for term in purpose_terms if term in searchable)
-            score = len(matched) * 10 + len(purpose_hits) * 3 + (max(0, int(row["quality_score"] or 0)) // 20)
-            if score <= 0:
+            # 图片质量只能用于同等相关性下的排序，不能让无关图片仅凭质量分进入推荐。
+            if not matched and not purpose_hits:
                 continue
+            score = len(matched) * 10 + len(purpose_hits) * 3 + (max(0, int(row["quality_score"] or 0)) // 20)
             ranked.append({
                 "asset_id": int(row["id"]), "title": row["title"],
                 "score": score, "matched_keywords": matched[:8],
