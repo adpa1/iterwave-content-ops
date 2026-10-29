@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { navigate, useUrlTab } from "../nav";
 import { useApp } from "../AppContext";
 import EmptyHint from "../components/EmptyHint";
+import TenantManagerPane from "../components/TenantManagerPane";
 import { AdvancedEditor, KbEditor, LlmEditor, PlatformStyleEditor, PlatformToggles, TimeoutEditor } from "../components/ConfigEditors";
 import { api, type SystemStatus, type SystemConfigView } from "../api";
 
@@ -25,6 +26,7 @@ const SETTINGS_TABS = [
   { k: "platform", l: "平台与账号" },
   { k: "rhythm", l: "节奏与评分权重" },
   { k: "system", l: "运行状态" },
+  { k: "tenants", l: "账号组" },
 ] as const;
 type SettingsTab = typeof SETTINGS_TABS[number]["k"];
 
@@ -501,6 +503,8 @@ export default function Settings() {
         </div>
       </div>
       )}
+      {tab === "tenants" && <TenantManagerPane />}
+
     </>
   );
 }
