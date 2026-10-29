@@ -56,12 +56,21 @@ def _save_storage(context, storage_path: str) -> None:
     """保存 storage_state.json + chmod 600（R23）。"""
     try:
         state = context.storage_state()
-        Path(storage_path).parent.mkdir(parents=True, exist_ok=True)
-        tmp = Path(storage_path).with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, storage_path)
+        target = Path(storage_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
         try:
-            os.chmod(storage_path, 0o600)
+            target.parent.chmod(0o700)
+        except OSError:
+            pass
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
+        os.replace(tmp, target)
+        try:
+            target.chmod(0o600)
         except OSError:
             pass
     except Exception as exc:
