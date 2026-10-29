@@ -794,8 +794,23 @@ def _register_routes(app: FastAPI) -> None:
     # --- 访问保护（口令 / 会话 / 脚本令牌）---
     @app.get("/api/auth/status")
     def auth_status(request: Request):
+        host = (request.url.hostname or "").strip("[]").lower()
+        client_host = (request.client.host if request.client else "").strip("[]").lower()
+        local_hosts = ("localhost", "127.0.0.1", "::1")
+        forwarded = any(
+            request.headers.get(name)
+            for name in ("x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host")
+        )
+        local_direct = host in local_hosts and client_host in local_hosts and not forwarded
+
         ip = request.client.host if request.client else "unknown"
-        return auth.status(request.cookies.get(auth.COOKIE_NAME), request.headers, ip=ip)
+        st = auth.status(request.cookies.get(auth.COOKIE_NAME), request.headers, ip=ip)
+        # 本机直连 + 未设密码 → 前端跳过 InitialSetupScreen / LoginScreen
+        if local_direct and not auth.password_configured():
+            st["configured"] = True
+            st["authenticated"] = True
+            st["needs_login"] = False
+        return st
 
     @app.post("/api/auth/login")
     def auth_login(payload: dict, request: Request, response: Response):
