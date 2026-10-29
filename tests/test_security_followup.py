@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
-from src.core import auth, config_store, env_store
+from src.core import auth, config_store, env_store, kb_sources
 
 
 def test_write_env_atomically_preserves_other_values_and_private_mode(tmp_path, monkeypatch):
@@ -81,3 +81,15 @@ def test_write_env_rejects_invalid_keys_and_multiline_values(tmp_path, monkeypat
             raise AssertionError("expected multiline value to be rejected")
 
     assert not (tmp_path / ".env").exists()
+
+
+
+def test_xlsx_column_coordinate_is_bounded():
+    assert kb_sources._xlsx_col_index("A1") == 0
+    assert kb_sources._xlsx_col_index("SZ1") < kb_sources.MAX_XLSX_COLUMNS
+    try:
+        kb_sources._xlsx_col_index("AAAA1")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected excessive Excel column coordinate to be rejected")
