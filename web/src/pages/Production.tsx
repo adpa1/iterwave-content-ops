@@ -1264,7 +1264,7 @@ export default function Production() {
                     >→ {t}</button>
                   ))}
                   {(ROUND_TARGETABLE[roundDetail.status] || []).length === 0 && (
-                    <span style={{ fontSize: 12, color: "var(--subtle)" }}>当前状态无合法迁移（终态）</span>
+                    <span style={{ fontSize: 12, color: "var(--subtle)" }}>当前状态不支持手工跳转；请通过业务操作推进或查看终态</span>
                   )}
                   {roundCancelBlockReason && (ROUND_TARGETABLE[roundDetail.status] || []).includes("cancelled") && (
                     <div className="note" style={{ flexBasis: "100%", marginTop: 4 }}>
