@@ -155,23 +155,39 @@ class Database:
         migrations.sort(key=lambda m: m.version)
         return migrations
 
+    @staticmethod
+    def _skip_existing_columns(conn: sqlite3.Connection, sql: str) -> str:
+        """按完整语句（而非按行）跳过已存在列的 ADD COLUMN。
+
+        ALTER 语句可能跨多行（例如列定义后换行写 CHECK 约束）；只删首行会留下孤立的
+        续行导致语法错误，旧库升级时服务无法启动。
+        """
+        import re
+
+        body = "\n".join(line for line in sql.splitlines() if not line.lstrip().startswith("--"))
+        pattern = re.compile(r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)", re.IGNORECASE)
+        columns: dict[str, set[str]] = {}
+        kept = []
+        for statement in body.split(";"):
+            if not statement.strip():
+                continue
+            match = pattern.match(statement)
+            if match:
+                table, column = match.group(1), match.group(2)
+                if table not in columns:
+                    columns[table] = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                if column in columns[table]:
+                    continue
+            kept.append(statement.strip() + ";")
+        return "\n".join(kept)
+
     def _run_migration(self, conn: sqlite3.Connection, mig: "Migration") -> None:
         """执行单个迁移脚本并记录版本。"""
         sql = mig.path.read_text(encoding="utf-8")
         logger.info("执行迁移 %d — %s（%s）", mig.version, mig.name, mig.path)
         # 历史迁移曾发生版本号冲突。已重编号的迁移必须兼容旧库中已执行过部分 ALTER 的情况。
         if mig.name in ("hot_topic_trend", "content_review_rejection"):
-            table_name = "hot_topics" if mig.name == "hot_topic_trend" else "contents"
-            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
-            filtered = []
-            for line in sql.splitlines():
-                prefix = f"ALTER TABLE {table_name} ADD COLUMN "
-                if line.startswith(prefix):
-                    column = line[len(prefix):].strip().split()[0]
-                    if column in existing:
-                        continue
-                filtered.append(line)
-            sql = "\n".join(filtered)
+            sql = self._skip_existing_columns(conn, sql)
 
         # SQLite 不支持单次多条语句的多结果集执行，用 executescript
         conn.executescript(sql)
