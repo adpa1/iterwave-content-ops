@@ -159,6 +159,11 @@ def load_registry(cfg) -> list[dict]:
         _ensure_empty_file(Path(source["path"]), source["format"])
         save_registry(cfg, [source])
         return [source]
+    # 来源登记可能包含远程请求头凭据；读取旧文件时也立即收紧权限。
+    try:
+        path.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧选题库登记文件权限：%s", path.name)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
