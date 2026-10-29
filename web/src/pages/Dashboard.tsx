@@ -57,6 +57,7 @@ export default function Dashboard() {
   const [loadedAt, setLoadedAt] = useState<Date | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [failedSources, setFailedSources] = useState<string[]>([]);
 
   const load = async () => {
     setLoading(true);
@@ -79,9 +80,11 @@ export default function Dashboard() {
     if (r[5].status === "fulfilled") setActions(r[5].value.items ?? []);
     if (r[6].status === "fulfilled") setCfg(r[6].value);
     if (r[7].status === "fulfilled") setSummary(r[7].value);
-    const failed = r.filter((x) => x.status === "rejected").length;
-    if (failed === r.length) setError("后端接口不可用，请确认 API 服务已启动");
-    else if (failed) setError(null);
+    const sourceLabels = ["轮次", "目标", "热点", "复盘", "平台进度", "待处理事项", "系统配置", "目标汇总"];
+    const failedLabels = r.flatMap((result, index) => result.status === "rejected" ? [sourceLabels[index]] : []);
+    setFailedSources(failedLabels);
+    if (failedLabels.length === r.length) setError("运营总览所需接口均不可用，请检查后端服务与登录状态");
+    else setError(null);
     setLoadedAt(new Date());
     setLoading(false);
   };
@@ -111,16 +114,32 @@ export default function Dashboard() {
     (s, p) => s + (p?.status_breakdown?.draft_saved ?? 0), 0,
   );
   const latestRound = rounds[0];
+  const failed = new Set(failedSources);
 
-  /** 首页主按钮随状态切换：有待发布 → 去发布；无轮次 → 开始第一轮；其余 → 内容生产 */
+  /** 主按钮直达用户当前需要处理的子页面，不把“跳转”伪装成“执行” */
   const primaryAction = savedDrafts > 0
-    ? { label: `去发布（${savedDrafts} 篇）`, page: "production" }
-    : rounds.length === 0
-      ? { label: "开始第一轮", page: "production" }
-      : { label: "内容生产", page: "production" };
+    ? { label: `去审核（${savedDrafts} 篇待确认）`, page: "production", tab: "review" }
+    : latestRound?.status === "awaiting_publish"
+      ? { label: "继续审核发布", page: "production", tab: "review" }
+      : latestRound && ["created", "producing"].includes(latestRound.status)
+        ? { label: "继续生产本轮", page: "production", tab: "pipeline" }
+        : rounds.length === 0
+          ? { label: "开始配置首轮", page: "production", tab: "plan" }
+          : { label: "查看最近一轮", page: "production", tab: "rounds" };
 
   return (
     <AsyncPanel loading={loading} error={error} onRetry={load} loadingText="加载运营总览…">
+      {failedSources.length > 0 && (
+        <div className="dashboard-partial-warning" role="status" aria-live="polite">
+          <div className="dashboard-partial-copy">
+            <strong>部分数据未能加载</strong>
+            <span>受影响模块：{failedSources.join("、")}。对应数字或列表可能不完整，暂不能视为真实的零值。</span>
+          </div>
+          <button type="button" className="btn sm" onClick={load} disabled={loading}>
+            {loading ? "重试中…" : "重试加载"}
+          </button>
+        </div>
+      )}
       <div className="page-head">
         <div>
           <div className="eyebrow">Command Center</div>
@@ -133,7 +152,7 @@ export default function Dashboard() {
         <div className="head-actions">
           <button type="button" className="btn" onClick={load}>↻ 刷新</button>
           <button type="button" className="btn" onClick={() => go("hot")}>✳ 扫描热点</button>
-          <button type="button" className="btn primary" onClick={() => go(primaryAction.page)}>{primaryAction.label}</button>
+          <button type="button" className="btn primary" onClick={() => go(primaryAction.page, primaryAction.tab)}>{primaryAction.label}</button>
         </div>
       </div>
 
@@ -150,38 +169,48 @@ export default function Dashboard() {
         <Metric
           label="待你处理"
           icon="!"
-          value={actions.length + awaitingRounds.length}
+          value={failed.has("待处理事项") ? "—" : actions.length}
           unit="项"
           foot={[
             highActions.length ? <span key="h" style={{ color: "var(--red)", fontWeight: 700 }}>{highActions.length} 项高优先级</span> : <span key="h">无高优先级</span>,
-            <span key="a">{awaitingRounds.length} 轮待确认发布</span>,
+            <span key="a">{failed.has("轮次") ? "待发布轮次待加载" : `${awaitingRounds.length} 轮待确认发布`}</span>,
           ]}
         />
         <Metric
           label="进行中的轮次"
           icon="⎇"
-          value={runningRounds.length}
+          value={failed.has("轮次") ? "—" : runningRounds.length}
           unit="轮"
-          foot={[<span key="d">{totalDrafts} 篇草稿</span>, <span key="p">{enabled.length} 个平台启用</span>]}
+          foot={[
+            <span key="d">{failed.has("平台进度") ? "草稿数据待加载" : `${totalDrafts} 篇草稿`}</span>,
+            <span key="p">{enabled.length} 个平台启用</span>,
+          ]}
         />
         <Metric
           label="热点机会池"
           icon="✳"
           iconTone="orange"
-          value={publishableHot.length}
+          value={failed.has("热点") ? "—" : publishableHot.length}
           unit="条匹配定位"
           foot={[
-            shortWindowHot.length ? <span key="s" style={{ color: "var(--orange)", fontWeight: 700 }}>{shortWindowHot.length} 条时效敏感</span> : <span key="s">无时效敏感</span>,
-            <span key="t">{unjudgedHot.length} 条待研判 · 共 {hot.length} 条</span>,
+            failed.has("热点")
+              ? <span key="s">热点数据待加载</span>
+              : shortWindowHot.length
+                ? <span key="s" style={{ color: "var(--orange)", fontWeight: 700 }}>{shortWindowHot.length} 条时效敏感</span>
+                : <span key="s">无时效敏感</span>,
+            <span key="t">{failed.has("热点") ? "采集结果未知" : `${unjudgedHot.length} 条待研判 · 共 ${hot.length} 条`}</span>,
           ]}
         />
         <Metric
           label="本周复盘"
           icon="↗"
           iconTone="teal"
-          value={insightsThisWeek.length}
-          unit="个平台"
-          foot={[<span key="w">{insightsWithSamples.length} 个有有效样本</span>, <span key="p">已发布样本 {status?.published_samples ?? 0}</span>]}
+          value={failed.has("复盘") ? "—" : insightsThisWeek.length}
+          unit="条结论"
+          foot={[
+            <span key="w">{failed.has("复盘") ? "复盘数据待加载" : `${insightsWithSamples.length} 条有有效样本`}</span>,
+            <span key="p">已发布样本 {status?.published_samples ?? "—"}</span>,
+          ]}
         />
       </div>
 
@@ -245,7 +274,9 @@ export default function Dashboard() {
             </div>
             <button type="button" className="btn sm" onClick={() => go("hot")}>热点雷达 →</button>
           </div>
-          {publishableHot.length === 0 ? (
+          {failed.has("热点") ? (
+            <EmptyHint next="点击首页的「重试加载」重新读取热点数据">热点数据加载失败，不能据此判断当前没有匹配热点。</EmptyHint>
+          ) : publishableHot.length === 0 ? (
             <EmptyHint next={unjudgedHot.length ? "到「热点雷达」对已采集热点做维度研判" : "到「热点雷达」刷新采集"}>
               {hot.length
                 ? `已采集 ${hot.length} 条，${unjudgedHot.length ? `${unjudgedHot.length} 条尚未研判，` : ""}暂无与账号定位匹配的热点`
@@ -380,7 +411,7 @@ export default function Dashboard() {
 // ============================================================
 
 function Metric({ label, icon, iconTone, value, unit, foot }: {
-  label: string; icon: string; iconTone?: "orange" | "teal"; value: number; unit: string; foot: React.ReactNode[];
+  label: string; icon: string; iconTone?: "orange" | "teal"; value: number | string; unit: string; foot: React.ReactNode[];
 }) {
   const toneStyle = iconTone === "orange"
     ? { background: "var(--orange-weak)", color: "var(--orange)" }
