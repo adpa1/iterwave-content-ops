@@ -39,7 +39,7 @@ STEP_DEFS: dict[str, dict] = {
     },
     "image_card": {
         "label": "④ 图片卡片", "skill": "image_card", "locked": False, "requires": ["copywriting"],
-        "desc": "按平台尺寸生成知识卡片（Pillow）",
+        "desc": "按平台尺寸生成图文卡片：渐变底 + 标题 + 维度标签",
         "inputs": ["文案标题", "平台尺寸"],
     },
     "save_draft": {
@@ -206,17 +206,40 @@ def _item(no, name, status, message, fix_page=None, fix_tab=None):
 
 def diagnose(cfg, conn, *, cb=None, live_llm: bool = False) -> dict:
     from ..adapters.base import Platform
-    from .kb_sources import read_all_for_check
+    from .kb_reader import KbReader
     from .login_manager import has_login_state
 
     items: list[dict] = []
     enabled = cfg.platforms.enabled_keys()
 
-    # 1 选题库来源（真实读一遍：上传 / 远程 / 服务器路径）
-    kb_check = read_all_for_check(cfg)
-    kb_status = kb_check["status"]
-    items.append(_item(
-        1, "选题库来源可读", kb_status, kb_check["message"], "assets", "mapping"))
+    # 1 选题来源：选题库 + 热点转入/手动添加，任一有选题即可开轮
+    from .kb_sources import scrub_paths
+    extra = conn.execute(
+        "SELECT COUNT(*) FROM topic_index WHERE (source = 'manual' OR source LIKE 'hot:%') "
+        "AND excluded_at IS NULL"
+    ).fetchone()[0]
+    try:
+        kb_items, rep = KbReader(cfg).read()
+        total = len(kb_items) + extra
+        if not rep.get("configured", True):
+            if extra:
+                items.append(_item(1, "有可用选题", "pass", f"未接选题库，热点转入/手动添加 {extra} 条"))
+            else:
+                items.append(_item(1, "有可用选题", "block",
+                                   "还没有任何选题：上传选题库、填写远程地址，或在选题池手动添加",
+                                   "settings", "kb"))
+        elif total:
+            ft = {"sqlite": "SQLite", "csv": "CSV", "jsonl": "JSONL", "json": "JSON", "xlsx": "Excel"}.get(
+                rep.get("file_type") or "", rep.get("file_type") or "")
+            items.append(_item(1, "有可用选题", "pass", f"选题库（{ft}）{len(kb_items)} 条 · 其他来源 {extra} 条"))
+        else:
+            items.append(_item(1, "有可用选题", "block", "选题库可以读取，但没有有效选题（需要标题列）",
+                               "settings", "kb"))
+    except Exception as exc:  # noqa: BLE001
+        status = "warn" if extra else "block"
+        items.append(_item(1, "有可用选题", status,
+                           f"选题库读取失败：{scrub_paths(str(exc))}" + (f"；其他来源仍有 {extra} 条" if extra else ""),
+                           "settings", "kb"))
 
     # 2 账号画像
     ug = cfg.ultimate_goal
@@ -254,7 +277,7 @@ def diagnose(cfg, conn, *, cb=None, live_llm: bool = False) -> dict:
         items.append(_item(4, "LLM API 连通", "warn", "LLM 未启用：文案走模板降级，复盘要点不会进文案",
                            "settings", "model"))
     elif not os.getenv(llm.api_key_env):
-        items.append(_item(4, "LLM API 连通", "block", f"缺少环境变量 {llm.api_key_env}", "settings", "model"))
+        items.append(_item(4, "LLM API 连通", "block", "还没有填写模型 API Key", "settings", "model"))
     elif live_llm:
         try:
             import httpx
@@ -267,7 +290,7 @@ def diagnose(cfg, conn, *, cb=None, live_llm: bool = False) -> dict:
             r.raise_for_status()
             items.append(_item(4, "LLM API 连通", "pass", f"{llm.model} 调用成功"))
         except Exception as exc:  # noqa: BLE001
-            items.append(_item(4, "LLM API 连通", "block", f"调用失败：{str(exc)[:120]}", "settings", "model"))
+            items.append(_item(4, "LLM API 连通", "block", f"调用失败：{scrub_paths(str(exc))[:120]}", "settings", "model"))
     else:
         items.append(_item(4, "LLM API 连通", "pass", f"已配置 {llm.model}（勾选「实测 LLM」可真调一次）"))
 
@@ -316,46 +339,38 @@ def diagnose(cfg, conn, *, cb=None, live_llm: bool = False) -> dict:
     vendor = Path(__file__).resolve().parent.parent / "vendor" / "easel"
     need = ["web_publisher.py", "login_qr.py", "login_state.py", "platform_readback.py", "account_stats.py"]
     lack = [n for n in need if not (vendor / n).exists()]
-    items.append(_item(8, "Easel Skills 可用", "block" if lack else "pass",
-                       f"缺失：{', '.join(lack)}" if lack else f"{len(need)} 个脚本就绪"))
+    items.append(_item(8, "平台操作组件完整", "block" if lack else "pass",
+                       f"缺失：{', '.join(lack)}" if lack else f"{len(need)} 个组件就绪"))
 
-    # 9 访问口令（P0 安全）
-    from .auth import password_configured
-    if password_configured():
-        items.append(_item(9, "访问保护已开启", "pass", "接口需要登录后才能调用", "settings", "access"))
-    else:
-        items.append(_item(9, "访问保护已开启", "warn",
-                           "未设置访问口令，公网部署时任何人都能操作账号和配置", "settings", "access"))
+    # 9 中文字体（出图）
+    from .content_pipeline import find_cjk_font
+    font = find_cjk_font()
+    items.append(_item(9, "出图中文字体", "pass" if font else "block",
+                       f"使用 {Path(font).name}" if font else
+                       "服务器上没有中文字体，卡片文字会变成方框。Linux 安装 fonts-noto-cjk 后重启服务"))
 
-    # 10 中文字体（跨平台可移植）
-    from .content_pipeline import resolve_font_path
-    font = resolve_font_path()
-    if font:
-        items.append(_item(10, "中文字体可用", "pass", "图片卡片可正常渲染中文", "settings", "appearance"))
-    else:
-        items.append(_item(10, "中文字体可用", "block",
-                           "未找到中文字体，图片卡片会显示方块；请安装 Noto Sans CJK 或在设置里指定字体路径",
-                           "settings", "appearance"))
+    # 10 通知（人工发布依赖提醒）
+    try:
+        from .notify import macos_available
+        ch = cfg.notifications.channels
+        ready = []
+        if ch.get("macos") and ch["macos"].enabled and macos_available():
+            ready.append("本机通知")
+        for name, label in (("wecom", "企业微信"), ("feishu", "飞书")):
+            c = ch.get(name)
+            if c and c.enabled and c.webhook_url_env and os.getenv(c.webhook_url_env):
+                ready.append(label)
+        items.append(_item(10, "通知可送达", "pass" if ready else "warn",
+                           f"已配置：{'、'.join(ready)}" if ready else
+                           "没有可用通知通道：草稿生成后你不会收到提醒", "settings", "notify"))
+    except Exception:  # noqa: BLE001
+        pass
 
-    # 11 通知通道
-    from .notify import macos_available
-    channels = cfg.notifications.channels
-    deliverable: list[str] = []
-    if macos_available() and getattr(channels.get("macos"), "enabled", False):
-        deliverable.append("macOS 通知")
-    for name, env in (("wecom", "WECOM_WEBHOOK_URL"), ("feishu", "FEISHU_WEBHOOK_URL")):
-        ccfg = channels.get(name)
-        if ccfg and ccfg.enabled and os.getenv(getattr(ccfg, "webhook_url_env", env) or env):
-            deliverable.append("企微" if name == "wecom" else "飞书")
-    if deliverable:
-        items.append(_item(11, "通知通道可用", "pass", f"已启用：{'、'.join(deliverable)}", "settings", "notify"))
-    elif macos_available():
-        items.append(_item(11, "通知通道可用", "warn",
-                           "macOS 通知未开启；草稿保存后不会提醒你发布", "settings", "notify"))
-    else:
-        items.append(_item(11, "通知通道可用", "warn",
-                           "当前系统不支持 macOS 通知；可在设置里填写企微 / 飞书 Webhook",
-                           "settings", "notify"))
+    # 11 访问口令
+    from src.api.auth import auth_required
+    items.append(_item(11, "访问口令", "pass" if auth_required() else "warn",
+                       "已开启" if auth_required() else "未设置：知道地址的人都能操作账号",
+                       "settings", "notify"))
 
     worst = "block" if any(i["status"] == "block" for i in items) else (
         "warn" if any(i["status"] == "warn" for i in items) else "pass")

@@ -42,8 +42,6 @@ data/logs/
 *.log
 # 运行时配置覆盖（本地个性化，不应入库）
 data/config_overrides.json
-# 选题库来源注册表 / 上传文件 / 远程缓存（含远程源鉴权头，敏感）
-data/kb/
 # 登录二维码临时图（敏感，含登录态）
 data/*_qr.png
 

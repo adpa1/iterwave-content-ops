@@ -2,10 +2,9 @@ import { useEffect, useState } from "react";
 import AsyncPanel from "../components/AsyncPanel";
 import EmptyHint from "../components/EmptyHint";
 import TopicPoolPane from "../components/TopicPoolPane";
-import KbSourcesPanel from "../components/KbSourcesPanel";
-import IndustryPresetPicker from "../components/IndustryPresetPicker";
 import CreatedContentPane from "../components/CreatedContentPane";
 import { useApp } from "../AppContext";
+import { platformLabel } from "../platforms";
 import { PersonaEditor } from "../components/ConfigEditors";
 import { navigate, useUrlTab } from "../nav";
 import {
@@ -254,12 +253,12 @@ export default function Assets() {
                     {hot.slice(0, 10).map((h) => (
                       <tr key={h.id}>
                         <td>{h.title}</td>
-                        <td><span className="tag gray">{h.source}</span></td>
-                        <td>{h.discovered_at ?? <span style={{ color: "var(--subtle)" }}>—</span>}</td>
+                        <td><span className="tag gray">{platformLabel((h.source || "").split("/").pop() || "")}</span></td>
+                        <td>{h.discovered_at ? h.discovered_at.replace("T", " ").slice(5, 16) : <span style={{ color: "var(--subtle)" }}>—</span>}</td>
                         <td>{h.heat == null ? <span style={{ color: "var(--subtle)" }}>—</span> : h.heat.toLocaleString()}</td>
                         <td>
                           <span className={`tag ${h.evidence_status === "collected" ? "green" : h.evidence_status === "demo" ? "orange" : "red"}`}>
-                            {h.evidence_status}
+                            {({ collected: "已采集", demo: "演示数据", failed: "采集失败" } as Record<string, string>)[h.evidence_status] ?? h.evidence_status}
                           </span>
                         </td>
                       </tr>
@@ -298,12 +297,10 @@ export default function Assets() {
             </div>
           </div>
 
-          <IndustryPresetPicker onApplied={load} />
-
           <AssetForm
             type="voice"
             titleLabel="观点标题"
-            bodyPlaceholder="例如：重要的不是把答案给得更快，而是帮读者把问题想清楚。"
+            bodyPlaceholder="例如：你对所在领域的一个核心判断，或希望内容反复传达的观点。"
             pending={isPending("asset:voice")}
             onSubmit={addAsset}
           />
@@ -367,7 +364,28 @@ export default function Assets() {
         </>
       )}
 
-      {tab === "mapping" && <KbSourcesPanel />}
+      {tab === "mapping" && (
+        <div className="panel">
+          <div className="panel-head">
+            <div>
+              <div className="panel-title"><span className="icon">⚙</span>选题库</div>
+              <div className="panel-sub">上传文件、远程地址、服务器路径和字段对应，都在「系统设置 → 选题库」里设置</div>
+            </div>
+            <div className="head-actions">
+              <button className="btn sm primary" onClick={() => navigate("settings", "kb")}>去设置选题库</button>
+            </div>
+          </div>
+          {kb && (
+            <div className="note">
+              {!kb.configured
+                ? "还没有接选题库，目前只使用热点转入和手动添加的选题。"
+                : kb.ok
+                  ? `✓ 可用：${kb.stats.total ?? 0} 条选题`
+                  : `✕ ${kb.message || "选题库暂不可用"}`}
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }
@@ -402,7 +420,7 @@ function AssetForm({
       <div className="panel-head">
         <div>
           <div className="panel-title"><span className="icon">＋</span>新增{titleLabel}</div>
-          <div className="panel-sub">只写入本地 content_assets 表</div>
+          <div className="panel-sub">只保存在本系统，不会发到平台</div>
         </div>
       </div>
       <div className="grid" style={{ gridTemplateColumns: needUrl ? "1fr 1fr 1.4fr auto" : "1fr 2fr auto", gap: 10 }}>

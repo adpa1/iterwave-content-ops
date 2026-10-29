@@ -1,14 +1,11 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
-import { api, AuthStatus, SystemStatus, Platform } from "./api";
+import { api, SystemStatus, Platform } from "./api";
 
 interface Toast { id: number; text: string; type?: "info" | "success" | "error"; }
 
 interface AppContextType {
   status: SystemStatus | null;
   refreshStatus: () => Promise<void>;
-  /** 访问保护状态：null = 检测中（首屏不闪「未登录」） */
-  auth: AuthStatus | null;
-  refreshAuth: () => Promise<void>;
   toasts: Toast[];
   showToast: (text: string, type?: Toast["type"]) => void;
   /** G-11：进行中的操作集合（key 由调用方定义，如 "publish:12" / "run:3"） */
@@ -28,18 +25,8 @@ export function useApp() {
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<SystemStatus | null>(null);
-  const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [pending, setPending] = useState<Record<string, boolean>>({});
-
-  const refreshAuth = useCallback(async () => {
-    try {
-      setAuth(await api.authStatus());
-    } catch (e) {
-      console.warn("auth status fetch failed:", e);
-      setAuth({ configured: true, authenticated: false, needs_login: true });
-    }
-  }, []);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -80,18 +67,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    refreshAuth();
-  }, [refreshAuth]);
-
-  useEffect(() => {
-    if (!auth?.authenticated) return;
     refreshStatus();
     const t = setInterval(refreshStatus, 15000);
     return () => clearInterval(t);
-  }, [auth?.authenticated, refreshStatus]);
+  }, [refreshStatus]);
 
   return (
-    <AppContext.Provider value={{ status, refreshStatus, auth, refreshAuth, toasts, showToast, pending, withPending, isPending }}>
+    <AppContext.Provider value={{ status, refreshStatus, toasts, showToast, pending, withPending, isPending }}>
       {children}
       <div className="toast-area" role="status" aria-live="polite">
         {toasts.map((t) => (

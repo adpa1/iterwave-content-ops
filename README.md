@@ -79,6 +79,21 @@ npm install
 npm run dev
 ```
 
+## 部署到服务器（任意位置）
+
+IterWave 不绑定任何电脑或目录，Linux / macOS / Windows 都可以部署：
+
+1. **中文字体**（出图必需）：Debian/Ubuntu `sudo apt install fonts-noto-cjk`，CentOS `sudo yum install google-noto-sans-cjk-ttc-fonts`；
+   或在 `config/.env` 写 `ITERWAVE_FONT=/path/to/font.ttc`。启动后「新手引导 → 检查清单」会显示用的是哪个字体。
+2. **子路径部署**（如 `https://域名/iterwave/`）：`cd web && VITE_BASE=/iterwave/ npm run build`，反向代理把 `/iterwave/` 转发到后端根路径。
+3. **访问口令**：公网部署后第一件事，在页面顶部的提示条或「系统设置 → 通知与访问」设置口令（保存在 `config/.env` 的 `ITERWAVE_ACCESS_TOKEN`）。
+   忘记口令：改 `.env` 后重启服务。脚本调用接口可带 `Authorization: Bearer <口令>`。
+4. **选题库**：「系统设置 → 选题库」三选一 —— 上传文件（CSV / Excel / JSON / JSONL / SQLite）、远程地址（CSV / JSON / RSS，每天自动同步）、
+   服务器路径（相对项目目录或绝对路径）。也可以不接，只用热点转入和手动添加的选题。
+5. **通知**：在「系统设置 → 通知与访问」粘贴企业微信 / 飞书群机器人 Webhook；macOS 本机通知只在 macOS 上可用。
+6. **行业**：平台不绑定垂类。「目标与画像」可从行业模板（通用 / 知识科普 / 生活方式 / 财经 / Web3 / 健康）一键填入画像与合规红线；
+   「热点雷达 → 筛选逻辑 → 热点来源」可关闭综合热榜、添加行业 RSS 源。
+
 ## 项目结构
 
 ```

@@ -6,9 +6,9 @@
  * 这里的组件只提交「真正改动」的字段，未改动不提交。
  */
 import { useEffect, useState } from "react";
-import { api, type Platform, type PlatformStyle, type SystemConfigView } from "../api";
+import { api, type KbInspect, type NotifyChannels, type Platform, type PlatformStyle, type SystemConfigView } from "../api";
 import { useApp } from "../AppContext";
-import { navigate } from "../nav";
+import VerticalPicker from "./VerticalPicker";
 
 const PLATFORM_LABELS: Record<string, string> = {
   xhs: "小红书",
@@ -17,7 +17,7 @@ const PLATFORM_LABELS: Record<string, string> = {
   wechat_channels: "视频号",
 };
 
-export const KB_TYPES = ["auto", "sqlite", "csv", "json", "jsonl", "xlsx", "rss"] as const;
+export const KB_TYPES = ["auto", "sqlite", "csv", "jsonl", "json", "xlsx"] as const;
 export const KB_MAPPING_FIELDS: string[] = ["source", "title", "summary", "link", "date", "dimension"];
 
 /** "a, b，c" → ["a","b","c"] */
@@ -64,6 +64,7 @@ export function PersonaEditor({ view, onSaved }: {
   const { showToast, withPending, isPending } = useApp();
   const [keywords, setKeywords] = useState(view.readonly.persona_keywords.join(", "));
   const [forbidden, setForbidden] = useState(view.readonly.forbidden_directions.join(", "));
+  const [redlinesAdd, setRedlinesAdd] = useState<string[]>([]);
   const busy = isPending("cfg:persona");
 
   const save = async () => {
@@ -75,6 +76,11 @@ export function PersonaEditor({ view, onSaved }: {
     }
     if (JSON.stringify(f) !== JSON.stringify(view.readonly.forbidden_directions)) {
       updates["ultimate_goal.forbidden_directions"] = f;
+    }
+    if (redlinesAdd.length) {
+      const cur = view.readonly.redline_keywords ?? [];
+      const merged = Array.from(new Set([...cur, ...redlinesAdd]));
+      if (merged.length !== cur.length) updates["ultimate_goal.redline_keywords"] = merged;
     }
     if (Object.keys(updates).length === 0) {
       showToast("画像没有改动", "info");
@@ -92,130 +98,295 @@ export function PersonaEditor({ view, onSaved }: {
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
+      <VerticalPicker onApply={(v) => {
+        if (v.persona_keywords.length) setKeywords(v.persona_keywords.join(", "));
+        if (v.forbidden_directions.length) setForbidden(v.forbidden_directions.join(", "));
+        setRedlinesAdd(v.redline_keywords);
+        showToast(`已填入「${v.name}」模板，确认后点保存`, "info");
+      }} />
       <Field label="定位关键词（逗号分隔，最多 30 条）">
         <input style={inputStyle} value={keywords} onChange={(e) => setKeywords(e.target.value)}
-          placeholder="如：职场成长, 效率方法, 生活方式" />
+          placeholder="如：你的领域、内容风格、受众关键词" />
       </Field>
       <Field label="禁区方向（逗号分隔，最多 30 条）">
         <input style={inputStyle} value={forbidden} onChange={(e) => setForbidden(e.target.value)}
-          placeholder="如：纯娱乐无信息增量, 医疗诊断结论" />
+          placeholder="如：不做低俗内容, 不做与定位无关的泛流量" />
       </Field>
       <div style={{ fontSize: 12, color: "var(--muted)" }}>
         红线敏感词库 已内置 <span className="tag blue">{view.readonly.redline_keywords_count} 条</span>
         <span style={{ marginLeft: 8, color: "var(--subtle)" }}></span>
       </div>
-      <SaveBar onSave={save} busy={busy} hint="保存后 终极目标检查器立即按新画像拦截" />
+      <SaveBar onSave={save} busy={busy} hint="保存后，新生成的内容立即按新画像检查" />
     </div>
   );
 }
 
 // =====================================================================
-// 选题库 KB：类型 / 路径 / 数据表
-// 路径来自后端脱敏（项目外绝对路径显示为 ~/…/x 或 …/x），脱敏值不能回写，
-// 所以脱敏状态下只读，统一到「内容资产 → 字段映射检查」的选题库来源管理里维护。
-//
+// 选题库：上传文件 / 远程地址 / 服务器路径（与部署位置无关）
 // =====================================================================
+const KB_FIELD_LABELS: Record<string, string> = {
+  title: "标题（必填）", dimension: "维度 / 分类", summary: "摘要", link: "链接", date: "日期", source: "来源",
+};
+const KB_SOURCE_TABS = [
+  { k: "upload", l: "上传文件", d: "CSV、Excel、JSON、JSONL、SQLite，最大 20MB" },
+  { k: "remote", l: "远程地址", d: "在线表格导出链接、JSON 接口或 RSS 订阅，每天自动同步" },
+  { k: "local", l: "服务器路径", d: "选题文件已经放在服务器上（相对项目目录或绝对路径）" },
+] as const;
+
+function fmtSize(n?: number) {
+  if (n == null) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
 export function KbEditor({ view, onSaved }: {
   view: SystemConfigView; onSaved?: () => void;
 }) {
   const { showToast, withPending, isPending } = useApp();
-  const [kbType, setKbType] = useState(view.readonly.kb_type || "auto");
-  const [path, setPath] = useState(view.readonly.kb_path || "");
-  const [table, setTable] = useState(view.readonly.kb_table || "");
-  const [mappingText, setMappingText] = useState(
-    Object.entries(view.readonly.kb_field_mapping).map(([k, v]) => `${k}=${v}`).join(", "),
-  );
-  const [inspectMsg, setInspectMsg] = useState<string | null>(null);
+  const src = view.readonly.kb_source;
+  const [mode, setMode] = useState<"upload" | "remote" | "local">(src?.source_type || "upload");
+  const [path, setPath] = useState(src?.source_type === "local" ? (view.readonly.kb_path || "") : "");
+  const [remoteUrl, setRemoteUrl] = useState("");
+  const [remoteFormat, setRemoteFormat] = useState(src?.remote_format || "auto");
+  const [remoteHeader, setRemoteHeader] = useState(src?.remote_header || "");
+  const [remoteToken, setRemoteToken] = useState("");
+  const [defaultDim, setDefaultDim] = useState(src?.default_dimension ?? "综合");
+  const [mapping, setMapping] = useState<Record<string, string>>(view.readonly.kb_field_mapping || {});
+  const [info, setInfo] = useState<KbInspect | null>(null);
+  const [uploading, setUploading] = useState(false);
   const busy = isPending("cfg:kb");
-  /** 脱敏后的路径（含 …）不可回写，避免把展示值当成真实路径保存 */
-  const pathRedacted = /^~?\u2026|^\u2026|\u2026\//.test(view.readonly.kb_path || "");
-
-  /** "title=标题, dimension=分类" → {title:"标题", dimension:"分类"} */
-  const parseMapping = (text: string): Record<string, string> | string => {
-    const out: Record<string, string> = {};
-    for (const part of text.split(/[,，\n]/).map((s) => s.trim()).filter(Boolean)) {
-      const idx = part.indexOf("=");
-      if (idx <= 0) return `字段映射格式错误：${part}（应为 通用字段=原始列名）`;
-      const k = part.slice(0, idx).trim();
-      const v = part.slice(idx + 1).trim();
-      if (!KB_MAPPING_FIELDS.includes(k)) return `未知通用字段：${k}`;
-      if (!v) return `${k} 的原始列名不能为空`;
-      out[k] = v;
-    }
-    return out;
-  };
-
-  const save = async () => {
-    if (!pathRedacted && !path.trim()) { showToast("选题库路径不能为空", "error"); return; }
-    const mapping = parseMapping(mappingText);
-    if (typeof mapping === "string") { showToast(mapping, "error"); return; }
-    const updates: Record<string, unknown> = {};
-    if (kbType !== view.readonly.kb_type) updates["topic_kb.type"] = kbType;
-    if (!pathRedacted && path.trim() !== view.readonly.kb_path) updates["topic_kb.path"] = path.trim();
-    if (table.trim() && table.trim() !== view.readonly.kb_table) updates["topic_kb.table_name"] = table.trim();
-    if (JSON.stringify(mapping) !== JSON.stringify(view.readonly.kb_field_mapping)) {
-      updates["topic_kb.field_mapping"] = mapping;
-    }
-    if (Object.keys(updates).length === 0) { showToast("选题库配置没有改动", "info"); return; }
-    try {
-      const res = await withPending("cfg:kb", () => api.patchConfig(updates));
-      if (!res) return;
-      showToast(`✓ 选题库配置已保存 ${res.changed.length} 项，下一轮选题立即生效`, "success");
-      onSaved?.();
-    } catch (e: any) {
-      showToast(`保存失败: ${e?.message ?? e}`, "error");
-    }
-  };
 
   const inspect = async () => {
-    setInspectMsg(null);
     try {
       const r = await api.kbInspect();
-      setInspectMsg(r.ok
-        ? `✓ ${r.stats?.total ?? 0} 条选题，${r.stats?.unique_dimensions ?? 0} 个维度（${r.file_type}${r.table ? ` · 表 ${r.table}` : ""}）`
-        : `✕ ${r.error || "检查失败"}`);
+      setInfo(r);
+      if (r.field_mapping && Object.keys(r.field_mapping).length) setMapping(r.field_mapping);
     } catch (e: any) {
-      setInspectMsg(`✕ 检查失败: ${e?.message ?? e}`);
+      setInfo({ ok: false, message: String(e?.message ?? e), columns: [], field_mapping: {}, missing_fields: [], stats: {}, path: "", file_type: null });
+    }
+  };
+  useEffect(() => { inspect(); }, []);
+
+  const afterChange = async (msg: string, r?: KbInspect) => {
+    showToast(msg, "success");
+    if (r) {
+      setInfo(r);
+      if (r.field_mapping) setMapping(r.field_mapping);
+    } else {
+      await inspect();
+    }
+    onSaved?.();
+  };
+
+  const onUpload = async (f: File | undefined) => {
+    if (!f) return;
+    setUploading(true);
+    try {
+      const res = await api.kbUpload(f);
+      await afterChange(`✓ 已上传 ${f.name}，已切换为上传文件`, res.inspect);
+    } catch (e: any) {
+      showToast(`上传失败：${e?.message ?? e}`, "error");
+    } finally {
+      setUploading(false);
     }
   };
 
-  const mapping = Object.entries(view.readonly.kb_field_mapping);
+  const saveRemote = async () => {
+    const url = remoteUrl.trim();
+    if (!url && !src?.remote_url) { showToast("请填写远程地址", "error"); return; }
+    const updates: Record<string, unknown> = {
+      "topic_kb.source_type": "remote",
+      "topic_kb.remote_format": remoteFormat,
+      "topic_kb.remote_header": remoteHeader.trim(),
+      "topic_kb.default_dimension": defaultDim.trim(),
+      "topic_kb.type": "auto",
+    };
+    if (url) updates["topic_kb.remote_url"] = url;
+    try {
+      const ok = await withPending("cfg:kb", async () => {
+        await api.patchConfig(updates);
+        if (remoteToken.trim()) await api.kbRemoteToken(remoteToken.trim());
+        return api.kbSync();
+      });
+      if (!ok) return;
+      setRemoteToken("");
+      await afterChange(`✓ 已同步 ${ok.rows} 条选题`, ok.inspect);
+    } catch (e: any) {
+      showToast(`同步失败：${String(e?.message ?? e).replace(/^\d+\s*/, "").replace(/^\{"detail":"(.*)"\}$/, "$1")}`, "error");
+      onSaved?.();
+    }
+  };
+
+  const syncNow = async () => {
+    try {
+      const ok = await withPending("cfg:kb", () => api.kbSync());
+      if (ok) await afterChange(`✓ 已同步 ${ok.rows} 条选题`, ok.inspect);
+    } catch (e: any) {
+      showToast(`同步失败：${String(e?.message ?? e).replace(/^\d+\s*/, "")}`, "error");
+    }
+  };
+
+  const saveLocal = async () => {
+    if (!path.trim()) { showToast("请填写服务器上的文件路径", "error"); return; }
+    try {
+      const res = await withPending("cfg:kb", () => api.patchConfig({
+        "topic_kb.source_type": "local", "topic_kb.path": path.trim(), "topic_kb.type": "auto",
+        "topic_kb.default_dimension": defaultDim.trim(),
+      }));
+      if (res) await afterChange("✓ 已保存服务器路径");
+    } catch (e: any) {
+      showToast(`保存失败：${e?.message ?? e}`, "error");
+    }
+  };
+
+  const saveMapping = async () => {
+    const clean = Object.fromEntries(Object.entries(mapping).filter(([, v]) => v));
+    try {
+      const res = await withPending("cfg:kb", () => api.patchConfig({
+        "topic_kb.field_mapping": clean, "topic_kb.default_dimension": defaultDim.trim(),
+      }));
+      if (res) await afterChange("✓ 字段对应已保存");
+    } catch (e: any) {
+      showToast(`保存失败：${e?.message ?? e}`, "error");
+    }
+  };
+
+  const clearKb = async () => {
+    try {
+      const res = await withPending("cfg:kb", () => api.patchConfig({
+        "topic_kb.source_type": "local", "topic_kb.path": "",
+      }));
+      if (res) await afterChange("已断开选题库，只使用热点转入和手动添加的选题");
+    } catch (e: any) {
+      showToast(`操作失败：${e?.message ?? e}`, "error");
+    }
+  };
+
+  const cur = info?.source || src;
+  const curLabel = !cur?.configured ? "未接选题库"
+    : cur.source_type === "upload" ? "上传文件" : cur.source_type === "remote" ? "远程地址" : "服务器路径";
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
-      <Field label="KB 类型">
-        <select style={{ ...inputStyle, width: 200 }} value={kbType} onChange={(e) => setKbType(e.target.value)}>
-          {KB_TYPES.map((t) => <option key={t} value={t}>{t === "auto" ? "auto（按扩展名自动识别）" : t}</option>)}
-        </select>
-      </Field>
-      <Field label={pathRedacted ? "当前选题库路径（已脱敏，只读）" : "文件路径（相对项目根目录或绝对路径）"}>
-        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={path}
-          readOnly={pathRedacted}
-          onChange={(e) => setPath(e.target.value)} placeholder="kb/topics.csv" />
-      </Field>
-      <div className="note" style={{ fontSize: 11 }}>
-        选题库可以来自多个来源（本地上传 / 远程地址 / 服务器路径），统一在
-        <button type="button" className="btn sm" style={{ marginLeft: 6 }}
-          onClick={() => navigate("assets", "mapping")}>内容资产 → 字段映射检查</button>
-        管理，支持自动识别字段与预览。
+      {/* 当前状态 */}
+      <div className="note" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <span className={`tag ${!cur?.configured ? "gray" : info?.ok ? "green" : "orange"}`}>{curLabel}</span>
+        {cur?.configured && (
+          <span style={{ fontSize: 12 }}>
+            {cur.source_type === "remote" ? cur.remote_url : cur.display_path}
+            {cur.size_bytes != null && ` · ${fmtSize(cur.size_bytes)}`}
+            {cur.remote_meta?.synced_at && ` · 上次同步 ${cur.remote_meta.synced_at.replace("T", " ")}`}
+          </span>
+        )}
+        <span style={{ fontSize: 12, color: info?.ok ? "var(--green)" : "var(--muted)" }}>
+          {info?.ok ? `✓ ${info.stats?.total ?? 0} 条可用` : info?.message || ""}
+        </span>
+        {cur?.configured && <button className="btn sm ghost" onClick={clearKb} disabled={busy}>断开</button>}
       </div>
-      <Field label="数据表名（数据库专用）">
-        <input style={{ ...inputStyle, width: 240, fontFamily: "monospace" }} value={table}
-          onChange={(e) => setTable(e.target.value)} placeholder="topics" />
-      </Field>
-      <Field label="字段映射（通用字段=原始列名，逗号分隔；留空 = 自动识别）">
-        <input style={{ ...inputStyle, fontFamily: "monospace" }} value={mappingText}
-          onChange={(e) => setMappingText(e.target.value)}
-          placeholder="title=标题, dimension=分类" />
-      </Field>
-      <div style={{ fontSize: 11, color: "var(--subtle)" }}>
-        可用通用字段：{KB_MAPPING_FIELDS.join(" / ")}
+
+      {/* 来源切换 */}
+      <div className="seg" role="tablist" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {KB_SOURCE_TABS.map((t) => (
+          <button key={t.k} role="tab" aria-selected={mode === t.k}
+            className={`btn sm ${mode === t.k ? "primary" : ""}`} onClick={() => setMode(t.k)}>{t.l}</button>
+        ))}
       </div>
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 4 }}>
-        <SaveBar onSave={save} busy={busy} hint="路径改动会在下一次选题读取时生效，无需重启后端" />
-        <button className="btn sm" onClick={inspect}>⌕ 诊断选题库</button>
+      <div style={{ fontSize: 12, color: "var(--muted)", marginTop: -6 }}>
+        {KB_SOURCE_TABS.find((t) => t.k === mode)?.d}
       </div>
-      {inspectMsg && <div className="note">{inspectMsg}</div>}
+
+      {mode === "upload" && (
+        <div style={{ display: "grid", gap: 8 }}>
+          <label className="kb-drop">
+            <input type="file" accept=".csv,.xlsx,.json,.jsonl,.ndjson,.db,.sqlite,.sqlite3" hidden
+              disabled={uploading} onChange={(e) => { onUpload(e.target.files?.[0]); e.target.value = ""; }} />
+            <span>{uploading ? "上传中…" : "点击选择文件"}</span>
+            <span className="tiny">至少要有一列标题；有「维度/分类」列更好，没有会归到默认维度</span>
+          </label>
+        </div>
+      )}
+
+      {mode === "remote" && (
+        <div style={{ display: "grid", gap: 10 }}>
+          <Field label="远程地址">
+            <input style={inputStyle} value={remoteUrl} onChange={(e) => setRemoteUrl(e.target.value)}
+              placeholder={src?.remote_url ? `当前：${src.remote_url}（留空不修改）` : "https://… 表格导出链接 / JSON 接口 / RSS 订阅"} />
+          </Field>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Field label="格式">
+              <select style={{ ...inputStyle, width: 160 }} value={remoteFormat} onChange={(e) => setRemoteFormat(e.target.value)}>
+                <option value="auto">自动识别</option>
+                <option value="csv">CSV</option>
+                <option value="json">JSON</option>
+                <option value="jsonl">JSONL</option>
+                <option value="rss">RSS / Atom</option>
+              </select>
+            </Field>
+            <Field label="鉴权请求头（可选）">
+              <input style={{ ...inputStyle, width: 180 }} value={remoteHeader}
+                onChange={(e) => setRemoteHeader(e.target.value)} placeholder="如 Authorization" />
+            </Field>
+            <Field label={`鉴权值${src?.remote_token_set ? "（已设置，留空不修改）" : ""}`}>
+              <input style={{ ...inputStyle, width: 240 }} type="password" value={remoteToken}
+                onChange={(e) => setRemoteToken(e.target.value)} placeholder="如 Bearer xxx" autoComplete="off" />
+            </Field>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="btn primary sm" onClick={saveRemote} disabled={busy}>{busy ? "同步中…" : "保存并同步"}</button>
+            {src?.source_type === "remote" && <button className="btn sm" onClick={syncNow} disabled={busy}>立即同步</button>}
+          </div>
+        </div>
+      )}
+
+      {mode === "local" && (
+        <div style={{ display: "grid", gap: 8 }}>
+          <Field label="服务器上的文件路径">
+            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={path}
+              onChange={(e) => setPath(e.target.value)} placeholder="如 data/kb/topics.csv 或 /srv/iterwave/topics.db" />
+          </Field>
+          <div><button className="btn primary sm" onClick={saveLocal} disabled={busy}>{busy ? "保存中…" : "保存并检查"}</button></div>
+        </div>
+      )}
+
+      {/* 字段对应 + 预览 */}
+      {info?.configured && (info.columns?.length ?? 0) > 0 && (
+        <div style={{ display: "grid", gap: 10, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 650 }}>字段对应 <span className="tiny">已自动识别，不对再改</span></div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 10 }}>
+            {KB_MAPPING_FIELDS.map((f) => (
+              <Field key={f} label={KB_FIELD_LABELS[f]}>
+                <select style={inputStyle} value={info.columns.includes(mapping[f]) ? mapping[f] : ""}
+                  onChange={(e) => setMapping({ ...mapping, [f]: e.target.value })}>
+                  <option value="">（不使用）</option>
+                  {info.columns.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </Field>
+            ))}
+            <Field label="没有维度时归到">
+              <input style={inputStyle} value={defaultDim} onChange={(e) => setDefaultDim(e.target.value)} placeholder="综合" />
+            </Field>
+          </div>
+          <div><button className="btn sm" onClick={saveMapping} disabled={busy}>保存字段对应</button></div>
+          {(info.preview?.length ?? 0) > 0 && (
+            <div style={{ overflowX: "auto" }}>
+              <table className="table" style={{ fontSize: 12 }}>
+                <thead><tr>{["title", "dimension", "summary", "date"].map((f) => <th key={f}>{KB_FIELD_LABELS[f].replace("（必填）", "")}</th>)}</tr></thead>
+                <tbody>
+                  {info.preview!.map((r, i) => (
+                    <tr key={i}>{["title", "dimension", "summary", "date"].map((f) => (
+                      <td key={f} style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {r[f] || (f === "dimension" ? <span className="tiny">→ {defaultDim || "（跳过）"}</span> : "")}
+                      </td>
+                    ))}</tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+      <div className="tiny">也可以先不接选题库：在「热点雷达」把热点转入，或在「内容资产 → 选题池」手动添加。</div>
     </div>
   );
 }
@@ -225,7 +396,7 @@ export function KbEditor({ view, onSaved }: {
 // =====================================================================
 // 火山方舟两条计费通道：按量付费 /、Agent Plan 专属通道。
 // Agent Plan 只支持套餐内模型（见 https://www.volcengine.com/docs/82379/2366394），
-// 用不支持的模型会返回 UnsupportedModel 错误。
+// 用不支持的模型会返回 404 UnsupportedModel。
 const ARK_CHANNEL_BASE: Record<string, string> = {
   metered: "https://ark.cn-beijing.volces.com/api/v3",
   plan: "https://ark.cn-beijing.volces.com/api/plan/v3",
@@ -326,7 +497,7 @@ export function LlmEditor({ view, onSaved }: {
           <option value="custom">自定义端点</option>
         </select>
       </Field>
-      <Field label="主模型（Agent Plan 套餐只支持套餐内模型，选错会报模型不支持）">
+      <Field label="主模型（Agent Plan 套餐只能用套餐内的模型，选错将无法调用）">
         <input style={{ ...inputStyle, fontFamily: "monospace" }} value={model}
           list="ark-plan-models" onChange={(e) => setModel(e.target.value)}
           placeholder="doubao-seed-2.1-lite" />
@@ -362,7 +533,7 @@ export function LlmEditor({ view, onSaved }: {
       </div>
       <SaveBar onSave={saveModel} busy={busy} />
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-        <Field label={`API Key（写 config/.env，前端不回显；当前：${view.readonly.llm_has_api_key ? "已配置" : "未配置"}）`}>
+        <Field label={`API Key（保存后不再显示；当前：${view.readonly.llm_has_api_key ? "已配置" : "未配置"}）`}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input style={{ ...inputStyle, flex: "1 1 240px", fontFamily: "monospace" }} type="password"
               value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="粘贴 Key 后点「保存 Key」" />
@@ -432,7 +603,7 @@ export function PlatformToggles({ view, onSaved, loggedIn }: {
     <>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>平台</th><th style={{ width: 70 }}>启用</th><th>account_key（登录态文件）</th><th>base_url（可改）</th><th>登录态</th></tr></thead>
+          <thead><tr><th>平台</th><th style={{ width: 70 }}>启用</th><th>账号标识</th><th>平台后台地址</th><th>登录态</th></tr></thead>
           <tbody>
             {Object.entries(view.readonly.platforms).map(([k, v]) => (
               <tr key={k}>
@@ -463,7 +634,7 @@ export function PlatformToggles({ view, onSaved, loggedIn }: {
         </table>
       </div>
       <SaveBar onSave={save} busy={busy}
-        hint="至少保留 1 个平台；启用 ≠ 可发布，还需在「账号连接」扫码登录" />
+        hint="至少保留 1 个平台；启用 ≠ 可发布，还需在「账号与登录」扫码登录" />
     </>
   );
 }
@@ -749,77 +920,6 @@ export function TimeoutEditor({ view, onSaved }: {
 }
 
 // =====================================================================
-// 通知通道开关（企微/飞书 webhook URL 只从 .env 读，R23 不回传明文）
-// =====================================================================
-const NOTIFY_CHANNELS: [string, string][] = [
-  ["macos", "macOS 原生通知"],
-  ["wecom", "企业微信 webhook"],
-  ["feishu", "飞书 webhook"],
-];
-
-export function NotifyChannelsEditor({ view, onSaved }: {
-  view: SystemConfigView; onSaved?: () => void;
-}) {
-  const { showToast, withPending, isPending } = useApp();
-  const [enabled, setEnabled] = useState<Record<string, boolean>>(() => {
-    const init: Record<string, boolean> = {};
-    for (const [k] of NOTIFY_CHANNELS) init[k] = !!view.readonly.notification_channels[k]?.enabled;
-    return init;
-  });
-  const busy = isPending("cfg:notify_channels");
-
-  const save = async () => {
-    const updates: Record<string, unknown> = {};
-    for (const [k] of NOTIFY_CHANNELS) {
-      const cur = !!view.readonly.notification_channels[k]?.enabled;
-      if (enabled[k] !== cur) updates[`notifications.channels.${k}.enabled`] = enabled[k];
-    }
-    if (Object.keys(updates).length === 0) { showToast("通知通道没有改动", "info"); return; }
-    try {
-      const res = await withPending("cfg:notify_channels", () => api.patchConfig(updates));
-      if (!res) return;
-      showToast(`✓ 已更新 ${res.changed.length} 个通知通道`, "success");
-      onSaved?.();
-    } catch (e: any) {
-      showToast(`保存失败: ${e?.message ?? e}`, "error");
-    }
-  };
-
-  return (
-    <>
-      <div className="table-wrap">
-        <table>
-          <thead><tr><th>通道</th><th style={{ width: 70 }}>启用</th><th>.env 配置</th></tr></thead>
-          <tbody>
-            {NOTIFY_CHANNELS.map(([k, label]) => {
-              const ch = view.readonly.notification_channels[k];
-              return (
-                <tr key={k}>
-                  <td>{label}</td>
-                  <td>
-                    <input type="checkbox" checked={enabled[k] ?? false}
-                      onChange={(e) => setEnabled((prev) => ({ ...prev, [k]: e.target.checked }))} />
-                  </td>
-                  <td style={{ fontFamily: "monospace", fontSize: 11 }}>
-                    {k === "macos"
-                      ? <span className="tag gray">无需配置</span>
-                      : ch?.has_webhook_url
-                        ? <span className="tag green">{ch.webhook_url_env} 已设置</span>
-                        : <span className="tag orange">{ch?.webhook_url_env || "未配置"} 缺失（.env）</span>}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <SaveBar onSave={save} busy={busy}
-        hint="启用只是允许发送；Webhook 地址只保存在本机配置文件中" />
-    </>
-  );
-}
-
-// =====================================================================
 // 平台文案风格（platform_styles 表）：标题风格 / 正文结构 / 语气 / 话题标签
 // =====================================================================
 type StyleDraft = { title_style: string; body_style: string; tone: string; hashtags: string };
@@ -852,7 +952,7 @@ export function PlatformStyleEditor() {
 
   useEffect(() => { load(); }, []);
 
-  /** "效率, 成长" → ["效率","成长"]；标签统一去掉 # 前缀与重复项 */
+  /** "话题A, 话题B" → ["话题A","话题B"]；标签统一去掉 # 前缀与重复项 */
   const parseTags = (text: string): string[] => {
     const out: string[] = [];
     for (const raw of text.split(/[,，\n]/)) {
@@ -936,7 +1036,7 @@ export function PlatformStyleEditor() {
             </div>
             <div style={{ marginTop: 10 }}>
               <Field label="话题标签（逗号分隔，不带 #；留空 = 只用选题维度标签）">
-                <input style={inputStyle} value={d.hashtags} placeholder="如：效率提升, 职场成长, 实用清单"
+                <input style={inputStyle} value={d.hashtags} placeholder="如：领域词, 栏目名, 常用话题"
                   onChange={(e) => setDrafts((p) => ({ ...p, [s.platform]: { ...p[s.platform], hashtags: e.target.value } }))} />
               </Field>
             </div>
@@ -948,6 +1048,128 @@ export function PlatformStyleEditor() {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+
+// =====================================================================
+// 通知通道：企业微信 / 飞书 Webhook（地址只写服务器 .env，不回显）
+// =====================================================================
+const WEBHOOK_META = {
+  wecom: { l: "企业微信群机器人", ph: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…" },
+  feishu: { l: "飞书群机器人", ph: "https://open.feishu.cn/open-apis/bot/v2/hook/…" },
+} as const;
+
+export function NotifyChannelsEditor() {
+  const { showToast, withPending, isPending } = useApp();
+  const [st, setSt] = useState<NotifyChannels | null>(null);
+  const [urls, setUrls] = useState<{ wecom: string; feishu: string }>({ wecom: "", feishu: "" });
+  const load = async () => {
+    try { setSt(await api.notifyChannels()); } catch { /* 页面其他处会提示 */ }
+  };
+  useEffect(() => { load(); }, []);
+
+  const save = async (ch: "wecom" | "feishu", clear = false) => {
+    const url = clear ? "" : urls[ch].trim();
+    if (!clear && !url) { showToast("请粘贴 Webhook 地址", "error"); return; }
+    try {
+      const r = await withPending(`notify:${ch}`, () => api.setNotifyWebhook(ch, url));
+      if (!r) return;
+      setSt(r);
+      setUrls({ ...urls, [ch]: "" });
+      showToast(clear ? "已移除" : "✓ 已保存，可以点「发送测试」验证", "success");
+    } catch (e: any) {
+      showToast(String(e?.message ?? e).replace(/^\d+\s*/, "").replace(/^\{"detail":"(.*)"\}$/, "$1"), "error");
+    }
+  };
+  const test = async () => {
+    try {
+      const r = await withPending("notify:test", () => api.notifyTest());
+      if (!r) return;
+      const label: Record<string, string> = { macos: "本机通知", wecom: "企业微信", feishu: "飞书" };
+      const ok = Object.entries(r.results).filter(([, v]) => v === "ok").map(([k]) => label[k] || k);
+      showToast(ok.length ? `✓ 已发送到：${ok.join("、")}` : "没有可用的通知通道", ok.length ? "success" : "error");
+    } catch (e: any) {
+      showToast(`发送失败：${e?.message ?? e}`, "error");
+    }
+  };
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      {st && !st.any_ready && (
+        <div className="note" style={{ color: "var(--orange)" }}>
+          还没有可用的通知通道：草稿生成后你不会收到提醒，连续不发布会让自动闭环暂停。
+        </div>
+      )}
+      {(["wecom", "feishu"] as const).map((ch) => (
+        <div key={ch} style={{ display: "grid", gap: 6 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <b style={{ fontSize: 13 }}>{WEBHOOK_META[ch].l}</b>
+            {st?.[ch]?.configured
+              ? <span className="tag green">已配置</span>
+              : <span className="tag gray">未配置</span>}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input style={inputStyle} type="password" autoComplete="off" value={urls[ch]}
+              onChange={(e) => setUrls({ ...urls, [ch]: e.target.value })}
+              placeholder={st?.[ch]?.configured ? "已保存（不显示），粘贴新地址可替换" : WEBHOOK_META[ch].ph} />
+            <button className="btn sm primary" disabled={isPending(`notify:${ch}`)} onClick={() => save(ch)}>保存</button>
+            {st?.[ch]?.configured && <button className="btn sm ghost" onClick={() => save(ch, true)}>移除</button>}
+          </div>
+        </div>
+      ))}
+      {st?.macos?.available && (
+        <div className="tiny">当前服务运行在 macOS 上，本机系统通知{st.macos.enabled ? "已开启" : "未开启"}。</div>
+      )}
+      <div><button className="btn sm" onClick={test} disabled={isPending("notify:test")}>发送测试通知</button></div>
+    </div>
+  );
+}
+
+// =====================================================================
+// 访问口令（修改）
+// =====================================================================
+export function AccessTokenEditor() {
+  const { showToast } = useApp();
+  const [st, setSt] = useState<{ required: boolean; authed: boolean } | null>(null);
+  const [oldT, setOldT] = useState("");
+  const [newT, setNewT] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api.authStatus().then(setSt).catch(() => {}); }, []);
+  const save = async () => {
+    if (newT.length < 8) { showToast("新口令至少 8 位", "error"); return; }
+    setBusy(true);
+    try {
+      await api.setupAuth(newT, oldT || undefined);
+      showToast("✓ 访问口令已更新", "success");
+      setOldT(""); setNewT("");
+      setSt(await api.authStatus());
+    } catch (e: any) {
+      showToast(String(e?.message ?? e).replace(/^\d+\s*/, "").replace(/^\{"detail":"(.*)"\}$/, "$1"), "error");
+    } finally { setBusy(false); }
+  };
+  const logout = async () => {
+    await api.authLogout().catch(() => {});
+    window.location.reload();
+  };
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      <div>
+        {st?.required ? <span className="tag green">已开启</span> : <span className="tag red">未设置，任何人都能访问</span>}
+      </div>
+      {st?.required && (
+        <Field label="当前口令（已登录可不填）">
+          <input style={inputStyle} type="password" value={oldT} onChange={(e) => setOldT(e.target.value)} autoComplete="current-password" />
+        </Field>
+      )}
+      <Field label={st?.required ? "新口令" : "设置口令（至少 8 位）"}>
+        <input style={inputStyle} type="password" value={newT} onChange={(e) => setNewT(e.target.value)} autoComplete="new-password" />
+      </Field>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button className="btn sm primary" onClick={save} disabled={busy}>{busy ? "保存中…" : "保存"}</button>
+        {st?.required && <button className="btn sm ghost" onClick={logout}>退出登录</button>}
+      </div>
     </div>
   );
 }

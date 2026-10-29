@@ -108,7 +108,7 @@ def test_notify_test_reports_channels(client):
     assert r.status_code == 200
     results = r.json()["results"]
     assert set(results) == {"macos", "wecom", "feishu"}
-    assert results["macos"] in {"ok", "failed", "disabled"}
+    assert results["macos"] in {"ok", "failed", "disabled", "unavailable"}
 
 
 def test_notify_test_503_when_notifier_missing(client):

@@ -16,8 +16,7 @@
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
     "allowSyntheticDefaultImports": true,
-    "esModuleInterop": true,
-    "types": ["vite/client"]
+    "esModuleInterop": true
   },
   "include": ["src"]
 }

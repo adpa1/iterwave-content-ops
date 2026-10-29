@@ -122,10 +122,10 @@ def test_orchestration_validation(conn):
     assert o.card_before_gate and not o.on("save_draft")
 
 
-def test_diagnostics_has_11_items(cfg, conn, kb):
+def test_diagnostics_has_8_items(cfg, conn, kb):
     d = orch.diagnose(cfg, conn)
     assert [i["no"] for i in d["items"]] == list(range(1, 12))
-    assert d["items"][0]["status"] in ("pass", "warn", "block")
+    assert d["items"][0]["status"] == "pass"
     assert d["overall"] in ("pass", "warn", "block")
 
 
@@ -151,7 +151,7 @@ def test_executor_follows_plan(cfg, conn, seed, kb, monkeypatch):
         getattr(cfg.platforms, p).enabled = True
     cfg.llm.enabled = False
     monkeypatch.setattr("src.core.round_executor.make_card",
-                        lambda title, dim, out, platform, footer="": out / f"{abs(hash(title))}.png")
+                        lambda title, dim, out, platform: out / f"{abs(hash(title))}.png")
     pvm = PlanVersionManager(cfg, conn)
     pvm.save_plan(pvm.build_plan(
         topic_count_per_platform=3, platforms=["xhs", "douyin"],
@@ -184,7 +184,7 @@ def test_excluded_topic_not_produced(cfg, conn, seed, kb, monkeypatch):
     cfg.platforms.xhs.enabled = True
     cfg.llm.enabled = False
     monkeypatch.setattr("src.core.round_executor.make_card",
-                        lambda title, dim, out, platform, footer="": out / "x.png")
+                        lambda title, dim, out, platform: out / "x.png")
     all_ids = [i.id for i in load_pool(cfg, conn)[0]]
     exclude_topics(cfg, conn, all_ids[:-1])
     steps = [dict(s, enabled=s["id"] not in ("save_draft", "auto_schedule", "await_publish"))

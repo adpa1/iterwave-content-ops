@@ -62,8 +62,10 @@ def new_context_for_platform(platform: Platform):
 
     @asynccontextmanager
     async def _ctx():
+        import os
+        _headed = os.environ.get("ITERWAVE_BROWSER_HEADED", "0") == "1"
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False)
+            browser = await p.chromium.launch(headless=not _headed)
             ctx = await get_or_create_context(browser, platform)
             try:
                 yield ctx

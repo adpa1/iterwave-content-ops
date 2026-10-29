@@ -55,7 +55,7 @@ def test_refresh_endpoint_runs_in_background(client, monkeypatch):
 
 
 def test_keyword_mode_never_scores_unmatched_as_zero(cfg, conn):
-    _insert(conn, "a", "个人成长 新方法分享")
+    _insert(conn, "a", "AI教育 新工具上线")
     _insert(conn, "b", "某地天气晴")
     m = HotTopicMatcher(cfg, conn, use_default_llm=False)
     rep = m.run()
@@ -68,14 +68,14 @@ def test_keyword_mode_never_scores_unmatched_as_zero(cfg, conn):
 
 
 def test_llm_mode_scores_and_flags_forbidden(cfg, conn):
-    _insert(conn, "a", "个人成长 复盘方法分享")
+    _insert(conn, "a", "学生用AI写作业引发讨论")
     _insert(conn, "b", "明星八卦")
     _insert(conn, "c", "国际新闻")
 
     def fake_llm(system, user):
-        assert "账号定位关键词" in user and "个人成长 复盘方法分享" in user
+        assert "账号定位关键词" in user and "学生用AI写作业" in user
         return json.dumps({"items": [
-            {"id": "a", "score": 86, "dimension": "", "angle": "复盘方法", "reason": "成长+方法", "forbidden": False},
+            {"id": "a", "score": 86, "dimension": "", "angle": "AI 辅助学习边界", "reason": "教育+AI", "forbidden": False},
             {"id": "b", "score": 70, "dimension": "", "angle": "", "reason": "", "forbidden": True},
             {"id": "c", "score": 12, "dimension": "", "angle": "", "reason": "无关", "forbidden": False},
         ]}), {"prompt_tokens": 10, "completion_tokens": 5}
@@ -103,8 +103,8 @@ def test_llm_batch_failure_keeps_pending(cfg, conn):
 
 def test_overview_shows_latest_batch_and_match_fields(cfg, conn, monkeypatch):
     monkeypatch.setattr("src.core.hot_topic_matcher.default_llm_fn", lambda cfg: None)
-    _insert(conn, "old", "个人成长 旧闻", batch="2026-10-27T10:00:00")
-    _insert(conn, "new", "个人成长 新闻", batch="2026-10-28T10:00:00")
+    _insert(conn, "old", "AI教育 旧闻", batch="2026-10-27T10:00:00")
+    _insert(conn, "new", "AI教育 新闻", batch="2026-10-28T10:00:00")
     HotTopicMatcher(cfg, conn, use_default_llm=False).run()
     data = HotTopicCollector(cfg, conn).overview()
     ids = [i["id"] for i in data["items"]]

@@ -428,20 +428,6 @@ class RoundExecutor:
     # ③ ④ ⑤ ⑥ 内容产出（G2 串行拦截）
     # ------------------------------------------------------------------
 
-    def _card_footer(self, platform: Platform) -> str:
-        """卡片页脚跟随账号画像：优先本平台账号名 + 定位，其次全局定位。
-
-        留空则 make_card 不画页脚（不写死任何垂类文案）。
-        """
-        goal = self.cfg.ultimate_goal
-        persona = goal.platform_personas.get(platform.value)
-        name = (persona.account_name if persona else "").strip()
-        positioning = (
-            (persona.positioning if persona else "").strip() or goal.positioning.strip()
-        )
-        text = " · ".join(part for part in (name, positioning) if part)
-        return text[:30]
-
     async def _produce_contents(
         self, round_id: int, scored: list, platforms: list[Platform], report: dict,
     ) -> list[dict]:
@@ -485,7 +471,6 @@ class RoundExecutor:
                         # 编排把出图排在质量门之前：每个候选版本都先出图再质检
                         image_path = await asyncio.to_thread(
                             make_card, title, topic.dimension, output_dir, platform,
-                            self._card_footer(platform),
                         )
 
                     try:
@@ -547,7 +532,6 @@ class RoundExecutor:
                     if make_cards:
                         image_path = await asyncio.to_thread(
                             make_card, title, topic.dimension, output_dir, platform,
-                            self._card_footer(platform),
                         )
 
                 # ⑥ 写 contents

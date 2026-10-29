@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": "default",
+      "kind": "server",
+      "name": "默认选题库",
+      "enabled": true,
+      "path": "/Users/longyi/project/redbook-easel/data/kb/topics.csv",
+      "format": "auto",
+      "field_mapping": {
+        "source": "source",
+        "title": "title",
+        "summary": "summary",
+        "link": "link",
+        "date": "date",
+        "dimension": "dimension"
+      },
+      "table_name": "items",
+      "headers": {},
+      "created_at": "2026-10-29T09:56:45",
+      "last_sync_at": null,
+      "last_error": null,
+      "rows": null
+    }
+  ]
+}

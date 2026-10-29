@@ -775,7 +775,15 @@ class SchedulerEngine:
         # 1. 统计当前 topic_index 数量
         before = self.conn.execute("SELECT COUNT(*) FROM topic_index").fetchone()[0]
 
-        # 2. 读取选题库：优先人工注入的 reader（测试 / 定制），否则读全部来源
+        # 1.5 远程选题库：先同步到本地缓存
+        if getattr(self.cfg.topic_kb, "source_type", "local") == "remote" and self.cfg.topic_kb.remote_url:
+            try:
+                from ..kb_sources import sync_remote
+                await asyncio.to_thread(sync_remote, self.cfg)
+            except Exception as exc:  # noqa: BLE001 — 同步失败继续用上次缓存
+                logger.warning("[APS] kb_scan 远程同步失败，继续使用上次缓存: %s", exc)
+
+        # 2. 如果有 kb_reader，读题库；否则直接走 scoring 读取（scoring 会自动调 kb_reader）
         if self.kb_reader is not None:
             try:
                 items, _ = self.kb_reader.read()
@@ -783,12 +791,7 @@ class SchedulerEngine:
                 logger.warning("[APS] kb_scan 读题库异常: %s", exc)
                 return
         else:
-            try:
-                from ..kb_sources import read_all
-                items, _ = read_all(self.cfg)
-            except Exception as exc:
-                logger.warning("[APS] kb_scan 读题库异常: %s", exc)
-                return
+            return  # 没注入 kb_reader 就跳过
 
         # 3. 插入不存在的新选题
         inserted = 0
@@ -815,15 +818,6 @@ class SchedulerEngine:
         logger.info(
             "📚 [APS] kb_scan — 选题库 %d → %d，新增 %d 条", before, after, inserted,
         )
-
-    async def _job_kb_sync(self) -> None:
-        """每天 7:00 同步远程选题库（CSV / JSON / RSS），再补一次增量扫描。"""
-        from ..kb_sources import sync_all_remote
-
-        results = await asyncio.to_thread(sync_all_remote, self.cfg)
-        failed = [k for k, v in results.items() if v != "ok"]
-        logger.info("📥 [APS] kb_sync — 远程来源 %d 个，失败 %d 个", len(results), len(failed))
-        await self._job_kb_scan()
 
     async def _job_data_retention_cleanup(self) -> None:
         """R23 数据保留清理（每天 6:00）。
@@ -1191,11 +1185,6 @@ async def _run_kb_scan() -> None:
         await _ACTIVE_ENGINE._job_kb_scan()
 
 
-async def _run_kb_sync() -> None:
-    if _ACTIVE_ENGINE is not None:
-        await _ACTIVE_ENGINE._job_kb_sync()
-
-
 async def _run_data_retention_cleanup() -> None:
     if _ACTIVE_ENGINE is not None:
         await _ACTIVE_ENGINE._job_data_retention_cleanup()
@@ -1223,7 +1212,6 @@ JOB_RUNNERS = {
     "comment_polling": _run_comment_polling,
     "cb_recovery": _run_cb_recovery,
     "kb_scan": _run_kb_scan,
-    "kb_sync": _run_kb_sync,
     "data_retention_cleanup": _run_data_retention_cleanup,
     "round_timeout_sweeper": _run_round_timeout_sweeper,
     "round_review": _run_round_review,
