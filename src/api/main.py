@@ -1592,7 +1592,7 @@ def _register_routes(app: FastAPI) -> None:
             outcome = guard.check_content(row["title"], row["body"], tags, platform=plat)
         except Exception as exc:  # noqa: BLE001 — R2 红线
             logger.exception("G2 重检异常 content=%s", content_id)
-            raise HTTPException(500, f"检查器异常，不能默认通过：{exc}") from exc
+            raise HTTPException(500, f"检查器异常，不能默认通过：{redact(str(exc))}") from exc
 
         conn.execute(
             "UPDATE contents SET guard_outcome = ?, guard_reason = ? WHERE id = ?",
@@ -2380,7 +2380,7 @@ def _register_routes(app: FastAPI) -> None:
                     rescheduled.append(sched.apply_job_config(job_id))
                 except Exception as e:  # noqa: BLE001
                     logger.exception("重排定时任务失败 %s", job_id)
-                    rescheduled.append({"job_id": job_id, "error": str(e)})
+                    rescheduled.append({"job_id": job_id, "error": redact(str(e))})
         result["rescheduled"] = rescheduled
         return {**result, "config": current_config_view(g2["cfg"], g2["conn"])["editable"]}
 
