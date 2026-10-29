@@ -9,7 +9,7 @@ from pathlib import Path
 from src.adapters.base import FetchStatus, MetricsSnapshot, Platform
 from src.core.goal_progress import GoalProgressUpdater
 from src.core.scheduler import SchedulerEngine
-from src.core.state_machine import DraftStateMachine
+from src.core.state_machine import DraftStateMachine, RoundStateMachine
 
 
 class _SeenAdapter:
@@ -26,7 +26,7 @@ class _SeenAdapter:
 
 def _engine(cfg, conn, adapters):
     eng = SchedulerEngine(cfg, Path(cfg.paths.db_file))
-    eng.wire(conn=conn, adapters=adapters, sm_draft=DraftStateMachine(conn))
+    eng.wire(conn=conn, adapters=adapters, sm_draft=DraftStateMachine(conn), sm_round=RoundStateMachine(conn))
     return eng
 
 
@@ -39,6 +39,71 @@ def test_publish_polling_sql_and_schedules_fetch(cfg, conn, seed, monkeypatch):
     asyncio.run(eng._job_publish_polling())
     assert conn.execute("SELECT status FROM drafts WHERE id = ?", (d,)).fetchone()[0] == "user_published"
     assert any(j.id == f"data_fetch_{d}_a1" for j in eng.scheduler.get_jobs())
+
+
+def test_round_review_waits_until_remaining_saved_drafts_expire(cfg, conn, seed):
+    now = datetime.now()
+    round_id = seed.round(status="collecting_metrics")
+    conn.execute(
+        "UPDATE spiral_rounds SET collecting_metrics_started_at = ? WHERE id = ?",
+        ((now - timedelta(hours=100)).isoformat(), round_id),
+    )
+    # 至少一篇已成功发布且完成采集，正常情况下轮次具备复盘条件。
+    seed.draft(
+        round_id,
+        platform="xhs",
+        draft_status="published",
+        saved_at=(now - timedelta(hours=140)).isoformat(),
+        fetch_status="success",
+        views=100,
+        likes=5,
+        collects=2,
+        comments=1,
+        topic_id="published-work",
+    )
+    # 但另一篇平台草稿尚未发布，单篇 120h 超时仍未到，不能先结束轮次。
+    pending_id = seed.draft(
+        round_id,
+        platform="douyin",
+        draft_status="draft_saved",
+        saved_at=(now - timedelta(hours=80)).isoformat(),
+        fetch_status=None,
+        topic_id="still-publishable",
+    )
+
+    eng = _engine(cfg, conn, {})
+    asyncio.run(eng._job_round_review())
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "collecting_metrics"
+
+    # 即使轮次的 72h collecting_metrics 阶段超时，也优先等待未到期的单篇发布确认。
+    asyncio.run(eng._job_round_timeout_sweeper())
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "collecting_metrics"
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (pending_id,)
+    ).fetchone()[0] == "draft_saved"
+
+    # 单篇 72h + 48h 超时到期后，系统将其标为 expired，轮次才可进入复盘并部分收口。
+    conn.execute(
+        "UPDATE drafts SET saved_at = ? WHERE id = ?",
+        ((now - timedelta(hours=121)).isoformat(), pending_id),
+    )
+    conn.commit()
+    asyncio.run(eng._job_round_timeout_sweeper())
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (pending_id,)
+    ).fetchone()[0] == "expired"
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "analyzing"
+
+    asyncio.run(eng._job_round_review())
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "partial_completed"
 
 
 def test_manual_confirm_path_schedules_fetch(cfg, conn, seed):
