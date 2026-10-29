@@ -50,7 +50,7 @@ IterWave 聚焦于**图文运营**场景，与通用 AI Agent 内容生成工具
 
 ## 最近更新（2026-10-29）
 
-- **访问保护** — 设置访问口令后页面需登录、`/api/*` 统一校验；未设置时顶部常驻警告。脚本可用 `X-Access-Token` / `Authorization: Bearer` 调用，登录失败按 IP 限速
+- **访问保护** — 首次使用必须先设置访问口令，设置前业务 API 返回 setup_required；公网/反向代理首次设置必须配置服务器环境变量 ITERWAVE_BOOTSTRAP_TOKEN。本机免引导设置需显式开启 ITERWAVE_ALLOW_LOCAL_BOOTSTRAP=1。浏览器使用 HttpOnly Cookie，脚本可用 Authorization: Bearer 调用；登录与脚本令牌失败均按 IP 限速
 - **选题库三种来源** — 页面上传（CSV / Excel / JSON / JSONL / SQLite，≤20MB）、远程地址（CSV / JSON / RSS，可带鉴权，每天自动同步）、服务器路径（相对或绝对）。字段自动识别 + 下拉映射 + 预览；不接选题库也能用热点转入和手动添加
 - **部署可移植** — Linux / Windows 中文字体候选 + `ITERWAVE_FONT` 覆盖；企业微信 / 飞书 Webhook 可在页面填写（只进 `.env`）；前端支持 `VITE_BASE` 子路径构建
 - **行业模板** — 通用 / 知识科普 / 生活方式 / 财经 / Web3 / 健康，一键填入画像、维度与合规红线，随时可改
@@ -106,8 +106,8 @@ IterWave 不绑定任何电脑或目录，Linux / macOS / Windows 都可以部�
 1. **中文字体**（出图必需）：Debian/Ubuntu `sudo apt install fonts-noto-cjk`，CentOS `sudo yum install google-noto-sans-cjk-ttc-fonts`；
    或在 `config/.env` 写 `ITERWAVE_FONT=/path/to/font.ttc`。启动后「新手引导 → 检查清单」会显示用的是哪个字体。
 2. **子路径部署**（如 `https://域名/iterwave/`）：`cd web && VITE_BASE=/iterwave/ npm run build`，反向代理把 `/iterwave/` 转发到后端根路径。
-3. **访问口令**：公网部署后第一件事，在页面顶部的提示条或「系统设置 → 通知与访问」设置口令（保存在 `config/.env` 的 `ITERWAVE_ACCESS_TOKEN`）。
-   忘记口令：改 `.env` 后重启服务。脚本调用接口可带 `Authorization: Bearer <口令>`。
+3. **访问口令**：首次打开先设置口令；设置前业务 API 关闭。公网域名 / 反向代理部署前，先在服务进程环境中设置强随机值 ITERWAVE_BOOTSTRAP_TOKEN，再在首次安全设置页输入引导口令与新访问口令。直接本机开发如需免引导设置，可显式设置 ITERWAVE_ALLOW_LOCAL_BOOTSTRAP=1（不要在公网反向代理部署中启用）。
+   访问口令保存在 config/.env 的 ITERWAVE_ACCESS_TOKEN。忘记口令：在服务器端修改 .env 后重启服务。脚本调用接口可带 Authorization: Bearer <口令>。
 4. **选题库**：「系统设置 → 选题库」三选一 —— 上传文件（CSV / Excel / JSON / JSONL / SQLite）、远程地址（CSV / JSON / RSS，每天自动同步）、
    服务器路径（相对项目目录或绝对路径）。也可以不接，只用热点转入和手动添加的选题。
 5. **通知**：在「系统设置 → 通知与访问」粘贴企业微信 / 飞书群机器人 Webhook；macOS 本机通知只在 macOS 上可用。
@@ -140,6 +140,11 @@ IterWave 的部分平台适配器代码基于 [Easel](https://github.com/kaichen
 详见 `src/vendor/easel/LICENSE` 和 `src/vendor/easel/NOTICE`。
 
 ## 安全边界
+
+- 用户可配置的远程选题库、热点源和 Webhook 会校验目标地址；远程数据源限制响应体积并逐跳检查重定向。公网部署仍应使用防火墙限制服务端出站访问，避免 DNS rebinding 等网络层绕过。
+- 上传的 Excel 文件会限制 ZIP 展开体积与条目数；选题源、配置覆盖、数据库备份及平台登录态文件会尽可能使用最小文件权限。
+- CI 会在 pull request 上运行 Python 测试与前端生产构建；如果检查尚未结束或失败，不应将分支视为已验证。
+
 
 - API Key、Cookie、Token 只存本地 `.env` / 登录态文件，已 `chmod 600`
 - 日志中的敏感信息脱敏（保留前 4 位 + `***`）
