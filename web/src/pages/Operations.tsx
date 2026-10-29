@@ -430,7 +430,11 @@ function PublishPane() {
   const fetchDrafts = async () => {
     try {
       const all = await api.drafts();
-      setDrafts(all.filter((d) => d.status === "draft_saved" || d.status === "user_published"));
+      // draft_pending 代表仅保存在本地的干跑/待存内容；用户可以复制到平台手动发布后在这里登记。
+      setDrafts(all.filter((d) =>
+        d.status === "draft_pending" || d.status === "draft_saved" ||
+        d.status === "user_published" || d.status === "data_fetching" || d.status === "published"
+      ));
       setError(null);
     } catch (e: any) {
       setError(e?.message ?? "加载草稿失败");
@@ -487,7 +491,7 @@ function PublishPane() {
         </div>
       )}
       {drafts.length === 0 ? (
-        <EmptyHint next="到「内容生产 → 生产线」运行一轮并勾选「执行存草稿」，返回这里确认发布">暂无待确认发布的草稿</EmptyHint>
+        <EmptyHint next="可勾选「执行存草稿」后在此确认；干跑内容可复制到平台手动发布，再回来登记">暂无待确认发布的内容</EmptyHint>
       ) : (
         <div className="list">
           {drafts.map((d) => (
@@ -496,8 +500,16 @@ function PublishPane() {
               <div className="task-main">
                 <div className="task-title">{PLATFORM_NAME[d.platform as Platform]} · {d.title ?? d.id}</div>
                 <div className="task-desc">
-                  状态：<strong>{d.status}</strong> · {d.saved_at ? `存草稿 ${new Date(d.saved_at).toLocaleString("zh-CN")}` : ""}
+                  状态：<strong>{d.status}</strong>
+                  {d.status === "draft_pending"
+                    ? " · 仅保存在 IterWave，本内容尚未存入平台"
+                    : d.saved_at ? ` · 存草稿 ${new Date(d.saved_at).toLocaleString("zh-CN")}` : ""}
                 </div>
+                {d.status === "draft_pending" && (
+                  <div className="note" style={{ marginTop: 6 }}>
+                    这是干跑/待存内容。请在「内容生产 → 内容编辑与审核」复制文案，手动发布到平台后再回来登记；系统不会自动发布。
+                  </div>
+                )}
                 {d.status === "draft_saved" && d.guard_confirmation_allowed !== true && (
                   <div className="note" style={{ marginTop: 6, color: "var(--orange)" }}>
                     当前质检状态：{d.guard_outcome ?? "未检查"}{d.guard_reason ? ` · ${d.guard_reason}` : ""}。
@@ -506,12 +518,12 @@ function PublishPane() {
                 )}
               </div>
               <div className="task-actions" style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                {d.status === "draft_saved" && (
+                {(d.status === "draft_pending" || d.status === "draft_saved") && (
                   <>
                     <input
                       value={noteUrls[d.id] ?? d.platform_note_url ?? ""}
                       onChange={(e) => setNoteUrls((prev) => ({ ...prev, [d.id]: e.target.value }))}
-                      placeholder="已发布笔记链接（可选，填了才自动拉评论）"
+                      placeholder="已发布笔记链接（可选；用于定位采集）"
                       style={{ width: 240, fontSize: 12 }}
                       disabled={pending !== null}
                     />
@@ -519,7 +531,7 @@ function PublishPane() {
                       <input
                         value={qualityOverrideReasons[d.id] ?? ""}
                         onChange={(e) => setQualityOverrideReasons((prev) => ({ ...prev, [d.id]: e.target.value }))}
-                        placeholder="已发布但质检未过？填写例外原因（必填）"
+                        placeholder="若已发布但质检未过，填写例外原因（必填）"
                         style={{ width: 260, fontSize: 12 }}
                         disabled={pending !== null}
                         aria-label={`${d.title ?? d.id} 的发布质检例外原因`}
@@ -533,10 +545,13 @@ function PublishPane() {
                       {pending === d.id
                         ? "提交中…"
                         : d.guard_confirmation_allowed === true
-                          ? "✓ 我已发布"
+                          ? d.status === "draft_pending" ? "✓ 我已手动发布" : "✓ 我已发布"
                           : "⚠ 已发布，仍登记"}
                     </button>
                   </>
+                )}
+                {(d.status === "user_published" || d.status === "data_fetching" || d.status === "published") && (
+                  <span className="tag green">已进入采集/复盘流程</span>
                 )}
               </div>
             </div>
