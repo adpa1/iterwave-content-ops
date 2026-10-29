@@ -245,6 +245,36 @@ export default function Production() {
     }
   };
 
+  const handleSavePendingDrafts = async () => {
+    if (!currentRoundId || savingPending || running) return;
+    setSavingPending(true);
+    setRunError(null);
+    setReport(null);
+    try {
+      const result = await api.savePendingDrafts(currentRoundId);
+      if (result.final_status === "awaiting_publish") {
+        showToast(
+          `✓ 已恢复存草稿：成功 ${result.drafts_saved} 篇，失败 ${result.drafts_failed} 篇`,
+          result.drafts_failed > 0 ? "info" : "success",
+        );
+      } else if (result.final_status === "failed") {
+        showToast("✕ 恢复存草稿失败，请查看各篇草稿错误原因", "error");
+      } else {
+        showToast(
+          `已尝试 ${result.drafts_attempted} 篇：成功 ${result.drafts_saved}，失败 ${result.drafts_failed}，仍待存 ${result.pending_drafts}`,
+          "info",
+        );
+      }
+      await refresh();
+      await loadRoundData(currentRoundId);
+    } catch (e: any) {
+      setRunError(e?.message ?? "恢复待存草稿失败");
+      showToast(`恢复存草稿失败：${e?.message ?? "未知错误"}`, "error");
+    } finally {
+      setSavingPending(false);
+    }
+  };
+
   const handleTransition = async (target: string) => {
     if (!currentRoundId) return;
     try {
