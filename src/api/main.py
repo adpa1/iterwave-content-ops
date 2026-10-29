@@ -532,10 +532,24 @@ class PlatformStyleUpdate(BaseModel):
 
 
 class PublishConfirmRequest(BaseModel):
-    """发布确认补充：笔记链接；质检未通过但已真实发布时可提供例外登记原因。"""
+    """发布确认补充：笔记链接；质检/人工审核/平台版本异常均需单独说明例外原因。"""
 
     note_url: Optional[str] = Field(None, max_length=500)
     quality_override_reason: Optional[str] = Field(None, max_length=500)
+    platform_sync_override_reason: Optional[str] = Field(None, max_length=500)
+
+
+class PlatformSyncConfirmRequest(BaseModel):
+    """用户确认已在平台端手动同步为当前本地文案版本。"""
+
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("平台版本同步说明不能为空")
+        return value
 
 
 class TransitionRequest(BaseModel):
@@ -1282,8 +1296,8 @@ def _register_routes(app: FastAPI) -> None:
     ):
         conn = _g()["conn"]
         sql = (
-            "SELECT d.*, c.title, c.round_id, c.topic_id, c.platform as cfg_platform, "
-            "c.guard_outcome AS guard_outcome, c.guard_reason AS guard_reason, "
+            "SELECT d.*, c.title, c.body, c.tags, c.image_paths, c.round_id, c.topic_id, "
+            "c.platform as cfg_platform, c.guard_outcome AS guard_outcome, c.guard_reason AS guard_reason, "
             "c.review_rejected AS review_rejected, "
             "c.review_rejection_reason AS review_rejection_reason "
             "FROM drafts d LEFT JOIN contents c ON d.content_id = c.id"
@@ -1303,6 +1317,7 @@ def _register_routes(app: FastAPI) -> None:
         from src.core.content_pipeline import _llm_available
         llm_available = _llm_available(_g()["cfg"])
         items = []
+        from src.core.content_version import content_version_hash, parse_json_list
         for item in rows:
             result = dict(item)
             outcome = result.get("guard_outcome")
@@ -1311,6 +1326,23 @@ def _register_routes(app: FastAPI) -> None:
                 not result["review_rejected"]
                 and (outcome == "pass" or (outcome == "warn" and not llm_available))
             )
+            if result.get("status") == "draft_pending":
+                result["platform_content_sync"] = "local_only"
+            elif result.get("status") == "draft_saved":
+                tags = parse_json_list(result.get("tags"))
+                stored_images = parse_json_list(result.get("image_paths"))
+                payload_images = [str(stored_images[0])] if stored_images and stored_images[0] else []
+                current_hash = content_version_hash(
+                    result.get("title"), result.get("body"), tags, payload_images,
+                )
+                saved_hash = result.get("saved_content_hash")
+                result["platform_content_sync"] = (
+                    "unknown" if not saved_hash
+                    else "matched" if saved_hash == current_hash
+                    else "stale"
+                )
+            else:
+                result["platform_content_sync"] = None
             items.append(result)
         return items
 
@@ -1323,8 +1355,9 @@ def _register_routes(app: FastAPI) -> None:
         """
         conn = _g()["conn"]
         row = conn.execute(
-            "SELECT d.platform, d.status, d.error_msg, c.round_id, c.guard_outcome, c.guard_reason, "
-            "c.review_rejected, c.review_rejection_reason "
+            "SELECT d.platform, d.status, d.error_msg, d.saved_content_hash, "
+            "c.id AS content_id, c.round_id, c.title, c.body, c.tags, c.image_paths, "
+            "c.guard_outcome, c.guard_reason, c.review_rejected, c.review_rejection_reason "
             "FROM drafts d JOIN contents c ON c.id = d.content_id WHERE d.id = ?",
             (draft_id,),
         ).fetchone()
@@ -1389,6 +1422,38 @@ def _register_routes(app: FastAPI) -> None:
                 "需填写例外原因才能登记真实发布与数据采集",
             )
 
+        # 已存平台草稿的真实载荷必须与当前本地版本一致；旧记录无指纹按 unknown 处理。
+        # 若用户尚未发布，应先在平台同步草稿；若已发布旧版，则需要单独说明例外原因。
+        platform_sync_state = None
+        platform_sync_override_reason = (
+            (req.platform_sync_override_reason or "").strip() if req else ""
+        )
+        current_hash = None
+        if row["status"] == "draft_saved":
+            from src.core.content_version import content_version_hash, parse_json_list
+            stored_images = parse_json_list(row["image_paths"])
+            payload_images = [str(stored_images[0])] if stored_images and stored_images[0] else []
+            current_hash = content_version_hash(
+                row["title"], row["body"], parse_json_list(row["tags"]), payload_images,
+            )
+            saved_hash = row["saved_content_hash"]
+            platform_sync_state = (
+                "unknown" if not saved_hash
+                else "matched" if saved_hash == current_hash
+                else "stale"
+            )
+            if platform_sync_state != "matched" and not platform_sync_override_reason:
+                sync_desc = (
+                    "历史平台草稿没有保存版本指纹，无法证明平台稿与本地稿一致"
+                    if platform_sync_state == "unknown"
+                    else "本地文案已不同于上次存入平台的版本"
+                )
+                raise HTTPException(
+                    409,
+                    f"{sync_desc}。尚未发布时，请先在平台端更新草稿并点击「确认平台版本已同步」；"
+                    "如果实际发布的就是平台旧版本，请填写平台版本例外原因后再登记",
+                )
+
         sched = _g().get("scheduler")
         if sched is not None and getattr(sched, "conn", None) is not None and getattr(sched, "sm_draft", None) is not None:
             # 统一入口：改状态 + 回写链接 + 注册发布后数据采集 + 推进轮次（与轮询识别完全一致）
@@ -1439,16 +1504,119 @@ def _register_routes(app: FastAPI) -> None:
             except Exception:  # noqa: BLE001 — 采集链路优先，审计写失败留日志
                 logger.exception("发布质检例外审计写入失败 draft=%s", draft_id)
 
+        platform_sync_override_recorded = False
+        if platform_sync_state and platform_sync_state != "matched" and platform_sync_override_reason:
+            try:
+                conn.execute(
+                    "INSERT INTO user_override (round_id, override_field, original_value, "
+                    "override_value, reason, overridden_by, overridden_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        row["round_id"], "platform_content_sync_override",
+                        json.dumps({
+                            "state": platform_sync_state,
+                            "saved_content_hash": row["saved_content_hash"],
+                            "current_content_hash": current_hash,
+                        }, ensure_ascii=False)[:500],
+                        json.dumps({"status": "user_published"}, ensure_ascii=False),
+                        platform_sync_override_reason, "publish-confirm-ui",
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    ),
+                )
+                conn.commit()
+                platform_sync_override_recorded = True
+            except Exception:  # noqa: BLE001 — 已发生的外部发布不能因审计写失败丢失采集
+                logger.exception("平台内容版本例外审计写入失败 draft=%s", draft_id)
+
         # G-15 场景：发布确认留痕（用户手动确认，非系统自动发布）
         message = f"草稿 {draft_id} 已由用户确认发布，进入数据采集"
         if quality_override_recorded:
-            message += f"（质检例外登记：{override_reason[:80]}）"
+            message += f"（质检/审核例外登记：{override_reason[:80]}）"
+        if platform_sync_override_recorded:
+            message += f"（平台内容版本例外登记：{platform_sync_override_reason[:80]}）"
         _g()["notifier"].emit(
             "publish_confirmed",
             message,
             platform=dict(row)["platform"] if row else None,
         )
         return {"draft_id": draft_id, "status": "user_published", "note_url": note_url or None}
+
+    @app.post("/api/drafts/{draft_id}/confirm_platform_sync")
+    def confirm_platform_draft_sync(
+        draft_id: str, req: PlatformSyncConfirmRequest,
+    ):
+        """用户确认已在平台端手动更新草稿，使其与当前本地文案版本一致。"""
+        conn = _g()["conn"]
+        row = conn.execute(
+            "SELECT d.status, d.saved_content_hash, c.id AS content_id, c.round_id, "
+            "c.title, c.body, c.tags, c.image_paths, c.guard_outcome, c.guard_reason, "
+            "c.review_rejected, c.review_rejection_reason "
+            "FROM drafts d JOIN contents c ON c.id = d.content_id WHERE d.id = ?",
+            (draft_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, f"草稿 {draft_id} 不存在")
+        if row["status"] != "draft_saved":
+            raise HTTPException(
+                409, f"当前状态为 {row['status']}，只有已存入平台的草稿可以确认同步",
+            )
+        _ensure_content_round_idle(row, "确认平台版本同步")
+        if bool(row["review_rejected"]):
+            raise HTTPException(
+                409,
+                f"该内容已被人工驳回：{row['review_rejection_reason'] or '未提供原因'}。"
+                "请先修改文案、重新过目标检查并提交审核",
+            )
+        from src.core.content_pipeline import _llm_available
+        llm_available = _llm_available(_g()["cfg"])
+        guard_outcome = row["guard_outcome"]
+        guard_accepted = guard_outcome == "pass" or (
+            guard_outcome == "warn" and not llm_available
+        )
+        if not guard_accepted:
+            raise HTTPException(
+                409,
+                f"当前质检状态为 {guard_outcome or '未检查'}："
+                f"{row['guard_reason'] or '当前文案尚未通过目标检查'}。"
+                "请先运行「重新过目标检查」并通过后，再确认平台版本同步",
+            )
+
+        from src.core.content_version import content_version_hash, parse_json_list
+        stored_images = parse_json_list(row["image_paths"])
+        payload_images = [str(stored_images[0])] if stored_images and stored_images[0] else []
+        current_hash = content_version_hash(
+            row["title"], row["body"], parse_json_list(row["tags"]), payload_images,
+        )
+        old_hash = row["saved_content_hash"]
+        if old_hash == current_hash:
+            return {
+                "draft_id": draft_id,
+                "platform_content_sync": "matched",
+                "already_synced": True,
+                "message": "平台草稿版本已与当前本地文案一致，无需重复登记",
+            }
+        conn.execute(
+            "UPDATE drafts SET saved_content_hash = ? WHERE id = ?",
+            (current_hash, draft_id),
+        )
+        conn.execute(
+            "INSERT INTO user_override (round_id, override_field, original_value, "
+            "override_value, reason, overridden_by, overridden_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["round_id"], "platform_content_sync_confirmed",
+                json.dumps({"saved_content_hash": old_hash}, ensure_ascii=False)[:500],
+                json.dumps({"saved_content_hash": current_hash}, ensure_ascii=False)[:500],
+                req.reason.strip(), "publish-confirm-ui",
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        )
+        conn.commit()
+        return {
+            "draft_id": draft_id,
+            "platform_content_sync": "matched",
+            "message": "已记录平台草稿与当前本地文案版本一致",
+        }
 
     @app.post("/api/drafts/{draft_id}/cancel")
     def cancel_draft(draft_id: str):
