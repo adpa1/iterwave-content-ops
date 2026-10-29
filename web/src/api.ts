@@ -469,6 +469,8 @@ export interface MediaAsset {
   status: "active" | "archived";
   review_status: "pending_review" | "approved" | "rejected";
   review_note?: string | null;
+  quality_score?: number | null;
+  quality_details?: { reasons?: string[]; disclaimer?: string; method?: string } | null;
   created_at?: string;
   updated_at?: string;
   file_url: string;
