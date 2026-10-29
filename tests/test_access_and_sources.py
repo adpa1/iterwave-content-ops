@@ -337,6 +337,22 @@ def test_server_source_and_path_redaction(cfg, tmp_path):
         kb_sources.add_server(cfg, path=str(tmp_path / "missing.csv"))
 
 
+def test_remote_source_inspection_redacts_url_and_name(cfg):
+    result = kb_sources.read_source(cfg, {
+        "id": "disabled-remote",
+        "kind": "remote",
+        "name": "https://user:pass@example.com/private/token?access_token=SECRET",
+        "url": "https://user:pass@example.com/private/token?access_token=SECRET",
+        "enabled": False,
+        "format": "csv",
+        "headers": {},
+    })
+    rendered = json.dumps(result, ensure_ascii=False)
+    assert result["status"] == "disabled"
+    assert result["display_path"] == "https://example.com/…"
+    assert "SECRET" not in rendered and "password" not in rendered and "private/token" not in rendered
+
+
 def test_public_remote_source_redacts_url_credentials(cfg):
     public = kb_sources._public_source(cfg, {
         "id": "kb-test",
