@@ -227,17 +227,17 @@ def _build_app() -> FastAPI:
         if path.startswith("/api/") and path not in ("/api/auth/status", "/api/auth/login"):
             cookie_token = request.cookies.get(auth.COOKIE_NAME)
             client_ip = request.client.host if request.client else "unknown"
+            has_token_header = bool(request.headers.get("x-access-token")) or (
+                (request.headers.get("authorization") or "").lower().startswith("bearer ")
+            )
+            limited_before = has_token_header and auth.is_rate_limited(client_ip)
             if not auth.is_authenticated(cookie_token, request.headers, ip=client_ip):
-                has_token_header = bool(request.headers.get("x-access-token")) or (
-                    (request.headers.get("authorization") or "").lower().startswith("bearer ")
-                )
-                limited = has_token_header and auth.is_rate_limited(client_ip)
                 return JSONResponse(
                     {
-                        "detail": "认证尝试次数过多，请 10 分钟后再试" if limited else "需要登录",
-                        "code": "auth_rate_limited" if limited else "auth_required",
+                        "detail": "认证尝试次数过多，请 10 分钟后再试" if limited_before else "需要登录",
+                        "code": "auth_rate_limited" if limited_before else "auth_required",
                     },
-                    status_code=429 if limited else 401,
+                    status_code=429 if limited_before else 401,
                 )
         return await call_next(request)
 
