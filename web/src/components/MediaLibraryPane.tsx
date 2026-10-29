@@ -218,6 +218,17 @@ export default function MediaLibraryPane() {
     finally { setRecommendationLoading(false); }
   };
 
+  const generateForContent = async () => {
+    if (!selectedContentId) { showToast("请先选择待配图内容", "error"); return; }
+    await withPending("media:generate-for-content", async () => {
+      try {
+        await api.generateMediaForContent(selectedContentId, usageRole);
+        showToast("已生成候选配图，需在素材库人工审核后才能使用", "success");
+        await load();
+      } catch (e) { showToast(e instanceof Error ? e.message : "内容配图生成失败", "error"); }
+    });
+  };
+
   const assignToContent = async (item: MediaAsset) => {
     if (!selectedContentId) {
       showToast("没有可选的待存草稿或平台草稿", "error");
@@ -367,8 +378,11 @@ export default function MediaLibraryPane() {
         </div>
         {targetWarning && <div className="note" role="alert" style={{ color: "var(--orange)", marginBottom: 10 }}>{targetWarning}</div>}
         {targets.length > 0 && <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
-          <button className="btn sm primary" onClick={() => void recommendForContent()} disabled={!selectedContentId || recommendationLoading}>
+          <button className="btn sm" onClick={() => void recommendForContent()} disabled={!selectedContentId || recommendationLoading}>
             {recommendationLoading ? "匹配中…" : "为当前内容推荐素材"}
+          </button>
+          <button className="btn sm primary" onClick={() => void generateForContent()} disabled={!selectedContentId || isPending("media:generate-for-content") || !generationSettings?.enabled || !generationSettings.provider_configured}>
+            {isPending("media:generate-for-content") ? "生成中…" : "按当前内容生成配图"}
           </button>
         </div>}
         {recommendations.length > 0 && recommendationContentId === selectedContentId && recommendationRole === usageRole && <div className="panel" style={{ marginBottom: 14, padding: 12 }}>
