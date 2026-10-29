@@ -185,6 +185,38 @@ def test_published_content_cannot_be_mutated_in_place(client):
         assert row["body"] == "B"
 
 
+def test_failed_metrics_fetch_does_not_make_published_history_deletable(client):
+    tc, conn, seed = client
+    round_id = seed.round(status="partial_completed")
+    draft_id = seed.draft(
+        round_id, platform="xhs", draft_status="failed",
+        fetch_status=None, topic_id="published-history",
+    )
+    conn.execute(
+        "UPDATE drafts SET user_confirmed_at = ?, error_msg = ? WHERE id = ?",
+        ("2026-01-01T00:00:00", "数据采集重试耗尽", draft_id),
+    )
+    conn.commit()
+    content_id = conn.execute(
+        "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+
+    delete_content_response = tc.delete(f"/api/contents/{content_id}")
+    assert delete_content_response.status_code == 409
+    assert conn.execute(
+        "SELECT 1 FROM contents WHERE id = ?", (content_id,)
+    ).fetchone() is not None
+
+    delete_round_response = tc.delete(f"/api/rounds/{round_id}")
+    assert delete_round_response.status_code == 409
+    assert conn.execute(
+        "SELECT 1 FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone() is not None
+    assert conn.execute(
+        "SELECT 1 FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone() is not None
+
+
 # ---------------------------------------------------------------- R-5 KPI 窗口
 def test_ops_kpi_days_param(client):
     tc, _, seed = client

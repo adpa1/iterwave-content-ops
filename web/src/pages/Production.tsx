@@ -1112,8 +1112,8 @@ export default function Production() {
                     {isPending("recheck-content") ? "重检中…" : "⌕ 重新过目标检查"}
                   </button>
                   <button className="btn danger" style={{ marginLeft: "auto" }} onClick={handleDeleteContent}
-                    disabled={isPending("delete-content") || ["user_published", "data_fetching", "published"].includes(selectedContent.draft_status ?? "")}
-                    title="已发布（有数据）的内容不能删除">
+                    disabled={isPending("delete-content") || selectedContentIsImmutable}
+                    title="已确认发布或有发布历史的内容不能删除">
                     {isPending("delete-content") ? "删除中…" : "删除这篇"}
                   </button>
                 </div>
