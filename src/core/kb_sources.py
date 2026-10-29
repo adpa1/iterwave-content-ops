@@ -791,7 +791,7 @@ def _decode_upload(filename: str, content_b64: str) -> tuple[str, bytes]:
     if len(data) > MAX_UPLOAD_BYTES:
         raise ValueError("上传文件超过 20MB 上限")
     # 同时处理 POSIX 和 Windows 路径分隔符，避免文件名因运行平台不同而变化。
-    raw_name = str(filename or "upload.csv").replace("\\\\", "/")
+    raw_name = str(filename or "upload.csv").replace("\\", "/")
     safe = raw_name.rsplit("/", 1)[-1].strip()
     if not safe or safe in (".", "..") or safe.startswith("."):
         raise ValueError("文件名不合法")
