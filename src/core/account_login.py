@@ -250,13 +250,13 @@ def get_login_status(platform: str) -> dict:
     f = _files(platform)
     raw = _read_status_file(f["status"])
     state = raw.get("state", "unknown")
-    message = raw.get("message", "")
+    message = redact(str(raw.get("message") or ""))
 
     proc = _LOGIN_PROCESSES.get(platform)
     proc_alive = proc is not None and proc.poll() is None
     if proc is not None and not proc_alive and state not in TERMINAL_STATES:
         # 与 Easel 一致：runner 没写终态就退出 → 明确的 error，而不是无限转圈的 unknown
-        tail = _last_log_line(f["log"])
+        tail = redact(_last_log_line(f["log"]))
         state, message = "error", f"登录程序异常退出（退出码 {proc.returncode}）" + (f"：{tail}" if tail else "")
     elif proc_alive and state == "unknown":
         state, message = "starting", "正在启动浏览器并准备二维码…"
