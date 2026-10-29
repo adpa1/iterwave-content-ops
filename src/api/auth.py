@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import os
 import threading
 import time
@@ -57,10 +58,22 @@ def is_authed(request: Request) -> bool:
 
 
 def _client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.client.host if request.client else "?"
+    # 不直接信任客户端可伪造的 X-Forwarded-For；需要代理链时应由受信任代理层配置。
+    return request.client.host if request.client else "unknown"
+
+
+def _is_trusted_local_setup(request: Request) -> bool:
+    # localhost 只能以 TCP 对端地址判定，不能信任 Host 头；
+    # 反向代理传入转发头时按远程请求处理，即使代理本身监听在 loopback。
+    if any(request.headers.get(name) for name in (
+        "forwarded", "x-forwarded-for", "x-real-ip", "x-forwarded-proto"
+    )):
+        return False
+    peer = request.client.host if request.client else ""
+    try:
+        return ipaddress.ip_address(peer).is_loopback
+    except ValueError:
+        return False
 
 
 def _too_many_fails(ip: str) -> bool:
@@ -90,14 +103,40 @@ class LoginRequest(BaseModel):
 class SetupRequest(BaseModel):
     token: str
     old_token: str | None = None
+    bootstrap_token: str | None = None
 
 
 def install_auth(app: FastAPI) -> None:
     @app.middleware("http")
     async def access_guard(request: Request, call_next):
         path = request.url.path
-        if (path.startswith("/api/") and not path.startswith(_OPEN_PREFIXES)
-                and request.method != "OPTIONS" and not is_authed(request)):
+        if not path.startswith("/api/") or request.method == "OPTIONS":
+            return await call_next(request)
+
+        if not current_token():
+            # 首次初始化时关闭业务 API，只开放状态查询与设置口令；不能因为尚未设密而匿名管理平台。
+            if path not in ("/api/auth/status", "/api/auth/setup", "/api/auth/login"):
+                return JSONResponse(
+                    {"detail": "请先完成访问口令设置", "code": "setup_required"},
+                    status_code=403,
+                )
+            return await call_next(request)
+
+        if path.startswith(_OPEN_PREFIXES):
+            return await call_next(request)
+
+        auth_header = request.headers.get("authorization", "")
+        has_bearer = auth_header.lower().startswith("bearer ")
+        ip = _client_ip(request)
+        if has_bearer and _too_many_fails(ip):
+            return JSONResponse(
+                {"detail": "尝试次数过多，请 10 分钟后再试", "auth_required": True},
+                status_code=429,
+            )
+        if not is_authed(request):
+            # 脚本 Bearer 认证也纳入失败计数，避免绕开 /login 暴力猜口令。
+            if has_bearer:
+                _record_fail(ip)
             return JSONResponse({"detail": "需要登录", "auth_required": True}, status_code=401)
         return await call_next(request)
 
@@ -135,14 +174,23 @@ def install_auth(app: FastAPI) -> None:
         if any(c.isspace() for c in new):
             raise HTTPException(400, "口令不能包含空格")
         old = current_token()
+        ip = _client_ip(request)
         if old:
-            ip = _client_ip(request)
             if _too_many_fails(ip):
                 raise HTTPException(429, "尝试次数过多，请 10 分钟后再试")
             ok = is_authed(request) or hmac.compare_digest((req.old_token or "").strip(), old)
             if not ok:
                 _record_fail(ip)
                 raise HTTPException(401, "旧口令不正确")
+        elif not _is_trusted_local_setup(request):
+            # 公网初始化需要操作者事先通过服务器控制台配置引导令牌，防止陌生访客抢先设密。
+            bootstrap = os.environ.get("ITERWAVE_BOOTSTRAP_TOKEN", "")
+            provided = (req.bootstrap_token or "").strip()
+            if not bootstrap or not provided or not hmac.compare_digest(provided, bootstrap):
+                raise HTTPException(
+                    403,
+                    "首次设置口令需从本机直连，或在服务器配置 ITERWAVE_BOOTSTRAP_TOKEN 后提交引导口令",
+                )
         set_env_secret(TOKEN_ENV, new)
         _set_cookie(response, new, request)
         return {"ok": True, "required": True}
