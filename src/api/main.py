@@ -1310,6 +1310,64 @@ def _register_routes(app: FastAPI) -> None:
         ).fetchall()
         return {"items": [dict(row) for row in rows]}
 
+    @app.get("/api/media/recommendations")
+    def recommend_media_assets(
+        content_id: str = Query(..., min_length=1, max_length=128),
+        usage_role: str = Query("cover", pattern="^(cover|illustration|background)$"),
+        limit: int = Query(8, ge=1, le=20),
+    ):
+        """基于内容文本与素材标题/标签的可解释关键词匹配；只推荐已审核且未归档素材，不自动分配。"""
+        conn = _g()["conn"]
+        content = conn.execute(
+            "SELECT id, title, body, platform FROM contents WHERE id = ?", (content_id,),
+        ).fetchone()
+        if content is None:
+            raise HTTPException(404, "目标内容不存在")
+        # 中文内容以连续字符片段和分词后的英文/数字作为候选关键词，不调用外部模型。
+        import re
+        source_text = " ".join(str(content[key] or "") for key in ("title", "body")).lower()
+        tokens = set(re.findall(r"[a-z0-9]{2,}|[\u4e00-\u9fff]{2,}", source_text))
+        stopwords = {"我们", "你们", "他们", "这个", "那个", "可以", "如何", "因为", "所以", "以及", "但是", "如果", "门店", "内容"}
+        tokens = {token for token in tokens if token not in stopwords}
+        rows = conn.execute(
+            "SELECT id, title, original_filename, alt_text, tags, quality_score, width, height "
+            "FROM media_assets WHERE status = 'active' AND review_status = 'approved' "
+            "ORDER BY created_at DESC LIMIT 500"
+        ).fetchall()
+        purpose_terms = {
+            "cover": {"封面", "主图", "门头", "产品", "招牌"},
+            "illustration": {"正文", "细节", "环境", "过程", "服务", "产品"},
+            "background": {"背景", "底图", "纹理", "氛围"},
+        }[usage_role]
+        ranked = []
+        for row in rows:
+            try:
+                tags = json.loads(row["tags"] or "[]")
+                if not isinstance(tags, list): tags = []
+            except (TypeError, json.JSONDecodeError):
+                tags = []
+            searchable = " ".join([str(row["title"] or ""), str(row["original_filename"] or ""), str(row["alt_text"] or ""), *[str(tag) for tag in tags]]).lower()
+            matched = sorted(token for token in tokens if token in searchable)
+            purpose_hits = sorted(term for term in purpose_terms if term in searchable)
+            score = len(matched) * 10 + len(purpose_hits) * 3 + (max(0, int(row["quality_score"] or 0)) // 20)
+            if score <= 0:
+                continue
+            ranked.append({
+                "asset_id": int(row["id"]), "title": row["title"],
+                "score": score, "matched_keywords": matched[:8],
+                "purpose_matches": purpose_hits, "quality_score": row["quality_score"],
+                "width": row["width"], "height": row["height"],
+                "reason": ("匹配关键词：" + "、".join(matched[:5]) if matched else "用途标签匹配")
+                    + (("；用途：" + "、".join(purpose_hits)) if purpose_hits else ""),
+            })
+        ranked.sort(key=lambda item: (-item["score"], -(item["quality_score"] or 0), item["asset_id"]))
+        return {
+            "content_id": content_id, "usage_role": usage_role,
+            "method": "keyword_match", "automatic_assignment": False,
+            "items": ranked[:limit],
+            "message": "这是基于标题、正文、素材名称和标签的关键词推荐；无匹配项不代表素材不可用。推荐结果不会自动配图。",
+        }
+
     @app.post("/api/media/{asset_id}/use")
     def use_media_asset(asset_id: int, req: MediaAssetUseRequest):
         registry = _g().get("tenant_registry")
