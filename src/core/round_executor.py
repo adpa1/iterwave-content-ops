@@ -235,7 +235,12 @@ class RoundExecutor:
         if not pending_rows:
             raise ValueError(f"轮次 {round_id} 没有待存草稿")
 
+        if self.guard is None:
+            raise ValueError("质量门检查器不可用，已拒绝恢复存草稿")
+
         rows: list[dict] = []
+        guard_failures: list[str] = []
+        llm_available = _llm_available(self.cfg)
         for item in pending_rows:
             try:
                 tags = json.loads(item["tags"]) if item["tags"] else []
@@ -243,6 +248,7 @@ class RoundExecutor:
                 tags = []
             if not isinstance(tags, list):
                 tags = []
+            tags = [str(tag) for tag in tags]
 
             try:
                 image_paths = json.loads(item["image_paths"]) if item["image_paths"] else []
@@ -251,15 +257,60 @@ class RoundExecutor:
             if not isinstance(image_paths, list):
                 image_paths = []
 
+            platform = Platform(item["platform"])
+            title = item["title"] or ""
+            body = item["body"] or ""
+            try:
+                # 必须按当前数据库内容重跑质量门；绝不能假定原文案的通过结果仍有效。
+                outcome = self.guard.check_content(
+                    title, body, tags, platform=platform.value,
+                )
+            except Exception as exc:  # noqa: BLE001 — 检查器异常必须 fail closed
+                logger.exception(
+                    "恢复存草稿前质量门异常 round=%s content=%s",
+                    round_id, item["content_id"],
+                )
+                outcome = CheckOutcome(
+                    result=CheckResult.ERROR,
+                    reason=f"恢复存草稿前质量门异常：{exc}",
+                )
+
+            # 跟初始生产保持一致：只有模板降级（无 LLM）的 WARN 可带告警采用。
+            accepted = outcome.passes or (
+                outcome.result == CheckResult.WARN and not llm_available
+            )
+            self.conn.execute(
+                "UPDATE contents SET guard_outcome = ?, guard_reason = ? WHERE id = ?",
+                (outcome.result.value, outcome.reason, item["content_id"]),
+            )
+            if not accepted:
+                guard_failures.append(
+                    f"「{title[:40]}」检查结果为 {outcome.result.value}：{outcome.reason or '未通过质量门'}"
+                )
+            elif outcome.result == CheckResult.WARN:
+                logger.warning(
+                    "恢复存草稿接受无 LLM 模式的 G2 WARN round=%s content=%s reason=%s",
+                    round_id, item["content_id"], outcome.reason,
+                )
+
             rows.append({
                 "draft_id": item["draft_id"],
                 "content_id": item["content_id"],
-                "platform": Platform(item["platform"]),
-                "title": item["title"] or "",
-                "body": item["body"] or "",
-                "tags": [str(tag) for tag in tags],
+                "platform": platform,
+                "title": title,
+                "body": body,
+                "tags": tags,
                 "image_path": str(image_paths[0]) if image_paths and image_paths[0] else None,
             })
+
+        # 全部待存内容都重新检查后再执行任何平台副作用；任意一篇未通过就整体阻断。
+        self.conn.commit()
+        if guard_failures:
+            raise ValueError(
+                "恢复存草稿已中止，存在未通过当前质量门的内容："
+                + "；".join(guard_failures[:5])
+                + "。请修改文案后重新检查，再继续存草稿"
+            )
 
         report: dict = {
             "round_id": round_id,
