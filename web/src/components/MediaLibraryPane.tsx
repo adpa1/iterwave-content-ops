@@ -42,6 +42,8 @@ export default function MediaLibraryPane() {
   const [recommendations, setRecommendations] = useState<MediaRecommendation[]>([]);
   const [recommendationMessage, setRecommendationMessage] = useState("");
   const [recommendationLoading, setRecommendationLoading] = useState(false);
+  const [recommendationContentId, setRecommendationContentId] = useState("");
+  const [recommendationRole, setRecommendationRole] = useState<"cover" | "illustration" | "background">("cover");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -210,6 +212,7 @@ export default function MediaLibraryPane() {
     try {
       const result = await api.recommendMediaAssets(selectedContentId, usageRole);
       setRecommendations(result.items); setRecommendationMessage(result.message);
+      setRecommendationContentId(selectedContentId); setRecommendationRole(usageRole);
       if (result.items.length === 0) showToast("没有找到明显匹配的已审核素材，可调整素材标签或继续手动选择", "info");
     } catch (e) { showToast(e instanceof Error ? e.message : "素材推荐失败", "error"); }
     finally { setRecommendationLoading(false); }
@@ -368,7 +371,7 @@ export default function MediaLibraryPane() {
             {recommendationLoading ? "匹配中…" : "为当前内容推荐素材"}
           </button>
         </div>}
-        {recommendations.length > 0 && <div className="panel" style={{ marginBottom: 14, padding: 12 }}>
+        {recommendations.length > 0 && recommendationContentId === selectedContentId && recommendationRole === usageRole && <div className="panel" style={{ marginBottom: 14, padding: 12 }}>
           <div className="panel-title">匹配推荐（前 {recommendations.length} 项）</div>
           <div className="panel-sub">按内容标题、正文、素材名称及标签进行关键词匹配；仅展示已审核素材，不会自动配图。</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 8, marginTop: 10 }}>
@@ -390,7 +393,7 @@ export default function MediaLibraryPane() {
         {targets.length > 0 && (
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
             <span className="field-label">手动配图目标</span>
-            <select value={selectedContentId} onChange={(event) => { setSelectedContentId(event.target.value); setTargetWarning(""); }} style={{ minWidth: 260, maxWidth: "100%" }}>
+            <select value={selectedContentId} onChange={(event) => { setSelectedContentId(event.target.value); setTargetWarning(""); setRecommendations([]); setRecommendationMessage(""); }} style={{ minWidth: 260, maxWidth: "100%" }}>
               {targets.map((target) => (
                 <option value={target.id} key={target.id}>
                   {target.title} · {target.platform} · {target.draft_status} · {target.visual_status === "media_asset" ? "已有素材图" : target.visual_status === "generated" ? "AI 配图" : "模板降级图"} · #{target.id}
@@ -399,7 +402,7 @@ export default function MediaLibraryPane() {
             </select>
             <label className="field" style={{ minWidth: 140 }}>
               <span className="field-label">在内容中的用途</span>
-              <select value={usageRole} onChange={(event) => setUsageRole(event.target.value as "cover" | "illustration" | "background")}>
+              <select value={usageRole} onChange={(event) => { setUsageRole(event.target.value as "cover" | "illustration" | "background"); setRecommendations([]); setRecommendationMessage(""); }}>
                 <option value="cover">封面</option><option value="illustration">正文配图</option><option value="background">背景</option>
               </select>
             </label>
