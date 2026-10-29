@@ -749,12 +749,10 @@ def _public_source(cfg, source: dict) -> dict:
     }
     if source.get("kind") == "remote":
         out["display_path"] = _redact_remote_url(source.get("url") or "")
-        # 旧来源可能曾把完整 URL 自动用作名称，防止名称字段继续泄露凭据。
-        raw_name = str(source.get("name") or "")
-        if raw_name.lower().startswith(("http://", "https://")):
-            out["name"] = _redact_remote_url(raw_name)
     else:
         out["display_path"] = redact_path(_source_path(cfg, source))
+    if out.get("name"):
+        out["name"] = redact(str(out["name"]))
     if out.get("last_error"):
         out["last_error"] = redact(str(out["last_error"]))
     out["header_keys"] = sorted((source.get("headers") or {}).keys())
