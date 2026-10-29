@@ -28,11 +28,15 @@ function Router() {
   const [page, setPageState] = useState<string>(getInitial);
   const { status, auth } = useApp();
 
-  const setPage = (p: string, tab?: string) => {
+  const setPage = (p: string, tab?: string, focus?: { roundId?: number; contentId?: string }) => {
     const url = new URL(window.location.href);
     url.searchParams.set("page", p);
     if (tab) url.searchParams.set("tab", tab);
     else url.searchParams.delete("tab");
+    if (focus?.roundId != null) url.searchParams.set("focusRound", String(focus.roundId));
+    else url.searchParams.delete("focusRound");
+    if (focus?.contentId) url.searchParams.set("focusContent", focus.contentId);
+    else url.searchParams.delete("focusContent");
     window.history.pushState({}, "", url.toString());
     setPageState(p);
     // 让页面内部的 useUrlTab 同步读取深链 tab（例如直接进入内容审核）。
@@ -157,7 +161,7 @@ function todayLabel() {
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 · ${WEEKDAYS[d.getDay()]}`;
 }
 
-function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, tab?: string) => void }) {
+function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, tab?: string, focus?: { roundId?: number; contentId?: string }) => void }) {
   const { status } = useApp();
   const [noticesOpen, setNoticesOpen] = useState(false);
   const broken = status?.circuit_broken_platforms || [];
@@ -175,9 +179,9 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [noticesOpen]);
 
-  const go = (page: string, tab?: string) => {
+  const go = (page: string, tab?: string, focus?: { roundId?: number; contentId?: string }) => {
     setNoticesOpen(false);
-    onNavigate(page, tab);
+    onNavigate(page, tab, focus);
   };
 
   return (
