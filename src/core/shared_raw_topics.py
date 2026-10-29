@@ -36,7 +36,6 @@ def _connect() -> sqlite3.Connection:
             heat_score REAL,
             heat_unit TEXT,
             time_sensitive INTEGER,
-            platform TEXT,
             platform TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_raw_hot_topics_seen
