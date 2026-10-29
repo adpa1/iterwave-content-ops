@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import json
 import os
 import sqlite3
@@ -57,6 +58,8 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from src.core.config import load_config, get_config, DEFAULT_ENV_PATH
+from src.core.config import PROJECT_ROOT
+from src.core.tenant_registry import TenantRegistry, TenantError
 from src.core.db import Database
 from src.core.state_machine import RoundStateMachine, DraftStateMachine
 from src.core.scoring.topic_eval import ScoringEngine, TopicItem
@@ -97,6 +100,7 @@ _g_ctx: dict = {}
 
 # G-22：正在执行的轮次集合。同一轮次并发触发会被拒绝（409），避免重复产出草稿
 _running_rounds: set[int] = set()
+_media_generation_lock = threading.Lock()
 
 # G-11：写接口幂等去重窗口（秒）。重复提交/连点在窗口内只落一条记录
 _DEDUPE_TTL_SECONDS = 10.0
@@ -127,12 +131,68 @@ def _build_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         # 启动阶段
         cfg = load_config()
-        # G-13：先套用 Web 端持久化的覆盖值（data/config_overrides.json），
+        # 账号组注册表是共享基础设施；默认组继续使用原有 data/ 与 backups/。
+        tenant_registry = TenantRegistry(PROJECT_ROOT)
+        tenant_registry.initialize()
+        active_tenant_id = tenant_registry.active_id()
+        active_tenant = tenant_registry.get(active_tenant_id)
+        if active_tenant_id != "default":
+            tenant_paths = tenant_registry.paths(
+                active_tenant_id, name=str(active_tenant.get("name") or active_tenant_id),
+                create=True,
+            )
+            # 使用绝对路径覆盖运行时路径，确保 cfg.resolve_path 不把租户目录再拼到项目根。
+            cfg.paths.data_dir = str(tenant_paths.data_dir)
+            cfg.paths.db_file = str(tenant_paths.db_file)
+            cfg.paths.backup_dir = str(tenant_paths.backup_dir)
+            cfg.paths.output_dir = str(tenant_paths.output_dir)
+            cfg.paths.screenshot_dir = str(tenant_paths.screenshot_dir)
+            cfg.paths.log_dir = str(tenant_paths.log_dir)
+            # 选题库及浏览器登录态均按账号组隔离；平台账号 key 不与 default 共用。
+            cfg.topic_kb.path = str(tenant_paths.kb_dir / "topics.csv")
+        # 恢复任务只在启动且数据库尚未打开时执行；校验账号组与备份目录后再替换数据。
+        runtime_data_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
+        runtime_backup_dir = Path(cfg.resolve_path(cfg.paths.backup_dir)).resolve()
+        pending_restore = runtime_data_dir / ".pending_restore.json"
+        if pending_restore.exists():
+            try:
+                restore_request = json.loads(pending_restore.read_text(encoding="utf-8"))
+                backup_name = restore_request.get("backup_name")
+                if restore_request.get("tenant_id") != active_tenant_id or not isinstance(backup_name, str):
+                    raise RuntimeError("待恢复任务的账号组标识无效")
+                if Path(backup_name).name != backup_name or not backup_name.startswith(f"iterwave_{active_tenant_id}_") or not backup_name.endswith(".zip"):
+                    raise RuntimeError("待恢复备份名称无效")
+                backup_path = (runtime_backup_dir / backup_name).resolve()
+                if not backup_path.is_relative_to(runtime_backup_dir) or not backup_path.is_file():
+                    raise RuntimeError("待恢复备份文件不存在或超出备份目录")
+                from src.core.tenant_backup import restore_backup
+                restore_backup(
+                    backup_path, cfg.resolve_path(cfg.paths.db_file), runtime_data_dir,
+                    runtime_backup_dir, active_tenant_id,
+                )
+                pending_restore.unlink(missing_ok=True)
+                logger.warning("账号组快照恢复完成 tenant=%s backup=%s", active_tenant_id, backup_name)
+            except Exception as exc:  # noqa: BLE001 — 恢复失败必须阻止启动，不能悄悄使用旧库
+                logger.exception("账号组快照恢复失败，拒绝启动 tenant=%s", active_tenant_id)
+                raise RuntimeError(f"账号组恢复失败，应用未启动：{exc}") from exc
+        # G-13：先套用 Web 端持久化的覆盖值（租户各自的 data/config_overrides.json），
         # 再构造各模块 —— 保证 scheduler/adapter/ops 拿到的是同一份生效配置
         applied_overrides = apply_overrides(cfg, load_overrides(cfg))
         if applied_overrides:
             logger.info("⚙️ 已套用 %d 项运行时配置覆盖：%s",
                         len(applied_overrides), applied_overrides)
+        if active_tenant_id != "default":
+            # 在覆盖值应用后再次强制命名空间化，避免旧配置覆盖把登录态指回 default。
+            for platform_cfg in cfg.platforms.model_dump().keys():
+                item = getattr(cfg.platforms, platform_cfg)
+                prefix = f"{active_tenant_id}__"
+                if not item.account_key.startswith(prefix):
+                    item.account_key = f"{prefix}{item.account_key}"
+        # 登录二维码、持久化浏览器 profile、storage_state 必须共用当前账号组数据根目录。
+        from src.core import account_login, login_manager
+        runtime_data_dir = cfg.resolve_path(cfg.paths.data_dir)
+        account_login.configure_data_dir(runtime_data_dir)
+        login_manager.configure_data_dir(runtime_data_dir)
         db = Database(cfg)
         db.initialize()
         # 线程安全包装：路由线程池 / 调度器 / 执行器共用这一个连接
@@ -157,7 +217,10 @@ def _build_app() -> FastAPI:
             circuit_breaker=cb, notifier=notifier,
         )
 
+        _g_ctx.clear()
         _g_ctx.update({
+            "tenant_registry": tenant_registry,
+            "runtime_tenant_id": active_tenant_id,
             "cfg": cfg, "db": db, "conn": conn,
             "adapters": adapters, "cb": cb, "rhythm": rhythm,
             "sm_round": sm_round, "sm_draft": sm_draft,
@@ -236,7 +299,7 @@ def _build_app() -> FastAPI:
         path = request.scope.get("path", "/")
         if path.startswith("/api/"):
             # 上传接口的 base64 JSON 约 28MB；其它 API 不应接受无限大的请求体。
-            max_body_bytes = 30 * 1024 * 1024 if path == "/api/kb/sources/upload" else 5 * 1024 * 1024
+            max_body_bytes = 30 * 1024 * 1024 if path == "/api/kb/sources/upload" else 17 * 1024 * 1024 if path == "/api/media" else 5 * 1024 * 1024
             content_length = request.headers.get("content-length")
             if content_length:
                 try:
@@ -374,6 +437,53 @@ def _build_app() -> FastAPI:
 # =====================================================================
 # Pydantic 请求模型
 # =====================================================================
+
+class MediaGenerationSettingsRequest(BaseModel):
+    enabled: bool = False
+    monthly_quota: int = Field(default=20, ge=0, le=1000)
+    prompt_prefix: str = Field(default="", max_length=2000)
+    model: str = Field(default="gpt-image-1", min_length=1, max_length=120)
+    size: str = Field(default="1024x1024", pattern="^(1024x1024|1024x1536|1536x1024)$")
+
+
+class MediaGenerationRequest(BaseModel):
+    prompt: str = Field(min_length=5, max_length=2000)
+    title: str = Field(default="", max_length=200)
+    alt_text: str = Field(default="", max_length=500)
+    tags: list[str] = Field(default_factory=list, max_length=30)
+
+
+class TenantBackupRestoreRequest(BaseModel):
+    backup_name: str = Field(min_length=1, max_length=255)
+    confirm: bool = False
+
+
+class MediaAssetReviewRequest(BaseModel):
+    decision: str = Field(pattern="^(approved|rejected)$")
+    note: str = Field(default="", max_length=500)
+
+
+class MediaAssetUseRequest(BaseModel):
+    content_id: str = Field(min_length=1, max_length=128)
+    usage_role: str = Field(default="illustration", pattern="^(cover|illustration|background)$")
+
+
+class MediaAssetUploadRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    title: str = Field(default="", max_length=200)
+    alt_text: str = Field(default="", max_length=500)
+    tags: list[str] = Field(default_factory=list, max_length=30)
+    data_base64: str = Field(min_length=1)
+
+
+class TenantCreateRequest(BaseModel):
+    tenant_id: str = Field(min_length=1, max_length=48)
+    name: str = Field(min_length=1, max_length=80)
+
+
+class TenantSelectRequest(BaseModel):
+    tenant_id: str = Field(min_length=1, max_length=48)
+
 
 class CreateGoalRequest(BaseModel):
     """R21：口径 5 字段必须齐备，缺一即 422（不接受默认值兜底）。"""
@@ -819,6 +929,550 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/health")
     def health():
         return {"status": "ok", "version": "0.1.0", "timestamp": datetime.now().isoformat()}
+
+    def _generate_media_asset(req: MediaGenerationRequest, source_asset_id: int | None = None):
+        registry = _g().get("tenant_registry")
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        conn = _g()["conn"]
+        if registry is None:
+            raise HTTPException(503, "账号组注册表尚未初始化")
+        settings_row = conn.execute(
+            "SELECT enabled, monthly_quota, prompt_prefix, model, size "
+            "FROM media_generation_settings WHERE id = 1"
+        ).fetchone()
+        settings = dict(settings_row) if settings_row else {
+            "enabled": 0, "monthly_quota": 20, "prompt_prefix": "",
+            "model": os.getenv("ITERWAVE_IMAGE_MODEL", "gpt-image-1"),
+            "size": "1024x1024",
+        }
+        if not settings["enabled"]:
+            raise HTTPException(409, "AI 配图功能尚未启用，请先在图片素材库设置中启用")
+        prompt = req.prompt.strip()
+        final_prompt = "\n\n".join(
+            part for part in (str(settings.get("prompt_prefix") or "").strip(), prompt) if part
+        )
+        model = str(settings.get("model") or os.getenv("ITERWAVE_IMAGE_MODEL", "gpt-image-1"))
+        size = str(settings.get("size") or "1024x1024")
+        paths = registry.paths(tenant_id, create=True)
+        source_path = None
+        source_mime = None
+        source_filename = None
+        if source_asset_id is not None:
+            source = conn.execute(
+                "SELECT stored_filename, original_filename, mime_type, status, review_status "
+                "FROM media_assets WHERE id = ?", (source_asset_id,),
+            ).fetchone()
+            if source is None or source["status"] != "active" or source["review_status"] != "approved":
+                raise HTTPException(409, "只能基于已审核通过且未归档的素材进行改图")
+            source_path = (paths.media_dir / source["stored_filename"]).resolve()
+            if not source_path.is_relative_to(paths.media_dir.resolve()) or not source_path.is_file():
+                raise HTTPException(404, "原始素材文件不存在")
+            source_mime = source["mime_type"]
+            source_filename = source["original_filename"]
+
+        # 整个配额检查与调用串行化，避免并发请求同时越过月度上限。
+        with _media_generation_lock:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+            used = int(conn.execute(
+                "SELECT COUNT(*) FROM media_generation_jobs WHERE created_at >= ?", (month_start,),
+            ).fetchone()[0])
+            quota = int(settings.get("monthly_quota") or 0)
+            if quota <= 0 or used >= quota:
+                raise HTTPException(429, f"本账号组本月 AI 配图额度已用完（{used}/{quota}）")
+            cur = conn.execute(
+                "INSERT INTO media_generation_jobs (prompt, final_prompt, model, status, created_at) "
+                "VALUES (?, ?, ?, 'running', ?)",
+                (prompt, final_prompt, model, now),
+            )
+            job_id = int(cur.lastrowid)
+            conn.commit()
+            target = None
+            try:
+                from src.core.media_generation import ImageGenerationError, generate_image_bytes
+                from src.core.media_quality import score_image
+                raw, mime_type, suffix, width, height = generate_image_bytes(
+                    final_prompt, model=model, size=size, source_path=source_path,
+                    source_mime_type=source_mime, source_filename=source_filename,
+                )
+                stored_filename = f"{uuid.uuid4().hex}{suffix}"
+                target = (paths.media_dir / stored_filename).resolve()
+                if not target.is_relative_to(paths.media_dir.resolve()):
+                    raise HTTPException(422, "生成文件路径无效")
+                target.write_bytes(raw)
+                try:
+                    target.chmod(0o600)
+                except OSError:
+                    pass
+                title = req.title.strip() or prompt[:80]
+                tags = list(dict.fromkeys(tag.strip()[:60] for tag in req.tags if tag.strip()))[:30]
+                source_ref = f"job:{job_id}" if source_asset_id is None else f"job:{job_id};edit_of:{source_asset_id}"
+                quality = score_image(raw)
+                asset_cur = conn.execute(
+                    "INSERT INTO media_assets "
+                    "(title, original_filename, stored_filename, mime_type, byte_size, sha256, "
+                    "width, height, alt_text, tags, source_type, source_ref, status, review_status, "
+                    "quality_score, quality_details) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, 'active', 'pending_review', ?, ?)",
+                    (
+                        title, stored_filename, stored_filename, mime_type, len(raw),
+                        hashlib.sha256(raw).hexdigest(), width, height, req.alt_text.strip(),
+                        json.dumps(tags, ensure_ascii=False), source_ref, quality["score"],
+                        json.dumps(quality, ensure_ascii=False),
+                    ),
+                )
+                asset_id = int(asset_cur.lastrowid)
+                conn.execute(
+                    "UPDATE media_generation_jobs SET status = 'succeeded', output_asset_id = ?, "
+                    "completed_at = ? WHERE id = ?",
+                    (asset_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
+                )
+                conn.commit()
+                return {
+                    "id": asset_id, "title": title, "original_filename": stored_filename,
+                    "mime_type": mime_type, "byte_size": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+                    "width": width, "height": height, "alt_text": req.alt_text.strip(),
+                    "tags": tags, "source_type": "generated", "source_ref": source_ref,
+                    "quality_score": quality["score"], "quality_details": quality,
+                    "status": "active", "review_status": "pending_review", "review_note": None,
+                    "duplicate": False, "file_url": f"/api/media/{asset_id}/file",
+                    "job_id": job_id, "review_required": True,
+                }
+            except HTTPException:
+                if target is not None:
+                    target.unlink(missing_ok=True)
+                conn.execute(
+                    "UPDATE media_generation_jobs SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?",
+                    ("图片生成请求未完成", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
+                )
+                conn.commit()
+                raise
+            except Exception as exc:  # noqa: BLE001 — 保存失败必须记账并留审计
+                if target is not None:
+                    target.unlink(missing_ok=True)
+                conn.execute(
+                    "UPDATE media_generation_jobs SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?",
+                    (str(exc)[:500], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
+                )
+                conn.commit()
+                logger.exception("AI 配图任务失败 job=%s", job_id)
+                from src.core.media_generation import ImageGenerationError
+                if isinstance(exc, ImageGenerationError):
+                    raise HTTPException(502, str(exc)) from exc
+                raise HTTPException(500, "图片生成失败，任务已记录") from exc
+
+    @app.get("/api/media/generation-settings")
+    def get_media_generation_settings():
+        conn = _g()["conn"]
+        row = conn.execute(
+            "SELECT enabled, monthly_quota, prompt_prefix, model, size, updated_at "
+            "FROM media_generation_settings WHERE id = 1"
+        ).fetchone()
+        settings = dict(row) if row else {
+            "enabled": False, "monthly_quota": 20, "prompt_prefix": "",
+            "model": os.getenv("ITERWAVE_IMAGE_MODEL", "gpt-image-1"),
+            "size": "1024x1024", "updated_at": None,
+        }
+        settings["enabled"] = bool(settings["enabled"])
+        month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        settings["used_this_month"] = int(conn.execute(
+            "SELECT COUNT(*) FROM media_generation_jobs WHERE created_at >= ?", (month_start,),
+        ).fetchone()[0])
+        key_env = os.getenv("ITERWAVE_IMAGE_API_KEY_ENV", "OPENAI_API_KEY").strip()
+        settings["provider_configured"] = bool(key_env and os.getenv(key_env))
+        settings["api_base_url"] = os.getenv("ITERWAVE_IMAGE_API_BASE_URL", "https://api.openai.com/v1")
+        settings["api_key_env"] = key_env
+        return settings
+
+    @app.put("/api/media/generation-settings")
+    def put_media_generation_settings(req: MediaGenerationSettingsRequest):
+        conn = _g()["conn"]
+        conn.execute(
+            "INSERT INTO media_generation_settings (id, enabled, monthly_quota, prompt_prefix, model, size, updated_at) "
+            "VALUES (1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled, monthly_quota=excluded.monthly_quota, "
+            "prompt_prefix=excluded.prompt_prefix, model=excluded.model, size=excluded.size, updated_at=CURRENT_TIMESTAMP",
+            (int(req.enabled), req.monthly_quota, req.prompt_prefix.strip(), req.model.strip(), req.size),
+        )
+        conn.commit()
+        return get_media_generation_settings()
+
+    @app.post("/api/media/generate", status_code=201)
+    def generate_media_asset(req: MediaGenerationRequest):
+        return _generate_media_asset(req)
+
+    @app.post("/api/media/{asset_id}/edit", status_code=201)
+    def edit_media_asset(asset_id: int, req: MediaGenerationRequest):
+        return _generate_media_asset(req, source_asset_id=asset_id)
+
+    @app.post("/api/media/{asset_id}/review")
+    def review_media_asset(asset_id: int, req: MediaAssetReviewRequest):
+        conn = _g()["conn"]
+        row = conn.execute(
+            "SELECT id, review_status, status FROM media_assets WHERE id = ?", (asset_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "图片素材不存在")
+        conn.execute(
+            "UPDATE media_assets SET review_status = ?, review_note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (req.decision, req.note.strip(), asset_id),
+        )
+        conn.commit()
+        return {
+            "id": asset_id, "review_status": req.decision, "review_note": req.note.strip(),
+            "previous_review_status": row["review_status"],
+        }
+
+    @app.get("/api/media")
+    def list_media_assets(
+        query: Optional[str] = Query(None, max_length=200),
+        status: str = Query("active", pattern="^(active|archived|all)$"),
+        review_status: str = Query("all", pattern="^(pending_review|approved|rejected|all)$"),
+        limit: int = Query(100, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+    ):
+        conn = _g()["conn"]
+        where: list[str] = []
+        params: list = []
+        if status != "all":
+            where.append("status = ?")
+            params.append(status)
+        if review_status != "all":
+            where.append("review_status = ?")
+            params.append(review_status)
+        if query and query.strip():
+            needle = f"%{query.strip()}%"
+            where.append("(title LIKE ? OR original_filename LIKE ? OR alt_text LIKE ? OR tags LIKE ?)")
+            params.extend([needle, needle, needle, needle])
+        sql = (
+            "SELECT id, title, original_filename, mime_type, byte_size, sha256, "
+            "width, height, alt_text, tags, source_type, source_ref, status, review_status, review_note, "
+            "quality_score, quality_details, created_at, updated_at "
+            "FROM media_assets"
+        )
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = conn.execute(sql, params).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["tags"] = json.loads(item["tags"] or "[]")
+            except (TypeError, ValueError):
+                item["tags"] = []
+            try:
+                item["quality_details"] = json.loads(item["quality_details"]) if item.get("quality_details") else None
+            except (TypeError, ValueError):
+                item["quality_details"] = None
+            item["file_url"] = f"/api/media/{item['id']}/file"
+            result.append(item)
+        return {"items": result, "limit": limit, "offset": offset}
+
+    @app.post("/api/media", status_code=201)
+    def upload_media_asset(req: MediaAssetUploadRequest):
+        registry = _g().get("tenant_registry")
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        if registry is None:
+            raise HTTPException(503, "账号组注册表尚未初始化")
+        try:
+            paths = registry.paths(tenant_id, create=True)
+            raw = base64.b64decode(req.data_base64, validate=True)
+        except (ValueError, TenantError) as exc:
+            raise HTTPException(422, "图片数据无效或账号组目录不可用") from exc
+        if not raw or len(raw) > 12 * 1024 * 1024:
+            raise HTTPException(413, "图片大小必须大于 0 且不超过 12MB")
+        digest = hashlib.sha256(raw).hexdigest()
+        conn = _g()["conn"]
+        existing = conn.execute(
+            "SELECT id, title, original_filename, mime_type, byte_size, width, height, "
+            "alt_text, tags, status, review_status, review_note, created_at FROM media_assets "
+            "WHERE sha256 = ? AND status = 'active' LIMIT 1",
+            (digest,),
+        ).fetchone()
+        if existing:
+            item = dict(existing)
+            item["tags"] = json.loads(item["tags"] or "[]")
+            item["duplicate"] = True
+            item["file_url"] = f"/api/media/{item['id']}/file"
+            return item
+        from PIL import Image, UnidentifiedImageError
+        try:
+            with Image.open(io.BytesIO(raw)) as image:
+                image.verify()
+            with Image.open(io.BytesIO(raw)) as image:
+                image_format = (image.format or "").upper()
+                width, height = image.size
+        except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as exc:
+            raise HTTPException(422, "上传内容不是有效的图片文件或超过安全像素限制") from exc
+        format_map = {
+            "JPEG": ("image/jpeg", ".jpg"),
+            "PNG": ("image/png", ".png"),
+            "WEBP": ("image/webp", ".webp"),
+            "GIF": ("image/gif", ".gif"),
+        }
+        if image_format not in format_map:
+            raise HTTPException(415, "仅支持 JPEG、PNG、WebP、GIF 图片")
+        mime_type, suffix = format_map[image_format]
+        if width < 1 or height < 1 or width > 20000 or height > 20000 or width * height > 40_000_000:
+            raise HTTPException(422, "图片尺寸不在允许范围内（单边不超过 20000 像素，总像素不超过 4000 万）")
+        stored_filename = f"{uuid.uuid4().hex}{suffix}"
+        target = (paths.media_dir / stored_filename).resolve()
+        if not target.is_relative_to(paths.media_dir.resolve()):
+            raise HTTPException(422, "素材文件路径无效")
+        safe_filename = Path(req.filename.replace(chr(92), "/")).name[:255]
+        title = req.title.strip() or safe_filename[:200]
+        tags = list(dict.fromkeys(tag.strip()[:60] for tag in req.tags if tag.strip()))[:30]
+        from src.core.media_quality import score_image
+        quality = score_image(raw)
+        target.write_bytes(raw)
+        try:
+            target.chmod(0o600)
+        except OSError:
+            pass
+        try:
+            cur = conn.execute(
+                "INSERT INTO media_assets "
+                "(title, original_filename, stored_filename, mime_type, byte_size, sha256, "
+                "width, height, alt_text, tags, source_type, status, quality_score, quality_details) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upload', 'active', ?, ?)",
+                (
+                    title, safe_filename, stored_filename, mime_type,
+                    len(raw), digest, width, height, req.alt_text.strip(),
+                    json.dumps(tags, ensure_ascii=False), quality["score"],
+                    json.dumps(quality, ensure_ascii=False),
+                ),
+            )
+            conn.commit()
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        return {
+            "id": cur.lastrowid, "title": title,
+            "original_filename": Path(req.filename).name[:255],
+            "mime_type": mime_type, "byte_size": len(raw), "sha256": digest,
+            "width": width, "height": height, "alt_text": req.alt_text.strip(),
+            "tags": tags, "source_type": "upload", "status": "active",
+            "review_status": "approved", "review_note": None,
+            "quality_score": quality["score"], "quality_details": quality,
+            "duplicate": False, "file_url": f"/api/media/{cur.lastrowid}/file",
+        }
+
+    @app.get("/api/media/{asset_id}/file")
+    def get_media_asset_file(asset_id: int):
+        registry = _g().get("tenant_registry")
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        if registry is None:
+            raise HTTPException(503, "账号组注册表尚未初始化")
+        row = _g()["conn"].execute(
+            "SELECT stored_filename, mime_type, status FROM media_assets WHERE id = ?",
+            (asset_id,),
+        ).fetchone()
+        if row is None or row["status"] != "active":
+            raise HTTPException(404, "图片素材不存在或已归档")
+        paths = registry.paths(tenant_id)
+        target = (paths.media_dir / row["stored_filename"]).resolve()
+        if not target.is_relative_to(paths.media_dir.resolve()) or not target.is_file():
+            raise HTTPException(404, "图片文件不存在")
+        return FileResponse(
+            target, media_type=row["mime_type"],
+            headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @app.get("/api/media/targets")
+    def list_media_usage_targets():
+        rows = _g()["conn"].execute(
+            "SELECT c.id, c.title, c.platform, c.round_id, c.created_at, "
+            "c.visual_status, c.visual_reason, d.status AS draft_status "
+            "FROM contents c JOIN drafts d ON d.content_id = c.id "
+            "WHERE d.status IN ('draft_pending','draft_saved') "
+            "ORDER BY c.created_at DESC LIMIT 200"
+        ).fetchall()
+        return {"items": [dict(row) for row in rows]}
+
+    @app.post("/api/media/{asset_id}/use")
+    def use_media_asset(asset_id: int, req: MediaAssetUseRequest):
+        registry = _g().get("tenant_registry")
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        if registry is None:
+            raise HTTPException(503, "账号组注册表尚未初始化")
+        conn = _g()["conn"]
+        asset = conn.execute(
+            "SELECT stored_filename, status, review_status FROM media_assets WHERE id = ?", (asset_id,),
+        ).fetchone()
+        if asset is None or asset["status"] != "active":
+            raise HTTPException(404, "图片素材不存在或已归档")
+        if asset["review_status"] != "approved":
+            raise HTTPException(409, "该素材尚未通过人工审核，不能用于内容")
+        content = conn.execute(
+            "SELECT id, round_id, platform, title FROM contents WHERE id = ?",
+            (req.content_id,),
+        ).fetchone()
+        if content is None:
+            raise HTTPException(404, "目标内容不存在")
+        draft = conn.execute(
+            "SELECT status FROM drafts WHERE content_id = ? AND platform = ? "
+            "ORDER BY rowid DESC LIMIT 1",
+            (req.content_id, content["platform"]),
+        ).fetchone()
+        if draft is None or draft["status"] not in ("draft_pending", "draft_saved"):
+            raise HTTPException(409, "只能为尚未发布的待存草稿或平台草稿选择图片")
+        paths = registry.paths(tenant_id)
+        image_path = (paths.media_dir / asset["stored_filename"]).resolve()
+        if not image_path.is_relative_to(paths.media_dir.resolve()) or not image_path.is_file():
+            raise HTTPException(404, "素材文件不存在")
+        conn.execute(
+            "UPDATE contents SET image_paths = ?, visual_status = 'media_asset', "
+            "visual_reason = NULL WHERE id = ?",
+            (json.dumps([str(image_path)], ensure_ascii=False), req.content_id),
+        )
+        conn.execute(
+            "INSERT INTO media_asset_usages (media_asset_id, content_id, platform, usage_role) "
+            "VALUES (?, ?, ?, ?)",
+            (asset_id, req.content_id, content["platform"], req.usage_role),
+        )
+        conn.commit()
+        return {
+            "asset_id": asset_id, "content_id": req.content_id,
+            "platform": content["platform"], "image_assigned": True,
+            "message": "已将素材设为该内容的图片。若平台草稿此前已保存，需重新同步平台草稿后再发布。",
+        }
+
+    @app.post("/api/media/{asset_id}/archive")
+    def archive_media_asset(asset_id: int):
+        conn = _g()["conn"]
+        row = conn.execute("SELECT id, status FROM media_assets WHERE id = ?", (asset_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "图片素材不存在")
+        conn.execute(
+            "UPDATE media_assets SET status = 'archived', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (asset_id,),
+        )
+        conn.commit()
+        return {"id": asset_id, "status": "archived", "already_archived": row["status"] == "archived"}
+
+    @app.post("/api/tenant-backup")
+    def create_tenant_backup():
+        cfg = _g()["cfg"]
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        data_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
+        db_path = Path(cfg.resolve_path(cfg.paths.db_file))
+        backup_dir = Path(cfg.resolve_path(cfg.paths.backup_dir))
+        try:
+            from src.core.tenant_backup import create_backup
+            target = create_backup(db_path, data_dir, backup_dir, tenant_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("账号组备份失败 tenant=%s", tenant_id)
+            raise HTTPException(500, f"账号组备份失败：{exc}") from exc
+        return {
+            "backup_name": target.name,
+            "size_bytes": target.stat().st_size,
+            "created_at": datetime.fromtimestamp(target.stat().st_mtime).isoformat(timespec="seconds"),
+            "includes": ["SQLite 数据库快照", "活动图片素材", "账号组运行配置覆盖"],
+            "excludes": ["登录态 Cookie", "浏览器登录 profile", "API 密钥", "共享原始热点数据"],
+        }
+
+    @app.get("/api/tenant-backups")
+    def list_tenant_backups():
+        cfg = _g()["cfg"]
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        backup_dir = Path(cfg.resolve_path(cfg.paths.backup_dir))
+        items = []
+        for path in sorted(backup_dir.glob(f"iterwave_{tenant_id}_*.zip"), reverse=True):
+            if not path.is_file():
+                continue
+            items.append({
+                "backup_name": path.name,
+                "size_bytes": path.stat().st_size,
+                "created_at": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+            })
+        return {"items": items}
+
+    @app.post("/api/tenant-backup/restore")
+    def stage_tenant_backup_restore(req: TenantBackupRestoreRequest):
+        if not req.confirm:
+            raise HTTPException(400, "恢复操作需要显式确认")
+        if _running_rounds:
+            raise HTTPException(409, "当前仍有轮次在执行，不能安排恢复")
+        cfg = _g()["cfg"]
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        data_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
+        backup_dir = Path(cfg.resolve_path(cfg.paths.backup_dir)).resolve()
+        backup_name = Path(req.backup_name).name
+        if backup_name != req.backup_name or not backup_name.startswith(f"iterwave_{tenant_id}_") or not backup_name.endswith(".zip"):
+            raise HTTPException(422, "备份名称无效或不属于当前账号组")
+        target = (backup_dir / backup_name).resolve()
+        if not target.is_relative_to(backup_dir) or not target.is_file():
+            raise HTTPException(404, "备份文件不存在")
+        pending = data_dir / ".pending_restore.json"
+        pending.write_text(
+            json.dumps({"tenant_id": tenant_id, "backup_name": backup_name}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        try:
+            pending.chmod(0o600)
+        except OSError:
+            pass
+        return {
+            "staged": True,
+            "restart_required": True,
+            "backup_name": backup_name,
+            "message": "恢复将在后端下次启动、打开数据库前执行。请停止使用当前实例并立即重启；重启前的新写入不会保留。",
+        }
+
+    @app.get("/api/tenants")
+    def list_tenants():
+        registry = _g().get("tenant_registry")
+        if registry is None:
+            raise HTTPException(503, "账号组注册表尚未初始化")
+        try:
+            return {
+                "runtime_tenant_id": _g().get("runtime_tenant_id", "default"),
+                "selected_tenant_id": registry.active_id(),
+                "restart_required": registry.active_id() != _g().get("runtime_tenant_id", "default"),
+                "items": registry.list(),
+            }
+        except TenantError as exc:
+            raise HTTPException(503, str(exc)) from exc
+
+    @app.post("/api/tenants")
+    def create_tenant(req: TenantCreateRequest):
+        registry = _g().get("tenant_registry")
+        if registry is None:
+            raise HTTPException(503, "账号组注册表尚未初始化")
+        try:
+            paths = registry.create(req.tenant_id, req.name)
+        except TenantError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {
+            "tenant": {"id": req.tenant_id, "name": req.name.strip()},
+            "paths": paths.as_dict(),
+            "restart_required": False,
+        }
+
+    @app.post("/api/tenants/select")
+    def select_tenant(req: TenantSelectRequest):
+        registry = _g().get("tenant_registry")
+        if registry is None:
+            raise HTTPException(503, "账号组注册表尚未初始化")
+        if _running_rounds:
+            raise HTTPException(409, "当前仍有轮次在执行，不能切换账号组")
+        try:
+            selected = registry.select_active(req.tenant_id)
+        except TenantError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        runtime_id = _g().get("runtime_tenant_id", "default")
+        return {
+            "selected": selected,
+            "runtime_tenant_id": runtime_id,
+            "restart_required": selected["id"] != runtime_id,
+            "message": (
+                "账号组已选择。当前进程仍使用旧账号组；请重启服务后切换才会生效。"
+                if selected["id"] != runtime_id
+                else "当前账号组已是运行中的账号组。"
+            ),
+        }
 
     # --- 访问保护（口令 / 会话 / 脚本令牌）---
     @app.get("/api/auth/status")
@@ -1297,6 +1951,7 @@ def _register_routes(app: FastAPI) -> None:
         conn = _g()["conn"]
         sql = (
             "SELECT d.*, c.title, c.body, c.tags, c.image_paths, c.round_id, c.topic_id, "
+            "c.visual_status AS visual_status, c.visual_reason AS visual_reason, "
             "c.platform as cfg_platform, c.guard_outcome AS guard_outcome, c.guard_reason AS guard_reason, "
             "c.review_rejected AS review_rejected, "
             "c.review_rejection_reason AS review_rejection_reason "

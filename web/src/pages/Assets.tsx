@@ -5,6 +5,7 @@ import TopicPoolPane from "../components/TopicPoolPane";
 import KbSourcesPanel from "../components/KbSourcesPanel";
 import IndustryPresetPicker from "../components/IndustryPresetPicker";
 import CreatedContentPane from "../components/CreatedContentPane";
+import MediaLibraryPane from "../components/MediaLibraryPane";
 import { useApp } from "../AppContext";
 import { PersonaEditor } from "../components/ConfigEditors";
 import { navigate, useUrlTab } from "../nav";
@@ -12,12 +13,13 @@ import {
   api, AssetItem, AssetType, Draft, HotTopicItem, KbInspect, ScoredTopic, SystemConfigView,
 } from "../api";
 
-type Tab = "topics" | "scoring" | "created" | "sources" | "voice" | "templates" | "mapping";
+type Tab = "topics" | "scoring" | "created" | "media" | "sources" | "voice" | "templates" | "mapping";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "topics", label: "选题池" },
   { key: "scoring", label: "选题评分" },
   { key: "created", label: "已生产内容" },
+  { key: "media", label: "图片素材库" },
   { key: "sources", label: "外部参考" },
   { key: "voice", label: "个人观点与画像" },
   { key: "templates", label: "内容模板" },
@@ -188,6 +190,7 @@ export default function Assets() {
       )}
 
       {tab === "created" && <CreatedContentPane />}
+      {tab === "media" && <MediaLibraryPane />}
 
       {tab === "sources" && (
         <>

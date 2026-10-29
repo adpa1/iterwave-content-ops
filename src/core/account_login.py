@@ -49,6 +49,16 @@ PROFILE_BASE = PROJECT_ROOT / "data" / "_profiles"
 # 项目其余模块读取的 storage_state（login_manager.LOGIN_DIR）
 STORAGE_STATE_DIR = PROJECT_ROOT / "data" / "login_states"
 
+
+def configure_data_dir(data_dir: Path | str) -> None:
+    """按当前账号组配置登录产物路径；默认组仍映射原有 data/ 文件位置。"""
+    global LOGIN_DIR, PROFILE_BASE, STORAGE_STATE_DIR
+    root = Path(data_dir).resolve()
+    LOGIN_DIR = root / "_login"
+    PROFILE_BASE = root / "_profiles"
+    STORAGE_STATE_DIR = root / "login_states"
+
+
 LOGIN_TIMEOUT = 240
 PLATFORMS = ("xhs", "douyin", "kuaishou", "wechat_channels")
 

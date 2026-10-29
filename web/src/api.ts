@@ -154,6 +154,8 @@ export interface Draft {
   title?: string | null;
   round_id?: number | null;
   topic_id?: string | null;
+  visual_status?: "degraded" | "media_asset" | "generated" | null;
+  visual_reason?: string | null;
   scheduled_publish_at?: string | null;
   /** 用户补填的平台笔记链接（被动评论轮询靠它定位笔记） */
   platform_note_url?: string | null;
@@ -415,6 +417,70 @@ export interface UnscheduledDraft {
 
 /** G-13 内容资产（外部参考 / 个人观点 / 内容模板） */
 export type AssetType = "reference" | "voice" | "template";
+
+export interface TenantItem {
+  id: string;
+  name: string;
+  created_at: string | null;
+  is_active: boolean;
+}
+export interface TenantListResponse {
+  runtime_tenant_id: string;
+  selected_tenant_id: string;
+  restart_required: boolean;
+  items: TenantItem[];
+}
+export interface TenantBackupItem {
+  backup_name: string;
+  size_bytes: number;
+  created_at: string;
+}
+export interface MediaGenerationSettings {
+  enabled: boolean;
+  monthly_quota: number;
+  prompt_prefix: string;
+  model: string;
+  size: "1024x1024" | "1024x1536" | "1536x1024";
+  updated_at: string | null;
+  used_this_month: number;
+  provider_configured: boolean;
+  api_base_url: string;
+  api_key_env: string;
+}
+export interface MediaUsageTarget {
+  id: string;
+  title: string;
+  platform: Platform;
+  round_id: number;
+  created_at: string | null;
+  visual_status: "degraded" | "media_asset" | "generated";
+  visual_reason: string | null;
+  draft_status: "draft_pending" | "draft_saved";
+}
+
+export interface MediaAsset {
+  id: number;
+  title: string;
+  original_filename: string;
+  mime_type: string;
+  byte_size: number;
+  sha256?: string;
+  width: number;
+  height: number;
+  alt_text: string;
+  tags: string[];
+  source_type: "upload" | "generated" | "imported";
+  source_ref?: string | null;
+  status: "active" | "archived";
+  review_status: "pending_review" | "approved" | "rejected";
+  review_note?: string | null;
+  quality_score?: number | null;
+  quality_details?: { reasons?: string[]; disclaimer?: string; method?: string } | null;
+  created_at?: string;
+  updated_at?: string;
+  file_url: string;
+  duplicate?: boolean;
+}
 
 export interface AssetItem {
   id: number;
@@ -1117,6 +1183,50 @@ export const api = {
   updateSchedule: (draft_id: string, scheduled: string | null) =>
     fetchJson<{ draft_id: string; scheduled_publish_at: string | null }>(
       `/api/schedule/${draft_id}`, { method: "PATCH", body: JSON.stringify({ scheduled_publish_at: scheduled }) },
+    ),
+  // === 账号组隔离 ===
+  tenants: () => fetchJson<TenantListResponse>("/api/tenants"),
+  createTenant: (data: { tenant_id: string; name: string }) =>
+    fetchJson<{ tenant: TenantItem; restart_required: boolean }>("/api/tenants", {
+      method: "POST", body: JSON.stringify(data),
+    }),
+  createTenantBackup: () =>
+    fetchJson<{ backup_name: string; size_bytes: number; created_at: string; includes: string[]; excludes: string[] }>(
+      "/api/tenant-backup", { method: "POST" },
+    ),
+  tenantBackups: () => fetchJson<{ items: TenantBackupItem[] }>("/api/tenant-backups"),
+  stageTenantBackupRestore: (backup_name: string, confirm: boolean) =>
+    fetchJson<{ staged: boolean; restart_required: boolean; backup_name: string; message: string }>(
+      "/api/tenant-backup/restore", { method: "POST", body: JSON.stringify({ backup_name, confirm }) },
+    ),
+  selectTenant: (tenant_id: string) =>
+    fetchJson<{ selected: { id: string; name: string }; runtime_tenant_id: string; restart_required: boolean; message: string }>(
+      "/api/tenants/select", { method: "POST", body: JSON.stringify({ tenant_id }) },
+    ),
+  // === 图片素材库 ===
+  mediaAssets: (query = "", status: "active" | "archived" | "all" = "active") =>
+    fetchJson<{ items: MediaAsset[]; limit: number; offset: number }>(
+      `/api/media?status=${encodeURIComponent(status)}&limit=200${query ? `&query=${encodeURIComponent(query)}` : ""}`,
+    ),
+  uploadMediaAsset: (data: { filename: string; title?: string; alt_text?: string; tags?: string[]; data_base64: string }) =>
+    fetchJson<MediaAsset>("/api/media", { method: "POST", body: JSON.stringify(data) }),
+  archiveMediaAsset: (id: number) =>
+    fetchJson<{ id: number; status: string; already_archived: boolean }>(`/api/media/${id}/archive`, { method: "POST" }),
+  mediaUsageTargets: () => fetchJson<{ items: MediaUsageTarget[] }>("/api/media/targets"),
+  useMediaAsset: (asset_id: number, content_id: string, usage_role: "cover" | "illustration" | "background" = "illustration") =>
+    fetchJson<{ asset_id: number; content_id: string; platform: Platform; image_assigned: boolean; message: string }>(
+      `/api/media/${asset_id}/use`, { method: "POST", body: JSON.stringify({ content_id, usage_role }) },
+    ),
+  mediaGenerationSettings: () => fetchJson<MediaGenerationSettings>("/api/media/generation-settings"),
+  saveMediaGenerationSettings: (data: Pick<MediaGenerationSettings, "enabled" | "monthly_quota" | "prompt_prefix" | "model" | "size">) =>
+    fetchJson<MediaGenerationSettings>("/api/media/generation-settings", { method: "PUT", body: JSON.stringify(data) }),
+  generateMediaAsset: (data: { prompt: string; title?: string; alt_text?: string; tags?: string[] }) =>
+    fetchJson<MediaAsset>("/api/media/generate", { method: "POST", body: JSON.stringify(data) }),
+  editMediaAsset: (id: number, data: { prompt: string; title?: string; alt_text?: string; tags?: string[] }) =>
+    fetchJson<MediaAsset>(`/api/media/${id}/edit`, { method: "POST", body: JSON.stringify(data) }),
+  reviewMediaAsset: (id: number, decision: "approved" | "rejected", note = "") =>
+    fetchJson<{ id: number; review_status: string; review_note: string; previous_review_status: string }>(
+      `/api/media/${id}/review`, { method: "POST", body: JSON.stringify({ decision, note }) },
     ),
   // === G-13 内容资产 / 字段映射 ===
   assets: (asset_type?: AssetType) =>
