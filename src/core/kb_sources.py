@@ -21,6 +21,9 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
+
+from .safe_http import SafeFetchError, fetch_public_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 UPLOAD_EXTS = {".csv", ".jsonl", ".ndjson", ".json", ".db", ".sqlite", ".sqlite3", ".xlsx"}
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_REMOTE_BYTES = 20 * 1024 * 1024
+MAX_TOPIC_ROWS = 100_000
 REMOTE_TIMEOUT = 30
 
 
@@ -48,6 +52,10 @@ def data_dir(cfg) -> Path:
 def kb_dir(cfg) -> Path:
     d = data_dir(cfg) / "kb"
     d.mkdir(parents=True, exist_ok=True)
+    try:
+        d.chmod(0o700)
+    except OSError:
+        logger.warning("无法收紧选题库目录权限：%s", d.name)
     return d
 
 
@@ -117,10 +125,22 @@ def source_summary(cfg) -> dict[str, Any]:
 
 
 def _mask_url(url: str) -> str:
-    """隐藏 URL 里的查询参数值（可能带 token）。"""
+    """用于界面展示的远程地址只保留协议和主机，路径及查询部分可能包含凭据。"""
     if not url:
         return ""
-    return re.sub(r"([?&][^=&#]+)=[^&#]*", r"\1=***", url)
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+            return "远程地址"
+        host = parsed.hostname.lower()
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        port = parsed.port
+        default_port = 443 if parsed.scheme.lower() == "https" else 80
+        authority = host if port is None or port == default_port else f"{host}:{port}"
+        return f"{parsed.scheme.lower()}://{authority}/…"
+    except ValueError:
+        return "远程地址"
 
 
 # ---------------------------------------------------------------------------
@@ -142,8 +162,16 @@ def save_upload(cfg, filename: str, content: bytes) -> Path:
     stamp = datetime.now().strftime("%Y%m%d%H%M%S")
     dest_dir = kb_dir(cfg) / "uploads"
     dest_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        dest_dir.chmod(0o700)
+    except OSError:
+        logger.warning("无法收紧上传目录权限：%s", dest_dir.name)
     dest = dest_dir / f"{safe}_{stamp}{ext}"
     dest.write_bytes(content)
+    try:
+        dest.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧上传文件权限：%s", dest.name)
     logger.info("📥 选题库上传: %s (%d bytes)", dest.name, len(content))
     return dest
 
@@ -189,50 +217,51 @@ def _sniff_format(body: bytes, content_type: str) -> str:
 
 
 def sync_remote(cfg) -> dict[str, Any]:
-    """下载远程选题库到本地缓存。返回 {ok, format, rows, message}。"""
-    import httpx
-
+    """下载远程选题库到本地缓存。只允许公网 HTTP(S)，流式限制响应大小。"""
     kb = cfg.topic_kb
     url = (kb.remote_url or "").strip()
     if not url:
         raise KbSourceError("还没有填写远程地址")
-    if not re.match(r"^https?://", url):
-        raise KbSourceError("远程地址必须以 http:// 或 https:// 开头")
     headers = {"User-Agent": "IterWave/1.0"}
     if kb.remote_header and kb.remote_token_env:
         token = os.environ.get(kb.remote_token_env)
         if token:
             headers[kb.remote_header] = token
     try:
-        with httpx.Client(timeout=REMOTE_TIMEOUT, follow_redirects=True) as client:
-            resp = client.get(url, headers=headers)
-    except httpx.HTTPError as exc:
-        raise KbSourceError(f"无法访问远程地址：{type(exc).__name__}") from exc
-    if resp.status_code in (401, 403):
-        raise KbSourceError("远程地址拒绝访问，请检查鉴权设置")
-    if resp.status_code >= 400:
-        raise KbSourceError(f"远程地址返回错误（{resp.status_code}）")
-    body = resp.content
-    if len(body) > MAX_REMOTE_BYTES:
-        raise KbSourceError("远程文件超过 20MB")
+        body, content_type, _final_url = fetch_public_bytes(
+            url, headers=headers, timeout=REMOTE_TIMEOUT, max_bytes=MAX_REMOTE_BYTES
+        )
+    except SafeFetchError as exc:
+        raise KbSourceError(str(exc)) from exc
 
     fmt = _remote_format(kb)
     if fmt == "auto":
-        fmt = _sniff_format(body, resp.headers.get("content-type", ""))
+        fmt = _sniff_format(body, content_type)
 
     rows = 0
     if fmt == "rss":
-        items = parse_feed(body, default_dimension=kb.default_dimension, source=url)
+        items = parse_feed(body, default_dimension=kb.default_dimension, source=_mask_url(url))
+        if len(items) > MAX_TOPIC_ROWS:
+            raise KbSourceError(f"远程选题库超过 {MAX_TOPIC_ROWS:,} 行上限")
         dest = kb_dir(cfg) / "remote_cache.jsonl"
         with open(dest, "w", encoding="utf-8") as f:
             for it in items:
                 f.write(json.dumps(it, ensure_ascii=False) + "\n")
         rows = len(items)
     else:
+        if fmt not in ("csv", "json", "jsonl"):
+            raise KbSourceError("远程文件格式不支持")
         ext = {"csv": ".csv", "json": ".json", "jsonl": ".jsonl"}[fmt]
         dest = kb_dir(cfg) / f"remote_cache{ext}"
         dest.write_bytes(body)
+        try:
+            dest.chmod(0o600)
+        except OSError:
+            logger.warning("无法收紧远程缓存文件权限：%s", dest.name)
         rows = _count_rows(dest, fmt)
+        if rows > MAX_TOPIC_ROWS:
+            dest.unlink(missing_ok=True)
+            raise KbSourceError(f"远程选题库超过 {MAX_TOPIC_ROWS:,} 行上限")
     # 清掉其它格式的旧缓存，避免读到过期文件
     for old in kb_dir(cfg).glob("remote_cache.*"):
         if old != dest:
@@ -244,13 +273,17 @@ def sync_remote(cfg) -> dict[str, Any]:
     return {"ok": True, "format": fmt, "rows": rows,
             "synced_at": datetime.now().isoformat(timespec="seconds")}
 
-
 def _meta_path(cfg) -> Path:
     return kb_dir(cfg) / "remote_meta.json"
 
 
 def _write_meta(cfg, meta: dict) -> None:
-    _meta_path(cfg).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    path = _meta_path(cfg)
+    path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧远程选题库元数据权限：%s", path.name)
 
 
 def remote_meta(cfg) -> dict:
