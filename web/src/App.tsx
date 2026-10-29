@@ -227,7 +227,9 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
     }
   };
 
-  useEffect(() => { void loadTenants(); }, []);
+  useEffect(() => {
+    api.tenants().then(setTenantData).catch((error) => console.warn("tenant switcher load failed:", error));
+  }, []);
 
   const handleTenantChange = async (tenantId: string) => {
     if (!tenantId || tenantId === tenantData?.selected_tenant_id || tenantLoading) return;
