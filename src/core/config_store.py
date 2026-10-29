@@ -530,6 +530,10 @@ def _save_overrides(cfg: Config, overrides: dict[str, Any]) -> None:
         json.dumps(overrides, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    try:
+        path.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧运行时配置覆盖文件权限：%s", path.name)
 
 
 def apply_overrides(cfg: Config, overrides: dict[str, Any]) -> list[str]:
