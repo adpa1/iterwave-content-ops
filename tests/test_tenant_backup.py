@@ -1,0 +1,51 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+
+from src.core.tenant_backup import create_backup, restore_backup
+
+
+def test_tenant_backup_restores_database_media_and_overrides(tmp_path: Path) -> None:
+    data_dir = tmp_path / "tenants" / "brand_a" / "data"
+    backup_dir = tmp_path / "tenants" / "brand_a" / "backups"
+    media_dir = data_dir / "media"
+    data_dir.mkdir(parents=True)
+    media_dir.mkdir()
+    backup_dir.mkdir(parents=True)
+    db_path = data_dir / "easel.db"
+
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE media_assets (
+            id INTEGER PRIMARY KEY,
+            stored_filename TEXT NOT NULL,
+            status TEXT NOT NULL
+        );
+        CREATE TABLE state (value TEXT NOT NULL);
+        INSERT INTO state VALUES ('before');
+        INSERT INTO media_assets VALUES (1, 'image_a.png', 'active');
+    """)
+    conn.close()
+    (media_dir / "image_a.png").write_bytes(b"image-original")
+    (data_dir / "config_overrides.json").write_text('{"quota": 10}', encoding="utf-8")
+
+    archive = create_backup(db_path, data_dir, backup_dir, "brand_a")
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE state SET value='after'")
+    conn.commit()
+    conn.close()
+    (media_dir / "image_a.png").write_bytes(b"image-changed")
+    (data_dir / "config_overrides.json").write_text('{"quota": 99}', encoding="utf-8")
+
+    result = restore_backup(archive, db_path, data_dir, backup_dir, "brand_a")
+
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert conn.execute("SELECT value FROM state").fetchone()[0] == "before"
+    conn.close()
+    assert (media_dir / "image_a.png").read_bytes() == b"image-original"
+    assert json.loads((data_dir / "config_overrides.json").read_text(encoding="utf-8")) == {"quota": 10}
+    assert Path(result["rollback_db"]).is_file()
