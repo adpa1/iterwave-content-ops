@@ -1186,6 +1186,18 @@ def _register_routes(app: FastAPI) -> None:
         if not ok:
             raise HTTPException(400, msg)
 
+        current_row = conn.execute(
+            "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+        ).fetchone()
+        if current_row and current_row["status"] != req.target_status:
+            # 正常状态只能由对应业务事件推进：运行执行器、用户发布确认、
+            # 数据采集与复盘任务。通用状态接口只提供安全取消，不允许跳过业务校验。
+            if req.target_status != "cancelled":
+                raise HTTPException(
+                    409,
+                    "该状态由业务流程自动推进，不支持手工修改。请使用运行本轮、发布确认或等待系统采集与复盘",
+                )
+
         if req.target_status == "cancelled":
             current = conn.execute(
                 "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
