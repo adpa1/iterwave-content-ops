@@ -255,3 +255,65 @@ def test_feedback_resolution_exception_marks_round_and_task_failed(cfg, conn, se
         "ORDER BY id DESC LIMIT 1", (str(round_id),)
     ).fetchone()
     assert task is not None and task["status"] == "failed"
+
+
+def _finalization_report():
+    return {"errors": [], "steps": []}
+
+
+def test_finalize_marks_all_cancelled_drafts_as_cancelled_round(cfg, conn, seed):
+    round_id = seed.round(status="producing")
+    seed.draft(round_id, platform="xhs", draft_status="cancelled", fetch_status=None)
+    seed.draft(round_id, platform="douyin", draft_status="cancelled", fetch_status=None, topic_id="t2")
+
+    report = _finalization_report()
+    _executor(cfg, conn)._finalize_round(round_id, report)
+
+    assert report["final_status"] == "cancelled"
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "cancelled"
+
+
+def test_finalize_marks_all_expired_drafts_as_cancelled_round(cfg, conn, seed):
+    round_id = seed.round(status="producing")
+    seed.draft(round_id, platform="xhs", draft_status="expired", fetch_status=None)
+    seed.draft(round_id, platform="douyin", draft_status="expired", fetch_status=None, topic_id="t2")
+
+    report = _finalization_report()
+    _executor(cfg, conn)._finalize_round(round_id, report)
+
+    assert report["final_status"] == "cancelled"
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "cancelled"
+
+
+def test_finalize_failed_and_cancelled_without_saved_drafts_fails_round(cfg, conn, seed):
+    round_id = seed.round(status="producing")
+    seed.draft(round_id, platform="xhs", draft_status="failed", fetch_status=None)
+    seed.draft(round_id, platform="douyin", draft_status="cancelled", fetch_status=None, topic_id="t2")
+
+    report = _finalization_report()
+    _executor(cfg, conn)._finalize_round(round_id, report)
+
+    assert report["final_status"] == "failed"
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "failed"
+
+
+def test_finalize_saved_draft_with_cancelled_sibling_still_awaits_publish(cfg, conn, seed):
+    round_id = seed.round(status="producing")
+    seed.draft(round_id, platform="xhs", draft_status="draft_saved", fetch_status=None)
+    seed.draft(round_id, platform="douyin", draft_status="cancelled", fetch_status=None, topic_id="t2")
+
+    report = _finalization_report()
+    _executor(cfg, conn)._finalize_round(round_id, report)
+
+    assert report["final_status"] == "awaiting_publish"
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "awaiting_publish"
+
+
