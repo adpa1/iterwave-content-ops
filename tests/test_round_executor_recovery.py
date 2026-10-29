@@ -97,6 +97,10 @@ def test_dry_run_pending_drafts_can_be_saved_without_regenerating(cfg, conn, see
         adapter.payloads[0].tags,
         adapter.payloads[0].image_paths,
     )
+    saved_title = conn.execute(
+        "SELECT saved_platform_title FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0]
+    assert saved_title == adapter.payloads[0].title
     assert conn.execute(
         "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
     ).fetchone()[0] == "awaiting_publish"
