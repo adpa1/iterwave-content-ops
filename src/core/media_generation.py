@@ -37,8 +37,8 @@ def validate_image_bytes(raw: bytes) -> tuple[str, str, int, int]:
         raise ImageGenerationError("生成结果不是有效的图片文件") from exc
     if image_format not in _FORMATS:
         raise ImageGenerationError("生成结果格式不支持，仅接受 JPEG、PNG、WebP、GIF")
-    if width < 1 or height < 1 or width > 20000 or height > 20000:
-        raise ImageGenerationError("生成结果尺寸超出允许范围")
+    if width < 1 or height < 1 or width > 20000 or height > 20000 or width * height > 40_000_000:
+        raise ImageGenerationError("生成结果尺寸超出允许范围（总像素不超过 4000 万）")
     mime_type, suffix = _FORMATS[image_format]
     return mime_type, suffix, width, height
 
