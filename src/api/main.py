@@ -1163,6 +1163,21 @@ def _register_routes(app: FastAPI) -> None:
             _running_rounds.discard(round_id)
         return report
 
+    @app.post("/api/rounds/{round_id}/save_pending")
+    async def save_pending_drafts(round_id: int):
+        """恢复已生成但尚未存到平台的草稿，不重新生成内容、不执行发布操作。"""
+        if round_id in _running_rounds:
+            raise HTTPException(
+                409, f"轮次 {round_id} 正在执行中，请等待本次执行结束"
+            )
+        _running_rounds.add(round_id)
+        try:
+            return await _g()["executor"].save_pending_drafts(round_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        finally:
+            _running_rounds.discard(round_id)
+
     @app.post("/api/rounds/{round_id}/transition")
     def round_transition(round_id: int, req: TransitionRequest):
         ok, msg = _g()["sm_round"].can_transition(round_id, req.target_status)
