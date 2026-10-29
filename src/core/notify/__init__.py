@@ -263,6 +263,7 @@ class Notifier:
             hostname = (parsed.hostname or "").lower()
             if (
                 parsed.scheme.lower() != "https"
+                or parsed.port not in (None, 443)
                 or hostname not in allowed_hosts.get(channel, set())
                 or parsed.username is not None
                 or parsed.password is not None
