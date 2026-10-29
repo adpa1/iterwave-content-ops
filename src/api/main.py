@@ -1588,6 +1588,13 @@ def _register_routes(app: FastAPI) -> None:
             row["title"], row["body"], parse_json_list(row["tags"]), payload_images,
         )
         old_hash = row["saved_content_hash"]
+        if old_hash == current_hash:
+            return {
+                "draft_id": draft_id,
+                "platform_content_sync": "matched",
+                "already_synced": True,
+                "message": "平台草稿版本已与当前本地文案一致，无需重复登记",
+            }
         conn.execute(
             "UPDATE drafts SET saved_content_hash = ? WHERE id = ?",
             (current_hash, draft_id),
