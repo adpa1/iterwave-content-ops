@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from src.api import main as api_main
 from src.core import auth, config_store, env_store, kb_sources
+from src.core.redact import redact
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +45,18 @@ def api_client(cfg, conn):
     finally:
         api_main._g_ctx.clear()
         api_main._g_ctx.update(saved)
+
+
+def test_redact_masks_bearer_tokens_and_signed_urls():
+    raw = (
+        "Authorization: Bearer bearer-secret-value "
+        "failed https://user:password@example.com/feed?access_token=URLSECRET&keep=visible"
+    )
+    safe = redact(raw)
+    assert "bearer-secret-value" not in safe
+    assert "password@" not in safe
+    assert "URLSECRET" not in safe
+    assert "keep=visible" in safe
 
 
 # =====================================================================
