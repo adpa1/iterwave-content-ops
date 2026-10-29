@@ -83,6 +83,10 @@ def data_dir(cfg) -> Path:
 def kb_dir(cfg) -> Path:
     p = data_dir(cfg) / "kb"
     p.mkdir(parents=True, exist_ok=True)
+    try:
+        p.chmod(0o700)
+    except OSError:
+        logger.debug("无法收紧选题库目录权限：%s", p.name)
     return p
 
 
@@ -93,12 +97,20 @@ def registry_file(cfg) -> Path:
 def upload_dir(cfg) -> Path:
     p = kb_dir(cfg) / "uploads"
     p.mkdir(parents=True, exist_ok=True)
+    try:
+        p.chmod(0o700)
+    except OSError:
+        logger.debug("无法收紧上传目录权限：%s", p.name)
     return p
 
 
 def cache_dir(cfg) -> Path:
     p = kb_dir(cfg) / "cache"
     p.mkdir(parents=True, exist_ok=True)
+    try:
+        p.chmod(0o700)
+    except OSError:
+        logger.debug("无法收紧缓存目录权限：%s", p.name)
     return p
 
 
@@ -170,6 +182,10 @@ def save_registry(cfg, sources: list[dict]) -> None:
         json.dumps({"version": 1, "sources": sources}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    try:
+        path.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧选题来源登记文件权限：%s", path.name)
 
 
 def _new_id() -> str:
@@ -540,6 +556,10 @@ def sync_remote(cfg, source: dict) -> dict:
         cache.write_text(buf.getvalue(), encoding="utf-8-sig")
     else:
         raise ValueError("远程来源不支持写入缓存（仅 CSV / JSON / JSONL / RSS）")
+    try:
+        cache.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧远程缓存文件权限：%s", cache.name)
     return {
         "last_sync_at": datetime.now().isoformat(timespec="seconds"),
         "last_error": None,
@@ -763,6 +783,10 @@ def add_upload(cfg, *, filename: str, content_b64: str, name: str = "",
         raise ValueError("文件不是有效的 .xlsx")
     dest = upload_dir(cfg) / f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{safe}"
     dest.write_bytes(data)
+    try:
+        dest.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧上传文件权限：%s", dest.name)
     columns, rows = read_table(dest, fmt)
     mapping, missing = detect_mapping(columns, field_mapping or {})
     if "title" in missing:
