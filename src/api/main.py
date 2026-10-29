@@ -1150,7 +1150,12 @@ def _register_routes(app: FastAPI) -> None:
             (round_id,),
         ).fetchall()
         result = dict(row)
-        result["drafts"] = [dict(d) for d in drafts]
+        round_drafts = []
+        for draft in drafts:
+            item = dict(draft)
+            item["review_rejected"] = bool(item.get("review_rejected"))
+            round_drafts.append(item)
+        result["drafts"] = round_drafts
         return result
 
     @app.post("/api/rounds/{round_id}/run")
@@ -1301,8 +1306,9 @@ def _register_routes(app: FastAPI) -> None:
         for item in rows:
             result = dict(item)
             outcome = result.get("guard_outcome")
+            result["review_rejected"] = bool(result.get("review_rejected"))
             result["guard_confirmation_allowed"] = (
-                not bool(result.get("review_rejected"))
+                not result["review_rejected"]
                 and (outcome == "pass" or (outcome == "warn" and not llm_available))
             )
             items.append(result)
