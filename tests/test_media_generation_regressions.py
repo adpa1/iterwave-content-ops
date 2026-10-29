@@ -99,11 +99,15 @@ def test_tenant_create_response_does_not_return_server_paths(tmp_path, test_auth
         api_main._g_ctx.update(saved)
 
 
-def test_empty_body_cannot_trigger_content_image_generation(conn, cfg, test_auth, tmp_path):
+def test_empty_body_cannot_trigger_content_image_generation(conn, seed, cfg, test_auth, tmp_path):
     registry = TenantRegistry(tmp_path / "workspace")
     registry.initialize()
+    round_id = seed.round()
+    topic_id = seed.topic("empty-body-topic")
     conn.execute(
-        "INSERT INTO contents (id, title, body, platform) VALUES ('empty-body-content', '有标题', '', 'xhs')"
+        "INSERT INTO contents (id, round_id, topic_id, platform, title, body) "
+        "VALUES ('empty-body-content', ?, ?, 'xhs', '有标题', '')",
+        (round_id, topic_id),
     )
     conn.commit()
     saved = dict(api_main._g_ctx)
@@ -125,9 +129,13 @@ def test_empty_body_cannot_trigger_content_image_generation(conn, cfg, test_auth
         api_main._g_ctx.update(saved)
 
 
-def test_recommendation_limit_can_return_more_than_eight_items(conn, test_auth):
+def test_recommendation_limit_can_return_more_than_eight_items(conn, seed, test_auth):
+    round_id = seed.round()
+    topic_id = seed.topic("many-media-topic")
     conn.execute(
-        "INSERT INTO contents (id, title, body, platform) VALUES ('many-media-content', '产品设计介绍', '产品设计细节和使用方式', 'xhs')"
+        "INSERT INTO contents (id, round_id, topic_id, platform, title, body) "
+        "VALUES ('many-media-content', ?, ?, 'xhs', '产品设计介绍', '产品设计细节和使用方式')",
+        (round_id, topic_id),
     )
     for asset_id in range(1, 13):
         conn.execute(
