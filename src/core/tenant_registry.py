@@ -61,7 +61,7 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
                 os.fchmod(stream.fileno(), 0o600)
             except (AttributeError, OSError):
                 temp_path.chmod(0o600)
-            stream.write(json.dumps(data, ensure_ascii=False, indent=2) + "\\n")
+            stream.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temp_path, path)
