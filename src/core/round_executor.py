@@ -857,10 +857,17 @@ class RoundExecutor:
                 continue
 
             if result.success:
+                from src.core.content_version import content_version_hash
+                saved_version_hash = content_version_hash(
+                    payload.title, payload.body, payload.tags, payload.image_paths,
+                )
                 self.sm_draft.transition(
                     row["draft_id"], "draft_saved",
                     reason="Playwright 存草稿成功",
-                    extra_updates={"draft_id": result.platform_draft_id},
+                    extra_updates={
+                        "draft_id": result.platform_draft_id,
+                        "saved_content_hash": saved_version_hash,
+                    },
                 )
                 report["drafts_saved"] += 1
                 saved_draft_ids.append(row["draft_id"])
