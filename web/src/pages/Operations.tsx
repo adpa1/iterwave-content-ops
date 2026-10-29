@@ -424,6 +424,8 @@ function PublishPane() {
   const [error, setError] = useState<string | null>(null);
   // 已发布笔记链接：被动评论轮询用它定位笔记；不填则该篇跳过轮询
   const [noteUrls, setNoteUrls] = useState<Record<string, string>>({});
+  // 实际发布已发生但质检失败/失效时，要求显式说明例外原因，保留数据闭环与审计记录。
+  const [qualityOverrideReasons, setQualityOverrideReasons] = useState<Record<string, string>>({});
 
   const fetchDrafts = async () => {
     try {
@@ -443,11 +445,20 @@ function PublishPane() {
     try {
       // G-11：同一草稿的确认按钮在请求中禁用，重复点击被 withPending 拦截
       const noteUrl = (noteUrls[id] ?? "").trim();
-      const res = await withPending(`publish:${id}`, () => api.confirmPublish(id, noteUrl || undefined));
+      const overrideReason = (qualityOverrideReasons[id] ?? "").trim();
+      const res = await withPending(
+        `publish:${id}`,
+        () => api.confirmPublish(id, noteUrl || undefined, overrideReason || undefined),
+      );
       if (res) {
         // 行内即时更新，无需等整表刷新
         setDrafts((prev) => prev.map((d) => (d.id === id ? { ...d, status: res.status } : d)));
-        showToast("✓ 已标记 user_published", "success");
+        showToast(
+          overrideReason
+            ? "✓ 已登记发布；质检例外原因已留痕"
+            : "✓ 已标记 user_published",
+          "success",
+        );
         await fetchDrafts();
       }
     } catch (e: any) {
@@ -487,8 +498,14 @@ function PublishPane() {
                 <div className="task-desc">
                   状态：<strong>{d.status}</strong> · {d.saved_at ? `存草稿 ${new Date(d.saved_at).toLocaleString("zh-CN")}` : ""}
                 </div>
+                {d.status === "draft_saved" && d.guard_confirmation_allowed !== true && (
+                  <div className="note" style={{ marginTop: 6, color: "var(--orange)" }}>
+                    当前质检状态：{d.guard_outcome ?? "未检查"}{d.guard_reason ? ` · ${d.guard_reason}` : ""}。
+                    尚未发布时请先回到内容审核页复检；若已在平台真实发布，需填写例外原因才能登记采集。
+                  </div>
+                )}
               </div>
-              <div className="task-actions" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <div className="task-actions" style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
                 {d.status === "draft_saved" && (
                   <>
                     <input
@@ -496,13 +513,28 @@ function PublishPane() {
                       onChange={(e) => setNoteUrls((prev) => ({ ...prev, [d.id]: e.target.value }))}
                       placeholder="已发布笔记链接（可选，填了才自动拉评论）"
                       style={{ width: 240, fontSize: 12 }}
+                      disabled={pending !== null}
                     />
+                    {d.guard_confirmation_allowed !== true && (
+                      <input
+                        value={qualityOverrideReasons[d.id] ?? ""}
+                        onChange={(e) => setQualityOverrideReasons((prev) => ({ ...prev, [d.id]: e.target.value }))}
+                        placeholder="已发布但质检未过？填写例外原因（必填）"
+                        style={{ width: 260, fontSize: 12 }}
+                        disabled={pending !== null}
+                        aria-label={`${d.title ?? d.id} 的发布质检例外原因`}
+                      />
+                    )}
                     <button
                       className="btn sm success"
-                      disabled={pending !== null}
+                      disabled={pending !== null || (d.guard_confirmation_allowed !== true && !(qualityOverrideReasons[d.id] ?? "").trim())}
                       onClick={() => confirm(d.id)}
                     >
-                      {pending === d.id ? "提交中…" : "✓ 我已发布"}
+                      {pending === d.id
+                        ? "提交中…"
+                        : d.guard_confirmation_allowed === true
+                          ? "✓ 我已发布"
+                          : "⚠ 已发布，仍登记"}
                     </button>
                   </>
                 )}
