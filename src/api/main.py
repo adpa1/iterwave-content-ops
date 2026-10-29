@@ -323,12 +323,12 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
         }
     except Exception as exc:
         logger.exception("账号组热切换失败 from=%s to=%s", old_tenant_id, tenant_id)
-        if new_started:
-            try:
-                new_context["scheduler"].shutdown()
+        try:
+            new_context["scheduler"].shutdown()
+            if new_started:
                 await asyncio.sleep(0.05)
-            except Exception:
-                logger.exception("关闭失败的新账号组调度器失败 tenant=%s", tenant_id)
+        except Exception:
+            logger.exception("清理失败的新账号组调度器失败 tenant=%s", tenant_id)
         try:
             new_context["conn"].close()
         except Exception:
