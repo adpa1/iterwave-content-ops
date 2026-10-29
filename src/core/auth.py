@@ -166,21 +166,30 @@ def request_token(cookie_token: Optional[str], headers) -> Optional[str]:
     return cookie_token or header_token or None
 
 
-def is_authenticated(cookie_token: Optional[str], headers) -> bool:
+def is_authenticated(cookie_token: Optional[str], headers, ip: Optional[str] = None) -> bool:
     if not password_configured():
         return True
-    candidate = request_token(cookie_token, headers)
+    # Cookie 只接受服务端签发的会话 token；无效 Cookie 不再触发 PBKDF2 口令校验。
+    if _session_valid(cookie_token):
+        return True
+
+    # 脚本口令只能从明确的认证请求头传入，并且与登录接口共用失败计数/限速。
+    candidate = request_token(None, headers)
     if not candidate:
         return False
-    if _session_valid(candidate):
+    client_ip = ip or "unknown"
+    if is_rate_limited(client_ip):
+        return False
+    if verify_password(candidate):
+        clear_failures(client_ip)
         return True
-    # 脚本直接带口令（常量时间比较）
-    return verify_password(candidate)
+    record_failure(client_ip)
+    return False
 
 
-def status(cookie_token: Optional[str], headers) -> dict:
+def status(cookie_token: Optional[str], headers, ip: Optional[str] = None) -> dict:
     configured = password_configured()
-    authenticated = is_authenticated(cookie_token, headers)
+    authenticated = is_authenticated(cookie_token, headers, ip=ip)
     return {
         "configured": configured,
         "authenticated": authenticated,
@@ -189,12 +198,12 @@ def status(cookie_token: Optional[str], headers) -> dict:
     }
 
 
-def session_cookie_header(token: str) -> str:
-    """HttpOnly + SameSite=Lax；本地 HTTP 不加 Secure，避免 http:// 下丢 Cookie。"""
-    return (
-        f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; "
-        f"Max-Age={SESSION_TTL_SECONDS}"
-    )
+def session_cookie_header(token: str, *, secure: bool = False) -> str:
+    """生成会话 Cookie；HTTPS 部署附加 Secure，纯 HTTP 本地开发仍可登录。"""
+    attrs = f"{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax"
+    if secure:
+        attrs += "; Secure"
+    return f"{attrs}; Max-Age={SESSION_TTL_SECONDS}"
 
 
 def clear_cookie_header() -> str:
