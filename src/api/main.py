@@ -1144,7 +1144,9 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(404, f"轮次 {round_id} 不存在")
         # 附带 drafts 列表
         drafts = conn.execute(
-            "SELECT * FROM drafts WHERE content_id IN (SELECT id FROM contents WHERE round_id = ?)",
+            "SELECT d.*, c.review_rejected AS review_rejected, "
+            "c.review_rejection_reason AS review_rejection_reason "
+            "FROM drafts d JOIN contents c ON c.id = d.content_id WHERE c.round_id = ?",
             (round_id,),
         ).fetchall()
         result = dict(row)
