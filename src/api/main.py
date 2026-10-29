@@ -1111,7 +1111,7 @@ def _register_routes(app: FastAPI) -> None:
             params.extend([needle, needle, needle, needle])
         sql = (
             "SELECT id, title, original_filename, mime_type, byte_size, sha256, "
-            "width, height, alt_text, tags, source_type, source_ref, status, review_status, created_at, updated_at "
+            "width, height, alt_text, tags, source_type, source_ref, status, review_status, review_note, created_at, updated_at "
             "FROM media_assets"
         )
         if where:
@@ -1253,10 +1253,12 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(503, "账号组注册表尚未初始化")
         conn = _g()["conn"]
         asset = conn.execute(
-            "SELECT stored_filename, status FROM media_assets WHERE id = ?", (asset_id,),
+            "SELECT stored_filename, status, review_status FROM media_assets WHERE id = ?", (asset_id,),
         ).fetchone()
         if asset is None or asset["status"] != "active":
             raise HTTPException(404, "图片素材不存在或已归档")
+        if asset["review_status"] != "approved":
+            raise HTTPException(409, "该素材尚未通过人工审核，不能用于内容")
         content = conn.execute(
             "SELECT id, round_id, platform, title FROM contents WHERE id = ?",
             (req.content_id,),
