@@ -35,7 +35,7 @@ export default function MediaLibraryPane() {
   const [altText, setAltText] = useState("");
   const [tagsText, setTagsText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [purpose, setPurpose] = useState("门店环境");
+  const [purpose, setPurpose] = useState("场景环境");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [targetWarning, setTargetWarning] = useState("");
@@ -275,8 +275,8 @@ export default function MediaLibraryPane() {
           <label className="field">
             <span className="field-label">用途分类（批量应用）</span>
             <select value={purpose} onChange={(event) => setPurpose(event.target.value)}>
-              <option>封面</option><option>商品/菜品</option><option>门店环境</option><option>团队人物</option>
-              <option>服务过程</option><option>活动海报</option><option>品牌标识</option><option>其他</option>
+              <option>封面主视觉</option><option>产品/作品</option><option>场景环境</option><option>人物/团队</option>
+              <option>过程/细节</option><option>活动宣传</option><option>品牌元素</option><option>信息图示</option><option>背景氛围</option><option>其他</option>
             </select>
           </label>
           <label className="field">
@@ -342,7 +342,7 @@ export default function MediaLibraryPane() {
               <textarea rows={3} maxLength={2000} value={generationSettings.prompt_prefix} onChange={(event) => setGenerationSettings({ ...generationSettings, prompt_prefix: event.target.value })} placeholder="例如：真实摄影风格、构图简洁、避免文字水印；根据账号品牌风格统一视觉表现" />
             </label>
             <div className="panel-sub" style={{ marginTop: 8 }}>
-              本月已请求 {generationSettings.used_this_month} 次 / 配额 {generationSettings.monthly_quota} 次。服务地址：{generationSettings.api_base_url} · 密钥环境变量：{generationSettings.api_key_env}
+              本月成功生成 {generationSettings.used_this_month} 次 / 配额 {generationSettings.monthly_quota} 次。失败的生成不计入已用额度。
             </div>
             <div className="panel-sub" style={{ marginTop: 4 }}>
               视觉初筛依据分辨率、构图、亮度、对比度、清晰度和颜色多样性给出可解释分数；它不判断图片是否符合文案语义，也不替代人工审核。
@@ -410,7 +410,7 @@ export default function MediaLibraryPane() {
             <select value={selectedContentId} onChange={(event) => { setSelectedContentId(event.target.value); setTargetWarning(""); setRecommendations([]); setRecommendationMessage(""); }} style={{ minWidth: 260, maxWidth: "100%" }}>
               {targets.map((target) => (
                 <option value={target.id} key={target.id}>
-                  {target.title} · {target.platform} · {target.draft_status} · {target.visual_status === "media_asset" ? "已有素材图" : target.visual_status === "generated" ? "AI 配图" : "模板降级图"} · #{target.id}
+                  {target.title} · {({ xhs: "小红书", douyin: "抖音", kuaishou: "快手", wechat_channels: "视频号" } as Record<string, string>)[target.platform] ?? "平台内容"} · {target.draft_status === "draft_saved" ? "已存平台草稿" : "待存草稿"} · {target.visual_status === "media_asset" ? "已有素材图" : target.visual_status === "generated" ? "AI 配图" : "默认配图"}
                 </option>
               ))}
             </select>

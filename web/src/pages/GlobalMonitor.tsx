@@ -63,13 +63,13 @@ export default function GlobalMonitor() {
     ["账号组", total?.tenants ?? "—", `数据库可读取 ${total?.available_tenants ?? "—"} 个`],
     ["内容产出", total?.contents_period ?? "—", `近 ${days} 天`],
     ["内容总量", total?.contents_all ?? "—", "所有可读取账号组"],
-    ["待存草稿", total?.drafts_pending ?? "—", "draft_pending 状态；不等同于人工审核"],
+    ["待存草稿", total?.drafts_pending ?? "—", "系统尚未保存到平台的草稿；不等同于人工审核"],
     ["已存平台草稿", total?.drafts_saved ?? "—", "不等同于已发布"],
     ["已发布及后续状态", total?.drafts_published ?? "—", "含已发布、采集和已采集"],
     ["失败草稿", total?.drafts_failed ?? "—", "按失败状态记录统计"],
     ["可用图片素材", total?.media_active ?? "—", "各账号组素材库合计"],
     ["素材使用关系", total?.media_usage ?? "—", "记录配图分配关系"],
-    ["已登记平台账号", data?.totals.registered_accounts_active ?? "—", "所有可读取账号组中人工登记且启用的账号"],
+    ["已登记平台账号", data?.totals.registered_accounts ?? "—", "所有可读取账号组中人工登记的账号总数（含停用）"],
   ] as const;
 
   return (
@@ -177,7 +177,7 @@ export default function GlobalMonitor() {
           </section>
 
           <div className="note" style={{ marginTop: 12 }}>
-            统计说明：内容产出量依据 contents.created_at；草稿按 drafts.status 分类；“待存草稿”不代表人工审核队列；“发布及后续”包含已发布、数据采集中和已采集状态。平台账号数量仅统计各账号组中人工登记且启用的账号标识；未登记的账号不计入，不能据此推断平台实际全部账号。
+            统计说明：内容产出量依据内容创建时间；草稿按系统状态分类；“待存草稿”不代表人工审核队列；“发布及后续”包含已发布、数据采集中和已采集状态。顶部“已登记平台账号”为登记总数（含停用），账号组明细列为启用数；未登记的账号不计入，不能据此推断平台实际全部账号。
           </div>
         </>
       )}
