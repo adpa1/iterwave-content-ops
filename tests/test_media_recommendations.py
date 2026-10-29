@@ -8,7 +8,7 @@ from src.api import main as api_main
 
 
 def test_media_recommendations_match_keywords_and_exclude_unapproved(test_auth):
-    conn = sqlite3.connect(":memory:")
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.executescript("""
         CREATE TABLE contents (id TEXT PRIMARY KEY, title TEXT, body TEXT, platform TEXT);
