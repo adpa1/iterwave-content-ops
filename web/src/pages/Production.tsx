@@ -1054,6 +1054,14 @@ export default function Production() {
                   <button className="btn" onClick={handleRecheck} disabled={isPending("recheck-content")}>
                     {isPending("recheck-content") ? "重检中…" : "⌕ 重新过目标检查"}
                   </button>
+                  <button className="btn" onClick={() => {
+                    const url = new URL(window.location.href);
+                    url.searchParams.set("page", "assets");
+                    url.searchParams.set("tab", "media");
+                    url.searchParams.set("focusContent", selectedContent.id);
+                    window.history.pushState({}, "", url.toString());
+                    window.dispatchEvent(new PopStateEvent("popstate"));
+                  }}>▧ 在素材库为此内容配图</button>
                   <button className="btn" onClick={handleCopy}>☷ 复制文案</button>
                   <button className="btn danger" style={{ marginLeft: "auto" }} onClick={handleDeleteContent}
                     disabled={isPending("delete-content") || ["user_published", "data_fetching", "published"].includes(selectedContent.draft_status ?? "")}
