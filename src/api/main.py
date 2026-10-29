@@ -1586,9 +1586,20 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.patch("/api/contents/{content_id}")
     def update_content(content_id: str, req: UpdateContentRequest):
-        """人工编辑文案 → 写 user_override 留痕（§16.3），不自动放行 G2。"""
+        """人工编辑未发布文案 → 写 user_override 留痕；已发布内容保持不可变。"""
         conn = _g()["conn"]
         row = _content_row(conn, content_id)
+        published = conn.execute(
+            "SELECT status FROM drafts WHERE content_id = ? "
+            "AND status IN ('user_published', 'data_fetching', 'published') "
+            "ORDER BY rowid DESC LIMIT 1",
+            (content_id,),
+        ).fetchone()
+        if published:
+            raise HTTPException(
+                409,
+                "该内容已确认发布或已进入数据采集，不能原地修改历史记录；请新建一篇修订内容",
+            )
 
         title = req.title if req.title is not None else row["title"]
         body = req.body if req.body is not None else row["body"]
