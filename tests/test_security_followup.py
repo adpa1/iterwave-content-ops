@@ -169,6 +169,19 @@ def test_load_registry_restricts_legacy_permissions(tmp_path):
     assert path.stat().st_mode & 0o777 == 0o600
 
 
+def test_invalid_source_id_is_reported_as_source_error(tmp_path):
+    cfg = SimpleNamespace(paths=SimpleNamespace(data_dir=str(tmp_path)))
+    result = kb_sources.read_source(cfg, {
+        "id": "../outside",
+        "kind": "remote",
+        "name": "invalid source",
+        "url": "https://example.com/feed.csv",
+        "format": "csv",
+    })
+    assert result["status"] == "error"
+    assert result["items"] == []
+
+
 def test_source_cache_ids_cannot_escape_cache_directory(tmp_path):
     cfg = SimpleNamespace(paths=SimpleNamespace(data_dir=str(tmp_path)))
     try:
