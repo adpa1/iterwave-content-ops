@@ -703,10 +703,14 @@ def test_activation_sample_background_does_not_block_tenant_switch(
     release = threading.Event()
     calls = {"count": 0}
     base_body = (
-        "这是一段用于验证快速体验后台任务隔离的中文内容，包含真实场景、具体步骤和可执行建议。"
-        "用户需要先明确目标，再拆分任务，逐步验证执行结果，并根据反馈调整方法。"
-        "每一篇内容都补充不同的细节，避免重复表达。"
+        "个人成长 实用经验 产品经理 AI工具 需求分析 用户研究 项目管理 工作效率 数据分析 "
+        "业务流程 产品设计 用户反馈 方案验证 目标拆解 方法总结 实践案例 场景分析 效率提升 团队协作 持续迭代 经验复盘"
     )
+    variations = [
+        "第一篇重点讲如何把复杂需求拆成可验证的小任务，并通过访谈和数据确认优先级。",
+        "第二篇重点讲如何建立团队协作节奏，明确责任边界，并减少重复沟通和返工。",
+        "第三篇重点讲如何复盘项目结果，把有效经验沉淀成模板并持续优化执行流程。",
+    ]
 
     def slow_varied(*args, **kwargs):
         calls["count"] += 1
@@ -715,8 +719,8 @@ def test_activation_sample_background_does_not_block_tenant_switch(
             assert release.wait(5), "测试未及时释放模拟模型调用"
         return (
             f"快速体验样稿标题 {calls['count']}",
-            base_body + f" 本篇独立角度编号 {calls['count']}，强调实践过程与复盘。",
-            ["实践", "效率"],
+            base_body + " " + variations[(calls["count"] - 1) % len(variations)],
+            ["产品经理", "实用经验"],
         )
 
     monkeypatch.setattr(content_pipeline, "generate_copy_content", slow_varied)
