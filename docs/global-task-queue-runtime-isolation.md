@@ -139,12 +139,12 @@ ITERWAVE_ENABLE_TENANT_HOT_SWITCH=1
 
 ## 当前代码验收基线（2026-10-30）
 
-以下结果对应 PR #49 当前 head，不代表已完成真机验收：
+以下结果对应 PR #49 当前代码 head，不代表已完成真机验收：
 
 - PR：#49（仍为 Draft，目标分支仍是 PR #48 开发分支）。
-- Head commit：`0c973aeaeab6080bd5ed494a36b7902ae2812d72`。
-- GitHub Actions CI：#766，全部成功。
-- 后端测试：447 passed，2 warnings。
+- 通知隔离与时区测试修复基线：`0c973aeaeab6080bd5ed494a36b7902ae2812d72`，CI #766 成功。
+- 队列列表/API/页面可见性改进后的当前代码 head：`66154ed44e1d94676b28c83c463c225491ae41ae`，CI #774 成功。
+- 后端测试：448 passed，2 warnings。
 - Python 编译检查：通过。
 - 安全边界导入/命名检查：通过。
 - 前端构建：通过。
