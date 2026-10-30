@@ -22,7 +22,8 @@ ALLOWED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 def _backup_limits(cfg) -> tuple[int, int]:
     if cfg is None:
-        return MAX_BACKUP_BYTES, 10
+        from src.core.config import TenantBackupConfig
+        return MAX_BACKUP_BYTES, TenantBackupConfig().retention_count
     # Configuration may tighten, never relax the code-level hard safety ceiling.
     policy = cfg.tenant_backup
     return min(int(policy.max_bytes), MAX_BACKUP_BYTES), max(1, min(int(policy.retention_count), 100))
