@@ -86,3 +86,44 @@ def test_secret_query_is_redacted_from_history_but_preserved_for_runtime(conn):
     audit = conn.execute("SELECT new_value FROM config_changes").fetchone()[0]
     assert "TOPSECRET" not in snapshot
     assert "TOPSECRET" not in audit
+
+
+def test_audit_failure_rolls_back_settings_and_version(conn):
+    import sqlite3
+    import pytest
+    conn.execute(
+        "CREATE TRIGGER reject_config_audit BEFORE INSERT ON config_changes "
+        "BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END"
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        save_settings(
+            conn,
+            {"timeouts.round_timeout_hours": 48},
+            audit_rows=[("timeouts.round_timeout_hours", "24", "48")],
+        )
+    assert read_settings(conn) == {}
+    assert conn.execute("SELECT COUNT(*) FROM tenant_setting_versions").fetchone()[0] == 0
+
+
+def test_settings_are_isolated_between_database_files(cfg, conn, tmp_path):
+    from src.core.db import Database
+    from src.core.config_repository import save_settings
+    second_paths = cfg.paths.model_copy(update={
+        "data_dir": str(tmp_path / "tenant-b" / "data"),
+        "db_file": str(tmp_path / "tenant-b" / "easel.db"),
+        "backup_dir": str(tmp_path / "tenant-b" / "backups"),
+        "output_dir": str(tmp_path / "tenant-b" / "data" / "outputs"),
+        "screenshot_dir": str(tmp_path / "tenant-b" / "data" / "screenshots"),
+        "log_dir": str(tmp_path / "tenant-b" / "data" / "logs"),
+    })
+    second_cfg = cfg.model_copy(update={"paths": second_paths})
+    db = Database(second_cfg)
+    db.initialize()
+    second = db.connect()
+    try:
+        save_settings(conn, {"timeouts.round_timeout_hours": 24})
+        save_settings(second, {"timeouts.round_timeout_hours": 72})
+        assert read_settings(conn)["timeouts.round_timeout_hours"] == 24
+        assert read_settings(second)["timeouts.round_timeout_hours"] == 72
+    finally:
+        second.close()
