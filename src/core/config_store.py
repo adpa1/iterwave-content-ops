@@ -925,6 +925,17 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
     if stable_min_samples < active_min_uses:
         raise ConfigPatchError("stable_dimension_min_samples 必须大于等于 active_dimension_min_uses")
 
+    quality_min = normalized.get("media_quality.brightness_min", cfg.media_quality.brightness_min)
+    quality_max = normalized.get("media_quality.brightness_max", cfg.media_quality.brightness_max)
+    portrait_min = normalized.get("media_quality.portrait_ratio_min", cfg.media_quality.portrait_ratio_min)
+    portrait_max = normalized.get("media_quality.portrait_ratio_max", cfg.media_quality.portrait_ratio_max)
+    square_max = normalized.get("media_quality.square_ratio_max", cfg.media_quality.square_ratio_max)
+    landscape_max = normalized.get("media_quality.landscape_ratio_max", cfg.media_quality.landscape_ratio_max)
+    if quality_min >= quality_max:
+        raise ConfigPatchError("media_quality.brightness_min 必须小于 brightness_max")
+    if not portrait_min < portrait_max < square_max < landscape_max:
+        raise ConfigPatchError("图片构图比例阈值必须依次递增：portrait_min < portrait_max < square_max < landscape_max")
+
     changes: list[dict[str, Any]] = []
     persisted: dict[str, Any] = {}
     audit_rows: list[tuple[str, str | None, str]] = []
