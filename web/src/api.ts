@@ -1400,7 +1400,7 @@ export const api = {
     ),
   /** R23：Key 只写 config/.env（chmod 600）；返回值只有状态，无明文 */
   saveLlmKey: (apiKey: string) =>
-    fetchJson<{ ok: boolean; has_key: boolean; env_file: string }>("/api/config/llm_key", {
+    fetchJson<{ ok: boolean; has_key: boolean }>("/api/config/llm_key", {
       method: "POST", body: JSON.stringify({ api_key: apiKey }),
     }),
   notifyRules: () => fetchJson<NotifyRule[]>("/api/notify_rules"),
