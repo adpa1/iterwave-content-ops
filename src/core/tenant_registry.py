@@ -267,10 +267,10 @@ class TenantRegistry:
         with self._lock:
             conn = self._connect()
             try:
+                conn.execute("BEGIN IMMEDIATE")
                 if conn.execute("SELECT 1 FROM tenants WHERE id=?", (tenant_id,)).fetchone():
                     raise TenantError(f"账号组标识已存在：{tenant_id}")
                 paths = self.paths(tenant_id, name=name, create=True)
-                conn.execute("BEGIN IMMEDIATE")
                 conn.execute(
                     "INSERT INTO tenants(id,name,created_at) VALUES(?,?,?)",
                     (tenant_id, name, datetime.now().isoformat(timespec="seconds")),
