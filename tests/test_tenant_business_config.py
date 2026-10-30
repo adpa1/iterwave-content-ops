@@ -77,3 +77,17 @@ def test_builtin_industry_preset_cannot_be_overwritten(conn):
             "key": "general", "name": "替换通用", "positioning": "不应覆盖",
         })
     assert get_preset(conn, "general")["name"] == "通用"
+
+
+def test_new_builtin_presets_are_seeded_after_first_install(conn, monkeypatch):
+    import src.core.industry_presets_repository as repository
+    seed_builtins(conn)
+    new_item = {
+        "key": "future_builtin", "name": "未来模板", "description": "",
+        "positioning": "新版本新增的内置模板", "persona_keywords": [],
+        "forbidden_directions": [], "extra_redlines": [], "dimensions": [],
+        "platform_notes": {},
+    }
+    monkeypatch.setattr(repository, "PRESETS", [*repository.PRESETS, new_item])
+    assert seed_builtins(conn) == {"imported": 1}
+    assert get_preset(conn, "future_builtin")["is_builtin"] is True
