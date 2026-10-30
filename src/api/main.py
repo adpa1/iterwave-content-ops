@@ -1391,6 +1391,23 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(422, "链接域名与当前平台不匹配，请检查链接或稍后补填")
         return value
 
+    @app.post("/api/activation/start")
+    def start_activation():
+        conn = _g()["conn"]
+        tenant_id = _tenant_id()
+        now = datetime.now().isoformat(sep=" ", timespec="seconds")
+        conn.execute(
+            "INSERT OR IGNORE INTO activation_cohort (tenant_id, first_seen_at) VALUES (?, ?)",
+            (tenant_id, now),
+        )
+        conn.commit()
+        cohort = conn.execute(
+            "SELECT first_seen_at FROM activation_cohort WHERE tenant_id=?", (tenant_id,)
+        ).fetchone()
+        if cohort and cohort["first_seen_at"] == now:
+            _record_content_event("activation_started", idempotency_key="activation-started")
+        return {"first_seen_at": cohort["first_seen_at"] if cohort else now}
+
     @app.get("/api/activation/status")
     def activation_status():
         conn = _g()["conn"]
@@ -1422,13 +1439,9 @@ def _register_routes(app: FastAPI) -> None:
                     )
                 except Exception:
                     logger.exception("中断体验任务事件写入失败 run=%s", stale["id"])
-        inserted = conn.execute(
-            "INSERT OR IGNORE INTO activation_cohort (tenant_id, first_seen_at) VALUES (?, ?)",
-            (tenant_id, now),
-        ).rowcount
-        conn.commit()
-        if inserted:
-            _record_content_event("activation_started", idempotency_key="activation-started")
+        cohort = conn.execute(
+            "SELECT first_seen_at FROM activation_cohort WHERE tenant_id=?", (tenant_id,)
+        ).fetchone()
         from src.core.content_pipeline import _llm_available
         cfg = _g()["cfg"]
         latest_run = conn.execute(
@@ -1466,9 +1479,7 @@ def _register_routes(app: FastAPI) -> None:
                 "platform_login_required_for_formal_publish": True,
             },
             "quick_experience_available": _llm_available(cfg),
-            "cohort_started_at": conn.execute(
-                "SELECT first_seen_at FROM activation_cohort WHERE tenant_id=?", (tenant_id,)
-            ).fetchone()[0],
+            "cohort_started_at": cohort["first_seen_at"] if cohort else None,
         }
 
     @app.post("/api/activation/samples", status_code=202)
