@@ -4393,6 +4393,14 @@ def _register_routes(app: FastAPI) -> None:
         from src.core.industry_presets_repository import list_presets as _list_presets
         return {"items": _list_presets(_g()["conn"])}
 
+    @app.put("/api/presets/{key}")
+    def save_custom_preset(key: str, req: dict):
+        from src.core.industry_presets_repository import upsert_custom_preset
+        try:
+            return upsert_custom_preset(_g()["conn"], {**req, "key": key})
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
     @app.post("/api/presets/{key}/apply")
     def apply_preset(key: str):
         from src.core.industry_presets_repository import get_preset
