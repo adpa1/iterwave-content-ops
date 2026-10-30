@@ -98,6 +98,10 @@ def initialize_system_config(system_db_file: Path | str) -> None:
         conn.commit()
     finally:
         conn.close()
+    try:
+        db_path.chmod(0o600)
+    except OSError:
+        logger.warning("无法收紧系统级配置数据库权限：%s", db_path.name)
 
 
 def read_system_llm_settings(system_db_file: Path | str) -> dict[str, Any]:
