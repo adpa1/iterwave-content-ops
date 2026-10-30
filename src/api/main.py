@@ -1357,14 +1357,14 @@ def _register_routes(app: FastAPI) -> None:
         return str(_g().get("runtime_tenant_id") or "default")
 
     def _record_content_event(event_type: str, *, content_id: str | None = None,
-                              sample_content_id: str | None = None, metadata: dict | None = None,
-                              idempotency_key: str | None = None) -> None:
+                              sample_content_id: str | None = None, sample_run_id: str | None = None,
+                              metadata: dict | None = None, idempotency_key: str | None = None) -> None:
         conn = _g()["conn"]
         conn.execute(
             "INSERT OR IGNORE INTO content_events "
-            "(id, tenant_id, content_id, sample_content_id, event_type, event_at, source, metadata_json, idempotency_key) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'web', ?, ?)",
-            (uuid.uuid4().hex, _tenant_id(), content_id, sample_content_id, event_type,
+            "(id, tenant_id, sample_run_id, content_id, sample_content_id, event_type, event_at, source, metadata_json, idempotency_key) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'web', ?, ?)",
+            (uuid.uuid4().hex, _tenant_id(), sample_run_id, content_id, sample_content_id, event_type,
              datetime.now().isoformat(sep=" ", timespec="seconds"),
              json.dumps(metadata or {}, ensure_ascii=False), idempotency_key),
         )
@@ -1416,7 +1416,8 @@ def _register_routes(app: FastAPI) -> None:
             for stale in stale_runs:
                 try:
                     _record_content_event(
-                        "sample_generation_failed", metadata={"error_code": "task_interrupted"},
+                        "sample_generation_failed", sample_run_id=stale["id"],
+                        metadata={"error_code": "task_interrupted"},
                         idempotency_key=f"sample-failed:{stale['id']}",
                     )
                 except Exception:
@@ -1522,9 +1523,11 @@ def _register_routes(app: FastAPI) -> None:
             if duplicate:
                 return {"sample_run_id": duplicate["id"], "status": duplicate["status"], "deduplicated": True}
             raise HTTPException(409, "已有快速体验任务正在执行，请等待完成后再试") from exc
-        _record_content_event("sample_generation_started", idempotency_key=f"sample-start:{run_id}")
+        _record_content_event("sample_generation_started", sample_run_id=run_id,
+                              idempotency_key=f"sample-start:{run_id}")
         if not model_ready:
-            _record_content_event("sample_generation_failed", metadata={"error_code": error_code},
+            _record_content_event("sample_generation_failed", sample_run_id=run_id,
+                                  metadata={"error_code": error_code},
                                   idempotency_key=f"sample-failed:{run_id}")
             return {"sample_run_id": run_id, "status": "failed", "error_code": error_code,
                     "error_message": error_message}
@@ -1536,9 +1539,9 @@ def _register_routes(app: FastAPI) -> None:
         def record_sample_event(event_type: str, metadata: dict, event_key: str) -> None:
             conn_bg.execute(
                 "INSERT OR IGNORE INTO content_events "
-                "(id, tenant_id, event_type, event_at, source, metadata_json, idempotency_key) "
-                "VALUES (?, ?, ?, ?, 'web', ?, ?)",
-                (uuid.uuid4().hex, tenant_id, event_type,
+                "(id, tenant_id, sample_run_id, event_type, event_at, source, metadata_json, idempotency_key) "
+                "VALUES (?, ?, ?, ?, ?, 'web', ?, ?)",
+                (uuid.uuid4().hex, tenant_id, run_id, event_type,
                  datetime.now().isoformat(sep=" ", timespec="seconds"),
                  json.dumps(metadata, ensure_ascii=False), event_key),
             )
@@ -1671,6 +1674,21 @@ def _register_routes(app: FastAPI) -> None:
             _tenant_switch_gate.leave_request()
             raise
         return {"sample_run_id": run_id, "status": "generating", "poll_after_ms": 1200}
+
+    @app.delete("/api/activation/samples/{sample_run_id}")
+    def delete_activation_samples(sample_run_id: str):
+        conn = _g()["conn"]
+        row = conn.execute(
+            "SELECT status FROM sample_runs WHERE id=? AND tenant_id=?",
+            (sample_run_id, _tenant_id()),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "体验样稿不存在")
+        if row["status"] in ("created", "generating", "quality_check"):
+            raise HTTPException(409, "体验任务仍在执行，完成或失败后才能删除")
+        conn.execute("DELETE FROM sample_runs WHERE id=? AND tenant_id=?", (sample_run_id, _tenant_id()))
+        conn.commit()
+        return {"sample_run_id": sample_run_id, "deleted": True}
 
     @app.get("/api/activation/samples/{sample_run_id}")
     def get_activation_samples(sample_run_id: str):
