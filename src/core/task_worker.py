@@ -173,10 +173,14 @@ class GlobalTaskWorker:
                 str(exc) if getattr(exc, "code", None)
                 else "本轮执行失败，请检查运行记录"
             )
-            self.queue.fail(
-                task.task_id, self.owner,
-                error_code=error_code, error_message=safe_message,
-            )
+            try:
+                self.queue.fail(
+                    task.task_id, self.owner,
+                    error_code=error_code, error_message=safe_message,
+                )
+            except Exception:
+                # 数据库短暂不可用时不能杀死消费者；租约过期后恢复流程会标记 interrupted。
+                logger.exception("写入任务失败状态异常 task_id=%s", task.task_id)
         finally:
             if not execution.done():
                 execution.cancel()
