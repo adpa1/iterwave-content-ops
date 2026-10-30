@@ -164,6 +164,7 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "hot_topics.trend_previous_drop_ratio": (float, 0.05, 1.0),
     "hot_topics.trend_min_seen_count": (int, 2, 20),
     "hot_topics.dedup.cross_platform_similarity": (float, 0.5, 1.0),
+    "hot_topics.dedup.length_prefilter_ratio": (float, 0.0, 1.0),
     "hot_topics.max_rows": (int, 100, 1_000_000),
     "hot_topics.dedup.cross_platform_window_hours": (int, 1, 720),
     "hot_topics.filters.heat_threshold": (int, 0, 10_000_000),
