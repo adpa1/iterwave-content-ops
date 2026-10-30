@@ -1789,42 +1789,85 @@ def _register_routes(app: FastAPI) -> None:
         total_samples = len({(r["content_id"], r["platform"]) for r in merged})
         why = []
         next_actions = []
-        evidence_ids = set()
         for p in platforms:
             platform_rows = [r for r in merged if r["platform"] == p]
-            platform_sample_count = len({r["content_id"] for r in platform_rows})
+            # 同一内容仅保留统计时间最新的一份快照用于特征对照；原始来源记录仍全部保留。
+            latest_by_content = {}
+            for row in sorted(platform_rows, key=lambda r: (
+                str(r.get("measured_at") or ""),
+                1 if r.get("source") == "platform_readback" else 0,
+            )):
+                latest_by_content[row["content_id"]] = row
+            comparable_rows = list(latest_by_content.values())
+            platform_sample_count = len(comparable_rows)
             if platform_sample_count < 3:
                 continue
-            platform_best = [item for item in best if item["platform"] == p]
-            winner_ids = {item["content_id"] for item in platform_best}
-            evidence_ids.update(winner_ids)
-            titles = list(dict.fromkeys(
-                str(r.get("title") or "")[:24] for r in platform_rows
-                if r["content_id"] in winner_ids and r.get("title")
-            ))
+            metric = next((
+                name for name in ("views", "likes", "collects", "comments", "shares")
+                if sum(1 for row in comparable_rows if row.get(name) is not None) >= 3
+            ), None)
+            if metric is None:
+                continue
+            scored = sorted(
+                (row for row in comparable_rows if row.get(metric) is not None),
+                key=lambda row: row[metric], reverse=True,
+            )
+            if len(scored) < 3:
+                continue
+            top_count = max(1, (len(scored) + 2) // 3)
+            top_rows = scored[:top_count]
+            comparison_rows = scored[top_count:]
+            if not comparison_rows:
+                continue
+            top_ids = sorted({row["content_id"] for row in top_rows})
+            def _avg(values):
+                valid = [float(value) for value in values if value is not None]
+                return round(sum(valid) / len(valid), 1) if valid else None
+            top_title_len = _avg([len(str(row.get("title") or "")) for row in top_rows])
+            rest_title_len = _avg([len(str(row.get("title") or "")) for row in comparison_rows])
+            top_body_len = _avg([len(str(row.get("body") or "")) for row in top_rows])
+            rest_body_len = _avg([len(str(row.get("body") or "")) for row in comparison_rows])
+            feature_evidence = {
+                "metric": metric,
+                "top_group_size": len(top_rows),
+                "comparison_group_size": len(comparison_rows),
+                "avg_title_chars_top": top_title_len,
+                "avg_title_chars_comparison": rest_title_len,
+                "avg_body_chars_top": top_body_len,
+                "avg_body_chars_comparison": rest_body_len,
+            }
+            observed = []
+            if top_title_len is not None and rest_title_len is not None:
+                observed.append(f"领先组标题平均 {top_title_len} 字，对照组 {rest_title_len} 字")
+            if top_body_len is not None and rest_body_len is not None:
+                observed.append(f"领先组正文平均 {top_body_len} 字，对照组 {rest_body_len} 字")
             why.append({
-                "statement": f"{p} 平台内表现靠前内容的标题主题可供人工对照；这不是因果结论。",
+                "statement": f"{p} 平台内按 {metric} 排序后，领先组与其余样本的可观测差异：" +
+                    ("；".join(observed) if observed else "目前可计算的内容特征有限") +
+                    "。该差异仅用于提出假设，不代表因果关系。",
                 "sample_size": platform_sample_count,
-                "evidence_content_ids": sorted(winner_ids),
-                "examples": titles[:3],
+                "evidence_content_ids": top_ids,
+                "features": feature_evidence,
             })
             next_actions.append({
-                "action": f"在 {p} 平台选取表现靠前内容的主题和表达结构，下一周做一组对照内容。",
-                "basis": "同平台同指标的实际数据排序",
-                "verification": "使用相同统计窗口和指标比较下一组内容",
-                "evidence_content_ids": sorted(winner_ids),
+                "action": f"在 {p} 平台围绕领先组内容特征设计一组对照稿，不直接照搬结论。",
+                "basis": f"同平台 {metric} 指标领先组与对照组的内容长度差异",
+                "verification": f"保持统计窗口一致，比较下一组内容的 {metric} 指标",
+                "evidence_content_ids": top_ids,
                 "sample_size": platform_sample_count,
             })
         if not why:
-            why.append({"statement": "同一平台的可比样本不足 3 篇，暂不推断表现原因。",
-                        "sample_size": total_samples, "evidence_content_ids": []})
+            why.append({
+                "statement": "同一平台至少 3 篇具有可比指标的样本尚未形成，暂不推断表现原因。",
+                "sample_size": total_samples, "evidence_content_ids": [],
+            })
         _record_content_event("weekly_report_viewed", idempotency_key=f"weekly-view:{start.date()}:{platform or 'all'}")
         return {
             "period": {"start": start.date().isoformat(), "end": (end - timedelta(seconds=1)).date().isoformat()},
             "best_content": best, "why_it_may_work": why, "next_actions": next_actions,
             "sample_size": total_samples,
             "data_sources": sorted({str(r.get("source") or "platform_readback") for r in merged}),
-            "limitations": ["只比较同平台数据", "单篇表现不代表因果", "人工与平台读回数据保留各自来源"],
+            "limitations": ["只比较同平台数据", "单篇表现不代表因果", "人工与平台读回数据保留各自来源", "周内样本的发布后统计时长可能不同，特征差异仅作假设"],
             "generated_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
         }
 
