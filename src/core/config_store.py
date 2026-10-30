@@ -26,7 +26,6 @@ from src.core.config import DEFAULT_JOB_SCHEDULES, JOB_DESCRIPTIONS, Config, Pla
 from src.core.redact import redact, redact_path
 
 logger = logging.getLogger(__name__)
-_OVERRIDES_WRITE_LOCK = threading.RLock()
 
 # 综合热榜覆盖的平台（新增来源时不指定即默认全选）
 AGGREGATE_PLATFORMS = ("weibo", "douyin", "zhihu", "toutiao", "bilibili")
