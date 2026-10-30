@@ -77,6 +77,7 @@ activation:
   max_runs_per_day: 5
   stale_task_timeout_minutes: 30
   sample_max_output_tokens: 1200
+  max_model_calls_per_run: 9
 
 # ===== 各平台逐篇指标字段 =====
 # 只展示平台可提供/可核验的指标；未配置字段不在回填表单中出现。
