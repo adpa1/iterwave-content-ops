@@ -13,6 +13,7 @@ export interface RecoveryInfo {
 }
 
 export interface GlobalTaskQueueItem {
+  queue_order: number;
   task_id: string;
   task_type: string;
   tenant_id: string;
