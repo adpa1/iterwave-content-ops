@@ -161,13 +161,11 @@ class HotTopicCollector:
         # 来源类型：aggregate（综合热榜，默认）/ rss / json（自定义行业源）
         self.aggregate_sources = [s for s in configured if s.get("type", "aggregate") == "aggregate"]
         self.custom_sources = [s for s in configured if s.get("type") in ("rss", "json")]
-        if not configured:
-            self.aggregate_sources = [{"name": "60s.viki.moe", "url": "https://60s.viki.moe",
-                                       "platforms": ["weibo", "douyin"]}]
+        # 数据源唯一默认定义在 config/config.yaml；显式清空来源即停止采集，不再静默回退到硬编码公网源。
         self.source = self.aggregate_sources[0] if self.aggregate_sources else {}
-        self.base_url = (self.source.get("url") or "https://60s.viki.moe").rstrip("/")
-        self.platforms = list(self.source.get("platforms") or ["weibo", "douyin"])
-        self.source_name = self.source.get("name") or "60s.viki.moe"
+        self.base_url = (self.source.get("url") or "").rstrip("/")
+        self.platforms = list(self.source.get("platforms") or [])
+        self.source_name = self.source.get("name") or ""
 
     # ------------------------------------------------------------------
     # 对外入口
