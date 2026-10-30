@@ -7,6 +7,10 @@ from types import SimpleNamespace
 from src.core.ops.circuit_breaker import CircuitBreakerEngine
 
 
+class FakePlatform:
+    value = "xhs"
+
+
 class FakeCursor:
     rowcount = 1
 
@@ -36,7 +40,7 @@ class FakeAdapter:
 
 
 def test_lightweight_action_failure_uses_configured_extension_minutes():
-    platform = SimpleNamespace(value="xhs")
+    platform = FakePlatform()
     db = FakeDb()
     cfg = SimpleNamespace(
         circuit_breaker=SimpleNamespace(
