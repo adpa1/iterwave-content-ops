@@ -261,3 +261,54 @@ def test_worker_uses_task_tenant_notifier_when_foreground_is_another_tenant(tmp_
     assert foreground_c.events == []
     # ContextVar 必须在任务结束后恢复，不能污染后续任务或前台请求。
     assert notify.get_active() is foreground_c
+
+
+
+def test_worker_with_no_task_notifier_does_not_fall_back_to_foreground(tmp_path, monkeypatch):
+    """任务上下文明确没有 notifier 时，不得回退到前台账号组通知器。"""
+    from src.core import notify
+
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    task, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-a", aggregate_id="22",
+        payload={"round_id": 22, "operation": "run"},
+    )
+    claimed = queue.claim_next("worker-no-notifier")
+    assert claimed is not None
+
+    class RecordingNotifier:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, event, message, **kwargs):
+            self.events.append((event, message, kwargs))
+            return True
+
+    foreground_c = RecordingNotifier()
+    monkeypatch.setattr(notify, "_active", foreground_c)
+    observed = {}
+
+    class FakeExecutor:
+        async def run(self, round_id, **kwargs):
+            observed["notifier"] = notify.get_active()
+            return {"round_id": round_id, "final_status": "completed"}
+
+    context = {
+        "cfg": SimpleNamespace(
+            paths=SimpleNamespace(data_dir=str(tmp_path / "tenant-a" / "data")),
+            resolve_path=lambda value: value,
+        ),
+        "executor": FakeExecutor(),
+        "scheduler": SimpleNamespace(shutdown=lambda: None),
+        "conn": SimpleNamespace(close=lambda: None),
+        # 故意不提供 notifier，验证明确绑定 None 时不会串到前台账号组。
+    }
+    worker = GlobalTaskWorker(queue, lambda tenant_id: context)
+    result = asyncio.run(worker._run_task(claimed))
+
+    assert result == {"round_id": 22, "final_status": "completed"}
+    assert observed["notifier"] is None
+    assert foreground_c.events == []
+    # 任务结束后必须恢复前台默认通知器。
+    assert notify.get_active() is foreground_c
