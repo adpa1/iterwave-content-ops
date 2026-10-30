@@ -127,3 +127,13 @@ def test_settings_are_isolated_between_database_files(cfg, conn, tmp_path):
         assert read_settings(second)["timeouts.round_timeout_hours"] == 72
     finally:
         second.close()
+
+
+def test_metadata_does_not_expose_internal_service_endpoints_or_account_keys(cfg):
+    from src.core.config_store import config_metadata_view
+    keys = {item["key"] for item in config_metadata_view(cfg)}
+    assert "vision_ranking.base_url" not in keys
+    assert "media_generation.base_url" not in keys
+    for platform in ("xhs", "douyin", "kuaishou", "wechat_channels"):
+        assert f"platforms.{platform}.base_url" not in keys
+        assert f"platforms.{platform}.account_key" not in keys
