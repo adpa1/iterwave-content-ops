@@ -99,6 +99,14 @@ logger = logging.getLogger(__name__)
 # =====================================================================
 
 _g_ctx: dict = {}
+
+
+def _tenant_switch_policy(cfg=None):
+    policy = getattr(cfg, "tenant_switch", None) if cfg is not None else None
+    if policy is not None:
+        return policy
+    from src.core.config import TenantSwitchConfig
+    return TenantSwitchConfig()
 _tenant_switch_gate = TenantSwitchGate()
 
 
@@ -299,7 +307,7 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
     except TenantError as exc:
         raise HTTPException(404, str(exc)) from exc
     # 请求闸门已排空普通 API 请求；运行轮次的等待时限由当前账号组策略控制。
-    switch_policy = _g_ctx.get("cfg").tenant_switch
+    switch_policy = _tenant_switch_policy(_g_ctx.get("cfg"))
     round_timeout = switch_policy.round_drain_timeout_seconds
     round_deadline = time.monotonic() + round_timeout
     while _running_rounds:
@@ -1919,7 +1927,7 @@ def _register_routes(app: FastAPI) -> None:
                 ),
             }
         try:
-            await _tenant_switch_gate.begin_switch(timeout_seconds=_g()["cfg"].tenant_switch.request_drain_timeout_seconds)
+            await _tenant_switch_gate.begin_switch(timeout_seconds=_tenant_switch_policy(_g().get("cfg")).request_drain_timeout_seconds)
         except (TenantSwitchInProgress, TimeoutError) as exc:
             raise HTTPException(409, str(exc)) from exc
         keep_gate_closed = False
