@@ -50,7 +50,10 @@ export default function Activation() {
   useEffect(() => {
     if (!runId || !run || !["created", "generating", "quality_check"].includes(run.run.status)) return;
     const timer = window.setInterval(() => {
-      api.activationSamples(runId).then(setRun).catch((e) => setError(e.message));
+      api.activationSamples(runId).then((data) => {
+        setRun(data);
+        if (["ready", "failed", "rejected"].includes(data.run.status)) setBusy(false);
+      }).catch((e) => setError(e.message));
     }, 1400);
     return () => window.clearInterval(timer);
   }, [runId, run?.run.status]);
