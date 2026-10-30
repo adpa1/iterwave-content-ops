@@ -16,7 +16,7 @@
 - R1  只存草稿，不点发布
 - R2  G2 检查失败必须丢弃；检查器异常（ERROR）不能默认通过
 - R3  NULL ≠ 0（本模块不写任何指标数字）
-- R5  本地时区 datetime.now()
+- R5  本地时区 business_now(self.cfg)
 - R16 存草稿幂等：content_id + platform 已有 draft_saved 则跳过
 """
 
@@ -30,6 +30,8 @@ from datetime import datetime
 from typing import Optional
 
 from .config import PROJECT_ROOT
+
+from .timezone import business_now
 from .kb_reader import KbReader  # noqa: F401 — 兼容旧引用
 from .topic_pool import load_pool
 from .persona import effective_persona
@@ -155,7 +157,7 @@ class RoundExecutor:
         report: dict = {
             "round_id": round_id,
             "round_number": round_row["round_number"],
-            "started_at": datetime.now().isoformat(),
+            "started_at": business_now(self.cfg).isoformat(),
             "platforms": [p.value for p in platforms],
             "topic_count_requested": topic_count,
             "plan_source": self._plan_source,
@@ -189,7 +191,7 @@ class RoundExecutor:
                 self.sm_round.transition(round_id, "failed", "选题库无可用选题")
                 report["final_status"] = "failed"
                 self._finish_task_run(task_run_id, "failed", "选题库无可用选题")
-                report["finished_at"] = datetime.now().isoformat()
+                report["finished_at"] = business_now(self.cfg).isoformat()
                 report["step_status"] = step_status_from_report(report, self._orch)
                 try:
                     self.conn.execute(
@@ -267,7 +269,7 @@ class RoundExecutor:
         else:
             self._finish_task_run(task_run_id, "success")
 
-        report["finished_at"] = datetime.now().isoformat()
+        report["finished_at"] = business_now(self.cfg).isoformat()
         report["step_status"] = step_status_from_report(report, self._orch)
         try:
             self.conn.execute(
@@ -403,7 +405,7 @@ class RoundExecutor:
         report: dict = {
             "round_id": round_id,
             "round_number": round_row["round_number"],
-            "started_at": datetime.now().isoformat(),
+            "started_at": business_now(self.cfg).isoformat(),
             "steps": [],
             "contents_created": 0,
             "drafts_created": len(rows),
@@ -423,7 +425,7 @@ class RoundExecutor:
             "WHERE c.round_id = ? AND d.status = 'draft_pending'",
             (round_id,),
         ).fetchone()[0])
-        report["finished_at"] = datetime.now().isoformat()
+        report["finished_at"] = business_now(self.cfg).isoformat()
 
         # 保留原有生产报告，并把恢复操作作为历史事件追加；移除当前态的 dry_run 标记，
         # 避免工作流仍被展示为“存草稿已跳过”。
@@ -473,7 +475,7 @@ class RoundExecutor:
             cur = self.conn.execute(
                 "INSERT INTO task_runs (task_type, biz_id, status, attempt, started_at) "
                 "VALUES ('round_pipeline', ?, 'running', 1, ?)",
-                (str(round_id), datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                (str(round_id), business_now(self.cfg).strftime("%Y-%m-%d %H:%M:%S")),
             )
             self.conn.commit()
             return cur.lastrowid
@@ -490,7 +492,7 @@ class RoundExecutor:
             self.conn.execute(
                 "UPDATE task_runs SET status = ?, finished_at = ?, error_msg = ? WHERE id = ?",
                 (
-                    status, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    status, business_now(self.cfg).strftime("%Y-%m-%d %H:%M:%S"),
                     error[:500] if error else None, task_run_id,
                 ),
             )
@@ -622,7 +624,7 @@ class RoundExecutor:
                 "SELECT scheduled_publish_at FROM drafts WHERE platform = ? AND scheduled_publish_at IS NOT NULL",
                 (platform_key,),
             )}
-            day = datetime.now().date() + timedelta(days=1)
+            day = business_now(self.cfg).date() + timedelta(days=1)
             queue = [r[0] for r in drafts]
             guard = 0
             while queue and guard < 366:
