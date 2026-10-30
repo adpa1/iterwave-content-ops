@@ -52,30 +52,81 @@ def test_invalid_tenant_ids_are_rejected(tmp_path: Path, tenant_id: str) -> None
         registry.create(tenant_id, "Invalid")
 
 
-def test_corrupt_registry_does_not_fall_back_to_default(tmp_path: Path) -> None:
+def test_corrupt_legacy_registry_is_ignored_after_successful_db_migration(tmp_path: Path) -> None:
     registry = TenantRegistry(tmp_path)
     registry.initialize()
     registry.registry_file.write_text("{broken", encoding="utf-8")
-    with pytest.raises(TenantError, match="拒绝自动回退"):
-        registry.active_id()
+    assert registry.active_id() == "default"
 
 
-def test_active_file_unknown_tenant_does_not_fall_back(tmp_path: Path) -> None:
+def test_corrupt_legacy_active_file_is_ignored_after_successful_db_migration(tmp_path: Path) -> None:
     registry = TenantRegistry(tmp_path)
     registry.initialize()
     registry.active_file.write_text(json.dumps({"tenant_id": "missing"}), encoding="utf-8")
-    with pytest.raises(TenantError, match="拒绝自动回退"):
-        registry.active_id()
+    assert registry.active_id() == "default"
 
 
-def test_registry_atomic_writes_use_unique_temp_files_and_private_permissions(tmp_path: Path) -> None:
+def test_system_database_is_private_and_json_is_not_written_after_migration(tmp_path: Path) -> None:
     registry = TenantRegistry(tmp_path)
     registry.initialize()
     registry.create("brand_a", "品牌 A")
     registry.select_active("brand_a")
 
-    assert json.loads(registry.registry_file.read_text(encoding="utf-8"))["tenants"]
-    assert json.loads(registry.active_file.read_text(encoding="utf-8"))["tenant_id"] == "brand_a"
-    assert registry.registry_file.stat().st_mode & 0o777 == 0o600
-    assert registry.active_file.stat().st_mode & 0o777 == 0o600
+    assert registry.system_db_file.exists()
+    assert registry.system_db_file.stat().st_mode & 0o777 == 0o600
+    assert registry.active_id() == "brand_a"
+    assert not registry.registry_file.exists()
+    assert not registry.active_file.exists()
     assert not list((tmp_path / "shared").glob("*.tmp"))
+
+
+def test_existing_json_registry_and_active_state_are_imported_once(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    registry_file = shared / "tenant_registry.json"
+    active_file = shared / "active_tenant.json"
+    registry_file.write_text(json.dumps({
+        "version": 1,
+        "tenants": [
+            {"id": "default", "name": "默认账号组", "created_at": "2026-01-01T00:00:00"},
+            {"id": "brand_a", "name": "品牌 A", "created_at": "2026-01-02T00:00:00"},
+        ],
+    }), encoding="utf-8")
+    active_file.write_text(json.dumps({"tenant_id": "brand_a"}), encoding="utf-8")
+
+    registry = TenantRegistry(tmp_path)
+    registry.initialize()
+    assert registry.active_id() == "brand_a"
+    assert registry.get("brand_a")["name"] == "品牌 A"
+    assert registry.registry_file.stat().st_mode & 0o777 == 0o400
+    assert registry.active_file.stat().st_mode & 0o777 == 0o400
+
+    # Once imported, legacy files are no longer authoritative.
+    registry.registry_file.chmod(0o600)
+    registry.active_file.chmod(0o600)
+    registry.registry_file.write_text("{broken", encoding="utf-8")
+    registry.active_file.write_text(json.dumps({"tenant_id": "missing"}), encoding="utf-8")
+    registry.initialize()
+    assert registry.active_id() == "brand_a"
+
+
+def test_corrupt_legacy_registry_blocks_first_migration(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "tenant_registry.json").write_text("{broken", encoding="utf-8")
+    with pytest.raises(TenantError, match="拒绝回退"):
+        TenantRegistry(tmp_path).initialize()
+
+
+def test_unknown_legacy_active_tenant_blocks_first_migration(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "tenant_registry.json").write_text(json.dumps({
+        "version": 1,
+        "tenants": [{"id": "default", "name": "默认账号组"}],
+    }), encoding="utf-8")
+    (shared / "active_tenant.json").write_text(
+        json.dumps({"tenant_id": "missing"}), encoding="utf-8",
+    )
+    with pytest.raises(TenantError, match="拒绝自动回退"):
+        TenantRegistry(tmp_path).initialize()
