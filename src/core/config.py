@@ -636,6 +636,7 @@ class ActivationConfig(BaseModel):
     max_runs_per_day: int = Field(5, ge=1, le=100)
     stale_task_timeout_minutes: int = Field(30, ge=5, le=240)
     sample_max_output_tokens: int = Field(1200, ge=128, le=8192)
+    max_model_calls_per_run: int = Field(9, ge=3, le=30)
 
     @model_validator(mode="after")
     def _check_description_range(self) -> "ActivationConfig":
