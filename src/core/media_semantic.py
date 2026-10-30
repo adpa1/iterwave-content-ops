@@ -10,6 +10,7 @@ import json
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any
 
 import httpx
@@ -49,13 +50,27 @@ def rank_media_with_vision(
     if not allowed_ids:
         return None
 
+    base_url = os.getenv("ITERWAVE_VISION_API_BASE", policy.base_url).rstrip("/")
+    try:
+        parsed_base_url = urlsplit(base_url)
+        valid_base_url = (
+            parsed_base_url.scheme in ("https", "http")
+            and bool(parsed_base_url.hostname)
+            and parsed_base_url.username is None
+            and parsed_base_url.password is None
+        )
+    except ValueError:
+        valid_base_url = False
+    if not valid_base_url:
+        return None
+
     prompt = (
         f"请为内容选择最合适的图片，用途={usage_role}。标题={title}。正文={body[:policy.max_body_chars]}。"
         "只返回JSON对象，格式为{\"ranked_ids\":[数字ID按相关性降序],\"reasons\":{\"数字ID\":\"简短理由\"}}。"
         "只能选择给定的图片ID；如果不相关请不要选。"
     )
     response = httpx.post(
-        os.getenv("ITERWAVE_VISION_API_BASE", policy.base_url).rstrip("/") + "/chat/completions",
+        base_url + "/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json={"model": os.getenv("ITERWAVE_VISION_MODEL", policy.model),
               "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}, *blocks]}],
