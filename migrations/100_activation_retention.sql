@@ -50,6 +50,7 @@ CREATE INDEX IF NOT EXISTS idx_sample_contents_tenant ON sample_contents(tenant_
 CREATE TABLE IF NOT EXISTS content_events (
     id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
+    sample_run_id TEXT REFERENCES sample_runs(id) ON DELETE CASCADE,
     content_id TEXT,
     sample_content_id TEXT REFERENCES sample_contents(id) ON DELETE CASCADE,
     event_type TEXT NOT NULL CHECK (event_type IN (
@@ -61,7 +62,7 @@ CREATE TABLE IF NOT EXISTS content_events (
     source TEXT NOT NULL DEFAULT 'web',
     metadata_json TEXT NOT NULL DEFAULT '{}',
     idempotency_key TEXT,
-    CHECK (content_id IS NOT NULL OR sample_content_id IS NOT NULL OR event_type IN ('activation_started','sample_generation_started','sample_generation_succeeded','sample_generation_failed','weekly_report_viewed'))
+    CHECK (content_id IS NOT NULL OR sample_content_id IS NOT NULL OR sample_run_id IS NOT NULL OR event_type IN ('activation_started','sample_generation_started','sample_generation_succeeded','sample_generation_failed','weekly_report_viewed'))
 );
 CREATE INDEX IF NOT EXISTS idx_content_events_tenant_time ON content_events(tenant_id, event_at DESC);
 CREATE INDEX IF NOT EXISTS idx_content_events_type_time ON content_events(event_type, event_at DESC);
