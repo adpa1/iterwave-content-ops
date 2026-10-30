@@ -117,8 +117,9 @@ function InitialSetupScreen() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password.trim().length < 6 || busy) {
-      if (password.trim().length < 6) setError("访问口令至少 6 个字符");
+    if (busy) return;
+    if (password.trim().length < 8) {
+      setError("访问口令至少 8 个字符，并混合至少三类字符（大小写字母、数字、符号）");
       return;
     }
     setBusy(true);
@@ -145,7 +146,7 @@ function InitialSetupScreen() {
         <input
           id="initialAccessPassword" className="field" type="password" autoFocus
           value={password} onChange={(e) => setPassword(e.target.value)}
-          placeholder="设置访问口令（至少 6 位）" autoComplete="new-password"
+          placeholder="至少 8 位，混合大小写字母、数字和符号" autoComplete="new-password"
         />
         <label className="sr-only" htmlFor="initialBootstrapToken">首次设置引导口令</label>
         <input
