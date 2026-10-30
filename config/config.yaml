@@ -403,9 +403,9 @@ media_quality:
   low_resolution_pixels: 500000
   low_color_count: 3
   color_count_reference: 16
-  composition_near_portrait_multiplier: 0.85
-  composition_square_multiplier: 0.6
-  composition_landscape_multiplier: 0.25
+  composition_near_square_multiplier: 0.85
+  composition_wide_multiplier: 0.6
+  composition_extreme_multiplier: 0.25
   sharpness_fallback_contrast_reference: 60
   sampling_size: 512
   color_quantization_colors: 16
