@@ -26,9 +26,7 @@ export default function Activation() {
   const loadRun = async (id: string) => {
     const data = await api.activationSamples(id);
     setRun(data);
-    if (data.run.status === "ready" || data.run.status === "failed" || data.run.status === "rejected") {
-      setBusy(false);
-    }
+    setBusy(["created", "generating", "quality_check"].includes(data.run.status));
   };
 
   useEffect(() => {
