@@ -1473,7 +1473,7 @@ export const api = {
   config: () => fetchJson<SystemConfigView>("/api/config"),
   configMetadata: () => fetchJson<{ items: ConfigMetadataItem[] }>("/api/config/metadata"),
   patchConfig: (updates: Record<string, unknown>) =>
-    fetchJson<{ changed: { key: string; old: unknown; new: unknown }[]; noop: boolean; config: SystemConfigView["editable"] }>(
+    fetchJson<{ changed: { key: string; old: unknown; new: unknown }[]; noop: boolean; restart_required?: boolean; config: SystemConfigView["editable"] }>(
       "/api/config", { method: "PATCH", body: JSON.stringify({ updates }) },
     ),
   /** R23：Key 只写 config/.env（chmod 600）；返回值只有状态，无明文 */
