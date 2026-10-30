@@ -244,3 +244,21 @@ def test_topic_kb_path_is_not_runtime_editable_or_exposed(cfg, conn):
         patch_config(cfg, conn, {"topic_kb.path": "/tmp/evil_topics.csv"})
     assert apply_overrides(cfg, {"topic_kb.path": "/tmp/evil_topics.csv"}) == []
     assert cfg.topic_kb.path == original_path
+
+
+
+def test_feedback_bias_metadata_is_numeric_float(cfg):
+    item = next(item for item in config_metadata_view(cfg) if item["key"] == "autogrow.feedback_max_bias")
+    assert item["type"] == "number"
+    assert item["value"] == 15.0
+    assert _validate("autogrow.feedback_max_bias", 15.5) == 15.5
+
+
+def test_request_validation_messages_are_localized():
+    from src.api.main import _friendly_validation_messages
+
+    messages = _friendly_validation_messages([
+        {"loc": ("body", "platform"), "type": "string_pattern_mismatch"},
+    ])
+    assert messages == ["平台标识：格式不符合要求"]
+    assert "String should match pattern" not in messages[0]
