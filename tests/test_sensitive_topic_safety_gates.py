@@ -103,7 +103,7 @@ def test_round_run_endpoint_enqueues_global_task(client, seed, monkeypatch, tmp_
     assert started["queued"] is True
     assert started["task_id"]
 
-    tenant_id = api_main._g().get("runtime_tenant_id", "default")
+    tenant_id = api_main._g_ctx.get("runtime_tenant_id", "default")
     queued = queue.find_latest(
         tenant_id=tenant_id, task_type="round_run", aggregate_id=str(round_id),
     )
