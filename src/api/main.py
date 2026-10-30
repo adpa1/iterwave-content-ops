@@ -1986,20 +1986,29 @@ def _register_routes(app: FastAPI) -> None:
             "AND event_type='publish_confirmed' AND event_at>=? AND event_at<=?",
             (tenant_id, started.isoformat(sep=" "), (started + timedelta(days=7)).isoformat(sep=" ")),
         ).fetchone()[0]
+        cohort_window_end = min(now, started + timedelta(days=7))
         published = conn.execute(
-            "SELECT COUNT(DISTINCT d.id) FROM drafts d WHERE d.user_confirmed_at IS NOT NULL"
+            "SELECT COUNT(DISTINCT id) FROM drafts WHERE user_confirmed_at>=? AND user_confirmed_at<=?",
+            (started.isoformat(sep=" "), cohort_window_end.isoformat(sep=" ")),
         ).fetchone()[0]
         returned_count = conn.execute(
             "SELECT COUNT(DISTINCT draft_id) FROM ("
-            "SELECT draft_id FROM metric_snapshots WHERE tenant_id=? "
-            "UNION SELECT draft_id FROM metrics WHERE fetch_status IN ('success','partial') AND draft_id IS NOT NULL)"
-            , (tenant_id,),
+            "SELECT ms.draft_id FROM metric_snapshots ms JOIN drafts d ON d.id=ms.draft_id "
+            "WHERE ms.tenant_id=? AND d.user_confirmed_at>=? AND d.user_confirmed_at<=? "
+            "UNION SELECT m.draft_id FROM metrics m JOIN drafts d ON d.id=m.draft_id "
+            "WHERE m.fetch_status IN ('success','partial') AND m.draft_id IS NOT NULL "
+            "AND d.user_confirmed_at>=? AND d.user_confirmed_at<=?)",
+            (tenant_id, started.isoformat(sep=" "), cohort_window_end.isoformat(sep=" "),
+             started.isoformat(sep=" "), cohort_window_end.isoformat(sep=" ")),
         ).fetchone()[0]
-        weekly = conn.execute(
-            "SELECT COUNT(DISTINCT e.content_id) FROM content_events e "
-            "WHERE e.tenant_id=? AND e.event_type='publish_confirmed' AND e.event_at>=?",
-            (tenant_id, (now - timedelta(days=7)).isoformat(sep=" ")),
-        ).fetchone()[0]
+        platform_breakdown = [
+            dict(row) for row in conn.execute(
+                "SELECT platform, model_mode, COUNT(*) AS run_count, "
+                "SUM(CASE WHEN status='ready' THEN 1 ELSE 0 END) AS ready_count "
+                "FROM sample_runs WHERE tenant_id=? GROUP BY platform, model_mode ORDER BY platform, model_mode",
+                (tenant_id,),
+            ).fetchall()
+        ]
         complete = now >= started + timedelta(days=7)
         return {
             "cohort_size": 1,
@@ -2010,6 +2019,7 @@ def _register_routes(app: FastAPI) -> None:
             "data_return_rate": (min(1.0, returned_count / published) if published else None),
             "published_content_count": int(published),
             "data_returned_count": int(returned_count),
+            "platform_model_breakdown": platform_breakdown,
             "observation_window_complete": complete,
             "limitations": ["首期按当前账号组/安装实例统计", "7 日指标仅纳入已完成观察窗的 cohort"],
         }
@@ -3612,6 +3622,11 @@ def _register_routes(app: FastAPI) -> None:
             "publish_confirmed",
             message,
             platform=dict(row)["platform"] if row else None,
+        )
+        _record_content_event(
+            "content_adopted", content_id=row["content_id"],
+            metadata={"draft_id": draft_id, "platform": row["platform"], "adoption_source": "publish_confirmation"},
+            idempotency_key=f"content-adopted:{draft_id}",
         )
         _record_content_event(
             "publish_confirmed", content_id=row["content_id"],
