@@ -634,7 +634,7 @@ function AccessNotifyPanel({ view, onSaved }: { view: SystemConfigView; onSaved:
           <div className="note" style={{ marginBottom: 8 }}>
             {macAvailable
               ? `macOS 通知${macEnabled ? "已开启" : "未开启"}；跨平台部署请用 Webhook`
-              : "当前系统不支持 macOS 通知，请使用企微或飞书 Webhook"}
+              : "当前服务部署环境不提供 macOS 本机通知，请使用企微或飞书 Webhook"}
           </div>
           {(["wecom", "feishu"] as const).map((channel) => {
             const info = channels[channel];
