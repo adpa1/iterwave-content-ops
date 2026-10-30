@@ -131,62 +131,101 @@ def run_once(
     return status()
 
 def trigger_background(cfg, *, trigger: str = "manual", tenant_id: str | None = None) -> dict:
-    """在后台线程启动一次刷新，立即返回当前状态。"""
+    """在后台线程启动一次刷新，先原子预占状态，再启动线程。"""
     with _LOCK:
         if _STATE["running"] or _RESEARCH_STATE["running"]:
             busy = _STATE if _STATE["running"] else _RESEARCH_STATE
             return {"started": False, "reason": "热点后台任务正在执行", **busy}
-    t = threading.Thread(
-        target=run_once, args=(cfg,), kwargs={"trigger": trigger, "tenant_id": tenant_id},
+        _STATE.update(
+            running=True, tenant_id=tenant_id, trigger=trigger, error=None, progress=None,
+            started_at=datetime.now().isoformat(timespec="seconds"),
+        )
+        snapshot = dict(_STATE)
+    thread = threading.Thread(
+        target=run_once, args=(cfg,),
+        kwargs={"trigger": trigger, "tenant_id": tenant_id, "_reserved": True},
         name=f"hot-topics-refresh-{tenant_id or 'unknown'}", daemon=True,
     )
-    t.start()
-    return {"started": True, **status()}
+    try:
+        thread.start()
+    except Exception as exc:
+        from .redact import redact
+        with _LOCK:
+            _STATE.update(running=False, error=redact(str(exc))[:500],
+                          finished_at=datetime.now().isoformat(timespec="seconds"))
+        raise
+    return {"started": True, **snapshot}
 
 
-def run_research(cfg, conn=None, *, tenant_id: str | None = None) -> dict:
+def run_research(
+    cfg, conn=None, *, tenant_id: str | None = None, _reserved: bool = False,
+) -> dict:
     """同步执行一次大模型研判（只处理当前榜单里尚未研判的条目）。"""
-    with _LOCK:
-        if _RESEARCH_STATE["running"] or _STATE["running"]:
-            busy = _RESEARCH_STATE if _RESEARCH_STATE["running"] else _STATE
-            return {"skipped": True, "reason": "热点后台任务正在执行，稍后再试", **busy}
-        _RESEARCH_STATE.update(running=True, tenant_id=tenant_id, error=None, report=None,
-                               started_at=datetime.now().isoformat(timespec="seconds"))
+    if not _reserved:
+        with _LOCK:
+            if _RESEARCH_STATE["running"] or _STATE["running"]:
+                busy = _RESEARCH_STATE if _RESEARCH_STATE["running"] else _STATE
+                return {"skipped": True, "reason": "热点后台任务正在执行，稍后再试", **busy}
+            _RESEARCH_STATE.update(
+                running=True, tenant_id=tenant_id, error=None, report=None,
+                started_at=datetime.now().isoformat(timespec="seconds"),
+            )
     own_conn = conn is None
-    if own_conn:
-        from .db import Database
-        conn = Database(cfg).connect()
     report, error = None, None
     try:
+        if own_conn:
+            from .db import Database
+            conn = Database(cfg).connect()
         from .hot_topic_matcher import HotTopicMatcher, default_llm_fn
         if default_llm_fn(cfg) is None:
             raise RuntimeError("大模型未启用：请到「系统设置」开启主模型并配置 API Key")
         report = HotTopicMatcher(cfg, conn).run()
-        logger.info("🔥 热点研判完成：%s", report)
+        logger.info("热点研判完成 tenant=%s report=%s", tenant_id, report)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("热点研判失败")
-        error = str(exc)
+        from .redact import redact
+        error = redact(str(exc))[:500]
+        logger.error("热点研判失败 tenant=%s error=%s", tenant_id, error)
     finally:
-        if own_conn:
-            conn.close()
+        if own_conn and conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                logger.exception("关闭热点研判数据库连接失败 tenant=%s", tenant_id)
         with _LOCK:
-            _RESEARCH_STATE.update(running=False, report=report, error=error,
-                                   finished_at=datetime.now().isoformat(timespec="seconds"))
+            _RESEARCH_STATE.update(
+                running=False, report=report, error=error,
+                finished_at=datetime.now().isoformat(timespec="seconds"),
+            )
     return research_status()
 
 
 def trigger_research(cfg, *, tenant_id: str | None = None) -> dict:
-    """在后台线程启动一次大模型研判，立即返回当前状态。"""
+    """在后台线程启动一次大模型研判，先原子预占状态，再启动线程。"""
     with _LOCK:
         if _RESEARCH_STATE["running"] or _STATE["running"]:
             busy = _RESEARCH_STATE if _RESEARCH_STATE["running"] else _STATE
             return {"started": False, "reason": "热点后台任务正在执行，稍后再试", **busy}
-    t = threading.Thread(
-        target=run_research, args=(cfg,), kwargs={"tenant_id": tenant_id},
+        _RESEARCH_STATE.update(
+            running=True, tenant_id=tenant_id, error=None, report=None,
+            started_at=datetime.now().isoformat(timespec="seconds"),
+        )
+        snapshot = dict(_RESEARCH_STATE)
+    thread = threading.Thread(
+        target=run_research, args=(cfg,),
+        kwargs={"tenant_id": tenant_id, "_reserved": True},
         name=f"hot-topics-research-{tenant_id or 'unknown'}", daemon=True,
     )
-    t.start()
-    return {"started": True, **research_status()}
+    try:
+        thread.start()
+    except Exception as exc:
+        from .redact import redact
+        with _LOCK:
+            _RESEARCH_STATE.update(
+                running=False, error=redact(str(exc))[:500],
+                finished_at=datetime.now().isoformat(timespec="seconds"),
+            )
+        raise
+    return {"started": True, **snapshot}
 
 
 def is_stale(cfg, conn) -> bool:
