@@ -302,14 +302,41 @@ class SchedulerEngine:
     def schedule_data_fetch(
         self, draft_id: str, run_at: datetime, attempt: int = 1,
     ) -> None:
-        """为已发布的 draft 注册一次性数据采集任务（attempt 用于失败重试计数）。"""
-        self.scheduler.add_job(
-            _run_data_fetch,
-            DateTrigger(run_date=run_at),
-            id=f"data_fetch_{draft_id}_a{attempt}",
-            kwargs={"engine_key": self.engine_key, "draft_id": draft_id, "attempt": attempt},
-            replace_existing=True,
-        )
+        """为已发布的 draft 注册持久化一次性采集任务（attempt 用于失败重试计数）。"""
+        active_engine = _ENGINES.get(self.engine_key)
+        if active_engine is not None and active_engine is not self:
+            # worker 为非活动账号组构造的临时运行时不能另起同库调度器；
+            # 交给该账号组当前活动的调度器持久化任务。
+            active_engine.schedule_data_fetch(draft_id, run_at, attempt)
+            return
+
+        job_kwargs = {
+            "engine_key": self.engine_key,
+            "draft_id": draft_id,
+            "attempt": attempt,
+        }
+        job_id = f"data_fetch_{draft_id}_a{attempt}"
+        if self.scheduler.running:
+            self.scheduler.add_job(
+                _run_data_fetch, DateTrigger(run_date=run_at),
+                id=job_id, kwargs=job_kwargs, replace_existing=True,
+            )
+        else:
+            # 队列 worker 为非活动账号组执行任务时，运行时调度器不会 start。
+            # 用短生命周期的 paused scheduler 将 DateTrigger 写入该租户自己的
+            # APSchedulerJobStore；租户下次激活时再由正式调度器执行。
+            temporary = AsyncIOScheduler(
+                jobstores={"default": SQLAlchemyJobStore(url=f"sqlite:///{self.db_path}")},
+                timezone=ZoneInfo(self.cfg.business_timezone),
+            )
+            temporary.start(paused=True)
+            try:
+                temporary.add_job(
+                    _run_data_fetch, DateTrigger(run_date=run_at),
+                    id=job_id, kwargs=job_kwargs, replace_existing=True,
+                )
+            finally:
+                temporary.shutdown(wait=False)
         logger.info("📅 注册 data_fetch: draft=%s attempt=%d run_at=%s",
                     draft_id, attempt, run_at.isoformat())
 
