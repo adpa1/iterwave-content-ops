@@ -513,8 +513,6 @@ export interface MediaGenerationSettings {
   updated_at: string | null;
   used_this_month: number;
   provider_configured: boolean;
-  api_base_url?: string | null;
-  api_key_env?: string | null;
 }
 export interface MediaUsageTarget {
   id: string;
