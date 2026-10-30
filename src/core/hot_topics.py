@@ -129,13 +129,16 @@ def _parse_feed_ts(value) -> Optional[datetime]:
         return _parse_event_ts({"event_time_at": value})
     text = str(value).strip()
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
     except ValueError:
         pass
     try:
         from email.utils import parsedate_to_datetime
         dt = parsedate_to_datetime(text)
-        return dt.replace(tzinfo=None) if dt else None
+        if dt and dt.tzinfo:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
     except (TypeError, ValueError):
         return None
 
