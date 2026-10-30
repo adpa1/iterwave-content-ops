@@ -526,7 +526,7 @@ const KEY_PART: Record<string, string> = {
   scheduler: "定时任务", jobs: "", enabled: "启用", interval_minutes: "间隔分钟", cron: "执行时间",
   kb_scan: "选题库扫描", daily_ops: "每日运营", hot_topics_refresh: "热点采集", autogrow: "自动闭环",
   platforms: "平台", xhs: "小红书", douyin: "抖音", kuaishou: "快手", wechat_channels: "视频号",
-  llm: "模型", model: "模型", provider: "服务商", timeouts: "超时", scoring: "评分权重", topic_kb: "选题库",
+  llm: "模型", model: "模型", provider: "服务商", timeouts: "超时", scoring: "评分权重", topic_kb: "选题库", path: "文件位置",
 };
 function configKeyLabel(key: string): string {
   return key.split(".").map((p) => KEY_PART[p] ?? p).filter(Boolean).join(" · ");
