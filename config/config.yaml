@@ -92,7 +92,6 @@ scoring:
   active_dimension_window_days: 90
   # 收缩估计参数（样本积累模式用）
   shrinkage_m: 5
-  exploration_percent: 15
   normalization_window_days: 90
   cold_start_min_published: 10
   stable_dimension_min_samples: 5
