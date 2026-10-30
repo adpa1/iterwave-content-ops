@@ -1384,13 +1384,10 @@ def _register_routes(app: FastAPI) -> None:
                 raise ValueError("invalid URL")
         except ValueError:
             raise HTTPException(422, "请填写有效的 http(s) 发布链接")
-        domains = {
-            "xhs": ("xiaohongshu.com", "xhslink.com"),
-            "douyin": ("douyin.com", "iesdouyin.com"),
-            "kuaishou": ("kuaishou.com", "gifshow.com"),
-            "wechat_channels": ("channels.weixin.qq.com", "weixin.qq.com", "wx.qq.com"),
-        }
-        if not any(host == d or host.endswith("." + d) for d in domains[platform]):
+        domains = _g()["cfg"].platform_link_domains.get(platform, [])
+        if not domains:
+            raise HTTPException(503, "当前平台尚未配置发布链接白名单")
+        if not any(host == d.lower() or host.endswith("." + d.lower()) for d in domains):
             raise HTTPException(422, "链接域名与当前平台不匹配，请检查链接或稍后补填")
         return value
 
