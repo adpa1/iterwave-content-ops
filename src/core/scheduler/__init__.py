@@ -58,7 +58,7 @@ class SchedulerEngine:
                 "default": SQLAlchemyJobStore(url=f"sqlite:///{db_path}"),
             },
             timezone=None,  # APScheduler 接受 None 表示本地时区（R5）
-            # 应用关着时到点的任务：6 小时内重启仍补跑（默认 1 秒会把一次性数据采集直接丢掉）
+            # 应用关闭期间错过的任务：按配置的宽限期决定重启后是否补跑。
             job_defaults={"misfire_grace_time": self.cfg.scheduler.misfire_grace_minutes * 60, "coalesce": True},
         )
         # 每平台一把 asyncio.Lock（R13.3）
