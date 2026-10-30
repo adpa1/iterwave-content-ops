@@ -18,6 +18,7 @@ import Agent from "./pages/Agent";
 import Accounts from "./pages/Accounts";
 import Onboarding from "./pages/Onboarding";
 import Settings from "./pages/Settings";
+import TaskQueue from "./pages/TaskQueue";
 import GlobalSearch from "./components/GlobalSearch";
 
 function Router() {
@@ -71,6 +72,7 @@ function Router() {
       case "accounts": return <Accounts />;
       case "onboarding": return <Onboarding />;
       case "settings": return <Settings />;
+      case "task-queue": return <TaskQueue />;
       default: return <Dashboard />;
     }
   };
