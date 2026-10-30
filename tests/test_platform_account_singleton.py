@@ -13,7 +13,9 @@ def _route(path: str):
     )
 
 
-def test_platform_account_api_rejects_second_registration_even_if_first_is_inactive(client):
+def test_platform_account_api_rejects_second_registration_even_if_first_is_inactive(conn, monkeypatch):
+    monkeypatch.setitem(api_main._g_ctx, "conn", conn)
+    monkeypatch.setitem(api_main._g_ctx, "runtime_tenant_id", "default")
     create = _route("/api/platform-accounts")
     first = create.endpoint(api_main.PlatformAccountRequest(
         platform="xhs", account_handle="xhs-first", display_name="小红书", status="inactive",
@@ -28,7 +30,9 @@ def test_platform_account_api_rejects_second_registration_even_if_first_is_inact
     assert "每个平台只能登记一个账号" in str(exc.value.detail)
 
 
-def test_platform_account_update_cannot_move_account_into_occupied_platform(client):
+def test_platform_account_update_cannot_move_account_into_occupied_platform(conn, monkeypatch):
+    monkeypatch.setitem(api_main._g_ctx, "conn", conn)
+    monkeypatch.setitem(api_main._g_ctx, "runtime_tenant_id", "default")
     create = _route("/api/platform-accounts")
     update = _route("/api/platform-accounts/{account_id}")
     xhs = create.endpoint(api_main.PlatformAccountRequest(
