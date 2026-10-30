@@ -26,6 +26,7 @@ from typing import Any
 
 from src.core.config import DEFAULT_JOB_SCHEDULES, JOB_DESCRIPTIONS, Config, PlatformPersonaConfig, validate_cron
 from src.core.redact import redact, redact_path
+from src.core.notify import _EVENT_CATALOG
 
 logger = logging.getLogger(__name__)
 _OVERRIDES_WRITE_LOCK = threading.RLock()
@@ -393,6 +394,13 @@ def _validate(key: str, value: Any) -> Any:
             raise ConfigPatchError(f"{key} 必须是合法环境变量名（大写字母/数字/下划线，1-64）")
         return v
 
+    if len(parts) == 4 and parts[:2] == ["notifications", "events"] and parts[3] == "enabled":
+        if parts[2] not in _EVENT_CATALOG:
+            raise ConfigNotAllowedError(f"未知通知事件：{parts[2]}")
+        if not isinstance(value, bool):
+            raise ConfigPatchError(f"{key} 必须是布尔值")
+        return value
+
     if key == "hot_topics.sources":
         if not isinstance(value, list) or len(value) > 20:
             raise ConfigPatchError("热点源必须是数组（最多 20 条）")
@@ -573,6 +581,10 @@ def _jsonable(v: Any) -> Any:
 
 
 def _get_value(cfg: Config, key: str) -> Any:
+    parts = _split(key)
+    if len(parts) == 4 and parts[:2] == ["notifications", "events"] and parts[3] == "enabled":
+        event = next((item for item in cfg.notifications.events if item.name == parts[2]), None)
+        return event.enabled if event is not None else None
     node: Any = cfg
     for part in _split(key):
         if isinstance(node, dict):
@@ -596,6 +608,12 @@ def _counterpart(key: str) -> str | None:
 
 def _set_value(cfg: Config, key: str, value: Any) -> None:
     parts0 = _split(key)
+    if len(parts0) == 4 and parts0[:2] == ["notifications", "events"] and parts0[3] == "enabled":
+        event = next((item for item in cfg.notifications.events if item.name == parts0[2]), None)
+        if event is None:
+            raise ConfigNotAllowedError(f"未知通知事件：{parts0[2]}")
+        event.enabled = value
+        return
     if len(parts0) == 4 and parts0[:2] == ["ultimate_goal", "platform_personas"]:
         from .config import PlatformPersonaConfig
         from .persona import platform_persona
@@ -768,6 +786,13 @@ def config_metadata_view(cfg: Config) -> list[dict[str, Any]]:
         for field in SCORING_WEIGHT_FIELDS:
             key = f"scoring.{mode}.{field}"
             add(key, _get_value(cfg, key), kind="integer", minimum=0, maximum=100)
+    for category in ("news", "evergreen"):
+        key = f"scoring.timeliness_half_life_days.{category}"
+        add(key, cfg.scoring.timeliness_half_life_days.get(category), kind="integer",
+            minimum=1, maximum=3650)
+    for event in cfg.notifications.events:
+        add(f"notifications.events.{event.name}.enabled", event.enabled, kind="boolean",
+            description=f"{event.name} 通知事件开关")
     # 独立校验分支中的可编辑字段也必须出现在统一元数据中。
     for key, minimum, maximum in (
         ("scoring.active_dimension_min_uses", 1, 10),
