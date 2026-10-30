@@ -151,12 +151,6 @@ def test_sample_delete_cascades_sample_events_and_contents(activation_client, co
         (now,),
     )
     conn.execute(
-        "INSERT INTO sample_runs "
-        "(id, tenant_id, platform, account_description, status, idempotency_key, created_at, started_at, completed_at) "
-        "VALUES ('cohort-run-failed', 'default', 'xhs', '分享产品经理实践方法', 'failed', 'cohort-failed-key', ?, ?, ?)",
-        (started.isoformat(sep=" "), started.isoformat(sep=" "), (started + timedelta(seconds=40)).isoformat(sep=" ")),
-    )
-    conn.execute(
         "INSERT INTO sample_contents "
         "(id, sample_run_id, tenant_id, platform, angle, title, body, hashtags_json, quality_status, "
         "quality_findings_json, created_at, updated_at) "
@@ -294,6 +288,12 @@ def test_activation_metrics_calculates_completed_cohort_rates_and_ttv(activation
         "(id, tenant_id, platform, account_description, status, idempotency_key, created_at, started_at, completed_at) "
         "VALUES ('cohort-run', 'default', 'xhs', '分享产品经理实践方法', 'ready', 'cohort-key', ?, ?, ?)",
         (started.isoformat(sep=" "), started.isoformat(sep=" "), completed.isoformat(sep=" ")),
+    )
+    conn.execute(
+        "INSERT INTO sample_runs "
+        "(id, tenant_id, platform, account_description, status, idempotency_key, created_at, started_at, completed_at) "
+        "VALUES ('cohort-run-failed', 'default', 'xhs', '分享产品经理实践方法', 'failed', 'cohort-failed-key', ?, ?, ?)",
+        (started.isoformat(sep=" "), started.isoformat(sep=" "), (started + timedelta(seconds=40)).isoformat(sep=" ")),
     )
     conn.execute(
         "INSERT INTO sample_contents "
