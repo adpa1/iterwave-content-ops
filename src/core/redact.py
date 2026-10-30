@@ -17,6 +17,8 @@ _HOME = Path.home()
 _SECRET_PATTERN = re.compile(
     r"(?i)\b(cookie|token|authorization|api[_-]?key)\b\s*[:=]\s*(?:bearer\s+)?([^\s,;]+)"
 )
+# OpenAI-compatible API keys may appear in provider prose without an "api_key=" label.
+_API_KEY_VALUE_PATTERN = re.compile(r"(?i)\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_*.-]{6,}")
 # URL userinfo（https://user:password@host）与常见签名/令牌查询参数
 _URL_USERINFO_PATTERN = re.compile(r"(?i)(https?://)[^/@\s]+@")
 _URL_SECRET_PARAM_PATTERN = re.compile(
@@ -49,6 +51,7 @@ def redact(text: str) -> str:
     text = _URL_USERINFO_PATTERN.sub(r"\1***@", text)
     text = _URL_SECRET_PARAM_PATTERN.sub(r"\1***", text)
     text = _SECRET_PATTERN.sub(_repl_secret, text)
+    text = _API_KEY_VALUE_PATTERN.sub("sk-***", text)
 
     def _repl_url(m: re.Match) -> str:
         raw = m.group(0)

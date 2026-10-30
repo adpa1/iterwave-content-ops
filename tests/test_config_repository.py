@@ -158,3 +158,32 @@ def test_config_view_hides_provider_endpoints_from_overrides_and_audit(cfg, conn
     assert matching
     assert matching[0]["old_value"] == "已隐藏"
     assert matching[0]["new_value"] == "已隐藏"
+
+
+
+def test_purge_disallowed_settings_removes_retired_key_and_versions_snapshot(conn):
+    from src.core.config_repository import purge_disallowed_settings
+
+    save_settings(conn, {
+        "topic_kb.path": "/srv/unsafe/other-tenant/topics.csv",
+        "timeouts.round_timeout_hours": 24,
+    })
+    removed = purge_disallowed_settings(conn, {"topic_kb.path"})
+
+    assert removed == 1
+    assert read_settings(conn) == {"timeouts.round_timeout_hours": 24}
+    snapshots = conn.execute(
+        "SELECT snapshot_json, changed_by FROM tenant_setting_versions ORDER BY version"
+    ).fetchall()
+    assert snapshots[-1]["changed_by"] == "security_migration"
+    assert "topic_kb.path" not in snapshots[-1]["snapshot_json"]
+
+
+def test_redact_masks_openai_style_key_fragments_without_key_label():
+    from src.core.redact import redact
+
+    message = "Incorrect API key provided: sk-test****mock"
+    safe = redact(message)
+    assert "sk-test" not in safe
+    assert "****mock" not in safe
+    assert "sk-***" in safe

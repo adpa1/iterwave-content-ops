@@ -102,3 +102,59 @@ def test_media_recommendations_use_vision_ranker_when_available(test_auth, monke
         api_main._g_ctx.clear()
         api_main._g_ctx.update(saved)
         conn.close()
+
+
+
+def test_vision_ranking_preserves_keyword_results_beyond_candidate_limit(test_auth, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from src.core import media_semantic
+
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE contents (id TEXT PRIMARY KEY, title TEXT, body TEXT, platform TEXT);
+        CREATE TABLE media_assets (
+            id INTEGER PRIMARY KEY, title TEXT, original_filename TEXT, stored_filename TEXT,
+            alt_text TEXT, tags TEXT, quality_score INTEGER, width INTEGER, height INTEGER,
+            status TEXT, review_status TEXT, created_at TEXT
+        );
+    """)
+    conn.execute("INSERT INTO contents VALUES (?, ?, ?, ?)", ("c20", "户外帐篷", "山地露营场景", "xhs"))
+    for asset_id in range(1, 21):
+        conn.execute("INSERT INTO media_assets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (
+            asset_id, f"帐篷露营素材 {asset_id}", f"asset-{asset_id}.jpg",
+            f"asset-{asset_id}.jpg", "山地露营帐篷", '["露营", "帐篷"]',
+            90 - asset_id, 1200, 1600, "active", "approved", f"2026-10-{asset_id:02d}",
+        ))
+    conn.commit()
+    seen = {}
+
+    def fake_ranker(**kwargs):
+        seen.update(kwargs)
+        return [
+            {"asset_id": item["asset_id"], "reason": f"视觉排序第 {index + 1} 位"}
+            for index, item in enumerate(kwargs["candidates"])
+        ]
+
+    monkeypatch.setattr(media_semantic, "rank_media_with_vision", fake_ranker)
+    registry = SimpleNamespace(paths=lambda tenant_id: SimpleNamespace(media_dir=tmp_path))
+    saved = dict(api_main._g_ctx)
+    api_main._g_ctx.clear()
+    api_main._g_ctx.update({
+        "conn": conn, "runtime_tenant_id": "ta", "tenant_registry": registry,
+    })
+    try:
+        client = test_auth(TestClient(api_main._build_app(), base_url="http://127.0.0.1"))
+        response = client.get("/api/media/recommendations?content_id=c20&usage_role=cover&limit=20")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["method"] == "vision_model"
+        assert len(seen["candidates"]) == 8
+        assert len(body["items"]) == 20
+        assert [item["asset_id"] for item in body["items"][:8]] == list(range(1, 9))
+        assert {item["asset_id"] for item in body["items"]} == set(range(1, 21))
+        assert len({item["asset_id"] for item in body["items"]}) == 20
+    finally:
+        api_main._g_ctx.clear()
+        api_main._g_ctx.update(saved)
+        conn.close()
