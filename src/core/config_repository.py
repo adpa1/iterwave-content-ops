@@ -115,7 +115,7 @@ def import_legacy_overrides(conn: sqlite3.Connection, legacy_path: Path) -> dict
     return {"imported": len(accepted), "rejected": rejected}
 
 
-def save_settings(conn: sqlite3.Connection, updates: dict[str, Any], *, changed_by: str = "settings_ui") -> int:
+def save_settings(conn: sqlite3.Connection, updates: dict[str, Any], *, audit_rows: list[tuple[str, str | None, str]] | None = None, changed_by: str = "settings_ui") -> int:
     """Atomically upsert changed keys and persist a complete version snapshot."""
     if not updates:
         row = conn.execute("SELECT COALESCE(MAX(version),0) FROM tenant_setting_versions").fetchone()
@@ -145,6 +145,11 @@ def save_settings(conn: sqlite3.Connection, updates: dict[str, Any], *, changed_
             "INSERT INTO tenant_setting_versions(version,snapshot_json,changed_at,changed_by) VALUES(?,?,?,?)",
             (version, snapshot, now, changed_by),
         )
+        for key, old_value, new_value in (audit_rows or []):
+            conn.execute(
+                "INSERT INTO config_changes(key,old_value,new_value,changed_at) VALUES(?,?,?,?)",
+                (key, old_value, new_value, now),
+            )
         conn.commit()
         return version
     except Exception:
