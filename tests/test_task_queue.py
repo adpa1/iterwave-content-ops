@@ -107,3 +107,16 @@ def test_concurrent_duplicate_enqueue_creates_one_active_task(tmp_path):
 
     assert sum(created for _, created in results) == 1
     assert len({task.task_id for task, _ in results}) == 1
+
+
+def test_worker_lease_is_held_until_consumer_releases_it(tmp_path):
+    queue = make_queue(tmp_path)
+    first, _ = queue.enqueue(task_type="round_run", tenant_id="a", payload={"round_id": 1})
+    second, _ = queue.enqueue(task_type="round_run", tenant_id="b", payload={"round_id": 2})
+    claimed = queue.claim_next("worker-1", lease_seconds=120)
+    assert claimed and claimed.task_id == first.task_id
+    assert queue.finish(first.task_id, "worker-1", result={"ok": True})
+    # 任务状态已完成，但 worker 尚未释放全局租约，其他进程不能并行领取下一项。
+    assert queue.claim_next("worker-2", lease_seconds=120) is None
+    next_task = queue.claim_next("worker-1", lease_seconds=120)
+    assert next_task and next_task.task_id == second.task_id
