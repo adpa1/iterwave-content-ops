@@ -1156,6 +1156,44 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 // ===== API Functions =====
+export interface ActivationStatus {
+  tenant_id: string;
+  latest_sample_run: { id: string; status: string } | null;
+  model_mode: "byok" | "hosted_trial";
+  model_ready: boolean;
+  model_message: string;
+  quick_experience_available: boolean;
+  cohort_started_at: string;
+}
+export interface ActivationSample {
+  id: string; platform: Platform; angle: string; title: string; body: string;
+  hashtags: string[]; quality_status: "pass" | "rejected";
+  quality_findings: string[]; adopted_at: string | null; rejected_at: string | null;
+  rejection_reason: string | null;
+}
+export interface ActivationSampleRun {
+  run: {
+    id: string; platform: Platform; account_description: string; status: string;
+    model_mode: string; error_code: string | null; error_message_safe: string | null;
+    created_at: string; started_at: string | null; completed_at: string | null;
+  };
+  contents: ActivationSample[];
+}
+export interface ActivationMetrics {
+  cohort_size: number; ttv_seconds: number | null; seven_day_activation_rate: number | null;
+  first_publish_rate: number | null; data_return_rate: number | null;
+  weekly_adopted_published: number; published_content_count?: number;
+  data_returned_count?: number; observation_window_complete: boolean; limitations?: string[];
+}
+export interface WeeklyReport {
+  period: { start: string; end: string };
+  best_content: { platform: Platform; metric: string; value: number; content_id: string;
+    title: string; measured_at: string; source: string }[];
+  why_it_may_work: { statement: string; sample_size: number; evidence_content_ids: string[]; examples?: string[] }[];
+  next_actions: { action: string; basis: string; verification: string; evidence_content_ids: string[]; sample_size: number }[];
+  sample_size: number; data_sources: string[]; limitations: string[]; generated_at: string;
+}
+
 export const api = {
   status: () => fetchJson<SystemStatus>("/api/status"),
   goals: () => fetchJson<Goal[]>("/api/goals"),
@@ -1579,4 +1617,35 @@ export const api = {
     fetchJson<{ ok: boolean }>(`/api/accounts/${platform}/sms`, { method: "POST", body: JSON.stringify({ code }) }),
   cancelLogin: (platform: Platform) =>
     fetchJson<{ status: string; platform: string }>(`/api/accounts/${platform}/cancel_login`, { method: "POST" }),
+  // === 激活与留存闭环 ===
+  activationStatus: () => fetchJson<ActivationStatus>("/api/activation/status"),
+  createActivationSamples: (data: { account_description: string; platform: Platform; idempotency_key: string }) =>
+    fetchJson<{ sample_run_id: string; status: string; poll_after_ms?: number; deduplicated?: boolean;
+      error_code?: string; error_message?: string }>("/api/activation/samples", {
+        method: "POST", body: JSON.stringify(data),
+      }),
+  activationSamples: (id: string) => fetchJson<ActivationSampleRun>(`/api/activation/samples/${id}`),
+  activationSampleEvent: (runId: string, contentId: string, event_type: "copied" | "saved" | "rejected", reason?: string) =>
+    fetchJson<{ sample_content_id: string; event: string; recorded: boolean }>(
+      `/api/activation/samples/${runId}/contents/${contentId}/events`,
+      { method: "POST", body: JSON.stringify({ event_type, reason }) },
+    ),
+  updateDraftNoteUrl: (draftId: string, note_url: string) =>
+    fetchJson<{ draft_id: string; note_url: string | null; updated: boolean }>(
+      `/api/drafts/${draftId}/note_url`, { method: "POST", body: JSON.stringify({ note_url }) },
+    ),
+  submitManualMetrics: (draftId: string, data: {
+    views?: number | null; likes?: number | null; collects?: number | null;
+    comments?: number | null; shares?: number | null; new_followers?: number | null;
+    measured_at?: string; correction_of?: string | null;
+  }) => fetchJson<{ snapshot_id: string; source: string; recorded_at: string }>(
+    `/api/drafts/${draftId}/metrics/manual`, { method: "POST", body: JSON.stringify(data) },
+  ),
+  weeklyReport: (week_start?: string, platform?: Platform) => {
+    const p = new URLSearchParams();
+    if (week_start) p.set("week_start", week_start);
+    if (platform) p.set("platform", platform);
+    return fetchJson<WeeklyReport>(`/api/reports/weekly?${p}`);
+  },
+  activationMetrics: () => fetchJson<ActivationMetrics>("/api/activation/metrics"),
 };
