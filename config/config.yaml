@@ -92,6 +92,20 @@ scoring:
   active_dimension_window_days: 90
   # 收缩估计参数（样本积累模式用）
   shrinkage_m: 5
+  cold_start_min_published: 10
+  stable_dimension_min_samples: 5
+  history_normalization_scale: 2000
+  freshness_window_days: 30
+  dimension_gap_ratio: 0.5
+  dimension_gap_score: 90
+  dimension_normal_score: 40
+  no_persona_match_score: 60
+  stable_exploration_percent: 15
+  timeliness_unknown_score: 50
+  history_cold_start_score: 0
+  freshness_recent_use_penalty: 20
+  freshness_min_score: 10
+  freshness_unused_score: 100
 
 # ===== 终极目标画像（§12.3 UltimateGoalChecker）=====
 ultimate_goal:
@@ -135,6 +149,7 @@ circuit_breaker:
     - "device_verify"            # 设备验证
   # 默认冷却时间（分钟）
   cooldown_minutes: 30
+  recovery_failure_extension_minutes: 60
   # 3 步恢复验证（R6）
   recovery:
     require_cooldown_expired: true
@@ -297,7 +312,7 @@ data_retention:
 # ===== 定时任务（APScheduler，本地时区 R5）=====
 # 每个任务：enabled 开关 + 触发方式二选一（interval_minutes 或 5 段 cron「分 时 日 月 周」）
 # 未列出的任务使用代码默认值（src/core/config.py DEFAULT_JOB_SCHEDULES）；
-# 也可在「运营中心 → 定时任务」页面在线修改，写入 data/config_overrides.json 并立即重排
+# 也可在「运营中心 → 定时任务」页面在线修改，写入账号组 SQLite 并立即重排
 scheduler:
   jobs:
     publish_polling:        { enabled: true, interval_minutes: 30 }   # 发布轮询
@@ -325,3 +340,58 @@ autogrow:
   stop_when_goals_achieved: true
   feedback_max_bias: 15
   feedback_lookback_rounds: 3
+
+
+# ===== 运行时策略参数（硬安全上限仍由代码强制）=====
+vision_ranking:
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-4o-mini"
+  timeout_seconds: 25
+  candidate_limit: 8
+  max_image_bytes: 4194304
+  max_body_chars: 1800
+  temperature: 0
+  max_tokens: 600
+
+media_generation:
+  timeout_seconds: 150
+  connect_timeout_seconds: 15
+  max_response_bytes: 20971520
+  max_dimension: 20000
+  max_pixels: 40000000
+
+media_quality:
+  resolution_weight: 25
+  composition_weight: 20
+  contrast_weight: 20
+  brightness_weight: 15
+  sharpness_weight: 20
+  color_diversity_weight: 20
+  resolution_reference_pixels: 1500000
+  portrait_ratio_min: 0.55
+  portrait_ratio_max: 0.85
+  square_ratio_max: 1.1
+  landscape_ratio_max: 1.7
+  brightness_min: 45
+  brightness_max: 210
+  sharpness_reference: 500
+  sharpness_warning_threshold: 35
+  low_contrast_threshold: 18
+  low_resolution_pixels: 500000
+  low_color_count: 3
+
+tenant_switch:
+  request_drain_timeout_seconds: 30
+  scheduler_drain_timeout_seconds: 30
+  background_jobs_timeout_seconds: 120
+  login_process_timeout_seconds: 10
+
+tenant_backup:
+  max_bytes: 2147483648
+  retention_count: 10
+
+hot_topic_matcher:
+  match_threshold: 60
+  keyword_score: 60
+  batch_size: 20
+  max_per_run: 200
