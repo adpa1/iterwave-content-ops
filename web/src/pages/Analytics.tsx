@@ -47,7 +47,7 @@ export default function Analytics() {
   const [snapshotHistory, setSnapshotHistory] = useState<Record<string, {
     id: string; source: string; measured_at: string; recorded_at: string;
     views: number | null; likes: number | null; collects: number | null;
-    comments: number | null; shares: number | null; new_followers: number | null;
+    comments: number | null; shares: number | null;
     correction_of: string | null;
   }[]>>({});
   const [historyOpen, setHistoryOpen] = useState<string | null>(null);
@@ -91,7 +91,7 @@ export default function Analytics() {
       setActivationStatus(status);
       setBackfillValues(Object.fromEntries(published.map((d) => [d.id, {
         note_url: d.platform_note_url || "", measured_at: "", correction_of: "",
-        views: "", likes: "", collects: "", comments: "", shares: "", new_followers: "",
+        views: "", likes: "", collects: "", comments: "", shares: "",
       }])));
     }).catch((e) => setReportError(e?.message || "发布回填与周报数据加载失败"));
   }, []);
@@ -117,7 +117,7 @@ export default function Analytics() {
       const numeric = ["views", "likes", "collects", "comments", "shares"] as const;
       const metrics: {
         views?: number | null; likes?: number | null; collects?: number | null;
-        comments?: number | null; shares?: number | null; new_followers?: number | null;
+        comments?: number | null; shares?: number | null;
       } = {};
       for (const key of numeric) {
         const raw = value[key].trim();
@@ -237,7 +237,7 @@ export default function Analytics() {
                   {(snapshotHistory[draft.id] || []).length === 0 ? <div className="panel-sub">暂无历史指标快照</div> :
                     (snapshotHistory[draft.id] || []).map((item) => <div className="panel-sub" key={item.id} style={{ padding: "6px 0" }}>
                       {item.measured_at} · {item.source === "manual" ? "人工填写" : item.source === "platform_readback" ? "平台读回" : item.source}
-                      · 曝光 {item.views ?? "—"} · 赞 {item.likes ?? "—"} · 藏 {item.collects ?? "—"} · 评 {item.comments ?? "—"}
+                      · {(activationStatus?.platform_metric_fields?.[draft.platform] || []).map((field) => `${({views:"曝光",likes:"点赞",collects:"收藏",comments:"评论",shares:"分享"} as Record<string,string>)[field] || field} ${item[field as keyof typeof item] ?? "—"}`).join(" · ")}
                       {item.correction_of ? " · 修正记录" : ""}
                       {item.source === "manual" && <button type="button" className="btn sm" style={{ marginLeft: 8 }} onClick={() => setBackfillValues((prev) => ({
                         ...prev, [draft.id]: {
