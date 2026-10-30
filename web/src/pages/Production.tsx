@@ -120,12 +120,19 @@ export default function Production() {
   const [runError, setRunError] = useState<string | null>(null);
   const [noLogin, setNoLogin] = useState<Platform[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [availableTopicCount, setAvailableTopicCount] = useState<number | null>(null);
 
   // ---------------------------------------------------------------- 数据加载
   const refresh = async () => {
     try {
       const r = await api.rounds();
       setRounds(r);
+      try {
+        const pool = await api.topicPool({ status: "active", limit: 1 });
+        setAvailableTopicCount(pool.total);
+      } catch {
+        setAvailableTopicCount(0);
+      }
       setLoadError(null);
       const targetId = currentRoundId ?? (r.length > 0 ? r[0].id : null);
       if (targetId) {
@@ -488,7 +495,9 @@ export default function Production() {
     setPlanPlatforms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
   };
 
-  const canRun = !!roundDetail && ["created", "failed"].includes(roundDetail.status) && !running && (usePlan || selPlatforms.length > 0);
+  const canRun = !!roundDetail && ["created", "failed"].includes(roundDetail.status)
+    && !running && availableTopicCount !== null && availableTopicCount > 0
+    && (usePlan || selPlatforms.length > 0);
   const selectedContent = contents.find((c) => c.id === selectedContentId) ?? null;
   const filteredReviewContents = contents.filter((item) => {
     const query = reviewSearch.trim().toLowerCase();
@@ -872,6 +881,12 @@ export default function Production() {
                     当前轮次处于「{ROUND_STATUS_LABEL[roundDetail.status] ?? roundDetail.status}」，不能再次启动。
                   </div>
                 )}
+                {availableTopicCount === 0 && (
+                  <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>
+                    运行前检查未通过：当前选题库没有可用选题。请先到「内容资产 → 选题池」添加或同步选题。
+                  </div>
+                )}
+                {availableTopicCount === null && <div className="note" style={{ marginTop: 8 }}>正在检查选题库…</div>}
                 {!usePlan && selPlatforms.length === 0 && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>至少选择一个平台</div>}
                 {runError && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>! {runError}</div>}
 
