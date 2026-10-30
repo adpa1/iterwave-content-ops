@@ -1850,28 +1850,39 @@ def _register_routes(app: FastAPI) -> None:
         return {"snapshot_id": snapshot_id, "source": "manual", "recorded_at": now, **values}
 
     @app.get("/api/metrics/snapshots")
-    def list_metric_snapshots(draft_id: str = Query(..., min_length=1, max_length=80)):
+    def list_metric_snapshots(
+        draft_id: str = Query(..., min_length=1, max_length=80),
+        limit: int = Query(100, ge=1, le=200),
+        offset: int = Query(0, ge=0, le=10000),
+    ):
         conn = _g()["conn"]
         tenant_id = _tenant_id()
         draft = conn.execute("SELECT id FROM drafts WHERE id=?", (draft_id,)).fetchone()
         if draft is None:
             raise HTTPException(404, "草稿不存在")
-        manual = conn.execute(
+        total_manual = conn.execute(
+            "SELECT COUNT(*) FROM metric_snapshots WHERE tenant_id=? AND draft_id=?",
+            (tenant_id, draft_id),
+        ).fetchone()[0]
+        total_auto = conn.execute(
+            "SELECT COUNT(*) FROM metrics WHERE draft_id=? AND fetch_status IN ('success','partial')",
+            (draft_id,),
+        ).fetchone()[0]
+        items = conn.execute(
+            "SELECT * FROM ("
             "SELECT id, draft_id, content_id, platform, source, views, likes, collects, comments, shares, "
             "measured_at, recorded_at, correction_of FROM metric_snapshots "
-            "WHERE tenant_id=? AND draft_id=?",
-            (tenant_id, draft_id),
-        ).fetchall()
-        automatic = conn.execute(
+            "WHERE tenant_id=? AND draft_id=? "
+            "UNION ALL "
             "SELECT CAST(id AS TEXT) AS id, draft_id, content_id, platform, "
             "'platform_readback' AS source, views, likes, collects, comments, shares, "
             "fetched_at AS measured_at, fetched_at AS recorded_at, NULL AS correction_of "
-            "FROM metrics WHERE draft_id=? AND fetch_status IN ('success','partial')",
-            (draft_id,),
+            "FROM metrics WHERE draft_id=? AND fetch_status IN ('success','partial')"
+            ") ORDER BY measured_at DESC, recorded_at DESC LIMIT ? OFFSET ?",
+            (tenant_id, draft_id, draft_id, limit, offset),
         ).fetchall()
-        items = [dict(row) for row in list(manual) + list(automatic)]
-        items.sort(key=lambda row: str(row.get("measured_at") or ""), reverse=True)
-        return {"items": items, "total": len(items)}
+        return {"items": [dict(row) for row in items], "total": int(total_manual + total_auto),
+                "limit": limit, "offset": offset}
 
     @app.get("/api/reports/weekly")
     def weekly_report(week_start: Optional[str] = Query(None), platform: Optional[str] = Query(None)):
