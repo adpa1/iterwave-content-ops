@@ -41,10 +41,13 @@ def test_kb_scan_inserts_without_missing_columns(conn: sqlite3.Connection, cfg) 
     assert rows[0]["title"] == "标题一"
 
 
-def test_metrics_retry_params_from_policy(cfg) -> None:
-    """timeouts.metrics_retry_policy（3次/间隔30min）必须被解析成 (3, 30)。"""
+def test_metrics_retry_params_from_typed_config(cfg) -> None:
+    """数据采集重试次数与间隔直接来自类型化配置。"""
     eng = SchedulerEngine(cfg, Path(cfg.paths.db_file))
     assert eng._metrics_retry_params() == (3, 30)
+    cfg.timeouts.metrics_retry_attempts = 5
+    cfg.timeouts.metrics_retry_interval_minutes = 45
+    assert eng._metrics_retry_params() == (5, 45)
 
 
 def test_retry_job_id_includes_attempt(cfg) -> None:
