@@ -73,3 +73,32 @@ def test_correct_login_is_not_blocked_by_other_users_ip_failures(monkeypatch):
 
     assert auth.login("correct-secret", "shared-nat") == "session-token"
     assert "shared-nat" not in auth._failures
+
+
+
+def test_round_run_endpoint_returns_before_background_execution(client, seed, monkeypatch):
+    import asyncio
+
+    import src.api.main as api_main
+
+    tc, _conn = client
+    round_id = seed.round(status="created")
+
+    class FakeExecutor:
+        async def run(self, *_args, **_kwargs):
+            await asyncio.sleep(0.02)
+            return {"round_id": round_id, "final_status": "success", "steps": []}
+
+    monkeypatch.setitem(api_main._g_ctx, "executor", FakeExecutor())
+    api_main._round_job_status.pop(round_id, None)
+    response = tc.post(f"/api/rounds/{round_id}/run", json={})
+    assert response.status_code == 202
+    assert response.json()["running"] is True
+
+    status = None
+    for _ in range(20):
+        status = tc.get(f"/api/rounds/{round_id}/run_status").json()
+        if not status["running"]:
+            break
+    assert status is not None
+    assert status["report"]["final_status"] == "success"
