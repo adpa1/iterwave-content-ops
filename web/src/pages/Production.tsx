@@ -850,7 +850,7 @@ export default function Production() {
                   <div style={{ marginBottom: 8 }}>
                     <DemoBadge
                       level="blocked"
-                      text={`${noLogin.map((p) => PLATFORM_NAME[p]).join("、")} 未连接真实账号；本轮将跳过这些平台的存草稿操作，内容保留为待存状态`}
+                      text={`${noLogin.map((p) => PLATFORM_NAME[p]).join("、")} 未连接真实账号；选择这些平台并开启存草稿时会阻止启动，关闭存草稿可先干跑`}
                     />
                   </div>
                 )}
