@@ -212,7 +212,7 @@ export default function Analytics() {
         <div className="metric"><div className="metric-label">首次价值时间 TTV</div><div className="metric-val">{activationMetrics?.ttv_seconds == null ? "—" : `${Math.round(activationMetrics.ttv_seconds)} 秒`}</div><div className="metric-foot">输入 {activationMetrics?.activation_input_wait_seconds == null ? "—" : Math.round(activationMetrics.activation_input_wait_seconds)} 秒 · 排队 {activationMetrics?.model_queue_wait_seconds == null ? "—" : Math.round(activationMetrics.model_queue_wait_seconds)} 秒 · 生成 {activationMetrics?.generation_processing_seconds == null ? "—" : Math.round(activationMetrics.generation_processing_seconds)} 秒</div></div>
         <div className="metric"><div className="metric-label">7 日激活率</div><div className="metric-val">{activationMetrics?.seven_day_activation_rate == null ? "观察中" : `${(activationMetrics.seven_day_activation_rate * 100).toFixed(0)}%`}</div><div className="metric-foot">复制或保存至少一篇合格样稿</div></div>
         <div className="metric"><div className="metric-label">首次发布率</div><div className="metric-val">{activationMetrics?.first_publish_rate == null ? "观察中" : `${(activationMetrics.first_publish_rate * 100).toFixed(0)}%`}</div><div className="metric-foot">初始化后 7 日内确认发布</div></div>
-        <div className="metric"><div className="metric-label">数据回流完成率</div><div className="metric-val">{activationMetrics?.data_return_rate == null ? "—" : `${(activationMetrics.data_return_rate * 100).toFixed(0)}%`}</div><div className="metric-foot">发布满 7 天且 7 日内有有效指标快照</div></div>
+        <div className="metric"><div className="metric-label">数据回流完成率</div><div className="metric-val">{activationMetrics?.data_return_rate == null ? "—" : `${(activationMetrics.data_return_rate * 100).toFixed(0)}%`}</div><div className="metric-foot">发布满 7 天且 7 日内补填链接或提交有效指标</div></div>
         <div className="metric"><div className="metric-label">快速体验完成率</div><div className="metric-val">{activationMetrics?.quick_experience_completion_rate == null ? "—" : `${(activationMetrics.quick_experience_completion_rate * 100).toFixed(0)}%`}</div><div className="metric-foot">成功展示三篇合格样稿的账号组</div></div>
         <div className="metric"><div className="metric-label">周采纳发布数</div><div className="metric-val">{activationMetrics?.weekly_adopted_published ?? 0}</div><div className="metric-foot">用户确认采纳并发布的内容</div></div>
         <div className="metric"><div className="metric-label">周有效复盘数</div><div className="metric-val">{activationMetrics?.weekly_effective_review_count ?? 0}</div><div className="metric-foot">近 7 天有有效指标的已发布内容</div></div>
@@ -274,7 +274,7 @@ export default function Analytics() {
           <div style={{ padding: "0 16px 16px" }}>
             <div className="panel-sub">{weeklyReport.period.start} 至 {weeklyReport.period.end} · 有效样本 {weeklyReport.sample_size} 篇 · 可复盘 {weeklyReport.effective_review_count ?? 0} 篇 · 来源：{weeklyReport.data_sources.join("、") || "暂无"}</div>
             <h3 style={{ marginTop: 14 }}>表现最好</h3>
-            {weeklyReport.best_content.length ? weeklyReport.best_content.map((item) => <div className="task-row" key={`${item.content_id}-${item.metric}`}><div className="task-main"><div className="task-title">{item.title}</div><div className="task-desc">{PLATFORM_NAME[item.platform]} · {item.metric}：{item.value} · {item.source}{item.conflict ? " · 来源冲突，按规则选择" : ""}</div></div></div>) : <div className="panel-sub">暂无有效指标，暂不排名。</div>}
+            {weeklyReport.best_content.length ? weeklyReport.best_content.map((item) => <div className="task-row" key={`${item.content_id}-${item.metric}`}><div className="task-main"><div className="task-title">{item.title}</div><div className="task-desc">{PLATFORM_NAME[item.platform]} · {item.metric}：{item.value} · {item.source} · 统计时间 {item.measured_at}{item.conflict ? " · 来源冲突，按规则选择" : ""}</div></div></div>) : <div className="panel-sub">暂无有效指标，暂不排名。</div>}
             {!!weeklyReport.data_conflicts?.length && <div className="note" style={{ marginTop: 12 }}>
               <strong>数据来源冲突（保留原始记录）</strong>
               {weeklyReport.data_conflicts.map((conflict) => <div className="panel-sub" key={conflict.content_id}>
@@ -282,9 +282,17 @@ export default function Analytics() {
               </div>)}
             </div>}
             <h3 style={{ marginTop: 14 }}>可能原因</h3>
-            {weeklyReport.why_it_may_work.map((item, i) => <p key={i} className="panel-sub">{item.statement}（样本 {item.sample_size}）</p>)}
+            {weeklyReport.why_it_may_work.map((item, i) => <div key={i} className="task-row" style={{ display: "block" }}>
+              <p className="panel-sub">{item.statement}（样本 {item.sample_size}）</p>
+              <details>
+                <summary className="form-label" style={{ cursor: "pointer" }}>查看证据与适用范围</summary>
+                <div className="panel-sub">平台：{item.platform ? PLATFORM_NAME[item.platform] : "全部"} · 时间范围：{item.time_window ? item.time_window.start + " 至 " + item.time_window.end : "未指定"} · 数据来源：{weeklyReport.data_sources.join("、") || "暂无"}</div>
+                <div className="panel-sub">证据内容 ID：{item.evidence_content_ids?.join("、") || "无"}</div>
+                <div className="panel-sub">指标快照 ID：{item.metric_snapshot_ids?.join("、") || "无"}</div>
+              </details>
+            </div>)}
             <h3 style={{ marginTop: 14 }}>下一轮建议</h3>
-            {weeklyReport.next_actions.length ? weeklyReport.next_actions.map((item, i) => <div key={i} className="task-row"><div className="task-main"><div className="task-title">{item.action}</div><div className="task-desc">依据：{item.basis} · 验证：{item.verification}</div></div></div>) : <div className="panel-sub">样本不足，先补充发布数据，再生成策略建议。</div>}
+            {weeklyReport.next_actions.length ? weeklyReport.next_actions.map((item, i) => <div key={i} className="task-row"><div className="task-main"><div className="task-title">{item.action}</div><div className="task-desc">依据：{item.basis} · 验证：{item.verification}</div><details><summary className="form-label" style={{ cursor: "pointer" }}>查看建议证据</summary><div className="panel-sub">平台：{PLATFORM_NAME[item.platform]} · 样本：{item.sample_size} · 时间范围：{item.time_window ? item.time_window.start + " 至 " + item.time_window.end : "未指定"}</div><div className="panel-sub">证据内容 ID：{item.evidence_content_ids?.join("、") || "无"}</div><div className="panel-sub">指标快照 ID：{item.metric_snapshot_ids?.join("、") || "无"}</div></details></div></div>) : <div className="panel-sub">样本不足，先补充发布数据，再生成策略建议。</div>}
             <div className="panel-sub" style={{ marginTop: 10 }}>限制：{weeklyReport.limitations.join("；")}</div>
           </div>
         </>}
