@@ -125,7 +125,12 @@ export default function TaskQueue() {
 
   const active = useMemo(
     () => items.filter((item) => item.status === "running" || item.status === "queued")
-      .sort((a, b) => a.queue_order - b.queue_order),
+      .sort((a, b) => {
+        const aDelayed = a.status === "queued" && new Date(a.available_at).getTime() > Date.now();
+        const bDelayed = b.status === "queued" && new Date(b.available_at).getTime() > Date.now();
+        if (aDelayed !== bDelayed) return aDelayed ? 1 : -1;
+        return a.queue_order - b.queue_order;
+      }),
     [items],
   );
   const history = useMemo(
@@ -167,7 +172,7 @@ export default function TaskQueue() {
       {error && <div className="notice danger" role="alert">{error}</div>}
       <section className="panel" style={{ marginBottom: 20 }}>
         <div className="panel-head">
-          <div><h2>待执行任务</h2><div className="muted">严格按提交时间先后执行；同一时刻只执行一个队列任务。</div></div>
+          <div><h2>待执行任务</h2><div className="muted">已到执行时间的任务按入队顺序执行；延迟任务到期后参与排序，同一时刻只执行一个队列任务。</div></div>
           <span className="muted">{active.length} 项</span>
         </div>
         {loading ? <div className="empty-state">正在读取队列…</div> : active.length ? (
