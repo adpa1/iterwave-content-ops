@@ -790,9 +790,7 @@ class RoundExecutor:
                         accepted = (title, body, tags, outcome)
                         break
 
-                    # D8：模板降级（无 LLM，无法自我改写）下 WARN 会确定性重复相同文案，
-                    # 重试只会第 3 次仍 WARN → 被当 FAIL 确定性丢弃。故无 LLM 时 WARN 不再丢弃，
-                    # 改为"采用 + 告警留痕"；有 LLM 时仍走重检（能改写，命中 R2 重检要求）。
+                    # 模型生成必须真实成功；G2 未通过时只允许有限次数携带拒绝原因重写，WARN 也不能绕过质量门。
                     # 未通过：计数 + 留痕，然后携带原因回 G1 重写
                     report["guard_rejected"] += 1
                     report["steps"].append({
