@@ -508,7 +508,9 @@ def _validate(key: str, value: Any) -> Any:
         if not isinstance(value, bool):
             raise ConfigPatchError(f"{key} 必须是布尔值")
         return value
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if typ is int and (isinstance(value, bool) or not isinstance(value, int)):
+        raise ConfigPatchError(f"{key} 必须是整数")
+    if typ is float and (isinstance(value, bool) or not isinstance(value, (int, float))):
         raise ConfigPatchError(f"{key} 必须是数字")
     if lo is not None and value < lo:
         raise ConfigPatchError(f"{key} 不能小于 {lo}")
