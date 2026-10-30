@@ -81,13 +81,20 @@ def import_legacy_overrides(conn: sqlite3.Connection, legacy_path: Path) -> dict
 
     accepted: dict[str, Any] = {}
     rejected = 0
+    from src.core.config_store import _validate
     for key, value in raw.items():
         if not isinstance(key, str) or not key or not _safe_value(key, value):
             rejected += 1
             continue
-        accepted[key] = value
+        try:
+            accepted[key] = _validate(key, value)
+        except (ValueError, TypeError):
+            rejected += 1
 
     now = _now()
+    lock = getattr(conn, "_lock", None)
+    if lock:
+        lock.acquire()
     try:
         conn.execute("BEGIN IMMEDIATE")
         for key, value in accepted.items():
@@ -110,6 +117,9 @@ def import_legacy_overrides(conn: sqlite3.Connection, legacy_path: Path) -> dict
     except Exception:
         conn.rollback()
         raise
+    finally:
+        if lock:
+            lock.release()
     if rejected:
         logger.warning("旧配置回填拒绝 %d 项（未记录配置值）", rejected)
     return {"imported": len(accepted), "rejected": rejected}
@@ -124,6 +134,9 @@ def save_settings(conn: sqlite3.Connection, updates: dict[str, Any], *, audit_ro
     if unsafe:
         raise ValueError(f"配置包含凭据或带认证信息的 URL，拒绝持久化：{', '.join(unsafe)}")
     now = _now()
+    lock = getattr(conn, "_lock", None)
+    if lock:
+        lock.acquire()
     try:
         conn.execute("BEGIN IMMEDIATE")
         current = read_settings(conn)
@@ -159,3 +172,6 @@ def save_settings(conn: sqlite3.Connection, updates: dict[str, Any], *, audit_ro
     except Exception:
         conn.rollback()
         raise
+    finally:
+        if lock:
+            lock.release()
