@@ -124,7 +124,7 @@ def _login_env() -> dict[str, str]:
     return env
 
 
-def build_cmd(platform: str, timeout_seconds: Optional[int] = None) -> list[str]:
+def build_cmd(platform: str, timeout_seconds: int | None = None) -> list[str]:
     """构造登录命令；等待时限来自当前账号组运行配置。"""
     if timeout_seconds is None:
         from .config import get_config
@@ -407,7 +407,7 @@ def _schedule_export(platform: str) -> None:
     threading.Thread(target=_run, name=f"login-export-{platform}", daemon=True).start()
 
 
-def export_storage_state(platform: str, timeout: Optional[int] = None) -> bool:
+def export_storage_state(platform: str, timeout: int | None = None) -> bool:
     """用与登录脚本相同的浏览器 / profile 打开一次，导出 cookies + localStorage。"""
     if timeout is None:
         from .config import get_config
