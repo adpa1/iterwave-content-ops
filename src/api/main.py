@@ -3848,7 +3848,8 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(503, "任务暂时无法入队，请稍后重试") from exc
         return {
             "round_id": round_id, "task_id": task.task_id,
-            "started": created, "running": task.status in ("queued", "running"),
+            "started": True, "created": created,
+            "running": task.status in ("queued", "running"),
             "queued": task.status == "queued", "status": task.status,
         }
 
@@ -3912,7 +3913,8 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(503, "任务暂时无法入队，请稍后重试") from exc
         return {
             "round_id": round_id, "task_id": task.task_id,
-            "started": created, "running": task.status in ("queued", "running"),
+            "started": True, "created": created,
+            "running": task.status in ("queued", "running"),
             "queued": task.status == "queued", "status": task.status,
         }
 
