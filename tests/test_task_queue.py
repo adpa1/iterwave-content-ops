@@ -120,3 +120,12 @@ def test_worker_lease_is_held_until_consumer_releases_it(tmp_path):
     assert queue.claim_next("worker-2", lease_seconds=120) is None
     next_task = queue.claim_next("worker-1", lease_seconds=120)
     assert next_task and next_task.task_id == second.task_id
+
+
+def test_worker_cannot_release_lease_while_task_is_running(tmp_path):
+    queue = make_queue(tmp_path)
+    task, _ = queue.enqueue(task_type="round_run", tenant_id="a", payload={"round_id": 1})
+    claimed = queue.claim_next("worker-1", lease_seconds=120)
+    assert claimed and claimed.task_id == task.task_id
+    assert queue.release_worker("worker-1") is False
+    assert queue.claim_next("worker-2", lease_seconds=120) is None
