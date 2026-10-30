@@ -123,6 +123,41 @@ def _enqueue_round_task(*, tenant_id: str, round_id: int, topic_count=None,
     )
 
 
+def _enqueue_scheduler_task(*, tenant_id: str, method: str, args: list | None = None):
+    """将账号组级后台作业写入全局队列，调用方必须显式提供任务归属。"""
+    if _task_queue is None:
+        raise RuntimeError("全局任务队列尚未初始化")
+    normalized_args = list(args or [])
+    aggregate_id = method + (":" + ":".join(map(str, normalized_args)) if normalized_args else "")
+    return _task_queue.enqueue(
+        task_type="scheduler_job",
+        tenant_id=tenant_id,
+        aggregate_id=aggregate_id,
+        payload={"method": method, "args": normalized_args},
+    )
+
+
+def _queued_scheduler_status(tenant_id: str, method: str) -> dict:
+    """返回指定账号组指定后台作业状态，不暴露其他账号组的线程状态。"""
+    if _task_queue is None:
+        return {"running": False, "queued": False, "status": None, "error": None, "progress": None}
+    task = _task_queue.find_latest(
+        tenant_id=tenant_id, task_type="scheduler_job", aggregate_id=method,
+    )
+    if task is None:
+        return {"running": False, "queued": False, "status": None, "error": None, "progress": None}
+    return {
+        "task_id": task.task_id,
+        "running": task.status in ("queued", "running"),
+        "queued": task.status == "queued",
+        "status": task.status,
+        "started_at": task.started_at,
+        "finished_at": task.finished_at,
+        "error": task.error_message,
+        "progress": None,
+    }
+
+
 def _round_task_active(tenant_id: str, round_id: int) -> bool:
     """检查轮次是否仍在全局队列中等待或执行，兼容旧进程内任务集合。"""
     if round_id in _running_rounds:
@@ -331,20 +366,6 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
         raise
 
 
-async def _wait_for_tenant_background_jobs(timeout_seconds: float = 120.0) -> None:
-    """等待不受 APScheduler 直接管理的热点采集/研判线程完成，避免跨账号组共享运行状态。"""
-    from src.core import hot_topic_service
-    deadline = time.monotonic() + timeout_seconds
-    while True:
-        collecting = hot_topic_service.status().get("running", False)
-        researching = hot_topic_service.research_status().get("running", False)
-        if not collecting and not researching:
-            return
-        if time.monotonic() >= deadline:
-            raise HTTPException(409, "热点采集或研判后台任务仍在执行，已取消账号组切换")
-        await asyncio.sleep(0.05)
-
-
 async def _switch_tenant_runtime(tenant_id: str) -> dict:
     """安全切换完整运行时；任何失败都尝试恢复原账号组。调用方必须持有切换闸门。"""
     registry = _g_ctx.get("tenant_registry")
@@ -390,10 +411,7 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
             old_stopped = True
             if old_conn is not None:
                 old_conn.close()
-            # 热点服务另有独立后台线程，APScheduler 结束不代表该线程已退出。
-            await _wait_for_tenant_background_jobs(timeout_seconds=switch_policy.background_jobs_timeout_seconds)
-            from src.core import hot_topic_service
-            hot_topic_service.reset_runtime_state()
+            # 账号组级热点采集/研判已进入全局队列；不等待其他任务上下文结束。
 
         from src.core import account_login, login_manager
         # 旧账号组的扫码登录子进程和登录态导出线程必须先退出，避免继续读写旧/新目录。
@@ -702,10 +720,12 @@ def _build_app() -> FastAPI:
             task_worker.run(task_worker_stop), name="global-tenant-task-worker",
         )
 
-        # 热点：库里没有新鲜数据时启动后补跑一次后台采集（不阻塞启动）
-        from ..core import hot_topic_service
-        if cfg.hot_topics.enabled is not False and hot_topic_service.is_stale(cfg, conn):
-            hot_topic_service.trigger_background(cfg, trigger="startup")
+        # 热点采集与标签匹配依赖当前账号组画像，必须以账号组任务进入全局队列。
+        from ..core.hot_topics import HotTopicCollector
+        if cfg.hot_topics.enabled is not False and not HotTopicCollector(cfg, conn)._is_fresh():
+            _enqueue_scheduler_task(
+                tenant_id=active_tenant_id, method="_job_hot_topics_refresh",
+            )
 
         logger.info("✅ FastAPI 应用启动完成，%d 个模块已加载", len(_g_ctx))
 
@@ -5315,11 +5335,14 @@ def _register_routes(app: FastAPI) -> None:
 
         conn = _g()["conn"]
         cfg = _g()["cfg"]
+        tenant_id = _g().get("runtime_tenant_id", "default")
         if refresh:
-            hot_topic_service.trigger_background(cfg, trigger="manual")
+            _enqueue_scheduler_task(
+                tenant_id=tenant_id, method="_job_hot_topics_refresh",
+            )
         data = HotTopicCollector(cfg, conn).overview()
-        data["refresh_job"] = hot_topic_service.status()
-        data["research_job"] = hot_topic_service.research_status()
+        data["refresh_job"] = _queued_scheduler_status(tenant_id, "_job_hot_topics_refresh")
+        data["research_job"] = _queued_scheduler_status(tenant_id, "_job_hot_topics_research")
         # 研判依赖大模型：未启用时前端把「研判热点」按钮置灰并提示去系统设置开启
         from ..core.hot_topic_matcher import default_llm_fn
         data["research_ready"] = default_llm_fn(cfg) is not None
@@ -5340,7 +5363,22 @@ def _register_routes(app: FastAPI) -> None:
         cfg = _g()["cfg"]
         if cfg.hot_topics.enabled is False:
             raise HTTPException(409, "热点采集已在配置中关闭（hot_topics.enabled=false）")
-        return hot_topic_service.trigger_background(cfg, trigger="manual")
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        try:
+            task, created = _enqueue_scheduler_task(
+                tenant_id=tenant_id, method="_job_hot_topics_refresh",
+            )
+        except (ValueError, sqlite3.Error) as exc:
+            logger.exception("热点采集任务入队失败 tenant=%s", tenant_id)
+            raise HTTPException(503, "热点采集任务暂时无法入队，请稍后重试") from exc
+        return {
+            "started": task.status in ("queued", "running"),
+            "created": created,
+            "task_id": task.task_id,
+            "running": task.status in ("queued", "running"),
+            "queued": task.status == "queued",
+            "status": task.status,
+        }
 
     @app.post("/api/hot_topics/research", status_code=202)
     def hot_topics_research():
@@ -5354,7 +5392,22 @@ def _register_routes(app: FastAPI) -> None:
         cfg = _g()["cfg"]
         if default_llm_fn(cfg) is None:
             raise HTTPException(409, "大模型未启用：请到「系统设置」开启主模型并配置 API Key")
-        return hot_topic_service.trigger_research(cfg)
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        try:
+            task, created = _enqueue_scheduler_task(
+                tenant_id=tenant_id, method="_job_hot_topics_research",
+            )
+        except (ValueError, sqlite3.Error) as exc:
+            logger.exception("热点研判任务入队失败 tenant=%s", tenant_id)
+            raise HTTPException(503, "热点研判任务暂时无法入队，请稍后重试") from exc
+        return {
+            "started": task.status in ("queued", "running"),
+            "created": created,
+            "task_id": task.task_id,
+            "running": task.status in ("queued", "running"),
+            "queued": task.status == "queued",
+            "status": task.status,
+        }
 
     @app.post("/api/hot_topics/import")
     def import_hot_topic(req: dict):
