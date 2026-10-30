@@ -7,7 +7,7 @@
 - 全部落 notifications 表留痕，用于 R16 幂等去重与审计
 - webhook URL 视同密钥（R23）：不写日志、不进 API 响应
 - 通知正文不得含 cookie / token（R23），发送前统一脱敏
-- 时间一律 datetime.now()（R5）
+- 时间一律 business_now(self.cfg)（R5）
 
 用法：
     from src.core.notify import Notifier
@@ -23,6 +23,8 @@ import os
 import sqlite3
 import subprocess
 from datetime import datetime, timedelta
+
+from ..timezone import business_now
 from typing import Optional
 
 
@@ -198,7 +200,7 @@ class Notifier:
         返回 {"macos": "ok|failed|disabled", ...}；不暴露 webhook URL（R23）。
         """
         head = "通知通道测试"
-        body = f"这是一条测试通知（{datetime.now().strftime('%H:%M:%S')}），收到即配置正常。"
+        body = f"这是一条测试通知（{business_now(self.cfg).strftime('%H:%M:%S')}），收到即配置正常。"
         results: dict[str, str] = {}
         for channel in ("macos", "wecom", "feishu"):
             ccfg = self.channels.get(channel)
@@ -313,7 +315,7 @@ class Notifier:
     def _is_duplicate(self, db_type: str, platform: Optional[str], body: str) -> bool:
         if self.conn is None:
             return False
-        cutoff = (datetime.now() - timedelta(minutes=self.dedupe_window_minutes)).isoformat(sep=" ")
+        cutoff = (business_now(self.cfg) - timedelta(minutes=self.dedupe_window_minutes)).isoformat(sep=" ")
         row = self.conn.execute(
             "SELECT 1 FROM notifications "
             "WHERE type = ? AND COALESCE(platform, '') = ? AND COALESCE(body, '') = ? "
@@ -336,7 +338,7 @@ class Notifier:
                     level, db_type, platform, title, body, channel,
                     # 带微秒：表上 UNIQUE(type, platform, sent_at) 只到秒，
                     # 同一秒内多条同类型通知（如连存多篇草稿）会撞约束丢记录
-                    datetime.now().isoformat(sep=" "),
+                    business_now(self.cfg).isoformat(sep=" "),
                 ),
             )
             self.conn.commit()
