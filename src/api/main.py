@@ -1431,7 +1431,6 @@ def _register_routes(app: FastAPI) -> None:
             _record_content_event("activation_started", idempotency_key="activation-started")
         from src.core.content_pipeline import _llm_available
         cfg = _g()["cfg"]
-        status = _g().get("status") or {}
         latest_run = conn.execute(
             "SELECT id, status FROM sample_runs WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1",
             (tenant_id,),
@@ -3694,9 +3693,7 @@ def _register_routes(app: FastAPI) -> None:
 
         # 发布确认记录的是用户已经在外部平台完成的动作：正常路径须有当前质检结果；
         # 若发布事实上已发生但质检失效/失败，允许显式登记原因以保留真实发布与采集闭环。
-        from src.core.content_pipeline import _llm_available
         guard_outcome = row["guard_outcome"]
-        llm_available = _llm_available(_g()["cfg"])
         guard_accepted = guard_outcome == "pass"
         review_rejected = bool(row["review_rejected"])
         review_rejection_reason = row["review_rejection_reason"] or ""
@@ -3883,9 +3880,7 @@ def _register_routes(app: FastAPI) -> None:
                 "请先修改文案、重新过目标检查并提交审核",
             )
         guard_outcome = row["guard_outcome"]
-        guard_accepted = guard_outcome == "pass" or (
-            guard_outcome == "warn" and not llm_available
-        )
+        guard_accepted = guard_outcome == "pass"
         if not guard_accepted:
             raise HTTPException(
                 409,
@@ -4483,11 +4478,8 @@ def _register_routes(app: FastAPI) -> None:
             (content_id,),
         ).fetchone()[0]:
             raise HTTPException(409, "该内容已有发布历史，不能重新提交待发布审核")
-        from src.core.content_pipeline import _llm_available
         outcome = row["guard_outcome"]
-        passes = outcome == "pass" or (
-            outcome == "warn" and not _llm_available(_g()["cfg"])
-        )
+        passes = outcome == "pass"
         if not passes:
             raise HTTPException(
                 409,
