@@ -296,6 +296,17 @@ class GlobalTaskQueue:
         finally:
             conn.close()
 
+    def release_worker(self, owner: str) -> bool:
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                "DELETE FROM global_task_worker_lease WHERE singleton_id=1 AND owner=?",
+                (owner,),
+            )
+            return cursor.rowcount == 1
+        finally:
+            conn.close()
+
     def cancel(self, task_id: str) -> bool:
         conn = self._connect()
         try:
