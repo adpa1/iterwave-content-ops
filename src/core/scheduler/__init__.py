@@ -289,9 +289,21 @@ class SchedulerEngine:
             (cutoff,),
         ).fetchall()
         n = 0
+        retry_times, _interval_min = self._metrics_retry_params()
         for r in rows:
             pending = [j for j in self.scheduler.get_jobs() if j.id.startswith(f"data_fetch_{r['id']}_")]
-            if pending:
+            queued = False
+            if self.task_queue is not None and self.tenant_id:
+                for attempt in range(1, retry_times + 1):
+                    task = self.task_queue.find_latest(
+                        tenant_id=self.tenant_id,
+                        task_type="scheduler_job",
+                        aggregate_id=f"_job_data_fetch:{r['id']}:{attempt}",
+                    )
+                    if task is not None and task.status in ("queued", "running"):
+                        queued = True
+                        break
+            if pending or queued:
                 continue
             self.schedule_data_fetch(r["id"], business_now(self.cfg) + timedelta(seconds=5))
             n += 1
@@ -302,41 +314,36 @@ class SchedulerEngine:
     def schedule_data_fetch(
         self, draft_id: str, run_at: datetime, attempt: int = 1,
     ) -> None:
-        """为已发布的 draft 注册持久化一次性采集任务（attempt 用于失败重试计数）。"""
-        active_engine = _ENGINES.get(self.engine_key)
-        if active_engine is not None and active_engine is not self:
-            # worker 为非活动账号组构造的临时运行时不能另起同库调度器；
-            # 交给该账号组当前活动的调度器持久化任务。
-            active_engine.schedule_data_fetch(draft_id, run_at, attempt)
+        """安排发布后的数据采集；优先写入全局持久化队列，保证非活动账号组也可恢复。"""
+        if self.task_queue is not None and self.tenant_id:
+            self.task_queue.enqueue(
+                task_type="scheduler_job",
+                tenant_id=self.tenant_id,
+                aggregate_id=f"_job_data_fetch:{draft_id}:{attempt}",
+                payload={
+                    "method": "_job_data_fetch",
+                    "args": [draft_id, attempt],
+                },
+                available_at=run_at,
+            )
+            logger.info(
+                "📥 数据采集已延迟入全局队列 draft=%s attempt=%d run_at=%s tenant=%s",
+                draft_id, attempt, run_at.isoformat(), self.tenant_id,
+            )
             return
 
-        job_kwargs = {
-            "engine_key": self.engine_key,
-            "draft_id": draft_id,
-            "attempt": attempt,
-        }
-        job_id = f"data_fetch_{draft_id}_a{attempt}"
-        if self.scheduler.running:
-            self.scheduler.add_job(
-                _run_data_fetch, DateTrigger(run_date=run_at),
-                id=job_id, kwargs=job_kwargs, replace_existing=True,
-            )
-        else:
-            # 队列 worker 为非活动账号组执行任务时，运行时调度器不会 start。
-            # 用短生命周期的 paused scheduler 将 DateTrigger 写入该租户自己的
-            # APSchedulerJobStore；租户下次激活时再由正式调度器执行。
-            temporary = AsyncIOScheduler(
-                jobstores={"default": SQLAlchemyJobStore(url=f"sqlite:///{self.db_path}")},
-                timezone=ZoneInfo(self.cfg.business_timezone),
-            )
-            temporary.start(paused=True)
-            try:
-                temporary.add_job(
-                    _run_data_fetch, DateTrigger(run_date=run_at),
-                    id=job_id, kwargs=job_kwargs, replace_existing=True,
-                )
-            finally:
-                temporary.shutdown(wait=False)
+        # 无全局队列的旧版/单元测试替身仍保留 APScheduler 兼容路径。
+        active_engine = _ENGINES.get(self.engine_key)
+        if active_engine is not None and active_engine is not self:
+            active_engine.schedule_data_fetch(draft_id, run_at, attempt)
+            return
+        self.scheduler.add_job(
+            _run_data_fetch,
+            DateTrigger(run_date=run_at),
+            id=f"data_fetch_{draft_id}_a{attempt}",
+            kwargs={"engine_key": self.engine_key, "draft_id": draft_id, "attempt": attempt},
+            replace_existing=True,
+        )
         logger.info("📅 注册 data_fetch: draft=%s attempt=%d run_at=%s",
                     draft_id, attempt, run_at.isoformat())
 
