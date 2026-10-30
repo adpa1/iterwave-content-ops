@@ -38,6 +38,20 @@ def _safe_value(key: str, value: Any) -> bool:
     return True
 
 
+def _history_safe(value: Any) -> Any:
+    """Redact secrets in immutable history while retaining operational values in current settings."""
+    from src.core.redact import redact
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {str(k): _history_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_history_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_history_safe(v) for v in value]
+    return value
+
+
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -158,7 +172,7 @@ def save_settings(conn: sqlite3.Connection, updates: dict[str, Any], *, audit_ro
                 (key, json.dumps(value, ensure_ascii=False, separators=(",", ":")),
                  type(value).__name__, version, now, changed_by),
             )
-        snapshot = json.dumps(current, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        snapshot = json.dumps(_history_safe(current), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         conn.execute(
             "INSERT INTO tenant_setting_versions(version,snapshot_json,changed_at,changed_by) VALUES(?,?,?,?)",
             (version, snapshot, now, changed_by),
@@ -166,7 +180,7 @@ def save_settings(conn: sqlite3.Connection, updates: dict[str, Any], *, audit_ro
         for key, old_value, new_value in (audit_rows or []):
             conn.execute(
                 "INSERT INTO config_changes(key,old_value,new_value,changed_at) VALUES(?,?,?,?)",
-                (key, old_value, new_value, now),
+                (key, _history_safe(old_value), _history_safe(new_value), now),
             )
         conn.commit()
         return version
