@@ -253,3 +253,22 @@ def test_refresh_reports_progress(cfg, conn, monkeypatch):
     assert fetch_done["percent"] <= 60
     assert [s["status"] for s in fetch_done["sources"]] == ["collected", "collected"]
     assert {s["items"] for s in fetch_done["sources"]} == {1}
+
+
+def test_hot_topic_background_state_recovers_when_database_open_fails(cfg, monkeypatch):
+    from src.core.db import Database
+
+    def fail_connect(self):
+        raise OSError("simulated tenant database unavailable")
+
+    monkeypatch.setattr(Database, "connect", fail_connect)
+    hot_topic_service.reset_for_tests()
+
+    refresh = hot_topic_service.run_once(cfg, tenant_id="tenant-a")
+    assert refresh["running"] is False
+    assert "simulated tenant database unavailable" in refresh["error"]
+
+    research = hot_topic_service.run_research(cfg, tenant_id="tenant-a")
+    assert research["running"] is False
+    assert "simulated tenant database unavailable" in research["error"]
+    hot_topic_service.reset_for_tests()
