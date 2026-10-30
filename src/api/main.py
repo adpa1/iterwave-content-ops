@@ -123,6 +123,7 @@ class TenantRuntimeRollbackError(RuntimeError):
 
 # G-22：正在执行的轮次集合。同一轮次并发触发会被拒绝（409），避免重复产出草稿
 _running_rounds: set[int] = set()
+_round_job_status: dict[int, dict] = {}
 _media_generation_lock = threading.Lock()
 
 # G-11：写接口幂等去重窗口（秒）。重复提交/连点在窗口内只落一条记录
@@ -2543,29 +2544,62 @@ def _register_routes(app: FastAPI) -> None:
         result["drafts"] = round_drafts
         return result
 
-    @app.post("/api/rounds/{round_id}/run")
+    @app.post("/api/rounds/{round_id}/run", status_code=202)
     async def run_round(round_id: int, req: RunRoundRequest):
-        """执行一轮：选题 → 文案 → G2 检查 → 卡片 → 存草稿（P0-1 主流程）。
-
-        G-22：同一轮次运行中重复调用返回 409，不重复产出草稿。
-        """
+        """异步启动一轮生产，立即返回任务 ID；客户端通过 run_status 轮询结果。"""
         if round_id in _running_rounds:
             raise HTTPException(
                 409, f"轮次 {round_id} 正在执行中，请等待本次执行结束（禁止并发重复触发）"
             )
         _running_rounds.add(round_id)
+        _round_job_status[round_id] = {
+            "round_id": round_id, "running": True, "started": True,
+            "report": None, "error": None,
+        }
+
+        async def execute_round_job():
+            try:
+                report = await _g()["executor"].run(
+                    round_id,
+                    topic_count=req.topic_count,
+                    platform_values=req.platforms,
+                    save_drafts=req.save_drafts,
+                )
+                _round_job_status[round_id] = {
+                    "round_id": round_id, "running": False,
+                    "report": report, "error": None,
+                }
+            except Exception as exc:  # noqa: BLE001 — 后台任务错误必须可查询
+                logger.exception("后台轮次执行失败 round=%s", round_id)
+                _round_job_status[round_id] = {
+                    "round_id": round_id, "running": False,
+                    "report": None, "error": str(exc),
+                }
+            finally:
+                _running_rounds.discard(round_id)
+
+        asyncio.create_task(execute_round_job(), name=f"round-{round_id}")
+        return {"round_id": round_id, "started": True, "running": True}
+
+    @app.get("/api/rounds/{round_id}/run_status")
+    def round_run_status(round_id: int):
+        """查询后台轮次任务状态与最终报告。"""
+        status = _round_job_status.get(round_id)
+        if status is not None:
+            return dict(status)
+        row = _g()["conn"].execute(
+            "SELECT status, run_report FROM spiral_rounds WHERE id = ?", (round_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "轮次不存在")
         try:
-            report = await _g()["executor"].run(
-                round_id,
-                topic_count=req.topic_count,
-                platform_values=req.platforms,
-                save_drafts=req.save_drafts,
-            )
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        finally:
-            _running_rounds.discard(round_id)
-        return report
+            report = json.loads(row["run_report"] or "null")
+        except (TypeError, ValueError):
+            report = None
+        return {
+            "round_id": round_id, "running": round_id in _running_rounds,
+            "report": report, "error": None,
+        }
 
     @app.post("/api/rounds/{round_id}/save_pending")
     async def save_pending_drafts(round_id: int):
