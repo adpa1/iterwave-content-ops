@@ -174,3 +174,47 @@ def test_idle_worker_releases_global_lease_for_failover(tmp_path):
     claimed = queue.claim_next("replacement-worker")
     assert claimed is not None
     assert claimed.task_id == task.task_id
+
+
+def test_concurrent_initialize_migrates_legacy_queue_schema_once(tmp_path):
+    import sqlite3
+
+    from src.core.task_queue import GlobalTaskQueue
+
+    db_path = tmp_path / "shared" / "system.db"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE global_task_queue ("
+            "task_id TEXT PRIMARY KEY, task_type TEXT NOT NULL, tenant_id TEXT NOT NULL, "
+            "aggregate_id TEXT, payload_json TEXT NOT NULL, status TEXT NOT NULL, "
+            "created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, "
+            "attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 1, "
+            "lease_owner TEXT, lease_expires_at TEXT, result_json TEXT, "
+            "error_code TEXT, error_message TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO global_task_queue(task_id,task_type,tenant_id,payload_json,status,created_at) "
+            "VALUES('legacy','round_run','tenant-a','{}','queued','2026-01-01T00:00:00+00:00')"
+        )
+
+    queue = GlobalTaskQueue(db_path)
+    errors = []
+
+    def initialize():
+        try:
+            queue.initialize()
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=initialize) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    migrated = queue.get("legacy")
+    assert migrated is not None
+    assert migrated.queue_order == 1
+    assert migrated.available_at == migrated.created_at
