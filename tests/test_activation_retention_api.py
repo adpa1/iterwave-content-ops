@@ -42,6 +42,20 @@ def test_activation_status_creates_one_cohort_event(activation_client, conn):
     ).fetchone()[0] == 1
 
 
+def test_activation_cohort_is_independent_per_tenant(activation_client, conn):
+    first = activation_client.get("/api/activation/status")
+    assert first.status_code == 200
+    main._g_ctx["runtime_tenant_id"] = "tenant-b"
+    second = activation_client.get("/api/activation/status")
+    assert second.status_code == 200
+    assert conn.execute("SELECT COUNT(*) FROM activation_cohort").fetchone()[0] == 2
+    rows = conn.execute(
+        "SELECT tenant_id, first_seen_at FROM activation_cohort ORDER BY tenant_id"
+    ).fetchall()
+    assert [row["tenant_id"] for row in rows] == ["default", "tenant-b"]
+    assert all(row["first_seen_at"] for row in rows)
+
+
 def test_activation_samples_without_model_fail_without_content(activation_client, conn):
     response = activation_client.post("/api/activation/samples", json={
         "account_description": "分享产品经理的 AI 工具实践和效率方法",
@@ -266,7 +280,7 @@ def test_activation_metrics_calculates_completed_cohort_rates_and_ttv(activation
     completed = started + timedelta(seconds=120)
     now = datetime.now()
     conn.execute(
-        "INSERT INTO activation_cohort (id, tenant_id, first_seen_at) VALUES (1, 'default', ?)",
+        "INSERT INTO activation_cohort (tenant_id, first_seen_at) VALUES ('default', ?)",
         (started.isoformat(sep=" "),),
     )
     conn.execute(
