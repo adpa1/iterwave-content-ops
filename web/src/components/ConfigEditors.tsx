@@ -128,7 +128,7 @@ export function KbEditor({ view, onSaved }: {
   const [inspectMsg, setInspectMsg] = useState<string | null>(null);
   const busy = isPending("cfg:kb");
   /** 脱敏后的路径（含 …）不可回写，避免把展示值当成真实路径保存 */
-  const pathRedacted = /^~?\u2026|^\u2026|\u2026\//.test(view.readonly.kb_path || "");
+  const pathRedacted = true;
 
   /** "title=标题, dimension=分类" → {title:"标题", dimension:"分类"} */
   const parseMapping = (text: string): Record<string, string> | string => {
@@ -146,12 +146,10 @@ export function KbEditor({ view, onSaved }: {
   };
 
   const save = async () => {
-    if (!pathRedacted && !path.trim()) { showToast("选题库路径不能为空", "error"); return; }
     const mapping = parseMapping(mappingText);
     if (typeof mapping === "string") { showToast(mapping, "error"); return; }
     const updates: Record<string, unknown> = {};
     if (kbType !== view.readonly.kb_type) updates["topic_kb.type"] = kbType;
-    if (!pathRedacted && path.trim() !== view.readonly.kb_path) updates["topic_kb.path"] = path.trim();
     if (table.trim() && table.trim() !== view.readonly.kb_table) updates["topic_kb.table_name"] = table.trim();
     if (JSON.stringify(mapping) !== JSON.stringify(view.readonly.kb_field_mapping)) {
       updates["topic_kb.field_mapping"] = mapping;
@@ -188,10 +186,10 @@ export function KbEditor({ view, onSaved }: {
           {KB_TYPES.map((t) => <option key={t} value={t}>{t === "auto" ? "auto（按扩展名自动识别）" : t}</option>)}
         </select>
       </Field>
-      <Field label={pathRedacted ? "当前选题库路径（已脱敏，只读）" : "文件路径（相对项目根目录或绝对路径）"}>
+      <Field label="选题库文件位置（只读）">
         <input style={{ ...inputStyle, fontFamily: "monospace" }} value={path}
           readOnly={pathRedacted}
-          onChange={(e) => setPath(e.target.value)} placeholder="kb/topics.csv" />
+          onChange={(e) => setPath(e.target.value)} placeholder="由内容资产中的选题库来源管理" />
       </Field>
       <div className="note" style={{ fontSize: 11 }}>
         选题库可以来自多个来源（本地上传 / 远程地址 / 服务器路径），统一在
@@ -252,7 +250,7 @@ export function LlmEditor({ view, onSaved }: {
   const [channel, setChannel] = useState<"plan" | "metered" | "custom">(
     view.readonly.llm_channel || "metered",
   );
-  const [baseUrl, setBaseUrl] = useState(view.readonly.llm_base_url || "");
+  const [baseUrl, setBaseUrl] = useState("");
   const [temperature, setTemperature] = useState(String(view.readonly.llm_temperature ?? ""));
   const [timeoutSec, setTimeoutSec] = useState(String(view.readonly.llm_timeout_seconds ?? ""));
   const [apiKey, setApiKey] = useState("");
@@ -342,7 +340,7 @@ export function LlmEditor({ view, onSaved }: {
         <Field label="Base URL（自定义端点）">
           <input style={{ ...inputStyle, fontFamily: "monospace" }} value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://ark.cn-beijing.volces.com/api/v3" />
+            placeholder="已配置的服务地址不会回显；输入新地址以替换" />
         </Field>
       ) : (
         <div style={{ fontSize: 12, color: "var(--subtle)" }}>
