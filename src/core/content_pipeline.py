@@ -28,10 +28,14 @@ logger = logging.getLogger(__name__)
 class ContentGenerationError(RuntimeError):
     """模型生成失败；携带稳定错误码和可安全展示给用户的提示。"""
 
-    def __init__(self, code: str, message: str, *, retryable: bool = False):
+    def __init__(
+        self, code: str, message: str, *, retryable: bool = False,
+        retry_after_seconds: float | None = None,
+    ):
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
 
 
 
@@ -141,6 +145,7 @@ def generate_copy_content(
     if not result:
         raise ContentGenerationError(
             "model_output_invalid", "模型未返回有效文案，请调整要求后重试",
+            retryable=True,
         )
     return result
 
@@ -276,14 +281,25 @@ def _generate_via_llm(
         elif status == 402:
             code, message, retryable = "model_quota_exceeded", "模型额度不足，请检查账户额度", False
         elif status == 429:
-            code, message, retryable = "model_rate_limited", "模型请求过于频繁，请稍后重试", True
+            retry_after_header = exc.response.headers.get("Retry-After")
+            try:
+                retry_after_seconds = max(0.1, min(float(retry_after_header), 300.0)) if retry_after_header else None
+            except (TypeError, ValueError):
+                retry_after_seconds = None
+            code, message, retryable = (
+                "model_rate_limited", "模型请求过于频繁，请稍后重试",
+                retry_after_seconds is not None,
+            )
         elif status in (408, 504):
             code, message, retryable = "model_timeout", "模型请求超时，请稍后重试", True
         elif status >= 500:
             code, message, retryable = "model_unavailable", "模型服务暂时不可用，请稍后重试", True
         else:
             code, message, retryable = "model_request_failed", "模型请求失败，请检查模型配置", False
-        raise ContentGenerationError(code, message, retryable=retryable) from exc
+        raise ContentGenerationError(
+            code, message, retryable=retryable,
+            retry_after_seconds=locals().get("retry_after_seconds"),
+        ) from exc
     except httpx.RequestError as exc:
         _log_ai_call(
             conn, platform, llm.model, topic_id, round_id,
