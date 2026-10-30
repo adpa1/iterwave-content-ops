@@ -141,7 +141,11 @@ export default function Analytics() {
         const [report, activation] = await Promise.all([api.weeklyReport(), api.activationMetrics()]);
         setWeeklyReport(report);
         setActivationMetrics(activation);
-        setSnapshotHistory((prev) => ({ ...prev, [draft.id]: undefined as any }));
+        setSnapshotHistory((prev) => {
+          const next = { ...prev };
+          delete next[draft.id];
+          return next;
+        });
       }
       const refreshed = await api.drafts();
       setPublishedDrafts(refreshed.filter((d) => !!d.user_confirmed_at));
