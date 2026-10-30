@@ -902,6 +902,12 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
     persona_saved = conn.execute(
         "SELECT 1 FROM config_changes WHERE key = 'ultimate_goal.persona_keywords' LIMIT 1"
     ).fetchone() is not None
+    # 兼容管理员直接维护 config.yaml 的部署；仅把历史示例值视为未配置。
+    sample_persona = ["个人成长", "实用经验", "生活方式", "效率方法"]
+    persona_saved = persona_saved or bool(
+        cfg.ultimate_goal.persona_keywords
+        and list(cfg.ultimate_goal.persona_keywords) != sample_persona
+    )
     return {
         "editable": {
             "daily_quotas": quotas,
