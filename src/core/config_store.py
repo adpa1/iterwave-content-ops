@@ -178,7 +178,7 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "autogrow.cooldown_hours": (int, 0, 720),
     "autogrow.max_rounds_per_day": (int, 0, 24),
     "autogrow.max_consecutive_failures": (int, 1, 20),
-    "autogrow.feedback_max_bias": (int, 0, 50),
+    "autogrow.feedback_max_bias": (float, 0.0, 50.0),
     "autogrow.feedback_lookback_rounds": (int, 1, 20),
     "autogrow.recency_decay": (float, 0.0, 1.0),
     "autogrow.full_confidence_samples": (int, 1, 100),
