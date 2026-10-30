@@ -136,7 +136,7 @@ export default function Operations() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">OPERATIONS CONSOLE</div>
+          <div className="eyebrow">运营控制台</div>
           <h1 className="page-title">运营控制台</h1>
           <div className="page-desc">
             监控运营动作、发布确认、熔断与节奏、定时任务和通知；系统只存草稿，发布永远由你确认。
