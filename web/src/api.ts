@@ -21,6 +21,7 @@ export interface GlobalTaskQueueItem {
   aggregate_id: string | null;
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
   created_at: string;
+  available_at: string;
   started_at: string | null;
   finished_at: string | null;
   attempts: number;
