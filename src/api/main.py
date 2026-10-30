@@ -104,6 +104,8 @@ logger = logging.getLogger(__name__)
 
 _g_ctx: dict = {}
 _task_queue: GlobalTaskQueue | None = None
+# 后台调度器上下文按账号组长期持有，不随前台活动账号组切换而销毁。
+_tenant_runtime_contexts: dict[str, dict] = {}
 
 
 def _enqueue_round_task(*, tenant_id: str, round_id: int, topic_count=None,
@@ -204,7 +206,10 @@ def _dedupe_once(key: str, produce: Callable[[], dict]) -> tuple[dict, bool]:
 
 
 
-def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: str) -> dict:
+def _build_tenant_runtime_context(
+    tenant_registry: TenantRegistry, tenant_id: str, *,
+    run_startup_maintenance: bool = False,
+) -> dict:
     """为指定账号组构造完整运行时；不启动调度器、不修改当前活动上下文。"""
     cfg = load_config()
     base_llm_config = cfg.llm.model_dump()
@@ -303,16 +308,17 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
             spiral=spiral, scoring=scoring, goal_progress=goal_progress, guard=guard,
             task_queue=_task_queue, tenant_id=tenant_id,
         )
-        # 临时账号组运行时用于队列任务/热切换，不能执行启动期恢复或计划失效扫描：
-        # 它们可能把另一个仍在全局队列中执行的任务误判为崩溃现场。
+        # 临时任务运行时不执行启动期恢复；常驻账号组调度器只在首次建立上下文时执行一次。
         recovery_report = {}
         pvm = PlanVersionManager(cfg, conn)
-        invalidation = {"stale_rounds": []}
-        if invalidation["stale_rounds"]:
-            logger.warning(
-                "账号组热切换计划签名检查 tenant=%s stale_rounds=%d",
-                tenant_id, len(invalidation["stale_rounds"]),
-            )
+        if run_startup_maintenance:
+            recovery_report = RecoveryManager(cfg, conn, scheduler).recover()
+            invalidation = pvm.invalidate_changed_plans()
+            if invalidation["stale_rounds"]:
+                logger.warning(
+                    "账号组启动计划签名检查 tenant=%s stale_rounds=%d",
+                    tenant_id, len(invalidation["stale_rounds"]),
+                )
         from ..core.autogrow import AutogrowController
         autogrow = AutogrowController(
             cfg, conn, executor, goal_progress=goal_progress,
@@ -345,117 +351,110 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
 
 
 async def _switch_tenant_runtime(tenant_id: str) -> dict:
-    """安全切换完整运行时；任何失败都尝试恢复原账号组。调用方必须持有切换闸门。"""
+    """只切换前台运行时引用；所有账号组后台调度器和连接继续常驻。"""
     registry = _g_ctx.get("tenant_registry")
     if registry is None:
         raise HTTPException(503, "账号组注册表尚未初始化")
     old_tenant_id = _g_ctx.get("runtime_tenant_id", "default")
     if tenant_id == old_tenant_id:
         registry.select_active(tenant_id)
-        return {"selected": {"id": tenant_id, "name": registry.get(tenant_id).get("name") or tenant_id},
-                "runtime_tenant_id": tenant_id, "restart_required": False,
-                "switch_status": "unchanged", "message": "当前账号组已是运行中的账号组。"}
+        return {
+            "selected": {"id": tenant_id, "name": registry.get(tenant_id).get("name") or tenant_id},
+            "runtime_tenant_id": tenant_id, "restart_required": False,
+            "switch_status": "unchanged", "message": "当前账号组已是运行中的账号组。",
+        }
     try:
         registry.get(tenant_id)
     except TenantError as exc:
         raise HTTPException(404, str(exc)) from exc
-    # 请求闸门已排空普通 API 请求；运行轮次的等待时限由当前账号组策略控制。
-    switch_policy = _tenant_switch_policy(_g_ctx.get("cfg"))
-    round_timeout = switch_policy.round_drain_timeout_seconds
-    round_deadline = time.monotonic() + round_timeout
-    while _running_rounds:
-        if time.monotonic() >= round_deadline:
-            raise HTTPException(409, f"轮次在 {round_timeout} 秒内未能结束，已取消账号组切换")
-        await asyncio.sleep(0.05)
 
     old_context = dict(_g_ctx)
-    old_scheduler = old_context.get("scheduler")
-    old_conn = old_context.get("conn")
-    try:
-        new_context = _build_tenant_runtime_context(registry, tenant_id)
-    except RuntimeError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except Exception as exc:
-        logger.exception("目标账号组运行时初始化失败 tenant=%s", tenant_id)
-        raise HTTPException(500, f"目标账号组初始化失败，当前账号组未变更：{type(exc).__name__}") from exc
+    # 保存切换前最新的前台对象引用；调度器仍使用同一批 cfg/DB/服务对象。
+    _tenant_runtime_contexts[old_tenant_id] = old_context
+    new_context = _tenant_runtime_contexts.get(tenant_id)
+    created_context = False
+    if new_context is None:
+        try:
+            new_context = _build_tenant_runtime_context(
+                registry, tenant_id, run_startup_maintenance=True,
+            )
+            new_context["scheduler"].start()
+            _tenant_runtime_contexts[tenant_id] = new_context
+            created_context = True
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except Exception as exc:
+            if new_context is not None:
+                try:
+                    new_context["scheduler"].shutdown()
+                except Exception:
+                    pass
+                try:
+                    new_context["conn"].close()
+                except Exception:
+                    pass
+            logger.exception("目标账号组后台运行时初始化失败 tenant=%s", tenant_id)
+            raise HTTPException(
+                500, f"目标账号组初始化失败，当前账号组未变更：{type(exc).__name__}",
+            ) from exc
 
-    old_stopped = False
-    new_started = False
-    try:
-        if old_scheduler is not None:
-            drained = await old_scheduler.quiesce(timeout_seconds=switch_policy.scheduler_drain_timeout_seconds)
-            if not drained:
-                raise HTTPException(409, f"旧账号组后台任务未能在 {switch_policy.scheduler_drain_timeout_seconds} 秒内结束，已取消切换")
-            old_stopped = True
-            if old_conn is not None:
-                old_conn.close()
-            # 账号组级热点采集/研判已进入全局队列；不等待其他任务上下文结束。
+    # 缓存上下文也必须检查待恢复标记，避免复用已被安排恢复的旧连接。
+    new_data_dir = Path(new_context["cfg"].resolve_path(new_context["cfg"].paths.data_dir))
+    if (new_data_dir / ".pending_restore.json").exists():
+        if created_context:
+            try:
+                new_context["scheduler"].shutdown()
+                new_context["conn"].close()
+            finally:
+                _tenant_runtime_contexts.pop(tenant_id, None)
+        raise HTTPException(409, "目标账号组存在待恢复快照，请先重启服务完成恢复，再执行热切换")
 
-        from src.core import account_login, login_manager
-        # 旧账号组的扫码登录子进程和登录态导出线程必须先退出，避免继续读写旧/新目录。
-        account_login.stop_all_logins(timeout_seconds=switch_policy.login_process_timeout_seconds)
-        new_data_dir = new_context["cfg"].resolve_path(new_context["cfg"].paths.data_dir)
+    from src.core import account_login, login_manager
+    try:
+        # 仅终止前台交互式扫码登录；已入队 Agent 任务和所有账号组调度器不受影响。
+        policy = _tenant_switch_policy(old_context.get("cfg"))
+        account_login.stop_all_logins(timeout_seconds=policy.login_process_timeout_seconds)
         account_login.configure_data_dir(new_data_dir)
         login_manager.configure_data_dir(new_data_dir)
-
-        new_context["scheduler"].start()
-        new_started = True
         selected = registry.select_active(tenant_id)
         set_active_notifier(new_context["notifier"])
         _g_ctx.clear()
         _g_ctx.update(new_context)
-        # 幂等去重结果含业务响应，必须在租户边界切换后清空，避免复用旧租户响应。
         with _dedupe_lock:
             _dedupe_cache.clear()
-        logger.info("账号组运行时热切换成功 from=%s to=%s", old_tenant_id, tenant_id)
+        logger.info("账号组前台工作空间切换成功 from=%s to=%s", old_tenant_id, tenant_id)
         return {
             "selected": selected, "runtime_tenant_id": tenant_id,
             "restart_required": False, "switch_status": "completed",
-            "message": f"已切换到账号组「{selected['name']}」，运行时已重建。",
+            "message": f"已切换到账号组「{selected['name']}」，后台任务和定时调度保持运行。",
         }
     except Exception as exc:
-        logger.exception("账号组热切换失败 from=%s to=%s", old_tenant_id, tenant_id)
+        logger.exception("账号组前台切换失败 from=%s to=%s", old_tenant_id, tenant_id)
         try:
-            new_context["scheduler"].shutdown()
-            if new_started:
-                await asyncio.sleep(0.05)
-        except Exception:
-            logger.exception("清理失败的新账号组调度器失败 tenant=%s", tenant_id)
-        try:
-            new_context["conn"].close()
-        except Exception:
-            logger.exception("关闭失败的新账号组连接失败 tenant=%s", tenant_id)
-
-        if not old_stopped:
-            if isinstance(exc, HTTPException):
-                raise exc
-            raise HTTPException(500, f"账号组初始化失败，原运行时未变更：{type(exc).__name__}") from exc
-
-        try:
-            # 旧调度器已停止，重新构造旧账号组而非复用可能已关闭的调度器实例。
-            rollback_context = _build_tenant_runtime_context(registry, old_tenant_id)
-            from src.core import account_login, login_manager
-            old_data_dir = rollback_context["cfg"].resolve_path(rollback_context["cfg"].paths.data_dir)
+            registry.select_active(old_tenant_id)
+            set_active_notifier(old_context["notifier"])
+            old_data_dir = Path(old_context["cfg"].resolve_path(old_context["cfg"].paths.data_dir))
             account_login.configure_data_dir(old_data_dir)
             login_manager.configure_data_dir(old_data_dir)
-            rollback_context["scheduler"].start()
-            registry.select_active(old_tenant_id)
-            set_active_notifier(rollback_context["notifier"])
             _g_ctx.clear()
-            _g_ctx.update(rollback_context)
-            if old_conn is not None:
-                try:
-                    old_conn.close()
-                except Exception:
-                    pass
+            _g_ctx.update(old_context)
         except Exception as rollback_exc:
-            logger.exception("账号组热切换回滚失败 from=%s to=%s", tenant_id, old_tenant_id)
+            logger.exception("账号组前台切换回滚失败")
             raise TenantRuntimeRollbackError(
-                f"切换失败且旧账号组恢复失败（{type(rollback_exc).__name__}）；为避免串租，系统已阻止新业务请求"
+                f"切换失败且旧账号组前台上下文恢复失败（{type(rollback_exc).__name__}）；系统已阻止新业务请求"
             ) from rollback_exc
+        if created_context:
+            try:
+                new_context["scheduler"].shutdown()
+                new_context["conn"].close()
+            except Exception:
+                logger.exception("清理切换失败的新账号组运行时失败 tenant=%s", tenant_id)
+            _tenant_runtime_contexts.pop(tenant_id, None)
         if isinstance(exc, HTTPException):
             raise exc
-        raise HTTPException(500, f"切换失败，已恢复账号组「{old_tenant_id}」：{type(exc).__name__}") from exc
+        raise HTTPException(
+            500, f"切换失败，已恢复账号组「{old_tenant_id}」：{type(exc).__name__}",
+        ) from exc
 
 
 _VALIDATION_FIELD_LABELS = {
