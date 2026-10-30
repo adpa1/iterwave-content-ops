@@ -241,6 +241,18 @@ notifications:
     - name: "round_completed"
       level: "info"
       enabled: true
+    - name: "circuit_recovered"
+      level: "info"
+      enabled: true
+    - name: "publish_confirmed"
+      level: "info"
+      enabled: true
+    - name: "quota_exhausted"
+      level: "info"
+      enabled: true
+    - name: "round_timeout"
+      level: "warning"
+      enabled: true
 
 # ===== 热点数据源（R22，默认公益 API）=====
 hot_topics:
