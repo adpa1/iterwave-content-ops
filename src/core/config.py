@@ -554,6 +554,26 @@ class CopyGenerationConfig(BaseModel):
         return self
 
 
+class SpiralConfig(BaseModel):
+    """复盘缺口识别与运营建议阈值。"""
+    min_dimension_samples: int = Field(5, ge=1, le=100)
+    validation_gap_topic_min: int = Field(2, ge=1, le=20)
+    validation_gap_topic_max: int = Field(3, ge=1, le=20)
+    coverage_gap_ratio: float = Field(0.5, ge=0.05, le=1.0)
+    coverage_performance_multiplier: float = Field(1.5, ge=1.0, le=10.0)
+    min_suggested_add: int = Field(50, ge=1, le=10000)
+    min_platform_samples: int = Field(3, ge=1, le=100)
+    low_interaction_rate_threshold: float = Field(0.02, ge=0.0, le=1.0)
+    min_metrics_for_ops_adjustment: int = Field(3, ge=1, le=100)
+    min_rounds_for_systematic_adjustment: int = Field(5, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def _check_validation_gap_range(self) -> "SpiralConfig":
+        if self.validation_gap_topic_min > self.validation_gap_topic_max:
+            raise ValueError("validation_gap_topic_min 必须小于等于 validation_gap_topic_max")
+        return self
+
+
 class InsightsConfig(BaseModel):
     """平台纵深分析的窗口、缓存与结果条数。"""
     window_days: int = Field(90, ge=1, le=3650)
@@ -626,6 +646,7 @@ class Config(BaseModel):
     copy_generation: CopyGenerationConfig = Field(default_factory=CopyGenerationConfig)
     insights: InsightsConfig = Field(default_factory=InsightsConfig)
     plan_suggestion: PlanSuggestionConfig = Field(default_factory=PlanSuggestionConfig)
+    spiral: SpiralConfig = Field(default_factory=SpiralConfig)
 
     def resolve_path(self, relative: str) -> Path:
         """把 config 中的相对路径解析为相对于项目根的绝对路径。"""
