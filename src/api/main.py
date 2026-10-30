@@ -1825,7 +1825,14 @@ def _register_routes(app: FastAPI) -> None:
         best = []
         metrics_to_compare = ("views", "likes", "collects", "comments", "shares")
         for p in platforms:
-            rows = [r for r in merged if r["platform"] == p]
+            raw_rows = [r for r in merged if r["platform"] == p]
+            latest_by_content = {}
+            for row in sorted(raw_rows, key=lambda r: (
+                str(r.get("measured_at") or ""),
+                1 if r.get("source") == "platform_readback" else 0,
+            )):
+                latest_by_content[row["content_id"]] = row
+            rows = list(latest_by_content.values())
             # 不擅自选定点赞或播放作为唯一主指标；同平台分别给出可用指标的领先内容。
             for metric in metrics_to_compare:
                 comparable = [r for r in rows if r.get(metric) is not None]
