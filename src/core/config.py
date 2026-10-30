@@ -297,6 +297,7 @@ class HotTopicDedupConfig(BaseModel):
     cross_platform_similarity: float = Field(0.8, ge=0.5, le=1.0)
     # 规则 3：只在这个时间窗内找跨平台重复（避免把一个月前的同名旧闻并进来）
     cross_platform_window_hours: int = Field(48, ge=1, le=720)
+    length_prefilter_ratio: float = Field(0.5, ge=0.0, le=1.0)
 
 
 class HotTopicsConfig(BaseModel):
