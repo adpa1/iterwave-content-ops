@@ -52,6 +52,7 @@ export default function Analytics() {
     correction_of: string | null;
   }[]>>({});
   const [historyOpen, setHistoryOpen] = useState<string | null>(null);
+  const [detailView, setDetailView] = useState<"overview" | "details">("overview");
 
   const loadGaps = () => {
     setGapsError(null);
@@ -199,7 +200,9 @@ export default function Analytics() {
           </div>
         </div>
         <div className="head-actions">
-          <button className="btn" onClick={() => loadMetrics(platformFilter)}>↻ 刷新数据</button>
+          <button className={detailView === "overview" ? "btn primary" : "btn"} onClick={() => setDetailView("overview")}>总览</button>
+          <button className={detailView === "details" ? "btn primary" : "btn"} onClick={() => setDetailView("details")}>详细数据</button>
+          <button className="btn" onClick={() => { loadMetrics(platformFilter); loadGaps(); }}>↻ 刷新数据</button>
         </div>
       </div>
 
@@ -343,6 +346,7 @@ export default function Analytics() {
         </>}
       </div>
 
+      {detailView === "details" && <>
       {/* G-08 逐篇数据 */}
       <div className="panel">
         <div className="panel-head">
@@ -578,6 +582,7 @@ export default function Analytics() {
           );
         })()}
       </div>
+      </>}
     </>
   );
 }
