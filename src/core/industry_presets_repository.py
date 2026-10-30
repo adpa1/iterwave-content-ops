@@ -102,8 +102,12 @@ def upsert_custom_preset(conn, item: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"{field} 必须是最多 200 项的字符串数组")
         normalized[field] = [v.strip() for v in value if v.strip()]
     notes = item.get("platform_notes", {})
-    if not isinstance(notes, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in notes.items()):
-        raise ValueError("platform_notes 必须是字符串映射")
+    if not isinstance(notes, dict) or any(
+        k not in ("xhs", "douyin", "kuaishou", "wechat_channels")
+        or not isinstance(v, str) or len(v) > 500
+        for k, v in notes.items()
+    ):
+        raise ValueError("platform_notes 只能是四个平台的字符串说明（每项不超过 500 字）")
     lock = getattr(conn, "_lock", None)
     if lock:
         lock.acquire()
