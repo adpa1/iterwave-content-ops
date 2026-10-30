@@ -4033,7 +4033,17 @@ def _register_routes(app: FastAPI) -> None:
                 conn.execute("UPDATE topic_index SET excluded_at = NULL, excluded_reason = NULL WHERE id = ?",
                              (topic_id,))
                 conn.commit()
-                return {"id": topic_id, "imported": True, "message": "该热点之前被删除，已恢复到选题池"}
+                if sensitive_hits:
+                    conn.execute(
+                        "INSERT INTO hot_topic_import_audit "
+                        "(topic_id, title, categories, confirmed_by, confirmed_at) VALUES (?, ?, ?, ?, ?)",
+                        (topic_id, title, json.dumps(sensitive_hits, ensure_ascii=False),
+                         confirmed_by, datetime.now().isoformat(timespec="seconds")),
+                    )
+                    conn.commit()
+                return {"id": topic_id, "imported": True,
+                        "message": "该热点之前被删除，已恢复到选题池",
+                        "manual_confirmation_recorded": bool(sensitive_hits)}
             return {"id": topic_id, "imported": False, "message": "选题库已存在该热点"}
 
         conn.execute(
