@@ -762,14 +762,31 @@ class RoundExecutor:
                 image_paths: list = []
                 reject_reason: Optional[str] = None
                 for attempt in range(self.cfg.copy_generation.max_guard_retries + 1):
-                    # LLM 为阻塞调用，放到线程池避免卡住事件循环
-                    title, body, tags = await asyncio.to_thread(
-                        generate_copy_content,
-                        topic.title, topic.summary, topic.dimension, platform, self.cfg,
-                        self.conn, topic.id, round_id,
-                        reject_reason,
-                        self._hints_for(platform),
-                    )
+                    # LLM 为阻塞调用，放到线程池避免卡住事件循环。
+                    # 仅对明确可重试的网络/超时/限流/临时服务错误执行有限指数退避。
+                    for model_attempt in range(self.cfg.llm.retry_attempts + 1):
+                        try:
+                            title, body, tags = await asyncio.to_thread(
+                                generate_copy_content,
+                                topic.title, topic.summary, topic.dimension, platform, self.cfg,
+                                self.conn, topic.id, round_id,
+                                reject_reason,
+                                self._hints_for(platform),
+                            )
+                            break
+                        except ContentGenerationError as exc:
+                            if not exc.retryable or model_attempt >= self.cfg.llm.retry_attempts:
+                                raise
+                            delay = self.cfg.llm.retry_backoff_seconds * (2 ** model_attempt)
+                            report["steps"].append({
+                                "step": "model_retry",
+                                "platform": platform.value,
+                                "topic_id": topic.id,
+                                "error_code": exc.code,
+                                "attempt": model_attempt + 1,
+                                "delay_seconds": delay,
+                            })
+                            await asyncio.sleep(delay)
                     if card_first:
                         # 编排把出图排在质量门之前：每个候选版本都先出图再质检
                         image_paths = await asyncio.to_thread(
