@@ -35,6 +35,7 @@ class FakeConfig:
         )
         self.topic_kb = SimpleNamespace(path=str(root / "data" / "kb" / "topics.csv"))
         self.platforms = FakePlatforms()
+        self.llm = SimpleNamespace(model_dump=lambda: {})
 
     def resolve_path(self, value):
         path = Path(value)
