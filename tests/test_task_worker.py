@@ -195,6 +195,7 @@ def test_worker_redacts_sensitive_failure_details_before_queue_storage(tmp_path)
         "conn": SimpleNamespace(close=lambda: None),
     }
     worker = GlobalTaskWorker(queue, lambda tenant_id: context)
+    worker.owner = "worker-d"
     asyncio.run(worker._execute(claimed))
 
     saved = queue.get(task.task_id)
