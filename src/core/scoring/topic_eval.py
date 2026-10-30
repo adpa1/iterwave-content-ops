@@ -119,7 +119,7 @@ class ScoringEngine:
         # 排序
         scored.sort(key=lambda s: s.total_score, reverse=True)
 
-        # 稳定运行模式：ε-greedy 15% 探索
+        # 稳定运行模式：ε-greedy 探索比例由 scoring.stable_exploration_percent 控制
         if mode == "stable_operation" and scored:
             exploration_percent = self.scoring_cfg.stable_exploration_percent
             top_count = max(1, len(scored) * (100 - exploration_percent) // 100)
