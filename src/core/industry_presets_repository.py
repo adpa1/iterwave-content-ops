@@ -31,19 +31,15 @@ def _decode(row) -> dict[str, Any]:
 
 
 def seed_builtins(conn) -> dict[str, int]:
-    marker = conn.execute(
-        "SELECT 1 FROM tenant_setting_migrations WHERE migration_key=?", (SEED_MARKER,)
-    ).fetchone()
-    if marker:
-        return {"imported": 0}
     lock = getattr(conn, "_lock", None)
     if lock:
         lock.acquire()
     try:
         conn.execute("BEGIN IMMEDIATE")
         now = _now()
+        imported = 0
         for item in PRESETS:
-            conn.execute(
+            cursor = conn.execute(
                 """INSERT OR IGNORE INTO industry_presets(
                     key,name,description,positioning,persona_keywords_json,
                     forbidden_directions_json,extra_redlines_json,dimensions_json,
@@ -60,9 +56,12 @@ def seed_builtins(conn) -> dict[str, int]:
                     now, now,
                 ),
             )
+            imported += max(0, cursor.rowcount)
         conn.execute(
-            "INSERT INTO tenant_setting_migrations(migration_key,completed_at,imported_count,rejected_count) VALUES(?,?,?,0)",
-            (SEED_MARKER, now, len(PRESETS)),
+            "INSERT INTO tenant_setting_migrations(migration_key,completed_at,imported_count,rejected_count) VALUES(?,?,?,0) "
+            "ON CONFLICT(migration_key) DO UPDATE SET completed_at=excluded.completed_at, "
+            "imported_count=tenant_setting_migrations.imported_count+excluded.imported_count",
+            (SEED_MARKER, now, imported),
         )
         conn.commit()
     except Exception:
@@ -71,7 +70,7 @@ def seed_builtins(conn) -> dict[str, int]:
     finally:
         if lock:
             lock.release()
-    return {"imported": len(PRESETS)}
+    return {"imported": imported}
 
 
 def list_presets(conn) -> list[dict[str, Any]]:
