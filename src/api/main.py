@@ -1773,11 +1773,13 @@ def _register_routes(app: FastAPI) -> None:
     @app.post("/api/drafts/{draft_id}/note_url")
     def update_draft_note_url(draft_id: str, req: dict):
         conn = _g()["conn"]
-        row = conn.execute("SELECT d.platform, d.status, d.content_id FROM drafts d WHERE d.id=?",
-                           (draft_id,)).fetchone()
+        row = conn.execute(
+            "SELECT d.platform, d.status, d.content_id, d.user_confirmed_at FROM drafts d WHERE d.id=?",
+            (draft_id,),
+        ).fetchone()
         if row is None:
             raise HTTPException(404, "草稿不存在")
-        if row["status"] not in ("user_published", "data_fetching", "published"):
+        if row["user_confirmed_at"] is None:
             raise HTTPException(409, "只有已确认发布的内容才能补填链接")
         note_url = str((req or {}).get("note_url") or "").strip()
         if note_url:
@@ -1794,11 +1796,11 @@ def _register_routes(app: FastAPI) -> None:
         conn = _g()["conn"]
         tenant_id = _tenant_id()
         row = conn.execute(
-            "SELECT d.platform, d.status, d.content_id FROM drafts d WHERE d.id=?", (draft_id,)
+            "SELECT d.platform, d.status, d.content_id, d.user_confirmed_at FROM drafts d WHERE d.id=?", (draft_id,)
         ).fetchone()
         if row is None:
             raise HTTPException(404, "草稿不存在")
-        if row["status"] not in ("user_published", "data_fetching", "published"):
+        if row["user_confirmed_at"] is None:
             raise HTTPException(409, "请先确认内容已在平台发布，再录入数据")
         supported_fields = tuple(_g()["cfg"].platform_metric_fields.get(row["platform"], []))
         known_fields = {"views", "likes", "collects", "comments", "shares"}
