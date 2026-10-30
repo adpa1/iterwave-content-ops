@@ -119,6 +119,12 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "media_quality.low_resolution_pixels": (int, 10_000, 20_000_000),
     "media_quality.low_color_count": (int, 1, 16),
     "media_quality.color_count_reference": (int, 1, 256),
+    "media_quality.composition_near_portrait_multiplier": (float, 0.0, 1.0),
+    "media_quality.composition_square_multiplier": (float, 0.0, 1.0),
+    "media_quality.composition_landscape_multiplier": (float, 0.0, 1.0),
+    "media_quality.sharpness_fallback_contrast_reference": (float, 1.0, 255.0),
+    "media_quality.sampling_size": (int, 128, 2048),
+    "media_quality.color_quantization_colors": (int, 2, 256),
     "tenant_switch.request_drain_timeout_seconds": (int, 1, 120),
     "tenant_switch.scheduler_drain_timeout_seconds": (int, 1, 120),
     "tenant_switch.round_drain_timeout_seconds": (int, 1, 600),
@@ -127,6 +133,7 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "tenant_backup.max_bytes": (int, 1_048_576, 2 * 1024 * 1024 * 1024),
     "tenant_backup.retention_count": (int, 1, 100),
     "hot_topic_matcher.match_threshold": (float, 0.0, 100.0),
+    "hot_topic_matcher.llm_temperature": (float, 0.0, 2.0),
     "hot_topic_matcher.keyword_score": (float, 0.0, 100.0),
     "hot_topic_matcher.batch_size": (int, 1, 100),
     "hot_topic_matcher.max_per_run": (int, 1, 2000),
@@ -148,6 +155,15 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "rhythm.windows.ops.end_hour": (int, 0, 23),
     "circuit_breaker.cooldown_minutes": (int, 1, 1440),
     "hot_topics.retention_days": (int, 1, 365),
+    "hot_topics.max_items_per_source": (int, 1, 500),
+    "hot_topics.fetch_timeout_seconds": (int, 1, 120),
+    "hot_topics.max_concurrent_fetches": (int, 1, 32),
+    "hot_topics.trend_burst_multiplier": (float, 1.01, 10.0),
+    "hot_topics.trend_cooled_ratio": (float, 0.05, 0.95),
+    "hot_topics.trend_sustained_ratio": (float, 0.05, 1.0),
+    "hot_topics.trend_previous_drop_ratio": (float, 0.05, 1.0),
+    "hot_topics.trend_min_seen_count": (int, 2, 20),
+    "hot_topics.dedup.cross_platform_similarity": (float, 0.5, 1.0),
     "hot_topics.max_rows": (int, 100, 1_000_000),
     "hot_topics.dedup.cross_platform_window_hours": (int, 1, 720),
     "hot_topics.filters.heat_threshold": (int, 0, 10_000_000),
@@ -164,6 +180,25 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "autogrow.max_consecutive_failures": (int, 1, 20),
     "autogrow.feedback_max_bias": (int, 0, 50),
     "autogrow.feedback_lookback_rounds": (int, 1, 20),
+    "autogrow.recency_decay": (float, 0.0, 1.0),
+    "autogrow.full_confidence_samples": (int, 1, 100),
+    "autogrow.coverage_gap_bias_ratio": (float, 0.0, 1.0),
+    "autogrow.validation_gap_bias_ratio": (float, 0.0, 1.0),
+    "autogrow.min_dimension_bias": (float, 0.0, 10.0),
+    "autogrow.max_reference_titles_per_platform": (int, 0, 10),
+    "autogrow.max_copy_hints_per_platform": (int, 1, 20),
+    "autogrow.max_copy_hint_chars": (int, 20, 500),
+    "copy_generation.topic_summary_max_chars": (int, 50, 2000),
+    "copy_generation.title_max_chars": (int, 5, 40),
+    "copy_generation.body_min_chars": (int, 0, 5000),
+    "copy_generation.body_max_chars": (int, 50, 10000),
+    "copy_generation.tag_min_count": (int, 0, 20),
+    "copy_generation.tag_max_count": (int, 1, 30),
+    "copy_generation.persona_keyword_limit": (int, 1, 50),
+    "copy_generation.forbidden_direction_limit": (int, 1, 50),
+    "copy_generation.strategy_hint_max_count": (int, 0, 20),
+    "copy_generation.strategy_hint_max_chars": (int, 20, 500),
+    "copy_generation.max_guard_retries": (int, 0, 10),
     "llm.enabled": (bool, None, None),
     # 通知通道开关（页面只在运营中心提供开关；也可从这里改）
     "notifications.channels.macos.enabled": (bool, None, None),
@@ -178,6 +213,8 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "timeouts.metrics_initial_delay_hours": (int, 0, 720),
     "timeouts.goal_max_rounds": (int, 1, 500),
     "timeouts.round_min_interval_hours": (int, 0, 168),
+    "timeouts.metrics_retry_attempts": (int, 1, 20),
+    "timeouts.metrics_retry_interval_minutes": (int, 1, 1440),
     # 存草稿时段窗口（本地时区，R5）
     "rhythm.windows.draft_save.start_hour": (int, 0, 23),
     "rhythm.windows.draft_save.end_hour": (int, 0, 23),
@@ -722,6 +759,32 @@ def config_metadata_view(cfg: Config) -> list[dict[str, Any]]:
         for field in SCORING_WEIGHT_FIELDS:
             key = f"scoring.{mode}.{field}"
             add(key, _get_value(cfg, key), kind="integer", minimum=0, maximum=100)
+    # 独立校验分支中的可编辑字段也必须出现在统一元数据中。
+    for key, minimum, maximum in (
+        ("scoring.active_dimension_min_uses", 1, 10),
+        ("scoring.active_dimension_window_days", 7, 365),
+        ("scoring.shrinkage_m", 1, 50),
+    ):
+        add(key, _get_value(cfg, key), kind="integer", minimum=minimum, maximum=maximum)
+    for field in RHYTHM_INTERVAL_FIELDS:
+        key = f"rhythm.intervals.{field}"
+        add(key, _get_value(cfg, key), kind="integer", minimum=0, maximum=3600)
+    for platform in PLATFORM_KEYS:
+        add(f"platforms.{platform}.enabled",
+            getattr(cfg.platforms, platform).enabled, kind="boolean")
+    add("topic_kb.type", cfg.topic_kb.type, kind="string")
+    add("topic_kb.field_mapping", cfg.topic_kb.field_mapping, kind="object")
+    add("ultimate_goal.goal_mode", cfg.ultimate_goal.goal_mode, kind="string")
+    add("ultimate_goal.positioning", cfg.ultimate_goal.positioning, kind="string")
+    add("ultimate_goal.platform_links",
+        [item.model_dump() for item in cfg.ultimate_goal.platform_links], kind="array")
+    for platform in PLATFORM_KEYS:
+        persona = cfg.ultimate_goal.platform_personas.get(platform)
+        if persona is None:
+            continue
+        for field in ("inherit_global", "account_name", "positioning", "audience",
+                      "role", "persona_keywords", "forbidden_directions", "extra_redlines"):
+            add(f"ultimate_goal.platform_personas.{platform}.{field}", getattr(persona, field))
     for key, value in HARD_LOCKED_KEYS.items():
         add(key, True, kind="boolean", editable=False, description=value)
     return [items[key] for key in sorted(items)]
