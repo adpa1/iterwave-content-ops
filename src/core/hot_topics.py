@@ -71,6 +71,24 @@ def _sensitive_topic_hits(title: str) -> list[str]:
     return [label for label, pattern in _SENSITIVE_TOPIC_PATTERNS if pattern.search(value)]
 
 
+def _publishability_status(
+    title: str,
+    redline_hits: list[str],
+    forbidden: bool,
+    dimension_match: Optional[bool],
+    match_fresh: bool,
+) -> str:
+    """只有通过新鲜研判与全部安全门才给出可发布结论。"""
+    sensitive_hits = _sensitive_topic_hits(title)
+    if sensitive_hits:
+        return "需人工确认"
+    if redline_hits or forbidden or dimension_match is False:
+        return "不可发布"
+    if not match_fresh or dimension_match is None:
+        return "未研判"
+    return "可发布"
+
+
 def _fetch_public_text(url: str, *, headers: dict[str, str], timeout: int) -> tuple[str, str]:
     """通过固定到已验证公网 IP 的连接抓取热点源。"""
     from .kb_sources import MAX_UPLOAD_BYTES
@@ -629,14 +647,9 @@ class HotTopicCollector:
             dimension_match = dimension_match_of(row, current_version, threshold=self.cfg.hot_topic_matcher.match_threshold)
             fresh = row["match_version"] == current_version
             forbidden = bool(fresh and row["forbidden_hit"])
-            if sensitive_hits:
-                publishability_status = "需人工确认"
-            elif hit_redline or forbidden or dimension_match is False:
-                publishability_status = "不可发布"
-            elif not fresh or dimension_match is None:
-                publishability_status = "未研判"
-            else:
-                publishability_status = "可发布"
+            publishability_status = _publishability_status(
+                title, hit_redline, forbidden, dimension_match, fresh,
+            )
             publishable = publishability_status == "可发布"
 
             items.append({
