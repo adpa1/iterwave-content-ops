@@ -26,7 +26,7 @@ import statistics
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 
@@ -87,6 +87,23 @@ def _publishability_status(
     if not match_fresh or dimension_match is None:
         return "未研判"
     return "可发布"
+
+
+def _utc_now_naive() -> datetime:
+    """数据库沿用无时区字段，但统一存 UTC；API 输出时再补 UTC offset。"""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _api_utc(value):
+    if not value:
+        return value
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.isoformat()
 
 
 def _fetch_public_text(url: str, *, headers: dict[str, str], timeout: int) -> tuple[str, str]:
@@ -156,7 +173,7 @@ def _parse_event_ts(raw: dict) -> Optional[datetime]:
             continue
         try:
             seconds = ts / 1000 if ts > 10_000_000_000 else ts
-            return datetime.fromtimestamp(seconds)
+            return datetime.fromtimestamp(seconds, tz=timezone.utc).replace(tzinfo=None)
         except (OverflowError, OSError, ValueError):
             continue
     return None
@@ -372,7 +389,7 @@ class HotTopicCollector:
             raise RuntimeError(f"接口返回 code={payload.get('code')} {payload.get('message', '')}")
 
         window_h = self.hcfg.filters.get("time_window_hours")
-        now = datetime.now()
+        now = _utc_now_naive()
         out: list[dict] = []
         for raw in (payload.get("data") or [])[:self.hcfg.max_items_per_source]:
             title = (raw.get("title") or "").strip()
@@ -427,7 +444,7 @@ class HotTopicCollector:
                     "heat": raw.get("heat") or raw.get("hot") or raw.get("hot_value"),
                 })
         window_h = self.hcfg.filters.get("time_window_hours")
-        now = datetime.now()
+        now = _utc_now_naive()
         out: list[dict] = []
         for raw in rows[:self.hcfg.max_items_per_source]:
             title = (raw.get("title") or "").strip()
@@ -465,7 +482,7 @@ class HotTopicCollector:
         else:
             source_label = str(source_label_or_rows)
         backfill(self.conn)   # 旧数据先补归一化字段并合并，保证新 id 不与旧行重复
-        now = datetime.now().isoformat(timespec="seconds")
+        now = _utc_now_naive().isoformat(timespec="seconds")
         platform = source_key.rsplit("/", 1)[-1]
         source = source_key
         seen_in_batch: set[str] = set()
@@ -526,8 +543,8 @@ class HotTopicCollector:
                 "heat_score=NULL, raw_url=NULL",
                 (
                     f"hot-failed-{platform}", source,
-                    datetime.now().isoformat(timespec="seconds"),
-                    datetime.now().isoformat(timespec="seconds"),
+                    _utc_now_naive().isoformat(timespec="seconds"),
+                    _utc_now_naive().isoformat(timespec="seconds"),
                     f"{platform} 热点采集失败：{reason[:100]}",
                 ),
             )
@@ -547,7 +564,7 @@ class HotTopicCollector:
             dt = datetime.fromisoformat(last)
         except ValueError:
             return False
-        return (datetime.now() - dt) < timedelta(minutes=self.refresh_interval_minutes())
+        return (_utc_now_naive() - dt) < timedelta(minutes=self.refresh_interval_minutes())
 
     def refresh_interval_minutes(self) -> Optional[int]:
         """采集频率来自 scheduler.jobs.hot_topics_refresh；cron 触发时按 24h 判断是否过期。"""
@@ -602,7 +619,7 @@ class HotTopicCollector:
                     "source": redact(source),
                     "status": "failed",
                     "message": redact(row["title"] or ""),
-                    "discovered_at": row["discovered_at"],
+                    "discovered_at": _api_utc(row["discovered_at"]),
                 }
 
         # 第二遍：只保留采集成功的平台条目，并过 4 道门
@@ -629,7 +646,7 @@ class HotTopicCollector:
                 "source": redact(source),
                 "status": row["evidence_status"],
                 "message": None,
-                "discovered_at": row["discovered_at"],
+                "discovered_at": _api_utc(row["discovered_at"]),
             })
 
             heat = row["heat_score"]
@@ -658,9 +675,9 @@ class HotTopicCollector:
                 "source": redact(source),
                 "platform": redact(platform),
                 "discovered_at": row["discovered_at"],
-                "last_seen_at": row["last_seen_at"],
+                "last_seen_at": _api_utc(row["last_seen_at"]),
                 # 采集时间（本轮在榜时间）：前端展示「这条热点是哪次采到的」
-                "collected_at": row["last_seen_at"] or row["discovered_at"],
+                "collected_at": _api_utc(row["last_seen_at"] or row["discovered_at"]),
                 "seen_count": row["seen_count"],
                 "heat_prev": row["heat_prev"],
                 "heat_peak": row["heat_peak"],
