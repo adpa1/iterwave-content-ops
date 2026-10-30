@@ -137,3 +137,24 @@ def test_metadata_does_not_expose_internal_service_endpoints_or_account_keys(cfg
     for platform in ("xhs", "douyin", "kuaishou", "wechat_channels"):
         assert f"platforms.{platform}.base_url" not in keys
         assert f"platforms.{platform}.account_key" not in keys
+
+
+def test_config_view_hides_provider_endpoints_from_overrides_and_audit(cfg, conn):
+    from src.core.config_repository import save_settings
+    from src.core.config_store import current_config_view
+
+    save_settings(
+        conn,
+        {"media_generation.base_url": "https://image.internal.example/v1"},
+        audit_rows=[(
+            "media_generation.base_url",
+            '"https://old.internal.example/v1"',
+            '"https://image.internal.example/v1"',
+        )],
+    )
+    view = current_config_view(cfg, conn)
+    assert "media_generation.base_url" not in view["overrides"]
+    matching = [item for item in view["audit"] if item["key"] == "media_generation.base_url"]
+    assert matching
+    assert matching[0]["old_value"] == "已隐藏"
+    assert matching[0]["new_value"] == "已隐藏"
