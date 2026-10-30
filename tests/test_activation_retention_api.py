@@ -321,6 +321,64 @@ def test_weekly_report_uses_latest_corrected_snapshot_and_within_platform_eviden
     assert report["next_actions"][0]["evidence_content_ids"]
 
 
+def test_weekly_action_feedback_persists_decisions_and_outcomes(activation_client, conn, seed):
+    from datetime import datetime
+
+    now = datetime.now().isoformat(sep=" ")
+    round_id = seed.round()
+    for i, views in enumerate((100, 200, 300), start=1):
+        draft_id = seed.draft(
+            round_id, platform="xhs", draft_status="published",
+            fetch_status=None, topic_id=f"weekly-feedback-{i}",
+        )
+        conn.execute("UPDATE drafts SET user_confirmed_at=? WHERE id=?", (now, draft_id))
+        conn.commit()
+        response = activation_client.post(
+            f"/api/drafts/{draft_id}/metrics/manual",
+            json={"views": views, "measured_at": now},
+        )
+        assert response.status_code == 200, response.text
+
+    report = activation_client.get("/api/reports/weekly").json()
+    assert report["next_actions"]
+    action = report["next_actions"][0]
+    assert len(action["suggestion_key"]) == 64
+    assert action["decision"] == "pending"
+    assert action["outcome"] == "pending"
+
+    adopted = activation_client.post(
+        "/api/reports/weekly/actions",
+        json={"suggestion_key": action["suggestion_key"], "decision": "adopted"},
+    )
+    assert adopted.status_code == 200, adopted.text
+    assert adopted.json()["decision"] == "adopted"
+
+    refreshed = activation_client.get("/api/reports/weekly").json()
+    persisted = next(item for item in refreshed["next_actions"]
+                     if item["suggestion_key"] == action["suggestion_key"])
+    assert persisted["decision"] == "adopted"
+    assert persisted["outcome"] == "pending"
+
+    outcome = activation_client.post(
+        "/api/reports/weekly/actions",
+        json={
+            "suggestion_key": action["suggestion_key"],
+            "decision": "adopted",
+            "outcome": "success",
+            "outcome_note": "对照测试达到预期",
+        },
+    )
+    assert outcome.status_code == 200, outcome.text
+    assert outcome.json()["outcome"] == "success"
+    assert outcome.json()["outcome_note"] == "对照测试达到预期"
+
+    final_report = activation_client.get("/api/reports/weekly").json()
+    final_action = next(item for item in final_report["next_actions"]
+                        if item["suggestion_key"] == action["suggestion_key"])
+    assert final_action["decision"] == "adopted"
+    assert final_action["outcome"] == "success"
+
+
 def test_activation_metrics_calculates_completed_cohort_rates_and_ttv(activation_client, conn, seed):
     from datetime import datetime, timedelta
     started = datetime.now() - timedelta(days=8)
