@@ -143,6 +143,11 @@ def import_legacy_overrides(conn: sqlite3.Connection, legacy_path: Path) -> dict
     finally:
         if lock:
             lock.release()
+    if legacy_path.exists():
+        try:
+            legacy_path.chmod(0o400)
+        except OSError:
+            logger.warning("无法将旧配置文件收紧为只读：%s", legacy_path.name)
     if rejected:
         logger.warning("旧配置回填拒绝 %d 项（未记录配置值）", rejected)
     return {"imported": len(accepted), "rejected": rejected}
