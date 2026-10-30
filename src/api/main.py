@@ -1744,7 +1744,8 @@ def _register_routes(app: FastAPI) -> None:
         tenant_id = _tenant_id()
         rows = conn.execute(
             "SELECT sc.id, sc.sample_run_id, sc.platform, sc.angle, sc.title, sc.body, "
-            "sc.hashtags_json, sc.adopted_at, sc.created_at, sr.account_description "
+            "sc.hashtags_json, sc.adopted_at, sc.created_at, sc.promoted_content_id, sc.promoted_at, "
+            "sr.account_description "
             "FROM sample_contents sc JOIN sample_runs sr ON sr.id=sc.sample_run_id AND sr.tenant_id=sc.tenant_id "
             "WHERE sc.tenant_id=? AND sc.adopted_at IS NOT NULL "
             "ORDER BY sc.adopted_at DESC, sc.id DESC LIMIT ?",
@@ -1756,7 +1757,108 @@ def _register_routes(app: FastAPI) -> None:
             "body": row["body"], "hashtags": json.loads(row["hashtags_json"] or "[]"),
             "adopted_at": row["adopted_at"], "created_at": row["created_at"],
             "account_description": row["account_description"],
+            "promoted_content_id": row["promoted_content_id"], "promoted_at": row["promoted_at"],
         } for row in rows]}
+
+    @app.post("/api/activation/saved/{sample_content_id}/promote", status_code=201)
+    def promote_activation_sample(sample_content_id: str, req: dict):
+        """将已保存体验样稿导入正式内容生产轮次；不自动生成图片、不自动存平台草稿或发布。"""
+        conn = _g()["conn"]
+        tenant_id = _tenant_id()
+        round_id = (req or {}).get("round_id")
+        if isinstance(round_id, bool) or not isinstance(round_id, int) or round_id <= 0:
+            raise HTTPException(422, "请先创建正式生产轮次")
+        sample = conn.execute(
+            "SELECT sc.*, sr.status AS run_status FROM sample_contents sc "
+            "JOIN sample_runs sr ON sr.id=sc.sample_run_id AND sr.tenant_id=sc.tenant_id "
+            "WHERE sc.id=? AND sc.tenant_id=? AND sc.adopted_at IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM activation_run_deletions d WHERE d.sample_run_id=sr.id)",
+            (sample_content_id, tenant_id),
+        ).fetchone()
+        if sample is None:
+            raise HTTPException(404, "已保存的体验样稿不存在")
+        if sample["quality_status"] != "pass" or sample["run_status"] != "ready":
+            raise HTTPException(409, "只有质量检查通过的已完成样稿才能导入")
+        if sample["promoted_content_id"]:
+            existing = conn.execute(
+                "SELECT round_id FROM contents WHERE id=?", (sample["promoted_content_id"],)
+            ).fetchone()
+            return {
+                "sample_content_id": sample_content_id,
+                "content_id": sample["promoted_content_id"],
+                "round_id": existing["round_id"] if existing else round_id,
+                "already_promoted": True,
+            }
+        target_round = conn.execute(
+            "SELECT id, status, topic_ids FROM spiral_rounds WHERE id=?", (round_id,)
+        ).fetchone()
+        if target_round is None:
+            raise HTTPException(404, "正式生产轮次不存在")
+        if target_round["status"] != "created":
+            raise HTTPException(409, "只能导入尚未开始执行的正式生产轮次")
+        platform = sample["platform"]
+        tags = json.loads(sample["hashtags_json"] or "[]")
+        try:
+            outcome = _g()["guard"].check_content(
+                sample["title"], sample["body"], tags, platform=platform,
+            )
+        except Exception as exc:
+            logger.exception("体验样稿导入正式生产时质量检查异常 sample=%s", sample_content_id)
+            raise HTTPException(503, "正式生产质量检查暂不可用，样稿未导入") from exc
+        if not outcome.passes:
+            raise HTTPException(409, f"样稿未通过正式生产质量检查：{outcome.reason}")
+        topic_id = f"activation-{sample_content_id}"
+        content_id = f"content-{uuid.uuid4().hex[:12]}"
+        draft_id = f"draft-{uuid.uuid4().hex[:12]}"
+        now = datetime.now().isoformat(sep=" ", timespec="seconds")
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO topic_index (id, dimension, source, title, date, total_uses) "
+                "VALUES (?, ?, 'activation_sample', ?, ?, 0)",
+                (topic_id, sample["angle"], sample["title"], now[:10]),
+            )
+            conn.execute(
+                "INSERT INTO contents (id, round_id, topic_id, platform, title, body, tags, image_paths, "
+                "word_count, card_style, guard_outcome, guard_reason, visual_status, visual_reason) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?, 'knowledge', 'pass', ?, 'degraded', ?)",
+                (
+                    content_id, round_id, topic_id, platform, sample["title"], sample["body"],
+                    json.dumps(tags, ensure_ascii=False), len(sample["body"] or ""),
+                    outcome.reason, "体验样稿导入；图片卡片需在正式生产流程中生成",
+                ),
+            )
+            conn.execute(
+                "INSERT INTO drafts (id, content_id, platform, status) VALUES (?, ?, ?, 'draft_pending')",
+                (draft_id, content_id, platform),
+            )
+            try:
+                topic_ids = json.loads(target_round["topic_ids"] or "[]")
+            except (TypeError, ValueError):
+                topic_ids = []
+            if topic_id not in topic_ids:
+                topic_ids.append(topic_id)
+            conn.execute(
+                "UPDATE spiral_rounds SET topic_ids=? WHERE id=?",
+                (json.dumps(topic_ids, ensure_ascii=False), round_id),
+            )
+            conn.execute(
+                "UPDATE sample_contents SET promoted_content_id=?, promoted_at=?, updated_at=? "
+                "WHERE id=? AND tenant_id=? AND promoted_content_id IS NULL",
+                (content_id, now, now, sample_content_id, tenant_id),
+            )
+            _record_content_event(
+                "content_adopted", sample_content_id=sample_content_id,
+                metadata={"content_id": content_id, "round_id": round_id, "source": "formal_production_import"},
+                idempotency_key=f"sample-promoted:{sample_content_id}",
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            raise HTTPException(409, "样稿已导入或该轮次存在重复平台选题，请刷新后检查") from exc
+        return {
+            "sample_content_id": sample_content_id, "content_id": content_id,
+            "draft_id": draft_id, "round_id": round_id, "already_promoted": False,
+        }
 
     @app.get("/api/activation/samples/{sample_run_id}")
     def get_activation_samples(sample_run_id: str):
