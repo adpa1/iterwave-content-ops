@@ -241,6 +241,7 @@ def test_weekly_report_uses_latest_corrected_snapshot_and_within_platform_eviden
     assert views_winner["content_id"] == drafts[1][1]
     assert views_winner["value"] == 200
     assert report["sample_size"] == 3
+    assert report["effective_review_count"] == 3
     assert report["why_it_may_work"][0]["sample_size"] == 3
     assert report["next_actions"][0]["evidence_content_ids"]
 
@@ -280,6 +281,11 @@ def test_activation_metrics_calculates_completed_cohort_rates_and_ttv(activation
     conn.execute(
         "INSERT INTO content_events (id, tenant_id, content_id, event_type, event_at, source, metadata_json) "
         "VALUES ('cohort-publish', 'default', ?, 'publish_confirmed', ?, 'web', '{}')",
+        (content_id, (started + timedelta(hours=2)).isoformat(sep=" ")),
+    )
+    conn.execute(
+        "INSERT INTO content_events (id, tenant_id, content_id, event_type, event_at, source, metadata_json) "
+        "VALUES ('cohort-adopt', 'default', ?, 'content_adopted', ?, 'web', '{}')",
         (content_id, (started + timedelta(hours=2)).isoformat(sep=" ")),
     )
     now_text = now.isoformat(sep=" ")
