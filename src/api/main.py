@@ -290,9 +290,11 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
             spiral=spiral, scoring=scoring, goal_progress=goal_progress, guard=guard,
             task_queue=_task_queue, tenant_id=tenant_id,
         )
-        recovery_report = RecoveryManager(cfg, conn, scheduler).recover()
+        # 临时账号组运行时用于队列任务/热切换，不能执行启动期恢复或计划失效扫描：
+        # 它们可能把另一个仍在全局队列中执行的任务误判为崩溃现场。
+        recovery_report = {}
         pvm = PlanVersionManager(cfg, conn)
-        invalidation = pvm.invalidate_changed_plans()
+        invalidation = {"stale_rounds": []}
         if invalidation["stale_rounds"]:
             logger.warning(
                 "账号组热切换计划签名检查 tenant=%s stale_rounds=%d",
