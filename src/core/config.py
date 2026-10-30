@@ -556,6 +556,24 @@ class CopyGenerationConfig(BaseModel):
         return self
 
 
+class InsightsConfig(BaseModel):
+    """平台纵深分析的窗口、缓存与结果条数。"""
+    window_days: int = Field(90, ge=1, le=3650)
+    cache_max_age_minutes: int = Field(60, ge=1, le=10080)
+    top_dimensions_limit: int = Field(5, ge=1, le=20)
+    top_hours_limit: int = Field(3, ge=1, le=24)
+
+
+class PlanSuggestionConfig(BaseModel):
+    """目标拆分建议策略；不替用户自动承诺产能。"""
+    default_topic_count: int = Field(5, ge=1, le=50)
+    default_period_days: int = Field(28, ge=1, le=3650)
+    minimum_sample_count: int = Field(3, ge=1, le=100)
+    max_topics_per_platform: int = Field(50, ge=1, le=200)
+    max_rounds: int = Field(60, ge=1, le=500)
+    default_interval_days: int = Field(7, ge=1, le=365)
+
+
 class DataRetentionConfig(BaseModel):
     raw_response_days: int = 90
     screenshot_days: int = 30
@@ -608,6 +626,8 @@ class Config(BaseModel):
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     autogrow: AutogrowConfig = Field(default_factory=AutogrowConfig)
     copy_generation: CopyGenerationConfig = Field(default_factory=CopyGenerationConfig)
+    insights: InsightsConfig = Field(default_factory=InsightsConfig)
+    plan_suggestion: PlanSuggestionConfig = Field(default_factory=PlanSuggestionConfig)
 
     def resolve_path(self, relative: str) -> Path:
         """把 config 中的相对路径解析为相对于项目根的绝对路径。"""
