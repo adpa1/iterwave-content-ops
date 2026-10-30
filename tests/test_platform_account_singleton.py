@@ -46,3 +46,24 @@ def test_platform_account_update_cannot_move_account_into_occupied_platform(clie
             ),
         )
     assert exc.value.status_code == 409
+
+
+def test_platform_account_migration_preflight_reports_legacy_duplicates():
+    import sqlite3
+
+    from src.core.db import Database
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute(
+            "CREATE TABLE platform_accounts (id INTEGER PRIMARY KEY, platform TEXT NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO platform_accounts(platform) VALUES(?)",
+            [("xhs",), ("xhs",), ("douyin",)],
+        )
+        with pytest.raises(RuntimeError, match="人工确认并删除/合并"):
+            Database._preflight_platform_account_singleton(conn)
+    finally:
+        conn.close()
