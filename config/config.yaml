@@ -141,13 +141,7 @@ timeouts:
 
 # ===== 熔断机制（§5 停止所有运营）=====
 circuit_breaker:
-  # 5 种触发信号
-  signals:
-    - "captcha"                  # 出现验证码
-    - "rate_limit"               # 限流
-    - "login_expired"            # 登录态过期
-    - "action_blocked"           # 操作被拦截
-    - "device_verify"            # 设备验证
+  # 触发信号由适配器事件与 CircuitBreakerReason 枚举定义，不通过配置关闭或增删。
   # 默认冷却时间（分钟）
   cooldown_minutes: 30
   recovery_failure_extension_minutes: 60
