@@ -1,9 +1,25 @@
 from __future__ import annotations
 
 import pytest
+from fastapi.testclient import TestClient
 
+from src.api import main as api_main
+from src.core import hot_topic_service
 from src.core.hot_topics import _sensitive_topic_hits
 from src.core.guard.ultimate_goal_checker import CheckResult, UltimateGoalChecker
+
+
+@pytest.fixture()
+def client(cfg, conn, test_auth):
+    saved = dict(api_main._g_ctx)
+    api_main._g_ctx.clear()
+    api_main._g_ctx.update({"cfg": cfg, "conn": conn})
+    hot_topic_service.reset_for_tests()
+    try:
+        yield test_auth(TestClient(api_main._build_app(), base_url="http://127.0.0.1")), conn
+    finally:
+        api_main._g_ctx.clear()
+        api_main._g_ctx.update(saved)
 
 
 def test_political_party_language_is_sensitive():
