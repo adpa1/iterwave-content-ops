@@ -1704,12 +1704,12 @@ def _register_routes(app: FastAPI) -> None:
         stopwords = {"我们", "你们", "他们", "这个", "那个", "可以", "如何", "因为", "所以", "以及", "但是", "如果", "门店", "内容", "介绍", "推荐"}
         tokens = {token for token in tokens if token not in stopwords}
         rows = conn.execute(
-            "SELECT id, title, original_filename, alt_text, tags, quality_score, width, height "
+            "SELECT id, title, original_filename, stored_filename, alt_text, tags, quality_score, width, height "
             "FROM media_assets WHERE status = 'active' AND review_status = 'approved' "
             "ORDER BY created_at DESC LIMIT 500"
         ).fetchall()
         purpose_terms = {
-            "cover": {"封面", "主图", "门头", "产品", "招牌"},
+            "cover": {"封面", "主图", "主体", "产品", "作品", "人物", "场景", "重点"},
             "illustration": {"正文", "细节", "环境", "过程", "服务", "产品"},
             "background": {"背景", "底图", "纹理", "氛围"},
         }[usage_role]
@@ -1736,11 +1736,64 @@ def _register_routes(app: FastAPI) -> None:
                     + (("；用途：" + "、".join(purpose_hits)) if purpose_hits else ""),
             })
         ranked.sort(key=lambda item: (-item["score"], -(item["quality_score"] or 0), item["asset_id"]))
+
+        # 视觉排序是显式 opt-in：未开启、未配置密钥或服务异常时，稳定回退关键词排序。
+        method = "keyword_match"
+        message = "当前使用关键词和用途标签匹配；推荐结果需人工确认。"
+        registry = _g().get("tenant_registry")
+        if registry is not None and rows:
+            try:
+                from src.core.media_semantic import rank_media_with_vision
+
+                cfg = _g().get("cfg")
+                candidate_limit = int(cfg.vision_ranking.candidate_limit) if cfg else 8
+                top = ranked[:candidate_limit]
+                by_id = {int(row["id"]): row for row in rows}
+                if len(top) < min(candidate_limit, len(rows)):
+                    already = {item["asset_id"] for item in top}
+                    rest = sorted(
+                        (row for row in rows if int(row["id"]) not in already),
+                        key=lambda row: (-(row["quality_score"] or 0), -int(row["id"])),
+                    )
+                    for row in rest[:candidate_limit - len(top)]:
+                        top.append({
+                            "asset_id": int(row["id"]), "title": row["title"], "score": 0,
+                            "matched_keywords": [], "purpose_matches": [],
+                            "quality_score": row["quality_score"], "width": row["width"],
+                            "height": row["height"], "reason": "候选图片",
+                        })
+                candidates = [
+                    {"asset_id": item["asset_id"], "title": item["title"],
+                     "stored_filename": by_id[item["asset_id"]]["stored_filename"]}
+                    for item in top if item["asset_id"] in by_id
+                ]
+                vision = rank_media_with_vision(
+                    title=str(content["title"] or ""), body=str(content["body"] or ""),
+                    usage_role=usage_role, candidates=candidates,
+                    media_dir=registry.paths(_g().get("runtime_tenant_id", "default")).media_dir,
+                    cfg=cfg,
+                )
+                if vision:
+                    indexed = {item["asset_id"]: item for item in top}
+                    ai_items = []
+                    for item in vision:
+                        if item["asset_id"] in indexed:
+                            ranked_item = dict(indexed[item["asset_id"]])
+                            ranked_item["reason"] = item["reason"]
+                            ranked_item["score"] = 1000 - len(ai_items)
+                            ai_items.append(ranked_item)
+                    if ai_items:
+                        ranked = ai_items
+                        method = "vision_model"
+                        message = "已使用视觉模型结合内容文本进行语义匹配；仅展示已审核素材，仍需人工确认。"
+            except Exception as exc:  # noqa: BLE001 — 视觉服务失败必须降级，不影响关键词推荐
+                logger.warning("vision media ranking failed; using keyword fallback: %s", type(exc).__name__)
+
         return {
             "content_id": content_id, "usage_role": usage_role,
-            "method": "keyword_match", "automatic_assignment": False,
+            "method": method, "automatic_assignment": False,
             "items": ranked[:limit],
-            "message": "这是基于标题、正文、素材名称和标签的关键词推荐；无匹配项不代表素材不可用。推荐结果不会自动配图。",
+            "message": message + " 不会自动替换内容图片。",
         }
 
     @app.post("/api/media/{asset_id}/use")
