@@ -177,7 +177,7 @@ class ScoringEngine:
             "  FROM drafts d JOIN contents c ON d.content_id = c.id "
             "  JOIN topic_index t ON c.topic_id = t.id "
             "  WHERE d.status='published' "
-            "  AND d.user_confirmed_at >= datetime('now', ?) "
+            "  AND d.user_confirmed_at >= ? "
             "  GROUP BY t.dimension HAVING cnt >= ? AND cnt < ? "
             ") w",
             (window_start, min_uses, self.scoring_cfg.stable_dimension_min_samples),
