@@ -2087,6 +2087,8 @@ def _register_routes(app: FastAPI) -> None:
         if cohort is None:
             return {"cohort_size": 0, "ttv_seconds": None, "seven_day_activation_rate": None,
                     "first_publish_rate": None, "data_return_rate": None, "weekly_adopted_published": 0,
+                    "weekly_effective_review_count": 0, "quick_experience_completion_rate": None,
+                    "sample_attempted_count": 0, "sample_ready_count": 0, "platform_model_breakdown": [],
                     "observation_window_complete": False}
         started = datetime.fromisoformat(cohort["first_seen_at"])
         ttv = conn.execute(
@@ -2124,6 +2126,28 @@ def _register_routes(app: FastAPI) -> None:
             (tenant_id, started.isoformat(sep=" "), mature_publish_cutoff,
              started.isoformat(sep=" "), mature_publish_cutoff),
         ).fetchone()[0]
+        weekly_adopted_published = conn.execute(
+            "SELECT COUNT(DISTINCT published.content_id) FROM content_events published "
+            "JOIN content_events adopted ON adopted.tenant_id=published.tenant_id "
+            "AND adopted.content_id=published.content_id AND adopted.event_type='content_adopted' "
+            "AND adopted.event_at<=published.event_at "
+            "WHERE published.tenant_id=? AND published.event_type='publish_confirmed' AND published.event_at>=?",
+            (tenant_id, (now - timedelta(days=7)).isoformat(sep=" ")),
+        ).fetchone()[0]
+        weekly_effective_review_count = conn.execute(
+            "SELECT COUNT(DISTINCT content_id) FROM ("
+            "SELECT ms.content_id FROM metric_snapshots ms JOIN drafts d ON d.id=ms.draft_id "
+            "WHERE ms.tenant_id=? AND ms.measured_at>=? AND d.user_confirmed_at IS NOT NULL "
+            "AND (ms.views IS NOT NULL OR ms.likes IS NOT NULL OR ms.collects IS NOT NULL "
+            "OR ms.comments IS NOT NULL OR ms.shares IS NOT NULL) "
+            "UNION SELECT m.content_id FROM metrics m JOIN drafts d ON d.id=m.draft_id "
+            "WHERE m.fetch_status IN ('success','partial') AND m.fetched_at>=? "
+            "AND d.user_confirmed_at IS NOT NULL "
+            "AND (m.views IS NOT NULL OR m.likes IS NOT NULL OR m.collects IS NOT NULL "
+            "OR m.comments IS NOT NULL OR m.shares IS NOT NULL))",
+            (tenant_id, (now - timedelta(days=7)).isoformat(sep=" "),
+             (now - timedelta(days=7)).isoformat(sep=" ")),
+        ).fetchone()[0]
         sample_counts = conn.execute(
             "SELECT COUNT(*) AS attempted, "
             "SUM(CASE WHEN status='ready' THEN 1 ELSE 0 END) AS completed "
@@ -2151,7 +2175,8 @@ def _register_routes(app: FastAPI) -> None:
             "ttv_seconds": round(float(ttv), 1) if ttv is not None else None,
             "seven_day_activation_rate": (1.0 if adopted else 0.0) if complete else None,
             "first_publish_rate": (1.0 if publish_count else 0.0) if complete else None,
-            "weekly_adopted_published": int(weekly or 0),
+            "weekly_adopted_published": int(weekly_adopted_published or 0),
+            "weekly_effective_review_count": int(weekly_effective_review_count or 0),
             "data_return_rate": (min(1.0, returned_count / published) if published else None),
             "published_content_count": int(published),
             "data_returned_count": int(returned_count),
