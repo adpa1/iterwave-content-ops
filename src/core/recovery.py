@@ -18,6 +18,8 @@ import json
 from datetime import datetime, timedelta
 from typing import Optional
 
+from .timezone import business_now
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,7 +58,7 @@ class RecoveryManager:
 
     def _mark_interrupted_running(self) -> int:
         """上次进程被强杀留下的 running 行 → interrupted。"""
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = business_now(self.cfg).strftime("%Y-%m-%d %H:%M:%S")
         rows = self.conn.execute(
             "SELECT id FROM task_runs WHERE status = 'running'"
         ).fetchall()
@@ -92,7 +94,7 @@ class RecoveryManager:
             if any(jid.startswith(prefix) for jid in job_ids):
                 continue
             if self.scheduler is not None:
-                run_at = datetime.now() + timedelta(minutes=self.cfg.timeouts.recovery_retry_delay_minutes)
+                run_at = business_now(self.cfg) + timedelta(minutes=self.cfg.timeouts.recovery_retry_delay_minutes)
                 self.scheduler.schedule_data_fetch(draft_id, run_at)
                 requeued.append(draft_id)
 
@@ -101,7 +103,7 @@ class RecoveryManager:
                 "next_run_at) VALUES ('data_fetch', ?, ?, 'pending', 1, ?)",
                 (
                     draft_id, row["platform"],
-                    (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"),
+                    (business_now(self.cfg) + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"),
                 ),
             )
         if requeued:
