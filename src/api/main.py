@@ -1685,7 +1685,7 @@ def _register_routes(app: FastAPI) -> None:
     def recommend_media_assets(
         content_id: str = Query(..., min_length=1, max_length=128),
         usage_role: str = Query("cover", pattern="^(cover|illustration|background)$"),
-        limit: int = Query(8, ge=1, le=20),
+        limit: int = Query(20, ge=1, le=50),
     ):
         """基于内容文本与素材标题/标签的可解释关键词匹配；只推荐已审核且未归档素材，不自动分配。"""
         conn = _g()["conn"]
