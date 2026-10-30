@@ -71,7 +71,9 @@ STRING_RULES: dict[str, tuple[int, int]] = {
     "llm.provider": (1, 32),
     "llm.model": (1, 128),
     "llm.fallback_model": (0, 128),
+    "vision_ranking.base_url": (1, 256),
     "vision_ranking.model": (1, 128),
+    "media_generation.base_url": (1, 256),
     "media_generation.base_url": (1, 256),
 }
 
