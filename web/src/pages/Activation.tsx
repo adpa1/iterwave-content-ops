@@ -32,6 +32,7 @@ export default function Activation() {
   useEffect(() => {
     (async () => {
       try {
+        await api.startActivation();
         const s = await api.activationStatus();
         setStatus(s);
         if (s.latest_sample_run?.id) {
