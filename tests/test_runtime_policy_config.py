@@ -262,3 +262,30 @@ def test_request_validation_messages_are_localized():
     ])
     assert messages == ["平台标识：格式不符合要求"]
     assert "String should match pattern" not in messages[0]
+
+
+
+def test_config_api_hides_knowledge_base_path_from_history(cfg, conn):
+    from src.core.config_store import _public_overrides
+
+    assert "topic_kb.path" not in _public_overrides({"topic_kb.path": "/workspace/tenants/ta/kb/topics.csv"})
+    conn.execute(
+        "INSERT INTO config_changes (key, old_value, new_value, changed_at) VALUES (?, ?, ?, ?)",
+        ("topic_kb.path", '"/workspace/tenants/ta/kb/topics.csv"', '"/tmp/evil_topics.csv"', "2026-10-30T10:00:00"),
+    )
+    conn.commit()
+    audit = current_config_view(cfg, conn)["audit"][0]
+    assert audit["old_value"] == "已隐藏"
+    assert audit["new_value"] == "已隐藏"
+
+
+def test_api_validation_response_is_chinese(test_auth):
+    from fastapi.testclient import TestClient
+    from src.api import main as api_main
+
+    client = test_auth(TestClient(api_main._build_app(), base_url="http://127.0.0.1"))
+    response = client.post("/api/platform-accounts", json={
+        "platform": "not-a-platform", "account_handle": "test-account",
+    })
+    assert response.status_code == 422
+    assert "平台标识" in response.json()["detail"][0]
