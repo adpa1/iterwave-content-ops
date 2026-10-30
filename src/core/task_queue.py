@@ -341,6 +341,19 @@ class GlobalTaskQueue:
         finally:
             conn.close()
 
+    def find_latest(
+        self, *, tenant_id: str, task_type: str, aggregate_id: str,
+    ) -> QueuedTask | None:
+        conn = self._connect()
+        try:
+            return self._decode(conn.execute(
+                "SELECT * FROM global_task_queue WHERE tenant_id=? AND task_type=? "
+                "AND aggregate_id=? ORDER BY created_at DESC,task_id DESC LIMIT 1",
+                (tenant_id, task_type, str(aggregate_id)),
+            ).fetchone())
+        finally:
+            conn.close()
+
     def list(self, *, limit: int = 100, tenant_id: str | None = None) -> list[QueuedTask]:
         limit = max(1, min(int(limit), 500))
         conn = self._connect()
