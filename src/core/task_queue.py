@@ -247,6 +247,12 @@ class GlobalTaskQueue:
                 (_stamp(now),),
             ).fetchone()
             if row is None:
+                # 空闲消费者不长期占用全局租约；多 API worker 场景下，
+                # 当前消费者进程退出后，其他 worker 无需等待租约超时即可接管。
+                conn.execute(
+                    "DELETE FROM global_task_worker_lease WHERE singleton_id=1 AND owner=?",
+                    (owner,),
+                )
                 conn.commit()
                 return None
             started = _stamp(now)
