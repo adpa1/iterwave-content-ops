@@ -13,7 +13,34 @@ const STATUS_LABEL: Record<GlobalTaskQueueItem["status"], string> = {
 
 const TASK_LABEL: Record<string, string> = {
   round_run: "内容生产 / 存草稿",
+  scheduler_job: "账号组后台任务",
 };
+
+const SCHEDULER_JOB_LABEL: Record<string, string> = {
+  _job_publish_polling: "发布状态轮询",
+  _job_data_fetch: "平台数据采集",
+  _job_daily_ops: "每日主动运营",
+  _job_comment_polling: "评论轮询",
+  _job_cb_recovery: "平台连接恢复",
+  _job_kb_scan: "选题库扫描",
+  _job_kb_sync: "选题库同步",
+  _job_data_retention_cleanup: "数据清理",
+  _job_round_timeout_sweeper: "轮次超时检查",
+  _job_round_review: "轮次复盘",
+  _job_autogrow_next_round: "自动闭环检查",
+};
+
+function aggregateLabel(task: GlobalTaskQueueItem) {
+  if (task.task_type !== "scheduler_job" || !task.aggregate_id) {
+    return task.aggregate_id || "—";
+  }
+  const [method, objectId, attempt] = task.aggregate_id.split(":");
+  const label = SCHEDULER_JOB_LABEL[method] || "账号组后台任务";
+  if (method === "_job_data_fetch" && objectId) {
+    return `${label} · ${objectId}${attempt ? ` · 第 ${attempt} 次` : ""}`;
+  }
+  return label;
+}
 
 function timeLabel(value: string | null) {
   if (!value) return "—";
@@ -36,7 +63,7 @@ function TaskRow({
       <div style={{ minWidth: 0 }}>
         <div style={{ fontWeight: 650 }}>{TASK_LABEL[task.task_type] || task.task_type}</div>
         <div className="muted" style={{ fontSize: 12, marginTop: 4, overflowWrap: "anywhere" }}>
-          {task.tenant_name} · 业务对象 {task.aggregate_id || "—"}
+          {task.tenant_name} · {aggregateLabel(task)}
         </div>
       </div>
       <div>
