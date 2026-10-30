@@ -1188,6 +1188,8 @@ export interface ActivationSampleRun {
 }
 export interface ActivationMetrics {
   cohort_size: number; ttv_seconds: number | null; seven_day_activation_rate: number | null;
+  activation_input_wait_seconds?: number | null; model_queue_wait_seconds?: number | null;
+  generation_processing_seconds?: number | null;
   first_publish_rate: number | null; data_return_rate: number | null;
   quick_experience_completion_rate?: number | null; sample_attempted_count?: number; sample_ready_count?: number;
   weekly_adopted_published: number; weekly_effective_review_count?: number; published_content_count?: number;
