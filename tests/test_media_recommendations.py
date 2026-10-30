@@ -24,7 +24,7 @@ def test_media_recommendations_match_keywords_and_exclude_unapproved(test_auth):
         1, "青岛海鲜门头", "store-front.jpg", "store-front.jpg", "海鲜烧烤招牌",
         '["青岛", "海鲜", "门头", "封面"]', 90, 1200, 900, "active", "approved", "2026-10-01"
     ))
-    conn.execute("INSERT INTO media_assets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (
+    conn.execute("INSERT INTO media_assets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (
         2, "青岛海鲜候选图", "candidate.jpg", "candidate.jpg", "海鲜店内",
         '["青岛", "海鲜"]', 95, 1200, 900, "active", "pending_review", "2026-10-02"
     ))
@@ -46,6 +46,7 @@ def test_media_recommendations_match_keywords_and_exclude_unapproved(test_auth):
         assert body["items"]
         assert body["items"][0]["asset_id"] == 1
         assert "海鲜" in body["items"][0]["matched_keywords"]
+        assert "门头" not in body["items"][0]["purpose_matches"]
         assert all(item["asset_id"] != 2 for item in body["items"])
         assert all(item["asset_id"] != 3 for item in body["items"])
     finally:
