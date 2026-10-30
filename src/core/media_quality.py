@@ -27,13 +27,13 @@ def score_image(raw: bytes, cfg=None) -> dict:
         composition_score = policy.composition_weight
         ratio_note = "纵向构图适合图文卡片"
     elif policy.portrait_ratio_max < ratio <= policy.square_ratio_max:
-        composition_score = policy.composition_weight * policy.composition_near_portrait_multiplier
+        composition_score = policy.composition_weight * policy.composition_near_square_multiplier
         ratio_note = "接近方形构图，可用于多数版式"
     elif policy.square_ratio_max < ratio <= policy.landscape_ratio_max:
-        composition_score = policy.composition_weight * policy.composition_square_multiplier
+        composition_score = policy.composition_weight * policy.composition_wide_multiplier
         ratio_note = "横向构图，竖版平台可能需要裁切"
     else:
-        composition_score = policy.composition_weight * policy.composition_landscape_multiplier
+        composition_score = policy.composition_weight * policy.composition_extreme_multiplier
         ratio_note = "长宽比极端，建议人工检查裁切"
 
     gray = sample.convert("L")
