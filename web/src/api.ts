@@ -1634,6 +1634,7 @@ export const api = {
   cancelLogin: (platform: Platform) =>
     fetchJson<{ status: string; platform: string }>(`/api/accounts/${platform}/cancel_login`, { method: "POST" }),
   // === 激活与留存闭环 ===
+  startActivation: () => fetchJson<{ first_seen_at: string }>("/api/activation/start", { method: "POST" }),
   activationStatus: () => fetchJson<ActivationStatus>("/api/activation/status"),
   createActivationSamples: (data: { account_description: string; platform: Platform; idempotency_key: string }) =>
     fetchJson<{ sample_run_id: string; status: string; poll_after_ms?: number; deduplicated?: boolean;
