@@ -327,7 +327,6 @@ class RoundExecutor:
 
         rows: list[dict] = []
         guard_failures: list[str] = []
-        llm_available = _llm_available(self.cfg)
         for item in pending_rows:
             try:
                 tags = json.loads(item["tags"]) if item["tags"] else []
