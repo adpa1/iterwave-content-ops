@@ -1564,6 +1564,7 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(413, "图片大小必须大于 0 且不超过 12MB")
         digest = hashlib.sha256(raw).hexdigest()
         conn = _g()["conn"]
+        cfg = _g()["cfg"]
         existing = conn.execute(
             "SELECT id, title, original_filename, mime_type, byte_size, width, height, "
             "alt_text, tags, status, review_status, review_note, created_at FROM media_assets "
@@ -1594,8 +1595,8 @@ def _register_routes(app: FastAPI) -> None:
         if image_format not in format_map:
             raise HTTPException(415, "仅支持 JPEG、PNG、WebP、GIF 图片")
         mime_type, suffix = format_map[image_format]
-        if width < 1 or height < 1 or width > 20000 or height > 20000 or width * height > 40_000_000:
-            raise HTTPException(422, "图片尺寸不在允许范围内（单边不超过 20000 像素，总像素不超过 4000 万）")
+        if width < 1 or height < 1 or width > min(cfg.media_generation.max_dimension, 20000) or height > min(cfg.media_generation.max_dimension, 20000) or width * height > min(cfg.media_generation.max_pixels, 40_000_000):
+            raise HTTPException(422, "图片尺寸超过当前配置允许范围（硬安全上限：单边 20000 像素、总像素 4000 万）")
         stored_filename = f"{uuid.uuid4().hex}{suffix}"
         target = (paths.media_dir / stored_filename).resolve()
         if not target.is_relative_to(paths.media_dir.resolve()):
@@ -1604,7 +1605,7 @@ def _register_routes(app: FastAPI) -> None:
         title = req.title.strip() or safe_filename[:200]
         tags = list(dict.fromkeys(tag.strip()[:60] for tag in req.tags if tag.strip()))[:30]
         from src.core.media_quality import score_image
-        quality = score_image(raw, cfg=_g()["cfg"])
+        quality = score_image(raw, cfg=cfg)
         target.write_bytes(raw)
         try:
             target.chmod(0o600)
