@@ -62,6 +62,9 @@ platforms:
     base_url: "https://channels.weixin.qq.com"
     account_key: "wechat_main"
 
+# ===== 业务时区（IANA 名称；影响配额日界线、运营时段和定时任务）=====
+business_timezone: "Asia/Shanghai"
+
 # ===== 平台发布链接域名白名单 =====
 # 仅用于校验用户手工粘贴的发布链接；系统不会主动请求这些 URL。
 platform_link_domains:
