@@ -94,6 +94,7 @@ def test_new_runtime_policy_fields_are_whitelisted_and_visible(cfg):
         "hot_topics.trend_previous_drop_ratio",
         "hot_topics.trend_min_seen_count",
         "hot_topics.dedup.cross_platform_similarity",
+        "hot_topics.dedup.length_prefilter_ratio",
         "hot_topic_matcher.llm_temperature",
         "media_quality.composition_near_square_multiplier",
         "media_quality.composition_wide_multiplier",
