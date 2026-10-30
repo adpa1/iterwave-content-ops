@@ -590,6 +590,7 @@ export interface ConfigMetadataItem {
 
 export interface SystemConfigView {
   editable: {
+    business_timezone: string;
     daily_quotas: Record<string, { passive_replies: number | null; active_comments: number | null; follows: number | null }>;
     ops_window: { start_hour: number | null; end_hour: number | null };
     cooldown_minutes: number | null;
@@ -1192,7 +1193,9 @@ export interface ActivationSampleRun {
   contents: ActivationSample[];
 }
 export interface ActivationMetrics {
-  cohort_size: number; ttv_seconds: number | null; seven_day_activation_rate: number | null;
+  cohort_size: number; ttv_seconds: number | null; ttv_sample_count?: number;
+  ttv_p50_seconds?: number | null; ttv_p90_seconds?: number | null; ttv_percentile_scope?: string;
+  seven_day_activation_rate: number | null;
   activation_input_wait_seconds?: number | null; model_queue_wait_seconds?: number | null;
   generation_processing_seconds?: number | null;
   first_publish_rate: number | null; data_return_rate: number | null;
