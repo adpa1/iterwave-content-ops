@@ -254,7 +254,9 @@ export default function Production() {
     try {
       const started = await api.runRound(
         currentRoundId,
-        usePlan ? {} : { topic_count: topicCount, platforms: selPlatforms, save_drafts: saveDrafts },
+        usePlan
+          ? { save_drafts: saveDrafts }
+          : { topic_count: topicCount, platforms: selPlatforms, save_drafts: saveDrafts },
       );
       if (!started.started) throw new Error("本轮任务未能启动");
       // 后端立即返回任务 ID；页面通过轻量状态接口轮询，不再让启动请求等待整轮生成。
@@ -263,6 +265,10 @@ export default function Production() {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
         const status = await api.roundRunStatus(currentRoundId);
         if (status.error) throw new Error(status.error);
+        // 运行期间定期从数据库回读轮次状态、阶段计数和草稿状态，展示真实进度。
+        if (attempt % 3 === 2) {
+          await Promise.all([refresh(), loadRoundData(currentRoundId)]);
+        }
         if (status.report) {
           res = status.report;
           break;
@@ -509,9 +515,11 @@ export default function Production() {
     setPlanPlatforms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
   };
 
+  const runHasMissingLogin = noLogin.length > 0;
   const canRun = !!roundDetail && ["created", "failed"].includes(roundDetail.status)
     && !running && availableTopicCount !== null && availableTopicCount > 0
-    && (usePlan || selPlatforms.length > 0);
+    && (usePlan || selPlatforms.length > 0)
+    && (!saveDrafts || !runHasMissingLogin);
   const selectedContent = contents.find((c) => c.id === selectedContentId) ?? null;
   const filteredReviewContents = contents.filter((item) => {
     const query = reviewSearch.trim().toLowerCase();
@@ -839,7 +847,7 @@ export default function Production() {
                   <div style={{ marginBottom: 8 }}>
                     <DemoBadge
                       level="blocked"
-                      text={`${noLogin.map((p) => PLATFORM_NAME[p]).join("、")} 未连接真实账号，存草稿会失败（勾选存草稿前请先登录）`}
+                      text={`${noLogin.map((p) => PLATFORM_NAME[p]).join("、")} 未连接真实账号；启用平台存在未登录账号；开启存草稿时阻止启动，关闭存草稿可先干跑`}
                     />
                   </div>
                 )}
@@ -874,17 +882,33 @@ export default function Production() {
                       </button>
                     ))}
                   </div>
-                  <label style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 4 }}>
-                    <input type="checkbox" checked={saveDrafts} onChange={(e) => setSaveDrafts(e.target.checked)} disabled={running || usePlan} />
-                    执行存草稿
-                  </label>
+
                 </div>
-                <div style={{ marginTop: 10 }}>
+                <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <label style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 5 }}>
+                    <input type="checkbox" checked={saveDrafts} onChange={(e) => setSaveDrafts(e.target.checked)} disabled={running} />
+                    本轮执行存草稿（取消后仅生成内容，可稍后恢复）
+                  </label>
                   <button className="btn primary" onClick={handleRun} disabled={!canRun}>
                     {running ? "◷ 运行中…" : roundDetail?.status === "failed" ? "↻ 重试本轮" : "▶ 运行本轮"}
                   </button>
                 </div>
 
+                {running && roundDetail.drafts.length > 0 && (() => {
+                  const saved = roundDetail.drafts.filter((d) => d.status === "draft_saved").length;
+                  const pending = roundDetail.drafts.filter((d) => d.status === "draft_pending").length;
+                  const failed = roundDetail.drafts.filter((d) => d.status === "failed").length;
+                  return (
+                    <div className="note" style={{ marginTop: 8 }}>
+                      {saveDrafts ? "存草稿进度" : "干跑产出进度"}：已保存 {saved} · 待处理 {pending} · 失败 {failed}
+                    </div>
+                  );
+                })()}
+                {saveDrafts && runHasMissingLogin && (
+                  <div className="note" style={{ marginTop: 8, color: "var(--orange)" }}>
+                    运行前检查未通过：当前启用平台存在未登录账号。请先到账号管理完成登录，或取消「本轮执行存草稿」进行干跑。
+                  </div>
+                )}
                 {roundDetail.status === "failed" && (
                   <div className="note" style={{ marginTop: 8 }}>
                     失败轮次可重新预检；仅当本轮尚未产生内容或草稿时允许重试。已有产出时请修复原因后新建一轮，避免重复交付。

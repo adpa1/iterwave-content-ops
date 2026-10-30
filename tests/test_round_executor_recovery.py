@@ -9,6 +9,7 @@ from src.adapters.base import DraftResult, Platform
 from src.core.guard.ultimate_goal_checker import CheckOutcome, CheckResult
 from src.core.orchestration import default_steps, save_steps
 from src.core.round_executor import RoundExecutor
+from src.core.recovery import RecoveryManager
 from src.core.state_machine import DraftStateMachine, RoundStateMachine
 
 
@@ -78,7 +79,8 @@ def test_failed_round_with_existing_content_cannot_be_retried(cfg, conn, seed):
     assert status == "failed"
 
 
-def test_dry_run_pending_drafts_can_be_saved_without_regenerating(cfg, conn, seed):
+def test_dry_run_pending_drafts_can_be_saved_without_regenerating(cfg, conn, seed, monkeypatch):
+    monkeypatch.setattr("src.core.login_manager.has_login_state", lambda _platform: True)
     round_id = seed.round(status="producing")
     draft_id = seed.draft(round_id, platform="xhs", draft_status="draft_pending", fetch_status=None)
     conn.execute(
@@ -187,7 +189,8 @@ def test_resume_rechecks_current_content_before_any_platform_save(cfg, conn, see
     ).fetchone()[0] == "producing"
 
 
-def test_resume_merges_draft_ids_instead_of_losing_prior_successes(cfg, conn, seed):
+def test_resume_merges_draft_ids_instead_of_losing_prior_successes(cfg, conn, seed, monkeypatch):
+    monkeypatch.setattr("src.core.login_manager.has_login_state", lambda _platform: True)
     round_id = seed.round(status="producing")
     previous_saved_id = seed.draft(
         round_id, platform="xhs", draft_status="draft_saved",
@@ -227,7 +230,8 @@ def test_resume_merges_draft_ids_instead_of_losing_prior_successes(cfg, conn, se
     assert len(saved_ids) == len(set(saved_ids))
 
 
-def test_resume_never_saves_manually_rejected_content(cfg, conn, seed):
+def test_resume_never_saves_manually_rejected_content(cfg, conn, seed, monkeypatch):
+    monkeypatch.setattr("src.core.login_manager.has_login_state", lambda _platform: True)
     round_id = seed.round(status="producing")
     rejected_id = seed.draft(
         round_id, platform="xhs", draft_status="draft_pending",
@@ -272,6 +276,65 @@ def test_resume_never_saves_manually_rejected_content(cfg, conn, seed):
     assert conn.execute(
         "SELECT status FROM drafts WHERE id = ?", (accepted_id,)
     ).fetchone()[0] == "draft_saved"
+
+
+def test_unlogged_platform_skips_save_and_keeps_draft_pending(cfg, conn, seed, monkeypatch):
+    round_id = seed.round(status="producing")
+    draft_id = seed.draft(round_id, platform="xhs", draft_status="draft_pending", fetch_status=None)
+    adapter = _SuccessfulDraftAdapter()
+    monkeypatch.setattr("src.core.login_manager.has_login_state", lambda _platform: False)
+    executor = _executor(cfg, conn, {Platform.XHS: adapter})
+    report = {"steps": [], "drafts_saved": 0, "drafts_failed": 0}
+
+    asyncio.run(executor._save_all_drafts([{
+        "draft_id": draft_id,
+        "content_id": conn.execute("SELECT content_id FROM drafts WHERE id = ?", (draft_id,)).fetchone()[0],
+        "platform": Platform.XHS,
+        "title": "待存内容",
+        "body": "正文",
+        "tags": [],
+        "image_paths": [],
+    }], round_id, report))
+
+    assert adapter.payloads == []
+    assert report["drafts_skipped_login"] == 1
+    assert report["steps"][0]["step"] == "save_drafts_skipped_login"
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "draft_pending"
+
+
+def test_restart_keeps_dry_run_pending_drafts_recoverable(cfg, conn, seed):
+    round_id = seed.round(status="producing")
+    seed.draft(round_id, platform="xhs", draft_status="draft_pending", fetch_status=None)
+    conn.execute(
+        "UPDATE spiral_rounds SET run_report = ? WHERE id = ?",
+        (json.dumps({"steps": [{"step": "produce"}, {"step": "dry_run"}]}), round_id),
+    )
+    conn.commit()
+
+    recovered = RecoveryManager(cfg, conn)._stale_producing_rounds()
+
+    assert round_id not in recovered
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "producing"
+
+
+def test_restart_still_marks_interrupted_non_dry_run_without_saved_drafts_failed(cfg, conn, seed):
+    round_id = seed.round(status="producing")
+    seed.draft(round_id, platform="xhs", draft_status="draft_pending", fetch_status=None)
+    conn.execute(
+        "UPDATE spiral_rounds SET run_report = ? WHERE id = ?",
+        (json.dumps({"steps": [{"step": "produce"}]}), round_id),
+    )
+    conn.commit()
+
+    RecoveryManager(cfg, conn)._stale_producing_rounds()
+
+    assert conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0] == "failed"
 
 
 def test_resume_requires_enabled_save_draft_step(cfg, conn, seed):

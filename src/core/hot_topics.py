@@ -51,8 +51,8 @@ _MULTIPLIERS = {"万": 10_000, "亿": 100_000_000}
 # 时政、军事、涉台等高监管领域不做自动可发布背书；默认进入人工确认。
 _SENSITIVE_TOPIC_PATTERNS = (
     ("时政", re.compile(
-        r"中共中央|党中央|中央政治局|政治局|全国两会|全国人大|全国政协|"
-        r"国务院|新闻发布会|外交部|国防部|全面从严治党|反腐|党风廉政|"
+        r"中共中央|党中央|中央委员会|中央政治局|政治局|全国两会|全国人大|全国政协|全会|"
+        r"国务院|新闻发布会|外交部|国防部|全面从严治党|从严治党|管党|党的|党|反腐|党风廉政|"
         r"中国共产党|共产党|我们党|政党|党派|党内|党组织|执政党|在野党|民主党派|"
         r"政府工作报告|领导人|国家主席|总理|总统|议会|选举|制裁|"
         r"外交关系|国际局势|政局|政策发布|政策解读"
@@ -249,7 +249,7 @@ class HotTopicCollector:
         return {
             "enabled": True,
             "cached": True,
-            "refreshed_at": last,
+            "refreshed_at": _api_utc(last),
             "stale": not self._is_fresh(),
             "refresh_interval_minutes": self.cfg.scheduler.job("hot_topics_refresh").interval_minutes,
             "refresh_schedule": self.cfg.scheduler.job("hot_topics_refresh").describe(),

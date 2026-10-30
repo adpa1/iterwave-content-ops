@@ -147,6 +147,7 @@ def _executor(cfg, conn):
 
 
 def test_executor_follows_plan(cfg, conn, seed, kb, monkeypatch):
+    monkeypatch.setattr("src.core.login_manager.has_login_state", lambda _platform: True)
     for p in ("xhs", "douyin"):
         getattr(cfg.platforms, p).enabled = True
     cfg.llm.enabled = False

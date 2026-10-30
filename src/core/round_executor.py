@@ -884,9 +884,22 @@ class RoundExecutor:
 
     async def _save_all_drafts(self, rows: list[dict], round_id: int, report: dict) -> None:
         saved_draft_ids: list[str] = []
+        skipped_login_platforms: set[str] = set()
+        from .login_manager import has_login_state
 
         for row in rows:
             platform: Platform = row["platform"]
+            # 未登录平台不调用 Playwright；保留 draft_pending，登录后可安全恢复。
+            try:
+                logged_in = has_login_state(platform)
+            except Exception:  # noqa: BLE001 — 登录状态不可确认时按未登录处理
+                logger.exception("读取平台登录态失败 platform=%s", platform.value)
+                logged_in = False
+            if not logged_in:
+                report["drafts_skipped_login"] = int(report.get("drafts_skipped_login") or 0) + 1
+                skipped_login_platforms.add(platform.value)
+                continue
+
             adapter = self.adapters.get(platform)
             if adapter is None:
                 report["drafts_failed"] += 1
@@ -980,6 +993,14 @@ class RoundExecutor:
                 self._notify_failed(
                     platform, row["title"], result.error_msg or "存草稿失败",
                 )
+
+        if skipped_login_platforms:
+            report["steps"].append({
+                "step": "save_drafts_skipped_login",
+                "platforms": sorted(skipped_login_platforms),
+                "skipped": report["drafts_skipped_login"],
+                "note": "未登录平台未执行存草稿，内容保留为待存状态；登录后可恢复",
+            })
 
         # 恢复存草稿可能是分批执行；不能用本次成功的 ID 覆盖此前已存成功的草稿关联。
         round_row = self.conn.execute(
