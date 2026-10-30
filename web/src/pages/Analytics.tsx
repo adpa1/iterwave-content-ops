@@ -41,6 +41,7 @@ export default function Analytics() {
     comments: string; shares: string;
   }>>({});
   const [weeklyReport, setWeeklyReport] = useState<WeeklyReport | null>(null);
+  const [weeklyActionBusy, setWeeklyActionBusy] = useState<string | null>(null);
   const [activationMetrics, setActivationMetrics] = useState<ActivationMetrics | null>(null);
   const [activationStatus, setActivationStatus] = useState<ActivationStatus | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
@@ -70,6 +71,23 @@ export default function Analytics() {
       setAdopting(null);
     }
   };
+  const updateWeeklyAction = async (
+    suggestionKey: string,
+    decision: "adopted" | "ignored",
+    outcome?: "success" | "no_effect" | "unclear",
+  ) => {
+    setWeeklyActionBusy(suggestionKey);
+    setReportError(null);
+    try {
+      await api.weeklyActionFeedback({ suggestion_key: suggestionKey, decision, outcome });
+      setWeeklyReport(await api.weeklyReport());
+    } catch (e: any) {
+      setReportError(e?.message || "建议反馈保存失败");
+    } finally {
+      setWeeklyActionBusy(null);
+    }
+  };
+
   const loadMetrics = (p: Platform | "") => {
     setMetricsError(null);
     api.metrics(p || undefined).then(setMetrics).catch((e) => setMetricsError(e.message));
@@ -292,7 +310,34 @@ export default function Analytics() {
               </details>
             </div>)}
             <h3 style={{ marginTop: 14 }}>下一轮建议</h3>
-            {weeklyReport.next_actions.length ? weeklyReport.next_actions.map((item, i) => <div key={i} className="task-row"><div className="task-main"><div className="task-title">{item.action}</div><div className="task-desc">依据：{item.basis} · 验证：{item.verification}</div><details><summary className="form-label" style={{ cursor: "pointer" }}>查看建议证据</summary><div className="panel-sub">平台：{item.platform ? PLATFORM_NAME[item.platform] : "全部"} · 样本：{item.sample_size} · 时间范围：{item.time_window ? item.time_window.start + " 至 " + item.time_window.end : "未指定"}</div><div className="panel-sub">证据内容 ID：{item.evidence_content_ids?.join("、") || "无"}</div><div className="panel-sub">指标快照 ID：{item.metric_snapshot_ids?.join("、") || "无"}</div></details></div></div>) : <div className="panel-sub">样本不足，先补充发布数据，再生成策略建议。</div>}
+            {weeklyReport.next_actions.length ? weeklyReport.next_actions.map((item, i) => <div key={item.suggestion_key || i} className="task-row" style={{ display: "block" }}>
+              <div className="task-title">{item.action}</div>
+              <div className="task-desc">依据：{item.basis} · 验证：{item.verification}</div>
+              <details><summary className="form-label" style={{ cursor: "pointer" }}>查看建议证据</summary>
+                <div className="panel-sub">平台：{item.platform ? PLATFORM_NAME[item.platform] : "全部"} · 样本：{item.sample_size} · 时间范围：{item.time_window ? item.time_window.start + " 至 " + item.time_window.end : "未指定"}</div>
+                <div className="panel-sub">证据内容 ID：{item.evidence_content_ids?.join("、") || "无"}</div>
+                <div className="panel-sub">指标快照 ID：{item.metric_snapshot_ids?.join("、") || "无"}</div>
+              </details>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
+                <span className="tag">{item.decision === "adopted" ? "已采纳" : item.decision === "ignored" ? "已忽略" : "待处理"}</span>
+                {item.decision === "pending" && <>
+                  <button className="btn sm primary" disabled={weeklyActionBusy === item.suggestion_key}
+                    onClick={() => updateWeeklyAction(item.suggestion_key, "adopted")}>采纳建议</button>
+                  <button className="btn sm" disabled={weeklyActionBusy === item.suggestion_key}
+                    onClick={() => updateWeeklyAction(item.suggestion_key, "ignored")}>忽略</button>
+                </>}
+                {item.decision === "adopted" && <>
+                  <span className="panel-sub">验证结果：</span>
+                  <button className="btn sm" disabled={weeklyActionBusy === item.suggestion_key}
+                    onClick={() => updateWeeklyAction(item.suggestion_key, "adopted", "success")}>有效</button>
+                  <button className="btn sm" disabled={weeklyActionBusy === item.suggestion_key}
+                    onClick={() => updateWeeklyAction(item.suggestion_key, "adopted", "no_effect")}>无明显效果</button>
+                  <button className="btn sm" disabled={weeklyActionBusy === item.suggestion_key}
+                    onClick={() => updateWeeklyAction(item.suggestion_key, "adopted", "unclear")}>暂无法判断</button>
+                  {item.outcome !== "pending" && <span className="panel-sub">已记录：{item.outcome === "success" ? "有效" : item.outcome === "no_effect" ? "无明显效果" : "暂无法判断"}</span>}
+                </>}
+              </div>
+            </div>) : <div className="panel-sub">样本不足，先补充发布数据，再生成策略建议。</div>
             <div className="panel-sub" style={{ marginTop: 10 }}>限制：{weeklyReport.limitations.join("；")}</div>
           </div>
         </>}
