@@ -219,20 +219,9 @@ class TimeoutsConfig(BaseModel):
 
 
 class CircuitBreakerConfig(BaseModel):
-    signals: list[str] = Field(
-        default_factory=lambda: [
-            "captcha", "rate_limit", "login_expired", "action_blocked", "device_verify",
-        ]
-    )
-    cooldown_minutes: int = 30
+    # 三步恢复验证是安全流程，固定在代码中，不提供可关闭的配置项。
+    cooldown_minutes: int = Field(30, ge=1, le=1440)
     recovery_failure_extension_minutes: int = Field(60, ge=1, le=1440)
-    recovery: dict[str, bool] = Field(
-        default_factory=lambda: {
-            "require_cooldown_expired": True,
-            "require_test_login": True,
-            "require_lightweight_action": True,
-        }
-    )
 
 
 class RhythmWindowsConfig(BaseModel):
@@ -547,7 +536,7 @@ class HotTopicMatcherConfig(BaseModel):
 class CopyGenerationConfig(BaseModel):
     """文案生成的可调输出约束；提示词结构与安全规则仍由代码版本化。"""
     topic_summary_max_chars: int = Field(300, ge=50, le=2000)
-    title_max_chars: int = Field(20, ge=5, le=80)
+    title_max_chars: int = Field(20, ge=5, le=40)
     body_min_chars: int = Field(150, ge=0, le=5000)
     body_max_chars: int = Field(400, ge=50, le=10000)
     tag_min_count: int = Field(3, ge=0, le=20)
