@@ -377,8 +377,10 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
     created_context = False
     if new_context is None:
         try:
+            # 服务运行期间全局 worker 可能正执行该账号组任务；热切换只构造运行时，
+            # 不再并发执行启动恢复/计划失效扫描。该类维护在进程启动时已对所有租户执行。
             new_context = _build_tenant_runtime_context(
-                registry, tenant_id, run_startup_maintenance=True,
+                registry, tenant_id, run_startup_maintenance=False,
             )
             new_context["scheduler"].start()
             _tenant_runtime_contexts[tenant_id] = new_context
