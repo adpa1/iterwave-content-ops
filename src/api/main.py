@@ -2110,16 +2110,31 @@ def _register_routes(app: FastAPI) -> None:
         if cohort is None:
             return {"cohort_size": 0, "ttv_seconds": None, "seven_day_activation_rate": None,
                     "first_publish_rate": None, "data_return_rate": None, "weekly_adopted_published": 0,
+                    "activation_input_wait_seconds": None, "model_queue_wait_seconds": None,
+                    "generation_processing_seconds": None,
                     "weekly_effective_review_count": 0, "quick_experience_completion_rate": None,
                     "sample_attempted_count": 0, "sample_ready_count": 0, "platform_model_breakdown": [],
                     "observation_window_complete": False}
         started = datetime.fromisoformat(cohort["first_seen_at"])
-        ttv = conn.execute(
-            "SELECT MIN((julianday(completed_at)-julianday(?))*86400) "
-            "FROM sample_runs WHERE tenant_id=? AND status='ready' AND completed_at IS NOT NULL "
-            "AND created_at>=?",
-            (cohort["first_seen_at"], tenant_id, cohort["first_seen_at"]),
-        ).fetchone()[0]
+        first_ready_run = conn.execute(
+            "SELECT created_at, started_at, completed_at FROM sample_runs "
+            "WHERE tenant_id=? AND status='ready' AND completed_at IS NOT NULL AND started_at IS NOT NULL "
+            "AND created_at>=? ORDER BY completed_at ASC LIMIT 1",
+            (tenant_id, cohort["first_seen_at"]),
+        ).fetchone()
+        if first_ready_run:
+            first_created = datetime.fromisoformat(first_ready_run["created_at"])
+            first_started = datetime.fromisoformat(first_ready_run["started_at"])
+            first_completed = datetime.fromisoformat(first_ready_run["completed_at"])
+            activation_input_wait_seconds = max(0.0, (first_created - started).total_seconds())
+            model_queue_wait_seconds = max(0.0, (first_started - first_created).total_seconds())
+            generation_processing_seconds = max(0.0, (first_completed - first_started).total_seconds())
+            ttv = (first_completed - started).total_seconds()
+        else:
+            activation_input_wait_seconds = None
+            model_queue_wait_seconds = None
+            generation_processing_seconds = None
+            ttv = None
         adopted = conn.execute(
             "SELECT COUNT(DISTINCT e.sample_content_id) FROM content_events e "
             "JOIN sample_contents sc ON sc.id=e.sample_content_id "
@@ -2197,6 +2212,9 @@ def _register_routes(app: FastAPI) -> None:
                 0.0 if int(sample_counts["attempted"] or 0) > 0 else None
             ),
             "ttv_seconds": round(float(ttv), 1) if ttv is not None else None,
+            "activation_input_wait_seconds": round(activation_input_wait_seconds, 1) if activation_input_wait_seconds is not None else None,
+            "model_queue_wait_seconds": round(model_queue_wait_seconds, 1) if model_queue_wait_seconds is not None else None,
+            "generation_processing_seconds": round(generation_processing_seconds, 1) if generation_processing_seconds is not None else None,
             "seven_day_activation_rate": (1.0 if adopted else 0.0) if complete else None,
             "first_publish_rate": (1.0 if publish_count else 0.0) if complete else None,
             "weekly_adopted_published": int(weekly_adopted_published or 0),
