@@ -21,6 +21,7 @@ export default function Activation() {
   const [error, setError] = useState("");
   const [reason, setReason] = useState("内容空泛");
   const [toast, setToast] = useState("");
+  const [deleting, setDeleting] = useState(false);
 
   const loadRun = async (id: string) => {
     const data = await api.activationSamples(id);
@@ -103,6 +104,22 @@ export default function Activation() {
     }
   };
 
+  const deleteRun = async () => {
+    if (!runId || !window.confirm("删除本次体验记录及其样稿、反馈和相关事件？此操作不可撤销。")) return;
+    setDeleting(true);
+    try {
+      await api.deleteActivationSamples(runId);
+      setRun(null);
+      setRunId(null);
+      setToast("本次体验记录已删除");
+      setStatus(await api.activationStatus());
+    } catch (e: any) {
+      setError(e?.message || "删除体验记录失败");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const reject = async (id: string) => {
     if (!runId) return;
     try {
@@ -178,9 +195,13 @@ export default function Activation() {
           <div className="panel-head" style={{ padding: "0 0 10px" }}>
             <div>
               <div className="panel-title">本次体验结果</div>
-              <div className="panel-sub">任务状态：{run.run.status === "ready" ? "已完成" : run.run.status === "failed" ? "生成失败" : "正在生成，请稍候…"}</div>
+              <div className="panel-sub">任务状态：{run.run.status === "ready" ? "已完成" : run.run.status === "failed" ? "生成失败" : "正在生成，请稍候…"} · 模型调用 {run.run.attempt_count ?? 0} 次</div>
             </div>
-            <span className="tag">体验样稿 · 非正式生产内容</span>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span className="tag">体验样稿 · 非正式生产内容</span>
+              {run.run.status !== "generating" && run.run.status !== "created" && run.run.status !== "quality_check" &&
+                <button className="btn sm" onClick={deleteRun} disabled={deleting}>{deleting ? "删除中…" : "删除本次记录"}</button>}
+            </div>
           </div>
           {["created", "generating", "quality_check"].includes(run.run.status) && (
             <div className="panel"><div className="loading"><div className="spinner" />正在生成并检查样稿，不显示虚构进度</div></div>
