@@ -1423,7 +1423,7 @@ def _register_routes(app: FastAPI) -> None:
                 except Exception:
                     logger.exception("中断体验任务事件写入失败 run=%s", stale["id"])
         inserted = conn.execute(
-            "INSERT OR IGNORE INTO activation_cohort (id, tenant_id, first_seen_at) VALUES (1, ?, ?)",
+            "INSERT OR IGNORE INTO activation_cohort (tenant_id, first_seen_at) VALUES (?, ?)",
             (tenant_id, now),
         ).rowcount
         conn.commit()
@@ -1466,9 +1466,9 @@ def _register_routes(app: FastAPI) -> None:
                 "platform_login_required_for_formal_publish": True,
             },
             "quick_experience_available": _llm_available(cfg),
-            "cohort_started_at": now if inserted else (
-                conn.execute("SELECT first_seen_at FROM activation_cohort WHERE id=1").fetchone()[0]
-            ),
+            "cohort_started_at": conn.execute(
+                "SELECT first_seen_at FROM activation_cohort WHERE tenant_id=?", (tenant_id,)
+            ).fetchone()[0],
         }
 
     @app.post("/api/activation/samples", status_code=202)
@@ -2175,13 +2175,11 @@ def _register_routes(app: FastAPI) -> None:
             (tenant_id, started.isoformat(sep=" "), mature_publish_cutoff,
              started.isoformat(sep=" "), mature_publish_cutoff),
         ).fetchone()[0]
+        # 确认发布本身即代表用户已采纳该内容；不依赖一个当前流程不会稳定写入的独立 content_adopted 事件。
         weekly_adopted_published = conn.execute(
-            "SELECT COUNT(DISTINCT published.content_id) FROM content_events published "
-            "JOIN content_events adopted ON adopted.tenant_id=published.tenant_id "
-            "AND adopted.content_id=published.content_id AND adopted.event_type='content_adopted' "
-            "AND adopted.event_at<=published.event_at "
-            "WHERE published.tenant_id=? AND published.event_type='publish_confirmed' AND published.event_at>=?",
-            (tenant_id, (now - timedelta(days=7)).isoformat(sep=" ")),
+            "SELECT COUNT(DISTINCT content_id) FROM content_events "
+            "WHERE tenant_id=? AND event_type='publish_confirmed' AND event_at>=? AND event_at<=?",
+            (tenant_id, (now - timedelta(days=7)).isoformat(sep=" "), now.isoformat(sep=" ")),
         ).fetchone()[0]
         weekly_effective_review_count = conn.execute(
             "SELECT COUNT(DISTINCT content_id) FROM ("
