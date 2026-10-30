@@ -465,6 +465,7 @@ class MediaQualityConfig(BaseModel):
 class TenantSwitchConfig(BaseModel):
     request_drain_timeout_seconds: int = Field(30, ge=1, le=120)
     scheduler_drain_timeout_seconds: int = Field(30, ge=1, le=120)
+    round_drain_timeout_seconds: int = Field(120, ge=1, le=600)
     background_jobs_timeout_seconds: int = Field(120, ge=1, le=600)
     login_process_timeout_seconds: int = Field(10, ge=1, le=60)
 
