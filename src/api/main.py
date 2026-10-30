@@ -1535,37 +1535,47 @@ def _register_routes(app: FastAPI) -> None:
                 ]
                 results = []
                 for angle, angle_hint in angles:
-                    for model_attempt in range(sample_cfg.llm.retry_attempts + 1):
-                        try:
-                            title, body, tags = await asyncio.to_thread(
-                                generate_copy_content,
-                                f"{description}：{angle}",
-                                f"账号定位：{description}。本篇创作角度：{angle_hint}。请给出具体、有信息增量且适合平台发布的内容。",
-                                "账号定位", PlatformEnum(platform), sample_cfg, conn_bg, None, None, None, None,
-                            )
+                    reject_reason = None
+                    for quality_attempt in range(sample_cfg.copy_generation.max_guard_retries + 1):
+                        for model_attempt in range(sample_cfg.llm.retry_attempts + 1):
+                            try:
+                                title, body, tags = await asyncio.to_thread(
+                                    generate_copy_content,
+                                    f"{description}：{angle}",
+                                    f"账号定位：{description}。本篇创作角度：{angle_hint}。请给出具体、有信息增量且适合平台发布的内容。",
+                                    "账号定位", PlatformEnum(platform), sample_cfg, conn_bg,
+                                    None, None, reject_reason, None,
+                                )
+                                break
+                            except ContentGenerationError as model_error:
+                                if not model_error.retryable or model_attempt >= sample_cfg.llm.retry_attempts:
+                                    raise
+                                delay = model_error.retry_after_seconds or (
+                                    sample_cfg.llm.retry_backoff_seconds * (2 ** model_attempt)
+                                )
+                                await asyncio.sleep(delay)
+                        findings = []
+                        if len(title.strip()) < 4:
+                            findings.append("标题信息不足")
+                        if len(body.strip()) < 100:
+                            findings.append("正文信息量不足")
+                        if len(set(body.split())) < 12:
+                            findings.append("正文重复度过高")
+                        if any(phrase in body for phrase in ("仅供参考", "总而言之", "希望对你有帮助")):
+                            findings.append("包含泛化套话")
+                        from src.core.guard.ultimate_goal_checker import UltimateGoalChecker, CheckResult
+                        guard_result = UltimateGoalChecker(sample_cfg).check_content(
+                            title, body, tags, platform=platform,
+                        )
+                        if guard_result.result != CheckResult.PASS:
+                            findings.append(guard_result.reason or "未通过内容方向与合规检查")
+                        if not findings:
                             break
-                        except ContentGenerationError as model_error:
-                            if not model_error.retryable or model_attempt >= sample_cfg.llm.retry_attempts:
-                                raise
-                            delay = sample_cfg.llm.retry_backoff_seconds * (2 ** model_attempt)
-                            await asyncio.sleep(delay)
-                    findings = []
-                    if len(title.strip()) < 4:
-                        findings.append("标题信息不足")
-                    if len(body.strip()) < 100:
-                        findings.append("正文信息量不足")
-                    if len(set(body.split())) < 12:
-                        findings.append("正文重复度过高")
-                    if any(phrase in body for phrase in ("仅供参考", "总而言之", "希望对你有帮助")):
-                        findings.append("包含泛化套话")
-                    from src.core.guard.ultimate_goal_checker import UltimateGoalChecker, CheckResult
-                    guard_result = UltimateGoalChecker(sample_cfg).check_content(
-                        title, body, tags, platform=platform,
-                    )
-                    if guard_result.result != CheckResult.PASS:
-                        findings.append(guard_result.reason or "未通过内容方向与合规检查")
-                    if findings:
-                        raise ContentGenerationError("quality_rejected", "样稿未通过质量检查：" + "、".join(findings))
+                        reject_reason = "上一版样稿未通过质量检查：" + "、".join(findings) + "。请针对问题重写，避免重复原稿。"
+                    else:
+                        raise ContentGenerationError(
+                            "quality_rejected", "样稿多次未通过质量检查：" + "、".join(findings),
+                        )
                     results.append((angle, title, body, tags, findings))
                 conn_bg.execute("UPDATE sample_runs SET status='quality_check' WHERE id=?", (run_id,))
                 conn_bg.commit()
