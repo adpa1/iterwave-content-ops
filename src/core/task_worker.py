@@ -79,12 +79,18 @@ class GlobalTaskWorker:
             from src.core import login_manager
 
             data_dir = Path(context["cfg"].resolve_path(context["cfg"].paths.data_dir))
+            feedback_data = task.payload.get("feedback")
+            feedback = None
+            if isinstance(feedback_data, dict):
+                from src.core.autogrow import StrategyFeedback
+                feedback = StrategyFeedback(**feedback_data)
             with login_manager.tenant_login_dir(data_dir):
                 report = await context["executor"].run(
                     round_id,
                     topic_count=task.payload.get("topic_count"),
                     platform_values=task.payload.get("platforms"),
                     save_drafts=task.payload.get("save_drafts"),
+                    feedback=feedback,
                 )
             if not self.queue.finish(task.task_id, self.owner, result=report):
                 logger.error("任务完成状态写入失败，租约可能已失效 task_id=%s", task.task_id)
