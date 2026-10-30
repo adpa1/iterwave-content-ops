@@ -440,7 +440,7 @@ def _build_app() -> FastAPI:
                 from src.core.tenant_backup import restore_backup
                 restore_backup(
                     backup_path, cfg.resolve_path(cfg.paths.db_file), runtime_data_dir,
-                    runtime_backup_dir, active_tenant_id,
+                    runtime_backup_dir, active_tenant_id, cfg=cfg,
                 )
                 pending_restore.unlink(missing_ok=True)
                 logger.warning("账号组快照恢复完成 tenant=%s backup=%s", active_tenant_id, backup_name)
@@ -1803,7 +1803,7 @@ def _register_routes(app: FastAPI) -> None:
         backup_dir = Path(cfg.resolve_path(cfg.paths.backup_dir))
         try:
             from src.core.tenant_backup import create_backup
-            target = create_backup(db_path, data_dir, backup_dir, tenant_id)
+            target = create_backup(db_path, data_dir, backup_dir, tenant_id, cfg=cfg)
         except Exception as exc:  # noqa: BLE001
             logger.exception("账号组备份失败 tenant=%s", tenant_id)
             raise HTTPException(500, f"账号组备份失败：{exc}") from exc
