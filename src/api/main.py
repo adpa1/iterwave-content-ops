@@ -470,7 +470,7 @@ def _build_app() -> FastAPI:
         # 启动阶段
         cfg = load_config()
         # 账号组注册表是共享基础设施；默认组继续使用原有 data/ 与 backups/。
-        tenant_registry = TenantRegistry(PROJECT_ROOT)
+        tenant_registry = TenantRegistry(PROJECT_ROOT, cfg=cfg)
         tenant_registry.initialize()
         active_tenant_id = tenant_registry.active_id()
         active_tenant = tenant_registry.get(active_tenant_id)
