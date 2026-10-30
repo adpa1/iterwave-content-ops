@@ -6,17 +6,18 @@ from fastapi import HTTPException
 import src.api.main as api_main
 
 
-def _route(path: str):
+def _route(path: str, method: str):
     return next(
         route for route in api_main.app.routes
         if getattr(route, "path", None) == path
+        and method in (getattr(route, "methods", None) or set())
     )
 
 
 def test_platform_account_api_rejects_second_registration_even_if_first_is_inactive(conn, monkeypatch):
     monkeypatch.setitem(api_main._g_ctx, "conn", conn)
     monkeypatch.setitem(api_main._g_ctx, "runtime_tenant_id", "default")
-    create = _route("/api/platform-accounts")
+    create = _route("/api/platform-accounts", "POST")
     first = create.endpoint(api_main.PlatformAccountRequest(
         platform="xhs", account_handle="xhs-first", display_name="小红书", status="inactive",
     ))
@@ -33,8 +34,8 @@ def test_platform_account_api_rejects_second_registration_even_if_first_is_inact
 def test_platform_account_update_cannot_move_account_into_occupied_platform(conn, monkeypatch):
     monkeypatch.setitem(api_main._g_ctx, "conn", conn)
     monkeypatch.setitem(api_main._g_ctx, "runtime_tenant_id", "default")
-    create = _route("/api/platform-accounts")
-    update = _route("/api/platform-accounts/{account_id}")
+    create = _route("/api/platform-accounts", "POST")
+    update = _route("/api/platform-accounts/{account_id}", "PUT")
     xhs = create.endpoint(api_main.PlatformAccountRequest(
         platform="xhs", account_handle="xhs-account",
     ))
