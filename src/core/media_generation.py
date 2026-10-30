@@ -68,7 +68,7 @@ def generate_image_bytes(
     api_key = os.getenv(key_env) if key_env else None
     if not api_key:
         raise ImageGenerationError(
-            f"未配置图片生成 API 密钥。请在服务端环境中设置 {key_env or 'ITERWAVE_IMAGE_API_KEY_ENV'}"
+            "未配置图片生成服务密钥。请检查服务端部署环境中的密钥配置."
         )
     try:
         parsed_base_url = urlsplit(base_url)
