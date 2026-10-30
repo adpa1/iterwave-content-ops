@@ -517,7 +517,7 @@ export default function Production() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">CONTENT OPERATIONS ROOM</div>
+          <div className="eyebrow">内容生产</div>
           <h1 className="page-title">内容生产</h1>
           <div className="page-desc">
             按轮次生产内容：选题 → 文案 → 质检 → 存草稿 → 你确认发布 → 复盘。所有草稿只能存草稿，系统永不自动点发布按钮。
