@@ -647,7 +647,6 @@ export interface SystemConfigView {
     /** 通知通道（webhook URL 只在 .env，这里只回是否已配置） */
     notification_channels: Record<string, {
       enabled: boolean;
-      webhook_url_env: string | null;
       has_webhook_url: boolean;
       available?: boolean;
     }>;
@@ -1383,7 +1382,7 @@ export const api = {
   saveHotSources: (items: HotSource[]) =>
     fetchJson<{ items: HotSource[] }>("/api/hot_topics/sources", { method: "PUT", body: JSON.stringify({ items }) }),
   saveWebhook: (channel: "wecom" | "feishu", url: string) =>
-    fetchJson<{ ok: boolean; channel: string; enabled: boolean; has_webhook_url: boolean; env_name: string }>(
+    fetchJson<{ ok: boolean; channel: string; enabled: boolean; has_webhook_url: boolean }>(
       "/api/notify/webhook", { method: "POST", body: JSON.stringify({ channel, url }) },
     ),
   // === 主动运营目标（账号组 SQLite 业务数据）===
