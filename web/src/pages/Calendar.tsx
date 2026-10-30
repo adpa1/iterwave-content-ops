@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useApp } from "../AppContext";
 import EmptyHint from "../components/EmptyHint";
 import { api, ScheduleEvent, UnscheduledDraft } from "../api";
+import { platformMeta } from "../platforms";
 
 export default function Calendar() {
   const { showToast, withPending, isPending } = useApp();
