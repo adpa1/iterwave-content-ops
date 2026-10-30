@@ -790,7 +790,11 @@ def _redact_public_value(value: Any) -> Any:
     return value
 
 
-_INTERNAL_ENDPOINT_KEYS = {"vision_ranking.base_url", "media_generation.base_url"}
+_INTERNAL_ENDPOINT_KEYS = {
+    "vision_ranking.base_url", "media_generation.base_url",
+    *(f"platforms.{platform}.{field}" for platform in PLATFORM_KEYS
+      for field in ("base_url", "account_key")),
+}
 
 
 def _public_overrides(values: dict[str, Any]) -> dict[str, Any]:
@@ -931,6 +935,7 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
         "vision_ranking.base_url", "media_generation.base_url",
         *(f"platforms.{platform}.{field}" for platform in PLATFORM_KEYS
           for field in ("base_url", "account_key")),
+        *(f"notifications.channels.{channel}.webhook_url_env" for channel in ("wecom", "feishu")),
     }
     blocked = sorted(set(updates) & blocked_runtime_fields)
     if blocked:
