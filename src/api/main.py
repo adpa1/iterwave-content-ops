@@ -2167,6 +2167,44 @@ def _register_routes(app: FastAPI) -> None:
                 "statement": "样本不足：同一平台至少 3 篇具有可比指标的样本尚未形成，暂不推断表现原因。",
                 "sample_size": total_samples, "evidence_content_ids": [],
             })
+        # 首次展示时持久化建议，后续采纳/忽略/验证反馈可追踪，刷新后状态不丢失。
+        for action_item in next_actions:
+            identity = "|".join((
+                start.date().isoformat(),
+                str(action_item.get("platform") or ""),
+                str(action_item.get("action") or ""),
+                str(action_item.get("basis") or ""),
+            ))
+            suggestion_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            now_text = datetime.now().isoformat(sep=" ", timespec="seconds")
+            conn.execute(
+                "INSERT OR IGNORE INTO weekly_action_feedback "
+                "(tenant_id, suggestion_key, report_start, platform, action, basis, verification, "
+                "evidence_content_ids_json, metric_snapshot_ids_json, sample_size, decision, outcome, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?)",
+                (
+                    tenant_id, suggestion_key, start.date().isoformat(),
+                    action_item.get("platform") or "", action_item["action"], action_item["basis"],
+                    action_item["verification"],
+                    json.dumps(action_item.get("evidence_content_ids") or [], ensure_ascii=False),
+                    json.dumps(action_item.get("metric_snapshot_ids") or [], ensure_ascii=False),
+                    int(action_item.get("sample_size") or 0), now_text, now_text,
+                ),
+            )
+            feedback = conn.execute(
+                "SELECT decision, outcome, outcome_note, decided_at, outcome_recorded_at "
+                "FROM weekly_action_feedback WHERE tenant_id=? AND suggestion_key=?",
+                (tenant_id, suggestion_key),
+            ).fetchone()
+            action_item.update({
+                "suggestion_key": suggestion_key,
+                "decision": feedback["decision"] if feedback else "pending",
+                "outcome": feedback["outcome"] if feedback else "pending",
+                "outcome_note": feedback["outcome_note"] if feedback else None,
+                "decided_at": feedback["decided_at"] if feedback else None,
+                "outcome_recorded_at": feedback["outcome_recorded_at"] if feedback else None,
+            })
+        conn.commit()
         _record_content_event("weekly_report_viewed", idempotency_key=f"weekly-view:{start.date()}:{platform or 'all'}")
         return {
             "period": {"start": start.date().isoformat(), "end": (end - timedelta(seconds=1)).date().isoformat()},
@@ -2181,6 +2219,54 @@ def _register_routes(app: FastAPI) -> None:
             "limitations": ["只比较同平台数据", "单篇表现不代表因果", "人工与平台读回数据保留各自来源", "周内样本的发布后统计时长可能不同，特征差异仅作假设"],
             "generated_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
         }
+
+    @app.post("/api/reports/weekly/actions")
+    def update_weekly_action_feedback(req: dict):
+        """记录周报建议的采纳/忽略，以及采纳后的验证结果。"""
+        tenant_id = _tenant_id()
+        suggestion_key = str((req or {}).get("suggestion_key") or "").strip()
+        decision = str((req or {}).get("decision") or "").strip()
+        outcome = str((req or {}).get("outcome") or "").strip()
+        outcome_note = str((req or {}).get("outcome_note") or "").strip()
+        if len(suggestion_key) != 64 or any(ch not in "0123456789abcdef" for ch in suggestion_key):
+            raise HTTPException(422, "建议标识无效，请刷新周报后重试")
+        if decision not in {"adopted", "ignored"}:
+            raise HTTPException(422, "建议处理状态只能是采纳或忽略")
+        if outcome and outcome not in {"success", "no_effect", "unclear"}:
+            raise HTTPException(422, "验证结果无效")
+        if outcome and decision != "adopted":
+            raise HTTPException(422, "只有已采纳的建议才能记录验证结果")
+        if len(outcome_note) > 500:
+            raise HTTPException(422, "验证说明不能超过 500 个字符")
+        conn = _g()["conn"]
+        existing = conn.execute(
+            "SELECT decision, outcome FROM weekly_action_feedback WHERE tenant_id=? AND suggestion_key=?",
+            (tenant_id, suggestion_key),
+        ).fetchone()
+        if existing is None:
+            raise HTTPException(404, "建议记录不存在或已过期，请刷新周报")
+        if existing["outcome"] != "pending" and decision != "adopted":
+            raise HTTPException(409, "已记录验证结果的建议不能再改为忽略")
+        now = datetime.now().isoformat(sep=" ", timespec="seconds")
+        if outcome:
+            conn.execute(
+                "UPDATE weekly_action_feedback SET decision='adopted', outcome=?, outcome_note=?, "
+                "outcome_recorded_at=?, updated_at=? WHERE tenant_id=? AND suggestion_key=?",
+                (outcome, outcome_note or None, now, now, tenant_id, suggestion_key),
+            )
+        else:
+            conn.execute(
+                "UPDATE weekly_action_feedback SET decision=?, decided_at=COALESCE(decided_at, ?), "
+                "updated_at=? WHERE tenant_id=? AND suggestion_key=?",
+                (decision, now, now, tenant_id, suggestion_key),
+            )
+        conn.commit()
+        row = conn.execute(
+            "SELECT decision, outcome, outcome_note, decided_at, outcome_recorded_at "
+            "FROM weekly_action_feedback WHERE tenant_id=? AND suggestion_key=?",
+            (tenant_id, suggestion_key),
+        ).fetchone()
+        return {"suggestion_key": suggestion_key, **dict(row)}
 
     @app.get("/api/activation/metrics")
     def activation_metrics():
