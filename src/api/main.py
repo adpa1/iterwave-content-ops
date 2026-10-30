@@ -1916,7 +1916,7 @@ def _register_routes(app: FastAPI) -> None:
             })
         if not why:
             why.append({
-                "statement": "同一平台至少 3 篇具有可比指标的样本尚未形成，暂不推断表现原因。",
+                "statement": "样本不足：同一平台至少 3 篇具有可比指标的样本尚未形成，暂不推断表现原因。",
                 "sample_size": total_samples, "evidence_content_ids": [],
             })
         _record_content_event("weekly_report_viewed", idempotency_key=f"weekly-view:{start.date()}:{platform or 'all'}")
