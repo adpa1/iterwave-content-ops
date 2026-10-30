@@ -296,11 +296,12 @@ def test_activation_metrics_calculates_completed_cohort_rates_and_ttv(activation
     )
     now_text = now.isoformat(sep=" ")
     measured_text = (started + timedelta(hours=3)).isoformat(sep=" ")
+    recorded_text = (started + timedelta(hours=4)).isoformat(sep=" ")
     conn.execute(
         "INSERT INTO metric_snapshots "
         "(id, tenant_id, draft_id, content_id, platform, source, views, measured_at, recorded_at, created_at) "
         "VALUES ('cohort-metric', 'default', ?, ?, 'xhs', 'manual', 10, ?, ?, ?)",
-        (draft_id, content_id, measured_text, now_text, now_text),
+        (draft_id, content_id, measured_text, recorded_text, now_text),
     )
     conn.commit()
 
