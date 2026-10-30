@@ -312,7 +312,9 @@ def _build_tenant_runtime_context(
         recovery_report = {}
         pvm = PlanVersionManager(cfg, conn)
         if run_startup_maintenance:
-            recovery_report = RecoveryManager(cfg, conn, scheduler).recover()
+            recovery_report = RecoveryManager(
+                cfg, conn, scheduler, task_queue=_task_queue, tenant_id=tenant_id,
+            ).recover()
             invalidation = pvm.invalidate_changed_plans()
             if invalidation["stale_rounds"]:
                 logger.warning(
