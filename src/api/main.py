@@ -384,6 +384,15 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
             _tenant_runtime_contexts[tenant_id] = new_context
             created_context = True
         except RuntimeError as exc:
+            if new_context is not None:
+                try:
+                    new_context["scheduler"].shutdown()
+                except Exception:
+                    pass
+                try:
+                    new_context["conn"].close()
+                except Exception:
+                    pass
             raise HTTPException(409, str(exc)) from exc
         except Exception as exc:
             if new_context is not None:
