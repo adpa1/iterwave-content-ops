@@ -193,6 +193,16 @@ def test_executor_follows_plan(cfg, conn, seed, kb, monkeypatch):
 def test_excluded_topic_not_produced(cfg, conn, seed, kb, monkeypatch):
     cfg.platforms.xhs.enabled = True
     cfg.llm.enabled = False
+    monkeypatch.setattr("src.core.round_executor._llm_available", lambda _cfg: True)
+    monkeypatch.setattr(
+        "src.core.round_executor.generate_copy_content",
+        lambda *args, **kwargs: (
+            "测试标题",
+            "个人成长 实用经验 产品经理 AI工具 需求分析 用户研究 项目管理 工作效率 数据分析 "
+            "业务流程 产品设计 用户反馈 方案验证 目标拆解 方法总结 实践案例 场景分析 效率提升 团队协作 持续迭代 经验复盘",
+            ["个人成长", "实用经验"],
+        ),
+    )
     monkeypatch.setattr("src.core.round_executor.make_card_set",
                         lambda title, dim, body, out, platform, footer="": [out / "x.png"])
     all_ids = [i.id for i in load_pool(cfg, conn)[0]]
