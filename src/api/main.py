@@ -1763,7 +1763,7 @@ def _register_routes(app: FastAPI) -> None:
         tenant_id = _tenant_id()
         conn = _g()["conn"]
         run = conn.execute(
-            "SELECT * FROM sample_runs sr WHERE id=? AND tenant_id=? "
+            "SELECT sr.* FROM sample_runs sr WHERE sr.id=? AND sr.tenant_id=? "
             "AND NOT EXISTS (SELECT 1 FROM activation_run_deletions d WHERE d.sample_run_id=sr.id)",
             (sample_run_id, tenant_id)
         ).fetchone()
