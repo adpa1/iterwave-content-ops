@@ -153,7 +153,7 @@ export default function Settings() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">SYSTEM SETTINGS</div>
+          <div className="eyebrow">系统设置</div>
           <h1 className="page-title">系统设置</h1>
           <div className="page-desc">所有设置保存后立即生效，并记录变更历史；按分类在下方页签中修改。</div>
         </div>
