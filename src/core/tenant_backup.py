@@ -127,7 +127,7 @@ def create_backup(db_path: Path | str, data_dir: Path | str,
                     if candidate.suffix.lower() not in ALLOWED_IMAGE_SUFFIXES:
                         continue
                     size = candidate.stat().st_size
-                    if size > MAX_BACKUP_BYTES:
+                    if size > max_backup_bytes:
                         raise BackupError(f"卡片图片超过备份上限：{name}")
                     output_files[name] = {"sha256": _sha256(candidate), "size": size}
 
