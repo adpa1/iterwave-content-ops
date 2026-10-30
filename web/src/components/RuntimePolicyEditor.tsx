@@ -42,7 +42,6 @@ const GROUPS: { prefix: string; title: string; exact?: string[] }[] = [
     "scoring.dimension_gap_score",
     "scoring.dimension_normal_score",
     "scoring.no_persona_match_score",
-    "scoring.stable_exploration_percent",
     "scoring.timeliness_unknown_score",
     "scoring.history_cold_start_score",
     "scoring.freshness_recent_use_penalty",
