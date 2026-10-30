@@ -2116,8 +2116,9 @@ def _register_routes(app: FastAPI) -> None:
         started = datetime.fromisoformat(cohort["first_seen_at"])
         ttv = conn.execute(
             "SELECT MIN((julianday(completed_at)-julianday(?))*86400) "
-            "FROM sample_runs WHERE tenant_id=? AND status='ready' AND completed_at IS NOT NULL",
-            (cohort["first_seen_at"], tenant_id),
+            "FROM sample_runs WHERE tenant_id=? AND status='ready' AND completed_at IS NOT NULL "
+            "AND created_at>=?",
+            (cohort["first_seen_at"], tenant_id, cohort["first_seen_at"]),
         ).fetchone()[0]
         adopted = conn.execute(
             "SELECT COUNT(DISTINCT e.sample_content_id) FROM content_events e "
