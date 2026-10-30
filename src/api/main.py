@@ -2571,9 +2571,13 @@ def _register_routes(app: FastAPI) -> None:
                 }
             except Exception as exc:  # noqa: BLE001 — 后台任务错误必须可查询
                 logger.exception("后台轮次执行失败 round=%s", round_id)
+                # 仅返回稳定错误码和安全提示，不把供应商原始响应/异常详情暴露给前端。
+                error_code = getattr(exc, "code", "round_execution_failed")
+                safe_message = str(exc) if getattr(exc, "code", None) else "本轮执行失败，请检查运行记录"
                 _round_job_status[round_id] = {
                     "round_id": round_id, "running": False,
-                    "report": None, "error": str(exc),
+                    "report": None, "error": safe_message,
+                    "error_code": error_code,
                 }
             finally:
                 _running_rounds.discard(round_id)
