@@ -20,6 +20,14 @@ MAX_BACKUP_BYTES = 2 * 1024 * 1024 * 1024
 ALLOWED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 
+def _backup_limits(cfg) -> tuple[int, int]:
+    if cfg is None:
+        return MAX_BACKUP_BYTES, 10
+    # Configuration may tighten, never relax the code-level hard safety ceiling.
+    policy = cfg.tenant_backup
+    return min(int(policy.max_bytes), MAX_BACKUP_BYTES), max(1, min(int(policy.retention_count), 100))
+
+
 class BackupError(ValueError):
     """备份文件无效或恢复未能安全完成。"""
 
@@ -33,7 +41,8 @@ def _sha256(path: Path) -> str:
 
 
 def create_backup(db_path: Path | str, data_dir: Path | str,
-                  backup_dir: Path | str, tenant_id: str) -> Path:
+                  backup_dir: Path | str, tenant_id: str, cfg=None) -> Path:
+    max_backup_bytes, retention_count = _backup_limits(cfg)
     db_path, data_dir, backup_dir = Path(db_path), Path(data_dir), Path(backup_dir)
     if not db_path.is_file():
         raise BackupError("数据库文件不存在，无法创建快照")
@@ -86,7 +95,7 @@ def create_backup(db_path: Path | str, data_dir: Path | str,
                 ):
                     continue
                 size = source_file.stat().st_size
-                if size > MAX_BACKUP_BYTES:
+                if size > max_backup_bytes:
                     raise BackupError(f"素材文件超过备份上限：{name}")
                 media_files[name] = {
                     "sha256": _sha256(source_file),
@@ -140,7 +149,7 @@ def create_backup(db_path: Path | str, data_dir: Path | str,
             + (overrides.stat().st_size if overrides.is_file() else 0)
             + len(json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
         )
-        if aggregate_size > MAX_BACKUP_BYTES:
+        if aggregate_size > max_backup_bytes:
             raise BackupError("备份内容总大小超过 2GB 上限")
         try:
             with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -160,13 +169,14 @@ def create_backup(db_path: Path | str, data_dir: Path | str,
     except OSError:
         pass
     backups = sorted(backup_dir.glob(f"iterwave_{tenant_id}_*.zip"), reverse=True)
-    for old in backups[10:]:
+    for old in backups[retention_count:]:
         old.unlink(missing_ok=True)
     return destination
 
 
 def restore_backup(backup_path: Path | str, db_path: Path | str, data_dir: Path | str,
-                   backup_dir: Path | str, tenant_id: str) -> dict[str, str]:
+                   backup_dir: Path | str, tenant_id: str, cfg=None) -> dict[str, str]:
+    max_backup_bytes, _ = _backup_limits(cfg)
     """安全恢复账号组快照。调用方必须确保应用与调度器已经停止。"""
     backup_path, db_path, data_dir, backup_dir = (
         Path(backup_path).resolve(), Path(db_path).resolve(),
@@ -183,7 +193,7 @@ def restore_backup(backup_path: Path | str, db_path: Path | str, data_dir: Path 
         try:
             with zipfile.ZipFile(backup_path, "r") as archive:
                 infos = archive.infolist()
-                if sum(info.file_size for info in infos) > MAX_BACKUP_BYTES:
+                if sum(info.file_size for info in infos) > max_backup_bytes:
                     raise BackupError("备份解压后超过 2GB 上限")
                 names_in_archive = [info.filename for info in infos]
                 if len(names_in_archive) != len(set(names_in_archive)):
