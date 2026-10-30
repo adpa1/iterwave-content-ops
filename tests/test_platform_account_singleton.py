@@ -71,3 +71,23 @@ def test_platform_account_migration_preflight_reports_legacy_duplicates():
             Database._preflight_platform_account_singleton(conn)
     finally:
         conn.close()
+
+
+def test_database_unique_index_rejects_second_account_on_same_platform(conn):
+    import sqlite3
+
+    indexes = {
+        row["name"] for row in conn.execute("PRAGMA index_list(platform_accounts)").fetchall()
+    }
+    assert "uq_platform_accounts_one_per_platform" in indexes
+
+    conn.execute(
+        "INSERT INTO platform_accounts(platform,account_handle,normalized_handle,display_name,status,notes) "
+        "VALUES('xhs','first','first','','active','')"
+    )
+    conn.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO platform_accounts(platform,account_handle,normalized_handle,display_name,status,notes) "
+            "VALUES('xhs','second','second','','inactive','')"
+        )
