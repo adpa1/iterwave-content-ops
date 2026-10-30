@@ -123,6 +123,22 @@ def _enqueue_round_task(*, tenant_id: str, round_id: int, topic_count=None,
     )
 
 
+def _round_task_active(tenant_id: str, round_id: int) -> bool:
+    """检查轮次是否仍在全局队列中等待或执行，兼容旧进程内任务集合。"""
+    if round_id in _running_rounds:
+        return True
+    if _task_queue is None:
+        return False
+    task = _task_queue.find_latest(
+        tenant_id=tenant_id, task_type="round_run", aggregate_id=str(round_id),
+    )
+    return task is not None and task.status in ("queued", "running")
+
+
+def _tenant_has_active_queue_tasks(tenant_id: str) -> bool:
+    return _task_queue is not None and _task_queue.has_active(tenant_id=tenant_id)
+
+
 def _tenant_switch_policy(cfg=None):
     policy = getattr(cfg, "tenant_switch", None) if cfg is not None else None
     if policy is not None:
@@ -3194,10 +3210,10 @@ def _register_routes(app: FastAPI) -> None:
     def stage_tenant_backup_restore(req: TenantBackupRestoreRequest):
         if not req.confirm:
             raise HTTPException(400, "恢复操作需要显式确认")
-        if _running_rounds:
-            raise HTTPException(409, "当前仍有轮次在执行，不能安排恢复")
-        cfg = _g()["cfg"]
         tenant_id = _g().get("runtime_tenant_id", "default")
+        if _running_rounds or _tenant_has_active_queue_tasks(tenant_id):
+            raise HTTPException(409, "当前账号组仍有轮次或后台任务在执行/排队，不能安排恢复")
+        cfg = _g()["cfg"]
         data_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
         backup_dir = Path(cfg.resolve_path(cfg.paths.backup_dir)).resolve()
         backup_name = Path(req.backup_name).name
@@ -3948,7 +3964,7 @@ def _register_routes(app: FastAPI) -> None:
             if current and current["status"] != "cancelled":
                 # 不能在异步生产仍运行时取消：执行器可能继续调用平台存草稿，
                 # 但轮次已是终态，后续的发布/复盘会失去状态入口。
-                if round_id in _running_rounds:
+                if _round_task_active(_g().get("runtime_tenant_id", "default"), round_id):
                     raise HTTPException(
                         409,
                         "本轮仍在执行，不能中途取消。请等待本次执行结束后再处理草稿",
@@ -4604,8 +4620,8 @@ def _register_routes(app: FastAPI) -> None:
     @app.delete("/api/rounds/{round_id}")
     def delete_round_api(round_id: int):
         from src.core.content_admin import DeleteBlocked, delete_round
-        if round_id in _running_rounds:
-            raise HTTPException(409, f"轮次 {round_id} 正在执行，不能删除")
+        if _round_task_active(_g().get("runtime_tenant_id", "default"), round_id):
+            raise HTTPException(409, f"轮次 {round_id} 正在排队或执行，不能删除")
         try:
             return delete_round(_g()["cfg"], _g()["conn"], round_id)
         except LookupError as exc:
@@ -4622,7 +4638,9 @@ def _register_routes(app: FastAPI) -> None:
 
     def _ensure_content_round_idle(row, operation: str) -> None:
         round_id = row["round_id"]
-        if round_id is not None and round_id in _running_rounds:
+        if round_id is not None and _round_task_active(
+            _g().get("runtime_tenant_id", "default"), round_id,
+        ):
             raise HTTPException(
                 409,
                 f"轮次 {round_id} 正在执行生产/存草稿操作，暂不能{operation}；请等待本轮结束",
