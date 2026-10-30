@@ -127,7 +127,7 @@ def test_worker_executes_queued_scheduler_job_in_its_tenant_context(tmp_path):
     worker = GlobalTaskWorker(queue, lambda tenant_id: context)
     result = asyncio.run(worker._run_task(claimed))
 
-    assert result is None
+    assert result == {"completed": True}
     assert observed["login_path"] == tmp_path / "tenant-b" / "data" / "login_states" / "xhs.json"
     saved = queue.get(task.task_id)
     assert saved is not None and saved.status == "running"
