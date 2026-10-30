@@ -12,13 +12,14 @@ def test_legacy_json_import_is_idempotent(conn, tmp_path):
         "timeouts.round_timeout_hours": 24,
         "llm.api_key": "must-not-import",
         "llm.base_url": "https://user:password@example.com/v1",
+        "hot_topics.sources": [{"name": "signed", "type": "rss", "url": "https://feed.example/rss?access_token=TOPSECRET"}],
         "notifications.channels.wecom.webhook_url_env": "WECOM_WEBHOOK",
     }), encoding="utf-8")
 
     first = import_legacy_overrides(conn, legacy)
     second = import_legacy_overrides(conn, legacy)
 
-    assert first == {"imported": 2, "rejected": 2}
+    assert first == {"imported": 2, "rejected": 3}
     assert second == {"imported": 0, "rejected": 0}
     assert read_settings(conn) == {
         "timeouts.round_timeout_hours": 24,
@@ -63,3 +64,12 @@ def test_remove_superseded_scheduler_setting(conn):
     )
     settings = read_settings(conn)
     assert settings == {"scheduler.jobs.daily_ops.cron": "0 9 * * *"}
+
+
+def test_metadata_exposes_hard_locks_as_read_only(cfg):
+    from src.core.config_store import config_metadata_view
+    items = {item["key"]: item for item in config_metadata_view(cfg)}
+    locked = items["hot_topics.filters.dimension_match_required"]
+    assert locked["editable"] is False
+    assert locked["tenant_scoped"] is True
+    assert items["timeouts.round_timeout_hours"]["type"] == "integer"
