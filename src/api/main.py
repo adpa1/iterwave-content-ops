@@ -75,7 +75,6 @@ from src.core.ops.rhythm import RhythmController
 from src.core.ops.engine import OperationsEngine
 from src.core import auth
 from src.core import kb_sources
-from src.core import industry_presets
 from src.core.env_store import env_file, read_env, write_env
 from src.core.redact import redact, redact_path
 from src.core.notify import Notifier, set_active as set_active_notifier, macos_available
@@ -196,6 +195,8 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
         if applied_overrides:
             logger.info("账号组热切换已应用 %d 项 SQLite 配置 tenant=%s",
                         len(applied_overrides), tenant_id)
+        from src.core.tenant_business_config import initialize_tenant_business_data
+        initialize_tenant_business_data(conn, cfg)
         if tenant_id != "default":
             for platform_cfg in cfg.platforms.model_dump().keys():
                 item = getattr(cfg.platforms, platform_cfg)
@@ -475,6 +476,8 @@ def _build_app() -> FastAPI:
         if applied_overrides:
             logger.info("⚙️ 已套用 %d 项 SQLite 运行时配置：%s",
                         len(applied_overrides), applied_overrides)
+        from src.core.tenant_business_config import initialize_tenant_business_data
+        initialize_tenant_business_data(conn, cfg)
         if active_tenant_id != "default":
             # 在覆盖值应用后再次强制命名空间化，避免旧配置覆盖把登录态指回 default。
             for platform_cfg in cfg.platforms.model_dump().keys():
@@ -4367,14 +4370,41 @@ def _register_routes(app: FastAPI) -> None:
     def kb_inspect():
         return kb_sources.legacy_inspect(_g()["cfg"])
 
-    # --- 行业模板（一键填画像 / 维度建议 / 合规红线）---
+    # --- 主动运营目标（账号组业务数据，SQLite 持久化）---
+    @app.get("/api/ops-targets")
+    def get_ops_targets():
+        from src.core.ops_targets_repository import read_targets
+        return {"items": read_targets(_g()["conn"])}
+
+    @app.put("/api/ops-targets")
+    def put_ops_targets(req: dict):
+        from src.core.ops_targets_repository import load_ops_targets, replace_targets
+        conn = _g()["conn"]
+        try:
+            items = replace_targets(conn, req)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        _g()["cfg"].ops_targets = load_ops_targets(conn)
+        return {"items": items, "message": "主动运营目标已保存；后续调度将读取新目标"}
+
+    # --- 行业模板（一键填画像 / 维度建议 / 合规红线），由账号组 SQLite 提供 ---
     @app.get("/api/presets")
     def list_presets():
-        return {"items": industry_presets.list_presets()}
+        from src.core.industry_presets_repository import list_presets as _list_presets
+        return {"items": _list_presets(_g()["conn"])}
+
+    @app.put("/api/presets/{key}")
+    def save_custom_preset(key: str, req: dict):
+        from src.core.industry_presets_repository import upsert_custom_preset
+        try:
+            return upsert_custom_preset(_g()["conn"], {**req, "key": key})
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.post("/api/presets/{key}/apply")
     def apply_preset(key: str):
-        preset = industry_presets.get_preset(key)
+        from src.core.industry_presets_repository import get_preset
+        preset = get_preset(_g()["conn"], key)
         if preset is None:
             raise HTTPException(404, "行业模板不存在")
         cfg = _g()["cfg"]
