@@ -52,6 +52,11 @@ const GROUPS: { prefix: string; title: string; exact?: string[] }[] = [
 ];
 
 const LABELS: Record<string, string> = {
+  enabled: "启用",
+  apply_feedback: "应用复盘反馈",
+  stop_when_goals_achieved: "目标达成后停止",
+  heat_filter_enabled: "启用热度过滤",
+  time_filter_enabled: "启用时间过滤",
   base_url: "API 地址",
   model: "模型名称",
   timeout_seconds: "请求总超时（秒）",
