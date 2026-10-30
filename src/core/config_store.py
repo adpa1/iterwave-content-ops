@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import tempfile
 import threading
 from datetime import datetime
@@ -735,7 +736,7 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             },
         },
         "overrides_file": redact_path(overrides_path(cfg)),
-        "overrides": _redact_public_value(load_overrides(cfg)),
+        "overrides": _redact_public_value(__import__("src.core.config_repository", fromlist=["read_settings"]).read_settings(conn)),
         "audit": [
             {
                 **dict(r),
