@@ -1318,7 +1318,7 @@ export const api = {
   mediaUsageTargets: () => fetchJson<{ items: MediaUsageTarget[] }>("/api/media/targets"),
   recommendMediaAssets: (content_id: string, usage_role: "cover" | "illustration" | "background" = "cover") =>
     fetchJson<{ content_id: string; usage_role: string; method: "keyword_match" | "vision_model"; automatic_assignment: false; items: MediaRecommendation[]; message: string }>(
-      `/api/media/recommendations?content_id=${encodeURIComponent(content_id)}&usage_role=${usage_role}&limit=20`,
+      `/api/media/recommendations?content_id=${encodeURIComponent(content_id)}&usage_role=${usage_role}`,
     ),
   useMediaAsset: (asset_id: number, content_id: string, usage_role: "cover" | "illustration" | "background" = "illustration") =>
     fetchJson<{ asset_id: number; content_id: string; platform: Platform; image_assigned: boolean; message: string }>(

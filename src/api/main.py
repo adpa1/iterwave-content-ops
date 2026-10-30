@@ -1418,12 +1418,8 @@ def _register_routes(app: FastAPI) -> None:
         row = _g()["conn"].execute("SELECT id, title, body, platform FROM contents WHERE id = ?", (content_id,)).fetchone()
         if row is None:
             raise HTTPException(404, "目标内容不存在")
-        title = str(row["title"] or "").strip()
-        body = str(row["body"] or "").strip()
-        if not body:
-            raise HTTPException(422, "请先补充正文内容，再生成配图")
-        if not title:
-            title = "内容配图"
+        title = str(row["title"] or "内容配图")
+        body = str(row["body"] or "")
         role_label = {"cover": "封面主视觉", "illustration": "正文插图", "background": "背景图"}[usage_role]
         prompt = (f"为当前平台内容生成一张{role_label}。主题：{title}。正文摘要：{body[:900]}。" +
                   "画面与主题直接相关，构图清晰，适合移动端阅读；不要生成文字、二维码、水印或虚构品牌标识。" +
@@ -1717,11 +1713,9 @@ def _register_routes(app: FastAPI) -> None:
                             ranked_item["score"] = 1000 - len(ai_items)
                             ai_items.append(ranked_item)
                     if ai_items:
-                        # 视觉模型只重排前 8 个候选；其余关键词结果仍保留，避免开启视觉推荐后列表被截断为 8 条。
-                        reranked_ids = {item["asset_id"] for item in ai_items}
-                        ranked = ai_items + [item for item in ranked if item["asset_id"] not in reranked_ids]
+                        ranked = ai_items
                         method = "vision_model"
-                        message = "已使用视觉模型重排优先候选，并保留其余关键词匹配结果；仅展示已审核素材，仍需人工确认。"
+                        message = "已使用视觉模型结合内容文本进行语义匹配；仅展示已审核素材，仍需人工确认。"
             except Exception as exc:  # noqa: BLE001 — 模型未配置或调用失败时回退关键词
                 logger.warning("vision media ranking failed; using keyword fallback: %s", type(exc).__name__)
         return {
@@ -1983,7 +1977,7 @@ def _register_routes(app: FastAPI) -> None:
                     if "platform_accounts" in tables:
                         row["registered_accounts"] = int(conn.execute("SELECT COUNT(*) FROM platform_accounts").fetchone()[0])
                         row["registered_accounts_active"] = int(conn.execute("SELECT COUNT(*) FROM platform_accounts WHERE status = 'active'").fetchone()[0])
-                        for item in conn.execute("SELECT platform, COUNT(*) AS n FROM platform_accounts GROUP BY platform").fetchall():
+                        for item in conn.execute("SELECT platform, COUNT(*) AS n FROM platform_accounts WHERE status = 'active' GROUP BY platform").fetchall():
                             platform = item["platform"]
                             row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0, "registered_accounts": 0})["registered_accounts"] = int(item["n"])
                     row["db_available"] = True
@@ -1998,7 +1992,7 @@ def _register_routes(app: FastAPI) -> None:
                 if platform in platform_totals:
                     platform_totals[platform]["registered_accounts"] += int(values.get("registered_accounts", 0))
             tenant_rows.append(row)
-        return {"days": days, "since": since, "totals": totals, "platform_totals": platform_totals, "tenants": tenant_rows, "account_count_note": "账号总数为人工登记的全部平台账号；启用数仅统计状态为启用的账号。未登记的账号不会自动推断计入。"}
+        return {"days": days, "since": since, "totals": totals, "platform_totals": platform_totals, "tenants": tenant_rows, "account_count_note": "账号数量来自用户登记的平台账号标识，按账号组和平台去重；未登记的账号不会自动推断计入。"}
 
     # --- 访问保护（口令 / 会话 / 脚本令牌）---
     @app.get("/api/auth/status")

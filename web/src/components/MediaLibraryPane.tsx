@@ -257,6 +257,29 @@ export default function MediaLibraryPane() {
     });
   };
 
+  const recommendForContent = async () => {
+    if (!selectedContentId) { showToast("请先选择待配图内容", "error"); return; }
+    setRecommendationLoading(true); setRecommendations([]); setRecommendationMessage("");
+    try {
+      const result = await api.recommendMediaAssets(selectedContentId, usageRole);
+      setRecommendations(result.items); setRecommendationMessage(result.message);
+      setRecommendationContentId(selectedContentId); setRecommendationRole(usageRole);
+      if (result.items.length === 0) showToast("没有找到明显匹配的已审核素材，可调整素材标签或继续手动选择", "info");
+    } catch (e) { showToast(e instanceof Error ? e.message : "素材推荐失败", "error"); }
+    finally { setRecommendationLoading(false); }
+  };
+
+  const generateForContent = async () => {
+    if (!selectedContentId) { showToast("请先选择待配图内容", "error"); return; }
+    await withPending("media:generate-for-content", async () => {
+      try {
+        await api.generateMediaForContent(selectedContentId, usageRole);
+        showToast("已生成候选配图，需在素材库人工审核后才能使用", "success");
+        await load();
+      } catch (e) { showToast(e instanceof Error ? e.message : "内容配图生成失败", "error"); }
+    });
+  };
+
   const assignToContent = async (item: MediaAsset) => {
     if (!selectedContentId) { showToast("请先在上方选择要配图的内容", "error"); return; }
     await withPending("media:use:" + item.id, async () => {
