@@ -110,7 +110,7 @@ def default_llm_fn(cfg) -> Optional[LlmFn]:
                     "model": llm.model,
                     "messages": [{"role": "system", "content": system_prompt},
                                  {"role": "user", "content": user_prompt}],
-                    "temperature": 0.1,
+                    "temperature": cfg.hot_topic_matcher.llm_temperature,
                     "response_format": {"type": "json_object"},
                 },
             )
