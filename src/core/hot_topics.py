@@ -677,7 +677,7 @@ class HotTopicCollector:
                 "title": title,
                 "source": redact(source),
                 "platform": redact(platform),
-                "discovered_at": row["discovered_at"],
+                "discovered_at": _api_utc(row["discovered_at"]),
                 "last_seen_at": _api_utc(row["last_seen_at"]),
                 # 采集时间（本轮在榜时间）：前端展示「这条热点是哪次采到的」
                 "collected_at": _api_utc(row["last_seen_at"] or row["discovered_at"]),
