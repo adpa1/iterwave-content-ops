@@ -633,6 +633,8 @@ class Config(BaseModel):
     topic_kb: TopicKbConfig
     render: RenderConfig = Field(default_factory=RenderConfig)
     platforms: PlatformsConfig
+    # 平台发布链接允许域名；用于人工粘贴链接校验，禁止在 API 路由中硬编码。
+    platform_link_domains: dict[str, list[str]] = Field(default_factory=dict)
     scoring: ScoringConfig
     ultimate_goal: UltimateGoalConfig
     timeouts: TimeoutsConfig
