@@ -50,6 +50,13 @@ const ROUND_STATUS_LABEL: Record<string, string> = {
   created: "已创建", producing: "生产中", awaiting_publish: "待发布", collecting_metrics: "采集中", analyzing: "复盘中", completed: "已完成", partial_completed: "部分完成", failed: "失败", cancelled: "已取消", paused: "已暂停",
 };
 
+const PIPELINE_STEP_LABEL: Record<string, string> = {
+  kb_read: "读取选题库", apply_feedback: "应用复盘建议", score: "选题评分",
+  dimension_quota: "维度配额", produce: "生成内容", guard_reject: "质量检查拦截",
+  plan_signature: "记录计划版本", draft_save: "保存草稿", save_drafts: "批量保存草稿",
+  dry_run: "仅生成预览", auto_schedule: "自动排期",
+};
+
 const AUTHOR_LABEL: Record<string, string> = {
   "web-ui": "手动保存", round_create: "新建轮次", round_executor: "轮次执行", autogrow: "自动闭环", agent: "Agent",
 };
@@ -871,7 +878,7 @@ export default function Production() {
                 {report && (
                   <div style={{ marginTop: 16 }}>
                     <div className="panel-title" style={{ fontSize: 13, marginBottom: 10 }}>
-                      执行报告 · 状态 {report.final_status ?? "—"}
+                      执行报告 · 状态 {ROUND_STATUS_LABEL[report.final_status ?? ""] ?? report.final_status ?? "—"}
                     </div>
                     <div className="grid four" style={{ marginBottom: 10 }}>
                       <MiniStat label="内容产出" value={report.contents_created} />
@@ -891,7 +898,7 @@ export default function Production() {
                         <tbody>
                           {report.steps.map((s, i) => (
                             <tr key={i}>
-                              <td style={{ fontFamily: "monospace", fontSize: 11 }}>{s.step}</td>
+                              <td style={{ fontSize: 11 }}>{PIPELINE_STEP_LABEL[s.step] ?? s.step}</td>
                               <td style={{ fontSize: 11 }}>
                                 {s.step === "score" && `${(s.selected as unknown[])?.length ?? 0} 条选题入选`}
                                 {s.step === "kb_read" && `${s.count} 条选题库记录`}
@@ -1295,7 +1302,7 @@ export default function Production() {
               <div>
                 <div className="panel-title">
                   <span className="icon">⎇</span>当前轮次
-                  {roundDetail && <span className={`tag ${STATUS_CLS[roundDetail.status]}`} style={{ marginLeft: 10 }}>{roundDetail.status}</span>}
+                  {roundDetail && <span className={`tag ${STATUS_CLS[roundDetail.status]}`} style={{ marginLeft: 10 }}>{ROUND_STATUS_LABEL[roundDetail.status] ?? roundDetail.status}</span>}
                 </div>
                 <div className="panel-sub">合法迁移按钮由后端状态机校验生成</div>
               </div>
@@ -1317,7 +1324,7 @@ export default function Production() {
                         {i > 0 && <div className={`track-connector ${isPast ? "completed" : ""}`} />}
                         <div className={`track-node ${isCurrent ? "active" : ""} ${isPast ? "completed" : ""}`}>
                           <div className="dot" />
-                          <div className="label">{s}</div>
+                          <div className="label">{ROUND_STATUS_LABEL[s] ?? s}</div>
                         </div>
                       </Fragment>
                     );
