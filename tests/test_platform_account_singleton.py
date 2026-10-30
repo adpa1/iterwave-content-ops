@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+import pytest
+from fastapi import HTTPException
+
+import src.api.main as api_main
+
+
+def _route(path: str):
+    return next(
+        route for route in api_main.app.routes
+        if getattr(route, "path", None) == path
+    )
+
+
+def test_platform_account_api_rejects_second_registration_even_if_first_is_inactive(client):
+    create = _route("/api/platform-accounts")
+    first = create.endpoint(api_main.PlatformAccountRequest(
+        platform="xhs", account_handle="xhs-first", display_name="小红书", status="inactive",
+    ))
+    assert first["status"] == "inactive"
+
+    with pytest.raises(HTTPException) as exc:
+        create.endpoint(api_main.PlatformAccountRequest(
+            platform="xhs", account_handle="xhs-second", display_name="另一个小红书",
+        ))
+    assert exc.value.status_code == 409
+    assert "每个平台只能登记一个账号" in str(exc.value.detail)
+
+
+def test_platform_account_update_cannot_move_account_into_occupied_platform(client):
+    create = _route("/api/platform-accounts")
+    update = _route("/api/platform-accounts/{account_id}")
+    xhs = create.endpoint(api_main.PlatformAccountRequest(
+        platform="xhs", account_handle="xhs-account",
+    ))
+    create.endpoint(api_main.PlatformAccountRequest(
+        platform="douyin", account_handle="douyin-account",
+    ))
+
+    with pytest.raises(HTTPException) as exc:
+        update.endpoint(
+            xhs["id"],
+            api_main.PlatformAccountRequest(
+                platform="douyin", account_handle="xhs-account",
+            ),
+        )
+    assert exc.value.status_code == 409
