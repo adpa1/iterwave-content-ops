@@ -1006,6 +1006,7 @@ class LlmKeyRequest(BaseModel):
 class CreateRoundRequest(BaseModel):
     goal_id: Optional[str] = None
     topic_count: int = 5
+    platforms: Optional[list[str]] = None
 
 class NotifyRuleRequest(BaseModel):
     scenario: str
@@ -2477,18 +2478,20 @@ def _register_routes(app: FastAPI) -> None:
                 "VALUES (?, ?, 'created', ?, ?)",
                 (goal_id, round_number, "[]", "[]"),
             )
-            conn.commit()
-
-            # R18 / G-21：创建轮次即固化母计划签名（写 rounds.plan_signature +
-            # signature_history），否则本轮在「改计划 → 下游失效」时无从比对
-            pvm = _g()["plan_version_manager"]
-            plan, _sig, _at, source = pvm.load_plan()
-            if source != "plan_settings":
-                plan = pvm.build_plan(
-                    topic_count_per_platform=req.topic_count,
-                    platforms=req.platforms or _g()["cfg"].platforms.enabled_keys(),
-                )
-            pvm.record(cursor.lastrowid, plan, author="round_create")
+            # R18 / G-21：创建轮次与母计划签名必须处于同一事务。
+            # 签名写入失败时回滚轮次，避免出现 UI 报错但数据库残留的幽灵轮次。
+            try:
+                pvm = _g()["plan_version_manager"]
+                plan, _sig, _at, source = pvm.load_plan()
+                if source != "plan_settings":
+                    plan = pvm.build_plan(
+                        topic_count_per_platform=req.topic_count,
+                        platforms=req.platforms or _g()["cfg"].platforms.enabled_keys(),
+                    )
+                pvm.record(cursor.lastrowid, plan, author="round_create")
+            except Exception:
+                conn.rollback()
+                raise
 
             return {"id": cursor.lastrowid, "round_number": round_number, "status": "created"}
 
