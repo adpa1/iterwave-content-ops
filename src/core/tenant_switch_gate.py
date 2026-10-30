@@ -29,7 +29,10 @@ class TenantSwitchGate:
             if self._active_requests > 0:
                 self._active_requests -= 1
 
-    async def begin_switch(self, timeout_seconds: float = 30.0) -> None:
+    async def begin_switch(self, timeout_seconds: float | None = None) -> None:
+        if timeout_seconds is None:
+            from src.core.config import TenantSwitchConfig
+            timeout_seconds = TenantSwitchConfig().request_drain_timeout_seconds
         with self._lock:
             if self._switching:
                 raise TenantSwitchInProgress("已有账号组切换正在进行")

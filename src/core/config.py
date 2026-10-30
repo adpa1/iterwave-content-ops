@@ -120,6 +120,20 @@ class ScoringConfig(BaseModel):
     active_dimension_min_uses: int = 2
     active_dimension_window_days: int = 90
     shrinkage_m: int = 5
+    cold_start_min_published: int = Field(10, ge=1, le=1000)
+    stable_dimension_min_samples: int = Field(5, ge=1, le=100)
+    history_normalization_scale: int = Field(2000, ge=1, le=10000)
+    freshness_window_days: int = Field(30, ge=1, le=365)
+    dimension_gap_ratio: float = Field(0.5, ge=0.0, le=1.0)
+    dimension_gap_score: float = Field(90.0, ge=0.0, le=100.0)
+    dimension_normal_score: float = Field(40.0, ge=0.0, le=100.0)
+    no_persona_match_score: float = Field(60.0, ge=0.0, le=100.0)
+    stable_exploration_percent: int = Field(15, ge=0, le=50)
+    timeliness_unknown_score: float = Field(50.0, ge=0.0, le=100.0)
+    history_cold_start_score: float = Field(0.0, ge=0.0, le=100.0)
+    freshness_recent_use_penalty: float = Field(20.0, ge=0.0, le=100.0)
+    freshness_min_score: float = Field(10.0, ge=0.0, le=100.0)
+    freshness_unused_score: float = Field(100.0, ge=0.0, le=100.0)
 
     @model_validator(mode="after")
     def _check_weight_sum(self) -> "ScoringConfig":
@@ -137,6 +151,8 @@ class ScoringConfig(BaseModel):
                 raise ValueError(
                     f"评分模式 {mode_name} 权重和 = {total}，必须 = 100"
                 )
+        if self.stable_dimension_min_samples < self.active_dimension_min_uses:
+            raise ValueError("stable_dimension_min_samples 必须大于等于 active_dimension_min_uses")
         return self
 
 
@@ -208,6 +224,7 @@ class CircuitBreakerConfig(BaseModel):
         ]
     )
     cooldown_minutes: int = 30
+    recovery_failure_extension_minutes: int = Field(60, ge=1, le=1440)
     recovery: dict[str, bool] = Field(
         default_factory=lambda: {
             "require_cooldown_expired": True,
@@ -403,6 +420,100 @@ class AutogrowConfig(BaseModel):
     feedback_lookback_rounds: int = Field(3, ge=1, le=20)  # 取最近 N 轮复盘结论
 
 
+class VisionRankingConfig(BaseModel):
+    base_url: str = "https://api.openai.com/v1"
+    model: str = "gpt-4o-mini"
+    timeout_seconds: int = Field(25, ge=1, le=120)
+    candidate_limit: int = Field(8, ge=1, le=32)
+    max_image_bytes: int = Field(4 * 1024 * 1024, ge=1024, le=4 * 1024 * 1024)
+    max_body_chars: int = Field(1800, ge=100, le=10000)
+    temperature: float = Field(0.0, ge=0.0, le=2.0)
+    max_tokens: int = Field(600, ge=1, le=4000)
+
+    @field_validator("base_url")
+    @classmethod
+    def _safe_vision_url(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+        parsed = urlsplit(value.strip())
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("vision_ranking.base_url 必须是无认证信息的 HTTP(S) URL")
+        return value.strip().rstrip("/")
+
+
+class MediaGenerationConfig(BaseModel):
+    base_url: str = "https://api.openai.com/v1"
+    timeout_seconds: int = Field(150, ge=1, le=300)
+    connect_timeout_seconds: int = Field(15, ge=1, le=60)
+    max_response_bytes: int = Field(20 * 1024 * 1024, ge=1024, le=20 * 1024 * 1024)
+    max_dimension: int = Field(20000, ge=256, le=20000)
+    max_pixels: int = Field(40_000_000, ge=1_000_000, le=40_000_000)
+
+    @field_validator("base_url")
+    @classmethod
+    def _safe_generation_url(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+        parsed = urlsplit(value.strip())
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("media_generation.base_url 必须是无认证信息的 HTTP(S) URL")
+        return value.strip().rstrip("/")
+
+
+class MediaQualityConfig(BaseModel):
+    resolution_weight: float = Field(25.0, ge=0.0, le=100.0)
+    composition_weight: float = Field(20.0, ge=0.0, le=100.0)
+    contrast_weight: float = Field(20.0, ge=0.0, le=100.0)
+    brightness_weight: float = Field(15.0, ge=0.0, le=100.0)
+    sharpness_weight: float = Field(20.0, ge=0.0, le=100.0)
+    color_diversity_weight: float = Field(20.0, ge=0.0, le=100.0)
+    resolution_reference_pixels: int = Field(1_500_000, ge=100_000, le=20_000_000)
+    portrait_ratio_min: float = Field(0.55, ge=0.1, le=1.0)
+    portrait_ratio_max: float = Field(0.85, ge=0.2, le=2.0)
+    square_ratio_max: float = Field(1.1, ge=0.5, le=3.0)
+    landscape_ratio_max: float = Field(1.7, ge=1.0, le=5.0)
+    brightness_min: float = Field(45.0, ge=0.0, le=255.0)
+    brightness_max: float = Field(210.0, ge=0.0, le=255.0)
+    brightness_penalty_scale: float = Field(8.5, ge=0.1, le=64.0)
+    contrast_reference: float = Field(45.0, ge=1.0, le=128.0)
+    sharpness_reference: float = Field(500.0, ge=1.0, le=10000.0)
+    sharpness_warning_threshold: float = Field(35.0, ge=0.0, le=1000.0)
+    low_contrast_threshold: float = Field(18.0, ge=0.0, le=128.0)
+    low_resolution_pixels: int = Field(500_000, ge=10_000, le=20_000_000)
+    low_color_count: int = Field(3, ge=1, le=16)
+    color_count_reference: int = Field(16, ge=1, le=256)
+
+    @model_validator(mode="after")
+    def _check_quality_ranges(self) -> "MediaQualityConfig":
+        if self.portrait_ratio_min >= self.portrait_ratio_max:
+            raise ValueError("portrait_ratio_min 必须小于 portrait_ratio_max")
+        if self.portrait_ratio_max >= self.square_ratio_max:
+            raise ValueError("portrait_ratio_max 必须小于 square_ratio_max")
+        if self.square_ratio_max >= self.landscape_ratio_max:
+            raise ValueError("square_ratio_max 必须小于 landscape_ratio_max")
+        if self.brightness_min >= self.brightness_max:
+            raise ValueError("brightness_min 必须小于 brightness_max")
+        return self
+
+
+class TenantSwitchConfig(BaseModel):
+    request_drain_timeout_seconds: int = Field(30, ge=1, le=120)
+    scheduler_drain_timeout_seconds: int = Field(30, ge=1, le=120)
+    round_drain_timeout_seconds: int = Field(120, ge=1, le=600)
+    background_jobs_timeout_seconds: int = Field(120, ge=1, le=600)
+    login_process_timeout_seconds: int = Field(10, ge=1, le=60)
+
+
+class TenantBackupConfig(BaseModel):
+    max_bytes: int = Field(2 * 1024 * 1024 * 1024, ge=1_048_576, le=2 * 1024 * 1024 * 1024)
+    retention_count: int = Field(10, ge=1, le=100)
+
+
+class HotTopicMatcherConfig(BaseModel):
+    match_threshold: float = Field(60.0, ge=0.0, le=100.0)
+    keyword_score: float = Field(60.0, ge=0.0, le=100.0)
+    batch_size: int = Field(20, ge=1, le=100)
+    max_per_run: int = Field(200, ge=1, le=2000)
+
+
 class DataRetentionConfig(BaseModel):
     raw_response_days: int = 90
     screenshot_days: int = 30
@@ -445,6 +556,12 @@ class Config(BaseModel):
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     hot_topics: HotTopicsConfig = Field(default_factory=HotTopicsConfig)
     data_retention: DataRetentionConfig = Field(default_factory=DataRetentionConfig)
+    vision_ranking: VisionRankingConfig = Field(default_factory=VisionRankingConfig)
+    media_generation: MediaGenerationConfig = Field(default_factory=MediaGenerationConfig)
+    media_quality: MediaQualityConfig = Field(default_factory=MediaQualityConfig)
+    tenant_switch: TenantSwitchConfig = Field(default_factory=TenantSwitchConfig)
+    tenant_backup: TenantBackupConfig = Field(default_factory=TenantBackupConfig)
+    hot_topic_matcher: HotTopicMatcherConfig = Field(default_factory=HotTopicMatcherConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     autogrow: AutogrowConfig = Field(default_factory=AutogrowConfig)

@@ -99,6 +99,14 @@ logger = logging.getLogger(__name__)
 # =====================================================================
 
 _g_ctx: dict = {}
+
+
+def _tenant_switch_policy(cfg=None):
+    policy = getattr(cfg, "tenant_switch", None) if cfg is not None else None
+    if policy is not None:
+        return policy
+    from src.core.config import TenantSwitchConfig
+    return TenantSwitchConfig()
 _tenant_switch_gate = TenantSwitchGate()
 
 
@@ -298,11 +306,13 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
         registry.get(tenant_id)
     except TenantError as exc:
         raise HTTPException(404, str(exc)) from exc
-    # 请求闸门已排空普通 API 请求；仍在运行的轮次最多等待 120 秒，超时则安全中止。
-    round_deadline = time.monotonic() + 120.0
+    # 请求闸门已排空普通 API 请求；运行轮次的等待时限由当前账号组策略控制。
+    switch_policy = _tenant_switch_policy(_g_ctx.get("cfg"))
+    round_timeout = switch_policy.round_drain_timeout_seconds
+    round_deadline = time.monotonic() + round_timeout
     while _running_rounds:
         if time.monotonic() >= round_deadline:
-            raise HTTPException(409, "轮次在 120 秒内未能结束，已取消账号组切换")
+            raise HTTPException(409, f"轮次在 {round_timeout} 秒内未能结束，已取消账号组切换")
         await asyncio.sleep(0.05)
 
     old_context = dict(_g_ctx)
@@ -320,20 +330,20 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
     new_started = False
     try:
         if old_scheduler is not None:
-            drained = await old_scheduler.quiesce(timeout_seconds=30.0)
+            drained = await old_scheduler.quiesce(timeout_seconds=switch_policy.scheduler_drain_timeout_seconds)
             if not drained:
-                raise HTTPException(409, "旧账号组后台任务未能在 30 秒内结束，已取消切换")
+                raise HTTPException(409, f"旧账号组后台任务未能在 {switch_policy.scheduler_drain_timeout_seconds} 秒内结束，已取消切换")
             old_stopped = True
             if old_conn is not None:
                 old_conn.close()
             # 热点服务另有独立后台线程，APScheduler 结束不代表该线程已退出。
-            await _wait_for_tenant_background_jobs(timeout_seconds=120.0)
+            await _wait_for_tenant_background_jobs(timeout_seconds=switch_policy.background_jobs_timeout_seconds)
             from src.core import hot_topic_service
             hot_topic_service.reset_runtime_state()
 
         from src.core import account_login, login_manager
         # 旧账号组的扫码登录子进程和登录态导出线程必须先退出，避免继续读写旧/新目录。
-        account_login.stop_all_logins(timeout_seconds=10.0)
+        account_login.stop_all_logins(timeout_seconds=switch_policy.login_process_timeout_seconds)
         new_data_dir = new_context["cfg"].resolve_path(new_context["cfg"].paths.data_dir)
         account_login.configure_data_dir(new_data_dir)
         login_manager.configure_data_dir(new_data_dir)
@@ -440,7 +450,7 @@ def _build_app() -> FastAPI:
                 from src.core.tenant_backup import restore_backup
                 restore_backup(
                     backup_path, cfg.resolve_path(cfg.paths.db_file), runtime_data_dir,
-                    runtime_backup_dir, active_tenant_id,
+                    runtime_backup_dir, active_tenant_id, cfg=cfg,
                 )
                 pending_restore.unlink(missing_ok=True)
                 logger.warning("账号组快照恢复完成 tenant=%s backup=%s", active_tenant_id, backup_name)
@@ -1287,6 +1297,7 @@ def _register_routes(app: FastAPI) -> None:
         registry = _g().get("tenant_registry")
         tenant_id = _g().get("runtime_tenant_id", "default")
         conn = _g()["conn"]
+        cfg = _g()["cfg"]
         if registry is None:
             raise HTTPException(503, "账号组注册表尚未初始化")
         settings_row = conn.execute(
@@ -1348,7 +1359,7 @@ def _register_routes(app: FastAPI) -> None:
                 from src.core.media_quality import score_image
                 raw, mime_type, suffix, width, height = generate_image_bytes(
                     final_prompt, model=model, size=size, source_path=source_path,
-                    source_mime_type=source_mime, source_filename=source_filename,
+                    source_mime_type=source_mime, source_filename=source_filename, cfg=cfg,
                 )
                 stored_filename = f"{uuid.uuid4().hex}{suffix}"
                 target = (paths.media_dir / stored_filename).resolve()
@@ -1362,7 +1373,7 @@ def _register_routes(app: FastAPI) -> None:
                 title = req.title.strip() or prompt[:80]
                 tags = list(dict.fromkeys(tag.strip()[:60] for tag in req.tags if tag.strip()))[:30]
                 source_ref = f"job:{job_id}" if source_asset_id is None else f"job:{job_id};edit_of:{source_asset_id}"
-                quality = score_image(raw)
+                quality = score_image(raw, cfg=cfg)
                 asset_cur = conn.execute(
                     "INSERT INTO media_assets "
                     "(title, original_filename, stored_filename, mime_type, byte_size, sha256, "
@@ -1563,6 +1574,7 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(413, "图片大小必须大于 0 且不超过 12MB")
         digest = hashlib.sha256(raw).hexdigest()
         conn = _g()["conn"]
+        cfg = _g()["cfg"]
         existing = conn.execute(
             "SELECT id, title, original_filename, mime_type, byte_size, width, height, "
             "alt_text, tags, status, review_status, review_note, created_at FROM media_assets "
@@ -1593,8 +1605,8 @@ def _register_routes(app: FastAPI) -> None:
         if image_format not in format_map:
             raise HTTPException(415, "仅支持 JPEG、PNG、WebP、GIF 图片")
         mime_type, suffix = format_map[image_format]
-        if width < 1 or height < 1 or width > 20000 or height > 20000 or width * height > 40_000_000:
-            raise HTTPException(422, "图片尺寸不在允许范围内（单边不超过 20000 像素，总像素不超过 4000 万）")
+        if width < 1 or height < 1 or width > min(cfg.media_generation.max_dimension, 20000) or height > min(cfg.media_generation.max_dimension, 20000) or width * height > min(cfg.media_generation.max_pixels, 40_000_000):
+            raise HTTPException(422, "图片尺寸超过当前配置允许范围（硬安全上限：单边 20000 像素、总像素 4000 万）")
         stored_filename = f"{uuid.uuid4().hex}{suffix}"
         target = (paths.media_dir / stored_filename).resolve()
         if not target.is_relative_to(paths.media_dir.resolve()):
@@ -1603,7 +1615,7 @@ def _register_routes(app: FastAPI) -> None:
         title = req.title.strip() or safe_filename[:200]
         tags = list(dict.fromkeys(tag.strip()[:60] for tag in req.tags if tag.strip()))[:30]
         from src.core.media_quality import score_image
-        quality = score_image(raw)
+        quality = score_image(raw, cfg=cfg)
         target.write_bytes(raw)
         try:
             target.chmod(0o600)
@@ -1801,7 +1813,7 @@ def _register_routes(app: FastAPI) -> None:
         backup_dir = Path(cfg.resolve_path(cfg.paths.backup_dir))
         try:
             from src.core.tenant_backup import create_backup
-            target = create_backup(db_path, data_dir, backup_dir, tenant_id)
+            target = create_backup(db_path, data_dir, backup_dir, tenant_id, cfg=cfg)
         except Exception as exc:  # noqa: BLE001
             logger.exception("账号组备份失败 tenant=%s", tenant_id)
             raise HTTPException(500, f"账号组备份失败：{exc}") from exc
@@ -1915,7 +1927,7 @@ def _register_routes(app: FastAPI) -> None:
                 ),
             }
         try:
-            await _tenant_switch_gate.begin_switch(timeout_seconds=30.0)
+            await _tenant_switch_gate.begin_switch(timeout_seconds=_tenant_switch_policy(_g().get("cfg")).request_drain_timeout_seconds)
         except (TenantSwitchInProgress, TimeoutError) as exc:
             raise HTTPException(409, str(exc)) from exc
         keep_gate_closed = False

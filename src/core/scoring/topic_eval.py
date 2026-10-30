@@ -121,10 +121,11 @@ class ScoringEngine:
 
         # 稳定运行模式：ε-greedy 15% 探索
         if mode == "stable_operation" and scored:
-            top_count = max(1, len(scored) * 85 // 100)
+            exploration_percent = self.scoring_cfg.stable_exploration_percent
+            top_count = max(1, len(scored) * (100 - exploration_percent) // 100)
             exploration_count = len(scored) - top_count
             if exploration_count > 0:
-                # 从非 Top-5 的选题里随机抽 exploration_count 个，标记探索
+                # 从非优先区选题里随机抽取配置比例，标记探索
                 non_top = scored[top_count:]
                 random.shuffle(non_top)
                 for s in non_top[:exploration_count]:
@@ -145,23 +146,28 @@ class ScoringEngine:
         ).fetchone()
         total_published = row[0] if row else 0
 
-        if total_published < 10:
+        if total_published < self.scoring_cfg.cold_start_min_published:
             return "cold_start"
 
-        # 检查活跃维度（90 天内至少 2 次使用）
+        # 检查活跃维度（窗口与最低使用次数均由配置决定）
         window = self.scoring_cfg.active_dimension_window_days
         min_uses = self.scoring_cfg.active_dimension_min_uses
-        row = self.db.execute(
-            "SELECT COUNT(DISTINCT t.dimension) FROM drafts d "
-            "JOIN contents c ON d.content_id = c.id "
-            "JOIN topic_index t ON c.topic_id = t.id "
-            "WHERE d.status='published' "
-            "AND d.user_confirmed_at >= datetime('now', ?)",
-            (f"-{window} days",),
+        active_dims_row = self.db.execute(
+            "SELECT COUNT(*) FROM ( "
+            "  SELECT t.dimension, COUNT(*) AS cnt "
+            "  FROM drafts d JOIN contents c ON d.content_id = c.id "
+            "  JOIN topic_index t ON c.topic_id = t.id "
+            "  WHERE d.status='published' "
+            "  AND d.user_confirmed_at >= datetime('now', ?) "
+            "  GROUP BY t.dimension HAVING cnt >= ? "
+            ") active",
+            (f"-{window} days", min_uses),
         ).fetchone()
-        active_dims_count = row[0] if row else 0
+        active_dims_count = active_dims_row[0] if active_dims_row else 0
+        if active_dims_count == 0:
+            return "sample_accumulating"
 
-        # 活跃维度中，有多少维度样本 < 5
+        # 活跃维度中，有多少维度样本尚未达到稳定运行的最低样本数。
         weak_dim_row = self.db.execute(
             "SELECT COUNT(*) FROM ( "
             "  SELECT t.dimension, COUNT(*) as cnt "
@@ -169,9 +175,9 @@ class ScoringEngine:
             "  JOIN topic_index t ON c.topic_id = t.id "
             "  WHERE d.status='published' "
             "  AND d.user_confirmed_at >= datetime('now', ?) "
-            "  GROUP BY t.dimension HAVING cnt < 5 "
+            "  GROUP BY t.dimension HAVING cnt >= ? AND cnt < ? "
             ") w",
-            (f"-{window} days",),
+            (f"-{window} days", min_uses, self.scoring_cfg.stable_dimension_min_samples),
         ).fetchone()
         weak_dim_count = weak_dim_row[0] if weak_dim_row else 0
 
@@ -220,7 +226,7 @@ class ScoringEngine:
         gap_raw = self._score_gap_weight(topic)
         breakdown["gap_weight"] = (gap_raw, weights["gap_weight"], gap_raw * weights["gap_weight"] / 100)
 
-        # 5. 新鲜度（近 30 天是否用过）
+        # 5. 新鲜度（配置窗口内是否用过）
         fresh_raw = self._score_freshness(topic)
         breakdown["freshness"] = (fresh_raw, weights["freshness"], fresh_raw * weights["freshness"] / 100)
 
@@ -254,7 +260,7 @@ class ScoringEngine:
         ]
         personas = [p for p in personas if p]
         if not personas:
-            return 60.0  # 无画像默认给 60
+            return self.scoring_cfg.no_persona_match_score  # 无画像默认分
         haystack = (topic.title + " " + topic.summary + " " + topic.dimension).lower()
         best = 0.0
         for persona in personas:
@@ -267,7 +273,7 @@ class ScoringEngine:
     def _score_history_performance(self, topic: TopicItem, mode: str) -> float:
         """历史表现：同维度历史平均互动率（收缩估计）。"""
         if mode == "cold_start":
-            return 0.0  # 冷启动无历史
+            return self.scoring_cfg.history_cold_start_score  # 冷启动无历史
 
         # 查同维度已发布内容的平均 interaction_rate
         row = self.db.execute(
@@ -292,16 +298,16 @@ class ScoringEngine:
             m = self.scoring_cfg.shrinkage_m
             score = (dim_count * dim_mean + m * global_mean) / (dim_count + m)
         else:  # stable_operation
-            score = dim_mean if dim_count >= 5 else global_mean
+            score = dim_mean if dim_count >= self.scoring_cfg.stable_dimension_min_samples else global_mean
 
-        # 归一化到 0-100（假设全局平均约 0.05=5%，放大 2000 倍）
-        return min(100.0, score * 2000)
+        # 归一化到 0-100；比例系数由评分策略配置控制
+        return min(100.0, score * self.scoring_cfg.history_normalization_scale)
 
     def _score_timeliness(self, topic: TopicItem, mode: str) -> float:
         """时效性：按 half-life 指数衰减（news 7d / evergreen 365d）。"""
         age = topic.age_days()
         if age is None:
-            return 50.0  # 无日期给中间分
+            return self.scoring_cfg.timeliness_unknown_score  # 无日期给配置的中间分
 
         if topic.time_sensitive is True:
             half_life = self.scoring_cfg.timeliness_half_life_days.get("news", 7)
@@ -339,16 +345,16 @@ class ScoringEngine:
         else:
             median_count = (all_counts[n // 2 - 1] + all_counts[n // 2]) / 2
 
-        if median_count > 0 and dim_count < median_count * 0.5:
+        if median_count > 0 and dim_count < median_count * self.scoring_cfg.dimension_gap_ratio:
             # 覆盖缺口 — 给高加权
-            return 90.0
-        return 40.0
+            return self.scoring_cfg.dimension_gap_score
+        return self.scoring_cfg.dimension_normal_score
 
     def _score_freshness(self, topic: TopicItem) -> float:
         """新鲜度：近 30 天是否使用过。"""
         row = self.db.execute(
-            "SELECT COUNT(*) FROM topic_index WHERE id = ? AND first_seen_at >= datetime('now','-30 days')",
-            (topic.id,),
+            "SELECT COUNT(*) FROM topic_index WHERE id = ? AND first_seen_at >= datetime('now', ?)",
+            (topic.id, f"-{self.scoring_cfg.freshness_window_days} days"),
         ).fetchone()
         if row and row[0] > 0:
             # 用过，打低分
@@ -356,5 +362,5 @@ class ScoringEngine:
                 "SELECT total_uses FROM topic_index WHERE id = ?", (topic.id,)
             ).fetchone()
             uses = use_row[0] if use_row else 1
-            return max(10.0, 100.0 - uses * 20.0)
-        return 100.0  # 30 天没用过，满分
+            return max(self.scoring_cfg.freshness_min_score, self.scoring_cfg.freshness_unused_score - uses * self.scoring_cfg.freshness_recent_use_penalty)
+        return self.scoring_cfg.freshness_unused_score  # 配置窗口内没用过，满分

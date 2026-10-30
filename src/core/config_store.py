@@ -71,6 +71,9 @@ STRING_RULES: dict[str, tuple[int, int]] = {
     "llm.provider": (1, 32),
     "llm.model": (1, 128),
     "llm.fallback_model": (0, 128),
+    "vision_ranking.base_url": (1, 256),
+    "vision_ranking.model": (1, 128),
+    "media_generation.base_url": (1, 256),
 }
 
 # 字符串列表白名单（账号画像 / 红线词库）：路径 → 最大条数
@@ -83,6 +86,64 @@ LIST_RULES: dict[str, int] = {
 
 # 简单标量白名单：路径 → (类型, 最小值, 最大值)
 SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
+    "circuit_breaker.recovery_failure_extension_minutes": (int, 1, 1440),
+    "vision_ranking.timeout_seconds": (int, 1, 120),
+    "vision_ranking.candidate_limit": (int, 1, 32),
+    "vision_ranking.max_image_bytes": (int, 1024, 4 * 1024 * 1024),
+    "vision_ranking.max_body_chars": (int, 100, 10000),
+    "vision_ranking.temperature": (float, 0.0, 2.0),
+    "vision_ranking.max_tokens": (int, 1, 4000),
+    "media_generation.timeout_seconds": (int, 1, 300),
+    "media_generation.connect_timeout_seconds": (int, 1, 60),
+    "media_generation.max_response_bytes": (int, 1024, 20 * 1024 * 1024),
+    "media_generation.max_dimension": (int, 256, 20000),
+    "media_generation.max_pixels": (int, 1_000_000, 40_000_000),
+    "media_quality.resolution_weight": (float, 0.0, 100.0),
+    "media_quality.composition_weight": (float, 0.0, 100.0),
+    "media_quality.contrast_weight": (float, 0.0, 100.0),
+    "media_quality.brightness_weight": (float, 0.0, 100.0),
+    "media_quality.sharpness_weight": (float, 0.0, 100.0),
+    "media_quality.color_diversity_weight": (float, 0.0, 100.0),
+    "media_quality.resolution_reference_pixels": (int, 100_000, 20_000_000),
+    "media_quality.portrait_ratio_min": (float, 0.1, 1.0),
+    "media_quality.portrait_ratio_max": (float, 0.2, 2.0),
+    "media_quality.square_ratio_max": (float, 0.5, 3.0),
+    "media_quality.landscape_ratio_max": (float, 1.0, 5.0),
+    "media_quality.brightness_min": (float, 0.0, 255.0),
+    "media_quality.brightness_max": (float, 0.0, 255.0),
+    "media_quality.brightness_penalty_scale": (float, 0.1, 64.0),
+    "media_quality.contrast_reference": (float, 1.0, 128.0),
+    "media_quality.sharpness_reference": (float, 1.0, 10000.0),
+    "media_quality.sharpness_warning_threshold": (float, 0.0, 1000.0),
+    "media_quality.low_contrast_threshold": (float, 0.0, 128.0),
+    "media_quality.low_resolution_pixels": (int, 10_000, 20_000_000),
+    "media_quality.low_color_count": (int, 1, 16),
+    "media_quality.color_count_reference": (int, 1, 256),
+    "tenant_switch.request_drain_timeout_seconds": (int, 1, 120),
+    "tenant_switch.scheduler_drain_timeout_seconds": (int, 1, 120),
+    "tenant_switch.round_drain_timeout_seconds": (int, 1, 600),
+    "tenant_switch.background_jobs_timeout_seconds": (int, 1, 600),
+    "tenant_switch.login_process_timeout_seconds": (int, 1, 60),
+    "tenant_backup.max_bytes": (int, 1_048_576, 2 * 1024 * 1024 * 1024),
+    "tenant_backup.retention_count": (int, 1, 100),
+    "hot_topic_matcher.match_threshold": (float, 0.0, 100.0),
+    "hot_topic_matcher.keyword_score": (float, 0.0, 100.0),
+    "hot_topic_matcher.batch_size": (int, 1, 100),
+    "hot_topic_matcher.max_per_run": (int, 1, 2000),
+    "scoring.cold_start_min_published": (int, 1, 1000),
+    "scoring.stable_dimension_min_samples": (int, 1, 100),
+    "scoring.history_normalization_scale": (int, 1, 10000),
+    "scoring.freshness_window_days": (int, 1, 365),
+    "scoring.dimension_gap_ratio": (float, 0.0, 1.0),
+    "scoring.dimension_gap_score": (float, 0.0, 100.0),
+    "scoring.dimension_normal_score": (float, 0.0, 100.0),
+    "scoring.no_persona_match_score": (float, 0.0, 100.0),
+    "scoring.stable_exploration_percent": (int, 0, 50),
+    "scoring.timeliness_unknown_score": (float, 0.0, 100.0),
+    "scoring.history_cold_start_score": (float, 0.0, 100.0),
+    "scoring.freshness_recent_use_penalty": (float, 0.0, 100.0),
+    "scoring.freshness_min_score": (float, 0.0, 100.0),
+    "scoring.freshness_unused_score": (float, 0.0, 100.0),
     "rhythm.windows.ops.start_hour": (int, 0, 23),
     "rhythm.windows.ops.end_hour": (int, 0, 23),
     "circuit_breaker.cooldown_minutes": (int, 1, 1440),
@@ -237,6 +298,21 @@ def _validate(key: str, value: Any) -> Any:
         if len(value) > 256:
             raise ConfigPatchError(f"{key} 最长 256 字符")
         return value.strip()
+
+    if key == "media_generation.base_url":
+        if not isinstance(value, str) or not value.strip().startswith(("http://", "https://")):
+            raise ConfigPatchError(f"{key} 必须是 http(s) URL")
+        if len(value) > 256:
+            raise ConfigPatchError(f"{key} 最长 256 字符")
+        return value.rstrip("/")
+
+    # —— Vision API base_url ——
+    if key == "vision_ranking.base_url":
+        if not isinstance(value, str) or not value.strip().startswith(("http://", "https://")):
+            raise ConfigPatchError(f"{key} 必须是 http(s) URL")
+        if len(value) > 256:
+            raise ConfigPatchError(f"{key} 最长 256 字符")
+        return value.rstrip("/")
 
     # —— LLM base_url（按量付费 / plan 通道切换时可调）——
     if key == "llm.base_url":
@@ -431,7 +507,9 @@ def _validate(key: str, value: Any) -> Any:
         if not isinstance(value, bool):
             raise ConfigPatchError(f"{key} 必须是布尔值")
         return value
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if typ is int and (isinstance(value, bool) or not isinstance(value, int)):
+        raise ConfigPatchError(f"{key} 必须是整数")
+    if typ is float and (isinstance(value, bool) or not isinstance(value, (int, float))):
         raise ConfigPatchError(f"{key} 必须是数字")
     if lo is not None and value < lo:
         raise ConfigPatchError(f"{key} 不能小于 {lo}")
@@ -842,6 +920,22 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
                     for field in SCORING_WEIGHT_FIELDS)
         if total != 100:
             raise ConfigPatchError(f"{mode} 权重合计必须 = 100%，按本次修改后为 {total}%（请同时调整其它维度）")
+
+    active_min_uses = normalized.get("scoring.active_dimension_min_uses", cfg.scoring.active_dimension_min_uses)
+    stable_min_samples = normalized.get("scoring.stable_dimension_min_samples", cfg.scoring.stable_dimension_min_samples)
+    if stable_min_samples < active_min_uses:
+        raise ConfigPatchError("stable_dimension_min_samples 必须大于等于 active_dimension_min_uses")
+
+    quality_min = normalized.get("media_quality.brightness_min", cfg.media_quality.brightness_min)
+    quality_max = normalized.get("media_quality.brightness_max", cfg.media_quality.brightness_max)
+    portrait_min = normalized.get("media_quality.portrait_ratio_min", cfg.media_quality.portrait_ratio_min)
+    portrait_max = normalized.get("media_quality.portrait_ratio_max", cfg.media_quality.portrait_ratio_max)
+    square_max = normalized.get("media_quality.square_ratio_max", cfg.media_quality.square_ratio_max)
+    landscape_max = normalized.get("media_quality.landscape_ratio_max", cfg.media_quality.landscape_ratio_max)
+    if quality_min >= quality_max:
+        raise ConfigPatchError("media_quality.brightness_min 必须小于 brightness_max")
+    if not portrait_min < portrait_max < square_max < landscape_max:
+        raise ConfigPatchError("图片构图比例阈值必须依次递增：portrait_min < portrait_max < square_max < landscape_max")
 
     changes: list[dict[str, Any]] = []
     persisted: dict[str, Any] = {}

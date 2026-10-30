@@ -34,10 +34,13 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "hot_match_v1"
-MATCH_THRESHOLD = 60.0
-KEYWORD_SCORE = 60.0
-BATCH_SIZE = 20
-MAX_PER_RUN = 200
+from src.core.config import HotTopicMatcherConfig
+
+_DEFAULT_POLICY = HotTopicMatcherConfig()
+MATCH_THRESHOLD = _DEFAULT_POLICY.match_threshold
+KEYWORD_SCORE = _DEFAULT_POLICY.keyword_score
+BATCH_SIZE = _DEFAULT_POLICY.batch_size
+MAX_PER_RUN = _DEFAULT_POLICY.max_per_run
 
 # LLM 调用函数签名：(system_prompt, user_prompt) -> (content, usage)
 LlmFn = Callable[[str, str], tuple[str, dict]]
@@ -151,16 +154,18 @@ def keyword_judgement(persona: Persona, title: str) -> dict:
 class HotTopicMatcher:
     def __init__(self, cfg, conn, llm_fn: Optional[LlmFn] = None, *, use_default_llm: bool = True):
         self.cfg = cfg
+        self.policy = cfg.hot_topic_matcher
         self.conn = conn
         self.llm_fn = llm_fn if llm_fn is not None else (default_llm_fn(cfg) if use_default_llm else None)
         self.persona = load_persona(cfg, conn)
 
     @property
     def version(self) -> str:
-        return self.persona.signature() + (":llm" if self.llm_fn else ":kw")
+        return self.persona.signature() + (":llm" if self.llm_fn else ":kw") + f":threshold={self.policy.match_threshold}:keyword={self.policy.keyword_score}"
 
-    def pending(self, limit: int = MAX_PER_RUN) -> list[dict]:
+    def pending(self, limit: int | None = None) -> list[dict]:
         """只研判当前榜单（每个数据源最近一次快照），历史热点不参与研判。"""
+        limit = self.policy.max_per_run if limit is None else max(1, min(int(limit), self.policy.max_per_run))
         rows = self.conn.execute(
             "SELECT id, title FROM hot_topics t WHERE t.evidence_status = 'collected' "
             "AND t.title IS NOT NULL AND t.duplicate_of IS NULL "
@@ -173,7 +178,7 @@ class HotTopicMatcher:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def run(self, limit: int = MAX_PER_RUN) -> dict:
+    def run(self, limit: int | None = None) -> dict:
         rows = self.pending(limit)
         report = {"pending": len(rows), "llm": 0, "keyword": 0, "failed_batches": 0,
                   "method": "llm" if self.llm_fn else "keyword"}
@@ -185,8 +190,8 @@ class HotTopicMatcher:
                 report["keyword"] += 1
             self.conn.commit()
             return report
-        for i in range(0, len(rows), BATCH_SIZE):
-            batch = rows[i:i + BATCH_SIZE]
+        for i in range(0, len(rows), self.policy.batch_size):
+            batch = rows[i:i + self.policy.batch_size]
             try:
                 results = self._llm_batch(batch)
             except Exception as exc:  # noqa: BLE001 — 单批失败不影响其他批，该批保持「待研判」
@@ -210,7 +215,7 @@ class HotTopicMatcher:
             res = {"score": 0.0, "dimension": kj["dimension"], "angle": "",
                    "reason": "标题命中禁止方向", "forbidden": True}
         elif kj["keyword_hits"]:
-            res = {"score": KEYWORD_SCORE, "dimension": kj["dimension"], "angle": "",
+            res = {"score": self.policy.keyword_score, "dimension": kj["dimension"], "angle": "",
                    "reason": f"命中定位词/维度：{'、'.join(kj['keyword_hits'])}", "forbidden": False}
         else:
             # 未命中 ≠ 无关：没有语义研判能力时保持 NULL（待研判），只记录已检查过
@@ -274,7 +279,7 @@ class HotTopicMatcher:
             logger.debug("ai_calls 写入失败", exc_info=True)
 
 
-def dimension_match_of(row, current_version: Optional[str]) -> Optional[bool]:
+def dimension_match_of(row, current_version: Optional[str], threshold: float = MATCH_THRESHOLD) -> Optional[bool]:
     """按落库结果给出三态 dimension_match（画像已变化的旧结果视为未研判）。"""
     keys = row.keys() if hasattr(row, "keys") else row
     if "match_version" not in keys or row["match_version"] is None:
@@ -286,4 +291,4 @@ def dimension_match_of(row, current_version: Optional[str]) -> Optional[bool]:
     score = row["match_score"]
     if score is None:
         return None
-    return score >= MATCH_THRESHOLD
+    return score >= threshold

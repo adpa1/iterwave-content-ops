@@ -3,6 +3,7 @@ import { navigate, useUrlTab } from "../nav";
 import { useApp } from "../AppContext";
 import EmptyHint from "../components/EmptyHint";
 import TenantManagerPane from "../components/TenantManagerPane";
+import RuntimePolicyEditor from "../components/RuntimePolicyEditor";
 import { AdvancedEditor, KbEditor, LlmEditor, PlatformStyleEditor, PlatformToggles, TimeoutEditor } from "../components/ConfigEditors";
 import { api, type SystemStatus, type SystemConfigView } from "../api";
 
@@ -14,9 +15,9 @@ const PLATFORM_LABELS: Record<string, string> = {
 };
 
 const SCORING_MODE_LABELS: Record<string, string> = {
-  cold_start: "冷启动（全库样本 < 10）",
-  sample_accumulating: "样本积累（部分维度 < 5）",
-  stable: "稳定运行（所有活跃维度 ≥ 5）",
+  cold_start: "冷启动",
+  sample_accumulating: "样本积累",
+  stable: "稳定运行",
 };
 
 const SETTINGS_TABS = [
@@ -25,6 +26,7 @@ const SETTINGS_TABS = [
   { k: "model", l: "知识库与模型" },
   { k: "platform", l: "平台与账号" },
   { k: "rhythm", l: "节奏与评分权重" },
+  { k: "policy", l: "运行策略参数" },
   { k: "system", l: "运行状态" },
   { k: "tenants", l: "账号组" },
 ] as const;
@@ -430,6 +432,8 @@ export default function Settings() {
         </div>
       </div>
       )}
+
+      {tab === "policy" && <RuntimePolicyEditor />}
 
       {tab === "system" && (
       <div className="grid two">

@@ -213,9 +213,9 @@ class HotTopicCollector:
         }
 
     def _match_summary(self, items: list[dict]) -> dict:
-        from .hot_topic_matcher import MATCH_THRESHOLD
+        threshold = self.cfg.hot_topic_matcher.match_threshold
         return {
-            "threshold": MATCH_THRESHOLD,
+            "threshold": threshold,
             "matched": sum(1 for i in items if i["dimension_match"] is True),
             "rejected": sum(1 for i in items if i["dimension_match"] is False),
             "pending": sum(1 for i in items if i["dimension_match"] is None),
@@ -603,7 +603,7 @@ class HotTopicCollector:
             title = row["title"] or ""
             hit_redline = [k for k in redlines if k in title]
             kj = keyword_judgement(matcher.persona, title)
-            dimension_match = dimension_match_of(row, current_version)
+            dimension_match = dimension_match_of(row, current_version, threshold=self.cfg.hot_topic_matcher.match_threshold)
             fresh = row["match_version"] == current_version
 
             items.append({

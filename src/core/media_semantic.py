@@ -10,6 +10,7 @@ import json
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any
 
 import httpx
@@ -17,8 +18,12 @@ import httpx
 
 def rank_media_with_vision(
     *, title: str, body: str, usage_role: str, candidates: list[dict[str, Any]],
-    media_dir: Path,
+    media_dir: Path, cfg=None,
 ) -> list[dict[str, Any]] | None:
+    if cfg is None:
+        from src.core.config import get_config
+        cfg = get_config()
+    policy = cfg.vision_ranking
     # Image bytes leave the local machine only when explicitly enabled by the operator.
     enabled = os.getenv("ITERWAVE_ENABLE_VISION_MEDIA_RANKING", "").strip().lower() in ("1", "true", "yes")
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -27,12 +32,12 @@ def rank_media_with_vision(
 
     blocks: list[dict[str, Any]] = []
     allowed_ids: set[int] = set()
-    for item in candidates[:8]:
+    for item in candidates[:min(policy.candidate_limit, 32)]:
         path = (media_dir / str(item.get("stored_filename") or "")).resolve()
         if not path.is_relative_to(media_dir.resolve()) or not path.is_file():
             continue
         raw = path.read_bytes()
-        if not raw or len(raw) > 4 * 1024 * 1024:
+        if not raw or len(raw) > min(policy.max_image_bytes, 4 * 1024 * 1024):
             continue
         suffix = path.suffix.lower()
         if suffix not in (".jpg", ".jpeg", ".png", ".webp"):
@@ -45,18 +50,32 @@ def rank_media_with_vision(
     if not allowed_ids:
         return None
 
+    base_url = os.getenv("ITERWAVE_VISION_API_BASE", policy.base_url).rstrip("/")
+    try:
+        parsed_base_url = urlsplit(base_url)
+        valid_base_url = (
+            parsed_base_url.scheme in ("https", "http")
+            and bool(parsed_base_url.hostname)
+            and parsed_base_url.username is None
+            and parsed_base_url.password is None
+        )
+    except ValueError:
+        valid_base_url = False
+    if not valid_base_url:
+        return None
+
     prompt = (
-        f"请为内容选择最合适的图片，用途={usage_role}。标题={title}。正文={body[:1800]}。"
+        f"请为内容选择最合适的图片，用途={usage_role}。标题={title}。正文={body[:policy.max_body_chars]}。"
         "只返回JSON对象，格式为{\"ranked_ids\":[数字ID按相关性降序],\"reasons\":{\"数字ID\":\"简短理由\"}}。"
         "只能选择给定的图片ID；如果不相关请不要选。"
     )
     response = httpx.post(
-        os.getenv("ITERWAVE_VISION_API_BASE", "https://api.openai.com/v1").rstrip("/") + "/chat/completions",
+        base_url + "/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"model": os.getenv("ITERWAVE_VISION_MODEL", "gpt-4o-mini"),
+        json={"model": os.getenv("ITERWAVE_VISION_MODEL", policy.model),
               "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}, *blocks]}],
-              "temperature": 0, "max_tokens": 600},
-        timeout=25.0,
+              "temperature": policy.temperature, "max_tokens": policy.max_tokens},
+        timeout=policy.timeout_seconds,
     )
     response.raise_for_status()
     answer = response.json()["choices"][0]["message"]["content"]
