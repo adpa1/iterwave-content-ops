@@ -540,3 +540,19 @@ details[open] > summary::before { content: "▾ "; }
   .ml-select { max-width: none; }
   .ml-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
 }
+
+/* 小屏幕兜底：页面容器与网格子项允许收缩，宽表格在自身容器内滚动。 */
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { width: 100%; max-width: 100%; overflow-x: clip; }
+.app, .main, .content, .page, .panel, .grid, .flex, .task-main { min-width: 0; max-width: 100%; }
+.content img, .content video, .content canvas { max-width: 100%; }
+.table-wrap, .demo-table-wrap, .ops-metric-table { max-width: 100%; overflow-x: auto; }
+@media (max-width: 620px) {
+  .content { padding-left: 12px; padding-right: 12px; }
+  .page-head, .panel-head { flex-wrap: wrap; align-items: flex-start; }
+  .head-actions { flex-wrap: wrap; max-width: 100%; }
+  .page-head > *, .panel-head > * { min-width: 0; max-width: 100%; }
+  .table-wrap table { min-width: 620px; }
+  .content .grid { grid-template-columns: minmax(0, 1fr) !important; }
+  .content input, .content select, .content textarea { max-width: 100%; }
+}
