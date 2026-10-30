@@ -1437,6 +1437,7 @@ def _register_routes(app: FastAPI) -> None:
             "tenant_id": tenant_id,
             "latest_sample_run": dict(latest_run) if latest_run else None,
             "model_mode": "byok",
+            "platform_metric_fields": cfg.platform_metric_fields,
             "model_ready": _llm_available(cfg),
             "model_message": "自带模型已就绪" if _llm_available(cfg) else "需要先配置自己的模型服务和 API Key",
             "formal_setup": {
@@ -1732,19 +1733,22 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(404, "草稿不存在")
         if row["status"] not in ("user_published", "data_fetching", "published"):
             raise HTTPException(409, "请先确认内容已在平台发布，再录入数据")
-        fields = ("views", "likes", "collects", "comments", "shares", "new_followers")
-        values = {}
-        for field in fields:
+        supported_fields = tuple(_g()["cfg"].platform_metric_fields.get(row["platform"], []))
+        known_fields = {"views", "likes", "collects", "comments", "shares"}
+        if not supported_fields or any(field not in known_fields for field in supported_fields):
+            raise HTTPException(503, "当前平台尚未配置有效的逐篇指标字段")
+        values = {field: None for field in known_fields}
+        for field in known_fields:
             raw = (req or {}).get(field)
+            if field not in supported_fields and raw not in (None, ""):
+                raise HTTPException(422, f"当前平台不支持回填 {field}")
             if raw in (None, ""):
-                values[field] = None
-            elif (isinstance(raw, bool) or not isinstance(raw, int) or raw < 0
-                  or raw > 9_007_199_254_740_991):
+                continue
+            if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0 or raw > 9_007_199_254_740_991:
                 raise HTTPException(422, f"{field} 必须是安全范围内的非负整数或留空")
-            else:
-                values[field] = raw
-        if all(v is None for v in values.values()):
-            raise HTTPException(422, "至少填写一项指标")
+            values[field] = raw
+        if all(values[field] is None for field in supported_fields):
+            raise HTTPException(422, "至少填写一项当前平台支持的指标")
         measured_at = str((req or {}).get("measured_at") or datetime.now().isoformat(sep=" ", timespec="seconds"))
         if len(measured_at) > 40:
             raise HTTPException(422, "统计时间格式无效")
@@ -1786,13 +1790,13 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(404, "草稿不存在")
         manual = conn.execute(
             "SELECT id, draft_id, content_id, platform, source, views, likes, collects, comments, shares, "
-            "new_followers, measured_at, recorded_at, correction_of FROM metric_snapshots "
+            "measured_at, recorded_at, correction_of FROM metric_snapshots "
             "WHERE tenant_id=? AND draft_id=?",
             (tenant_id, draft_id),
         ).fetchall()
         automatic = conn.execute(
             "SELECT CAST(id AS TEXT) AS id, draft_id, content_id, platform, "
-            "'platform_readback' AS source, views, likes, collects, comments, shares, new_followers, "
+            "'platform_readback' AS source, views, likes, collects, comments, shares, "
             "fetched_at AS measured_at, fetched_at AS recorded_at, NULL AS correction_of "
             "FROM metrics WHERE draft_id=? AND fetch_status IN ('success','partial')",
             (draft_id,),
