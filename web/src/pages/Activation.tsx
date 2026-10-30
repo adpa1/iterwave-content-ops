@@ -23,6 +23,7 @@ export default function Activation() {
   const [reason, setReason] = useState("内容空泛");
   const [toast, setToast] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const [promoting, setPromoting] = useState<string | null>(null);
 
   const loadRun = async (id: string) => {
     const data = await api.activationSamples(id);
@@ -129,6 +130,27 @@ export default function Activation() {
       setToast("已保存到体验草稿区，可在下方「已保存样稿」中找回");
     } catch (e: any) {
       setError(e.message || "保存失败");
+    }
+  };
+
+  const promote = async (item: ActivationSavedSample) => {
+    if (promoting) return;
+    setPromoting(item.id);
+    setError("");
+    try {
+      const round = await api.createRound({ topic_count: 1, platforms: [item.platform] });
+      const result = await api.promoteActivationSample(item.id, round.id);
+      const url = new URL(window.location.href);
+      url.searchParams.set("page", "production");
+      url.searchParams.set("tab", "rounds");
+      url.searchParams.set("focusRound", String(result.round_id));
+      window.history.pushState({}, "", url.toString());
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    } catch (e: any) {
+      setError(e?.message || "导入正式生产失败");
+      await loadSaved();
+    } finally {
+      setPromoting(null);
     }
   };
 
@@ -275,7 +297,7 @@ export default function Activation() {
         <div className="panel-head">
           <div>
             <div className="panel-title">已保存样稿</div>
-            <div className="panel-sub">跨体验批次保留，可随时找回；当前版本仍需人工复制到正式内容流程。</div>
+            <div className="panel-sub">跨体验批次保留。导入正式生产后会进入正式内容编辑、复核和平台存草稿流程，不会自动发布。</div>
           </div>
           <button className="btn sm" onClick={loadSaved}>刷新</button>
         </div>
@@ -290,6 +312,12 @@ export default function Activation() {
                 <div className="panel-sub" style={{ whiteSpace: "pre-wrap", maxHeight: 150, overflow: "auto" }}>{item.body}</div>
                 <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                   <button className="btn sm" onClick={() => copy(item.id, item.title, item.body, item.hashtags, item.sample_run_id)}>复制</button>
+                  {item.promoted_content_id ? (
+                    <span className="tag green">已导入正式生产</span>
+                  ) : (
+                    <button className="btn sm primary" disabled={!!promoting}
+                      onClick={() => promote(item)}>{promoting === item.id ? "导入中…" : "导入正式生产"}</button>
+                  )}
                 </div>
               </article>
             ))}
