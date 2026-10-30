@@ -597,6 +597,56 @@ def scheduler_jobs_view(cfg: Config) -> dict[str, dict[str, Any]]:
     }
 
 
+def config_metadata_view(cfg: Config) -> list[dict[str, Any]]:
+    """前端配置编辑器的后端元数据视图；白名单校验仍由 _validate 强制执行。"""
+    items: dict[str, dict[str, Any]] = {}
+
+    def add(key: str, value: Any, *, kind: str | None = None,
+            minimum: float | None = None, maximum: float | None = None,
+            editable: bool = True, description: str = "") -> None:
+        items[key] = {
+            "key": key, "type": kind or ("boolean" if isinstance(value, bool)
+                else "integer" if isinstance(value, int)
+                else "number" if isinstance(value, float)
+                else "array" if isinstance(value, list)
+                else "object" if isinstance(value, dict) else "string"),
+            "value": _redact_public_value(value),
+            "min": minimum, "max": maximum, "editable": editable,
+            "tenant_scoped": True, "restart_required": False,
+            "sensitive": False, "description": description,
+        }
+
+    for key, (kind, minimum, maximum) in SCALAR_RULES.items():
+        try:
+            value = _get_value(cfg, key)
+        except (AttributeError, KeyError, TypeError):
+            continue
+        add(key, value, kind="boolean" if kind is bool else "integer" if kind is int else "number",
+            minimum=minimum, maximum=maximum)
+    for key in STRING_RULES:
+        add(key, _get_value(cfg, key), kind="string")
+    for key in LIST_RULES:
+        add(key, _get_value(cfg, key), kind="array", maximum=LIST_RULES[key])
+    for platform in PLATFORM_KEYS:
+        for field in QUOTA_FIELDS:
+            key = f"rhythm.daily_quotas.{platform}.{field}"
+            quota = cfg.rhythm.daily_quotas.get(platform)
+            add(key, getattr(quota, field, None) if quota else None, kind="integer", minimum=0, maximum=10000)
+        add(f"platforms.{platform}.base_url", _get_value(cfg, f"platforms.{platform}.base_url"), kind="url")
+        add(f"platforms.{platform}.account_key", _get_value(cfg, f"platforms.{platform}.account_key"), kind="string")
+    for job_id, job in cfg.scheduler.jobs.items():
+        add(f"scheduler.jobs.{job_id}.enabled", job.enabled, kind="boolean")
+        add(f"scheduler.jobs.{job_id}.interval_minutes", job.interval_minutes, kind="integer", minimum=1, maximum=10080)
+        add(f"scheduler.jobs.{job_id}.cron", job.cron, kind="cron")
+    for mode in SCORING_MODES:
+        for field in SCORING_WEIGHT_FIELDS:
+            key = f"scoring.{mode}.{field}"
+            add(key, _get_value(cfg, key), kind="integer", minimum=0, maximum=100)
+    for key, value in HARD_LOCKED_KEYS.items():
+        add(key, True, kind="boolean", editable=False, description=value)
+    return [items[key] for key in sorted(items)]
+
+
 def changed_job_ids(keys) -> set[str]:
     """从修改过的配置键里找出需要重排的定时任务。"""
     out: set[str] = set()
