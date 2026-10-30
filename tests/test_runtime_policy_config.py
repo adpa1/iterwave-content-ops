@@ -71,3 +71,11 @@ def test_backup_policy_can_tighten_but_not_raise_hard_cap(cfg):
     })
     assert _backup_limits(policy) == (1_048_576, 4)
     assert _backup_limits(None) == (MAX_BACKUP_BYTES, 10)
+
+
+def test_metadata_does_not_include_provider_endpoint_or_account_identity(cfg):
+    from src.core.config_store import config_metadata_view
+    keys = {item["key"] for item in config_metadata_view(cfg)}
+    assert "vision_ranking.base_url" not in keys
+    assert "media_generation.base_url" not in keys
+    assert not any(key.endswith(".account_key") for key in keys)
