@@ -1445,7 +1445,8 @@ def _register_routes(app: FastAPI) -> None:
         from src.core.content_pipeline import _llm_available
         cfg = _g()["cfg"]
         latest_run = conn.execute(
-            "SELECT id, status FROM sample_runs WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1",
+            "SELECT id, status FROM sample_runs WHERE tenant_id=? AND deleted_at IS NULL "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
             (tenant_id,),
         ).fetchone()
         day_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(sep=" ")
@@ -1634,7 +1635,10 @@ def _register_routes(app: FastAPI) -> None:
                             findings.append("标题信息不足")
                         if len(body.strip()) < 100:
                             findings.append("正文信息量不足")
-                        if len(set(body.split())) < 12:
+                        compact_body = "".join(ch for ch in body if not ch.isspace())
+                        bigrams = [compact_body[i:i + 2] for i in range(max(0, len(compact_body) - 1))]
+                        bigram_uniqueness = len(set(bigrams)) / len(bigrams) if bigrams else 0.0
+                        if len(compact_body) >= 100 and bigram_uniqueness < 0.25:
                             findings.append("正文重复度过高")
                         if any(phrase in body for phrase in ("仅供参考", "总而言之", "希望对你有帮助")):
                             findings.append("包含泛化套话")
@@ -1704,24 +1708,51 @@ def _register_routes(app: FastAPI) -> None:
     @app.delete("/api/activation/samples/{sample_run_id}")
     def delete_activation_samples(sample_run_id: str):
         conn = _g()["conn"]
+        now = datetime.now().isoformat(sep=" ", timespec="seconds")
         row = conn.execute(
-            "SELECT status FROM sample_runs WHERE id=? AND tenant_id=?",
+            "SELECT status, deleted_at FROM sample_runs WHERE id=? AND tenant_id=?",
             (sample_run_id, _tenant_id()),
         ).fetchone()
         if row is None:
             raise HTTPException(404, "体验样稿不存在")
         if row["status"] in ("created", "generating", "quality_check"):
             raise HTTPException(409, "体验任务仍在执行，完成或失败后才能删除")
-        conn.execute("DELETE FROM sample_runs WHERE id=? AND tenant_id=?", (sample_run_id, _tenant_id()))
-        conn.commit()
+        if row["deleted_at"] is None:
+            # 软删除：保留额度计数和审计事件，不允许通过删除历史恢复体验次数。
+            conn.execute(
+                "UPDATE sample_runs SET deleted_at=? WHERE id=? AND tenant_id=? AND deleted_at IS NULL",
+                (now, sample_run_id, _tenant_id()),
+            )
+            conn.commit()
         return {"sample_run_id": sample_run_id, "deleted": True}
+
+    @app.get("/api/activation/saved")
+    def list_activation_saved_samples(limit: int = Query(100, ge=1, le=200)):
+        conn = _g()["conn"]
+        tenant_id = _tenant_id()
+        rows = conn.execute(
+            "SELECT sc.id, sc.sample_run_id, sc.platform, sc.angle, sc.title, sc.body, "
+            "sc.hashtags_json, sc.adopted_at, sc.created_at, sr.account_description "
+            "FROM sample_contents sc JOIN sample_runs sr ON sr.id=sc.sample_run_id "
+            "WHERE sc.tenant_id=? AND sc.adopted_at IS NOT NULL "
+            "ORDER BY sc.adopted_at DESC, sc.id DESC LIMIT ?",
+            (tenant_id, limit),
+        ).fetchall()
+        return {"items": [{
+            "id": row["id"], "sample_run_id": row["sample_run_id"],
+            "platform": row["platform"], "angle": row["angle"], "title": row["title"],
+            "body": row["body"], "hashtags": json.loads(row["hashtags_json"] or "[]"),
+            "adopted_at": row["adopted_at"], "created_at": row["created_at"],
+            "account_description": row["account_description"],
+        } for row in rows]}
 
     @app.get("/api/activation/samples/{sample_run_id}")
     def get_activation_samples(sample_run_id: str):
         tenant_id = _tenant_id()
         conn = _g()["conn"]
         run = conn.execute(
-            "SELECT * FROM sample_runs WHERE id=? AND tenant_id=?", (sample_run_id, tenant_id)
+            "SELECT * FROM sample_runs WHERE id=? AND tenant_id=? AND deleted_at IS NULL",
+            (sample_run_id, tenant_id)
         ).fetchone()
         if run is None:
             raise HTTPException(404, "体验样稿不存在")
@@ -1751,7 +1782,7 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(422, "不支持的样稿操作")
         conn = _g()["conn"]
         row = conn.execute(
-            "SELECT id FROM sample_contents WHERE id=? AND sample_run_id=? AND tenant_id=?",
+            "SELECT id, adopted_at, rejected_at FROM sample_contents WHERE id=? AND sample_run_id=? AND tenant_id=?",
             (sample_content_id, sample_run_id, tenant_id),
         ).fetchone()
         if row is None:
@@ -1759,16 +1790,20 @@ def _register_routes(app: FastAPI) -> None:
         now = datetime.now().isoformat(sep=" ", timespec="seconds")
         metadata = {}
         if event_type == "saved":
-            conn.execute("UPDATE sample_contents SET adopted_at=COALESCE(adopted_at,?), updated_at=? WHERE id=?",
-                         (now, now, sample_content_id))
+            conn.execute(
+                "UPDATE sample_contents SET adopted_at=?, rejected_at=NULL, rejection_reason=NULL, updated_at=? WHERE id=?",
+                (now, now, sample_content_id),
+            )
             event_name = "content_saved"
         elif event_type == "rejected":
             reason = str((req or {}).get("reason") or "其他").strip()[:80]
             allowed_reasons = {"定位不符", "内容空泛", "平台不适配", "事实不准确", "表达风格不符", "其他"}
             if reason not in allowed_reasons:
                 raise HTTPException(422, "请选择有效的不采用原因")
-            conn.execute("UPDATE sample_contents SET rejected_at=?, rejection_reason=?, updated_at=? WHERE id=?",
-                         (now, reason, now, sample_content_id))
+            conn.execute(
+                "UPDATE sample_contents SET rejected_at=?, rejection_reason=?, adopted_at=NULL, updated_at=? WHERE id=?",
+                (now, reason, now, sample_content_id),
+            )
             metadata = {"reason": reason}
             event_name = "content_rejected"
         else:
@@ -1776,7 +1811,7 @@ def _register_routes(app: FastAPI) -> None:
         conn.commit()
         _record_content_event(
             event_name, sample_content_id=sample_content_id, metadata=metadata,
-            idempotency_key=f"{event_name}:{sample_content_id}" if event_name == "content_saved" else None,
+            idempotency_key=f"{event_name}:{sample_content_id}:{uuid.uuid4().hex}" if event_name == "content_saved" else None,
         )
         return {"sample_content_id": sample_content_id, "event": event_name, "recorded": True}
 
@@ -1841,9 +1876,20 @@ def _register_routes(app: FastAPI) -> None:
             if original is None:
                 raise HTTPException(422, "修正记录必须属于当前账号组和同一篇内容")
         try:
-            measured_at = datetime.fromisoformat(measured_at).isoformat(sep=" ", timespec="seconds")
-        except ValueError:
-            raise HTTPException(422, "统计时间必须是有效的 ISO 日期时间")
+            measured_dt = datetime.fromisoformat(measured_at)
+            if measured_dt.tzinfo is not None:
+                measured_dt = measured_dt.astimezone().replace(tzinfo=None)
+            confirmed_dt = datetime.fromisoformat(str(row["user_confirmed_at"]))
+            if confirmed_dt.tzinfo is not None:
+                confirmed_dt = confirmed_dt.astimezone().replace(tzinfo=None)
+        except (TypeError, ValueError):
+            raise HTTPException(422, "统计时间或发布时间必须是有效的 ISO 日期时间")
+        now_dt = datetime.now()
+        if measured_dt < confirmed_dt:
+            raise HTTPException(422, "统计时间不能早于确认发布时间")
+        if measured_dt > now_dt + timedelta(minutes=5):
+            raise HTTPException(422, "统计时间不能晚于当前时间（允许 5 分钟设备时钟误差）")
+        measured_at = measured_dt.isoformat(sep=" ", timespec="seconds")
         snapshot_id = uuid.uuid4().hex
         conn.execute(
             "INSERT INTO metric_snapshots "
