@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, type ConfigMetadataItem } from "../api";
 import { useApp } from "../AppContext";
 
-const GROUPS = [
+const GROUPS: { prefix: string; title: string; exact?: string[] }[] = [
   { prefix: "vision_ranking.", title: "视觉理解" },
   { prefix: "media_generation.", title: "图片生成" },
   { prefix: "media_quality.", title: "素材质量评估" },
