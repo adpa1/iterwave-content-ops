@@ -1911,7 +1911,8 @@ def _register_routes(app: FastAPI) -> None:
         # 自动读回沿用原 metrics 表；来源固定标记为 platform_readback，不改写原记录。
         auto_rows = conn.execute(
             "SELECT m.id, m.content_id, m.platform, m.views, m.likes, m.collects, m.comments, m.shares, "
-            "m.fetched_at AS measured_at, c.title, c.body, c.tags "
+            "'platform_readback' AS source, m.fetched_at AS measured_at, m.fetched_at AS recorded_at, "
+            "c.title, c.body, c.tags "
             "FROM metrics m JOIN contents c ON c.id=m.content_id "
             "WHERE m.fetch_status IN ('success','partial') AND m.fetched_at>=? AND m.fetched_at<? "
             + ("AND m.platform=? " if platform else ""),
@@ -2164,16 +2165,23 @@ def _register_routes(app: FastAPI) -> None:
             (started.isoformat(sep=" "), mature_publish_cutoff),
         ).fetchone()[0]
         returned_count = conn.execute(
-            "SELECT COUNT(DISTINCT draft_id) FROM ("
-            "SELECT ms.draft_id FROM metric_snapshots ms JOIN drafts d ON d.id=ms.draft_id "
-            "WHERE ms.tenant_id=? AND d.user_confirmed_at>=? AND d.user_confirmed_at<=? "
-            "AND ms.measured_at>=d.user_confirmed_at AND ms.measured_at<=datetime(d.user_confirmed_at, '+7 days') AND ms.recorded_at>=d.user_confirmed_at AND ms.recorded_at<=datetime(d.user_confirmed_at, '+7 days') "
-            "UNION SELECT m.draft_id FROM metrics m JOIN drafts d ON d.id=m.draft_id "
-            "WHERE m.fetch_status IN ('success','partial') AND m.draft_id IS NOT NULL "
-            "AND d.user_confirmed_at>=? AND d.user_confirmed_at<=? "
-            "AND m.fetched_at>=d.user_confirmed_at AND m.fetched_at<=datetime(d.user_confirmed_at, '+7 days'))",
-            (tenant_id, started.isoformat(sep=" "), mature_publish_cutoff,
-             started.isoformat(sep=" "), mature_publish_cutoff),
+            "SELECT COUNT(DISTINCT d.id) FROM drafts d "
+            "WHERE d.user_confirmed_at>=? AND d.user_confirmed_at<=? AND ("
+            "EXISTS (SELECT 1 FROM content_events e WHERE e.tenant_id=? "
+            "AND e.content_id=d.content_id AND e.event_type='note_url_added' "
+            "AND e.event_at>=d.user_confirmed_at "
+            "AND e.event_at<=datetime(d.user_confirmed_at, '+7 days')) "
+            "OR EXISTS (SELECT 1 FROM metric_snapshots ms WHERE ms.tenant_id=? "
+            "AND ms.draft_id=d.id AND ms.recorded_at>=d.user_confirmed_at "
+            "AND ms.recorded_at<=datetime(d.user_confirmed_at, '+7 days') "
+            "AND (ms.views IS NOT NULL OR ms.likes IS NOT NULL OR ms.collects IS NOT NULL "
+            "OR ms.comments IS NOT NULL OR ms.shares IS NOT NULL)) "
+            "OR EXISTS (SELECT 1 FROM metrics m WHERE m.draft_id=d.id "
+            "AND m.fetch_status IN ('success','partial') AND m.fetched_at>=d.user_confirmed_at "
+            "AND m.fetched_at<=datetime(d.user_confirmed_at, '+7 days') "
+            "AND (m.views IS NOT NULL OR m.likes IS NOT NULL OR m.collects IS NOT NULL "
+            "OR m.comments IS NOT NULL OR m.shares IS NOT NULL)))",
+            (started.isoformat(sep=" "), mature_publish_cutoff, tenant_id, tenant_id),
         ).fetchone()[0]
         # 确认发布本身即代表用户已采纳该内容；不依赖一个当前流程不会稳定写入的独立 content_adopted 事件。
         weekly_adopted_published = conn.execute(
@@ -2216,8 +2224,8 @@ def _register_routes(app: FastAPI) -> None:
             "sample_attempted_count": int(sample_counts["attempted"] or 0),
             "sample_ready_count": int(sample_counts["completed"] or 0),
             "quick_experience_completion_rate": (
-                1.0 if int(sample_counts["completed"] or 0) > 0 else
-                0.0 if int(sample_counts["attempted"] or 0) > 0 else None
+                round(int(sample_counts["completed"] or 0) / int(sample_counts["attempted"]), 4)
+                if int(sample_counts["attempted"] or 0) > 0 else None
             ),
             "ttv_seconds": round(float(ttv), 1) if ttv is not None else None,
             "activation_input_wait_seconds": round(activation_input_wait_seconds, 1) if activation_input_wait_seconds is not None else None,
