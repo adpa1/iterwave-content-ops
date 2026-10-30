@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS sample_runs (
     UNIQUE(tenant_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_sample_runs_tenant_created ON sample_runs(tenant_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_sample_runs_one_active_per_tenant
+    ON sample_runs(tenant_id) WHERE status IN ('created','generating','quality_check');
 
 CREATE TABLE IF NOT EXISTS sample_contents (
     id TEXT PRIMARY KEY,
