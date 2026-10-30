@@ -236,7 +236,7 @@ def _parse_dt(value) -> Optional[datetime]:
 
 class AutogrowController:
     def __init__(self, cfg, conn, executor, *, goal_progress=None, notifier=None,
-                 guard=None, pvm=None):
+                 guard=None, pvm=None, enqueue_task=None):
         self.cfg = cfg
         self.conn = conn
         self.executor = executor
@@ -244,6 +244,7 @@ class AutogrowController:
         self.notifier = notifier
         self.guard = guard
         self.pvm = pvm
+        self.enqueue_task = enqueue_task
 
     # ------------------------------------------------------------------
     def evaluate(self, force: bool = False) -> dict:
@@ -436,6 +437,24 @@ class AutogrowController:
             trigger_source="auto", applied_feedback=feedback.to_json(),
         )
         round_id = created["id"]
+        if self.enqueue_task is not None:
+            task, created_task = self.enqueue_task(
+                round_id=round_id,
+                topic_count=None if by_plan else ag.topic_count,
+                platforms=verdict["platforms"],
+                save_drafts=None,
+                feedback=feedback.to_dict(),
+            )
+            reason = (
+                f"第 {created['round_number']} 轮已进入全局任务队列"
+                if created_task else f"第 {created['round_number']} 轮任务已在队列中"
+            )
+            self._log("queued", reason, round_id)
+            return {
+                "can_start": True, "action": "queued", "reason": reason,
+                "round_id": round_id, "round_number": created["round_number"],
+                "task_id": task.task_id, "feedback": feedback.to_dict(),
+            }
         try:
             report = await self.executor.run(
                 round_id, topic_count=None if by_plan else ag.topic_count,

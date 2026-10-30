@@ -12,6 +12,37 @@ export interface RecoveryInfo {
   pending_verify: number;
 }
 
+export interface GlobalTaskQueueItem {
+  queue_order: number;
+  task_id: string;
+  task_type: string;
+  tenant_id: string;
+  tenant_name: string;
+  aggregate_id: string | null;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
+  created_at: string;
+  available_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  attempts: number;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+export interface GlobalTaskQueueResponse {
+  items: GlobalTaskQueueItem[];
+}
+
+export interface QueueTaskSubmission {
+  round_id: number;
+  task_id: string;
+  started: boolean;
+  created?: boolean;
+  running: boolean;
+  queued: boolean;
+  status: GlobalTaskQueueItem["status"];
+}
+
 export interface SystemStatus {
   enabled_platforms: Platform[];
   /** 有登录态的平台（R20 ● 判定依据） */
@@ -1249,6 +1280,11 @@ export const api = {
     fetchJson<{ updated: Record<string, number | null>; goals: Goal[]; summary: GoalSummary }>(
       "/api/goals/progress/refresh", { method: "POST" },
     ),
+  taskQueue: () => fetchJson<GlobalTaskQueueResponse>("/api/task-queue"),
+  cancelTask: (taskId: string) =>
+    fetchJson<{ task_id: string; status: string }>(`/api/task-queue/${encodeURIComponent(taskId)}/cancel`, {
+      method: "POST",
+    }),
   rounds: (status?: string) =>
     fetchJson<SpiralRound[]>(status ? `/api/rounds?status=${status}` : "/api/rounds"),
   round: (id: number) => fetchJson<SpiralRound & { drafts: Draft[] }>(`/api/rounds/${id}`),
@@ -1257,16 +1293,16 @@ export const api = {
       method: "POST", body: JSON.stringify(data),
     }),
   runRound: (id: number, data: { topic_count?: number; platforms?: Platform[]; save_drafts?: boolean } = {}) =>
-    fetchJson<{ round_id: number; started: boolean; running: boolean }>(`/api/rounds/${id}/run`, {
+    fetchJson<QueueTaskSubmission>(`/api/rounds/${id}/run`, {
       method: "POST", body: JSON.stringify(data),
     }),
   roundRunStatus: (id: number) =>
-    fetchJson<{ round_id: number; running: boolean; report: RunRoundReport | null; error: string | null }>(
+    fetchJson<{ round_id: number; task_id?: string; status?: GlobalTaskQueueItem["status"]; queued?: boolean; running: boolean; report: RunRoundReport | null; error: string | null; error_code?: string | null }>(
       `/api/rounds/${id}/run_status`,
     ),
   /** 恢复已生成、尚未存平台草稿的内容；不会重新生成或发布。 */
   savePendingDrafts: (id: number) =>
-    fetchJson<PendingDraftSaveResult>(`/api/rounds/${id}/save_pending`, {
+    fetchJson<QueueTaskSubmission>(`/api/rounds/${id}/save_pending`, {
       method: "POST",
     }),
   transitionRound: (id: number, target_status: string, reason = "") =>

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import asyncio
+import threading
 import time
 
 import pytest
@@ -684,3 +686,71 @@ def test_sample_save_and_reject_are_mutually_exclusive(activation_client, conn):
     row = conn.execute("SELECT adopted_at, rejected_at, rejection_reason FROM sample_contents WHERE id='state-content'").fetchone()
     assert row["adopted_at"] is None and row["rejected_at"] is not None and row["rejection_reason"] == "定位不符"
 
+
+
+def test_activation_sample_background_does_not_block_tenant_switch(
+    activation_client, conn, monkeypatch,
+):
+    cfg = main._g_ctx["cfg"]
+    cfg.llm.enabled = True
+    monkeypatch.setenv(cfg.llm.api_key_env, "test-only-key")
+    from src.core import content_pipeline
+    from src.core.tenant_switch_gate import TenantSwitchGate
+
+    gate = TenantSwitchGate()
+    monkeypatch.setattr(main, "_tenant_switch_gate", gate)
+    started = threading.Event()
+    release = threading.Event()
+    calls = {"count": 0}
+    base_body = (
+        "个人成长 实用经验 产品经理 AI工具 需求分析 用户研究 项目管理 工作效率 数据分析 "
+        "业务流程 产品设计 用户反馈 方案验证 目标拆解 方法总结 实践案例 场景分析 效率提升 团队协作 持续迭代 经验复盘"
+    )
+    variations = [
+        "第一篇重点讲如何把复杂需求拆成可验证的小任务，并通过访谈和数据确认优先级。",
+        "第二篇重点讲如何建立团队协作节奏，明确责任边界，并减少重复沟通和返工。",
+        "第三篇重点讲如何复盘项目结果，把有效经验沉淀成模板并持续优化执行流程。",
+    ]
+
+    def slow_varied(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            started.set()
+            assert release.wait(5), "测试未及时释放模拟模型调用"
+        return (
+            f"快速体验样稿标题 {calls['count']}",
+            base_body + " " + variations[(calls["count"] - 1) % len(variations)],
+            ["产品经理", "实用经验"],
+        )
+
+    monkeypatch.setattr(content_pipeline, "generate_copy_content", slow_varied)
+    response = activation_client.post("/api/activation/samples", json={
+        "account_description": "分享产品经理的 AI 工具实践和效率方法",
+        "platform": "xhs",
+        "idempotency_key": "switch-during-sample-generation",
+    })
+    assert response.status_code == 202
+    run_id = response.json()["sample_run_id"]
+
+    try:
+        assert started.wait(2), "后台样稿生成没有启动"
+        # HTTP 请求已经返回；后台生成仍在运行，但不应继续占用前台切换闸门。
+        assert gate.active_requests == 0
+        asyncio.run(gate.begin_switch(timeout_seconds=0.2))
+        gate.end_switch()
+    finally:
+        release.set()
+        if gate.switching:
+            gate.end_switch()
+
+    result = None
+    for _ in range(150):
+        result = activation_client.get(f"/api/activation/samples/{run_id}").json()
+        if result["run"]["status"] in ("ready", "failed"):
+            break
+        time.sleep(0.02)
+    assert result is not None
+    assert result["run"]["status"] == "ready", result["run"]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM sample_contents WHERE sample_run_id=?", (run_id,)
+    ).fetchone()[0] == 3

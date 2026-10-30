@@ -92,9 +92,9 @@ def test_refresh_endpoint_runs_in_background(client, monkeypatch):
     tc, _ = client
     started = []
     monkeypatch.setattr(hot_topic_service, "trigger_background",
-                        lambda cfg, trigger="manual": started.append(trigger) or {"started": True})
+                        lambda cfg, trigger="manual", tenant_id=None: started.append((trigger, tenant_id)) or {"started": True, "tenant_id": tenant_id})
     r = tc.post("/api/hot_topics/refresh")
-    assert r.status_code == 202 and started == ["manual"]
+    assert r.status_code == 202 and started == [("manual", "default")]
 
 
 def test_research_endpoint_rejects_without_llm(client, monkeypatch):
@@ -110,9 +110,9 @@ def test_research_endpoint_starts_background(client, monkeypatch):
     monkeypatch.setattr("src.core.hot_topic_matcher.default_llm_fn", lambda cfg: lambda s, u: ("", {}))
     started = []
     monkeypatch.setattr(hot_topic_service, "trigger_research",
-                        lambda cfg: started.append(1) or {"started": True, "running": True})
+                        lambda cfg, tenant_id=None: started.append(tenant_id) or {"started": True, "running": True, "tenant_id": tenant_id})
     r = tc.post("/api/hot_topics/research")
-    assert r.status_code == 202 and started == [1]
+    assert r.status_code == 202 and started == ["default"]
     body = tc.get("/api/hot_topics").json()
     assert "research_job" in body and "research_ready" in body
 
@@ -253,3 +253,22 @@ def test_refresh_reports_progress(cfg, conn, monkeypatch):
     assert fetch_done["percent"] <= 60
     assert [s["status"] for s in fetch_done["sources"]] == ["collected", "collected"]
     assert {s["items"] for s in fetch_done["sources"]} == {1}
+
+
+def test_hot_topic_background_state_recovers_when_database_open_fails(cfg, monkeypatch):
+    from src.core.db import Database
+
+    def fail_connect(self):
+        raise OSError("simulated tenant database unavailable")
+
+    monkeypatch.setattr(Database, "connect", fail_connect)
+    hot_topic_service.reset_for_tests()
+
+    refresh = hot_topic_service.run_once(cfg, tenant_id="tenant-a")
+    assert refresh["running"] is False
+    assert "simulated tenant database unavailable" in refresh["error"]
+
+    research = hot_topic_service.run_research(cfg, tenant_id="tenant-a")
+    assert research["running"] is False
+    assert "simulated tenant database unavailable" in research["error"]
+    hot_topic_service.reset_for_tests()

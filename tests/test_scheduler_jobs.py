@@ -9,6 +9,7 @@ from pathlib import Path
 
 from src.adapters.base import CircuitBreakerReason, DraftResult, Platform
 from src.core.scheduler import SchedulerEngine
+from src.core.timezone import business_now
 from src.core.scoring.topic_eval import TopicItem
 
 
@@ -133,7 +134,7 @@ def test_data_fetch_failure_schedules_retry(cfg, conn, seed) -> None:
     conn.execute(
         "INSERT INTO metrics (draft_id, platform, fetch_status, fetched_at, attempt) "
         "VALUES (?, 'xhs', 'failed', ?, 6)",
-        (draft_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        (draft_id, business_now(cfg).strftime("%Y-%m-%d %H:%M:%S")),
     )
     conn.commit()
 

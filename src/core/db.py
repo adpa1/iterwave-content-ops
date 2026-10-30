@@ -112,6 +112,8 @@ class Database:
                 self._backup()
 
             for mig in pending:
+                if mig.name == "platform_account_singleton":
+                    self._preflight_platform_account_singleton(conn)
                 self._run_migration(conn, mig)
 
             logger.info("数据库迁移完成，最新版本 = %d", pending[-1].version)
@@ -182,6 +184,29 @@ class Database:
                     continue
             kept.append(statement.strip() + ";")
         return "\n".join(kept)
+
+    @staticmethod
+    def _preflight_platform_account_singleton(conn: sqlite3.Connection) -> None:
+        """禁止自动丢弃历史账号：发现同平台重复登记时，给出可人工处理的明确错误。"""
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='platform_accounts'"
+        ).fetchone()
+        if table is None:
+            return
+        duplicates = conn.execute(
+            "SELECT platform, GROUP_CONCAT(id) AS account_ids, COUNT(*) AS total "
+            "FROM platform_accounts GROUP BY platform HAVING COUNT(*) > 1 "
+            "ORDER BY platform"
+        ).fetchall()
+        if duplicates:
+            details = "；".join(
+                f"{row['platform']}（记录 ID：{row['account_ids']}，共 {row['total']} 条）"
+                for row in duplicates
+            )
+            raise RuntimeError(
+                "账号组存在同平台多账号历史数据，数据库唯一约束未执行。"
+                f"请先人工确认并删除/合并重复登记：{details}"
+            )
 
     def _run_migration(self, conn: sqlite3.Connection, mig: "Migration") -> None:
         """执行单个迁移脚本并记录版本。"""

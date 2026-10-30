@@ -64,6 +64,8 @@ from src.core.config import load_config, get_config, DEFAULT_ENV_PATH
 from src.core.timezone import business_now
 from src.core.config import PROJECT_ROOT
 from src.core.tenant_registry import TenantRegistry, TenantError
+from src.core.task_queue import GlobalTaskQueue
+from src.core.task_worker import GlobalTaskWorker
 from src.core.tenant_switch_gate import TenantSwitchGate, TenantSwitchInProgress
 from src.core.db import Database
 from src.core.state_machine import RoundStateMachine, DraftStateMachine
@@ -101,6 +103,56 @@ logger = logging.getLogger(__name__)
 # =====================================================================
 
 _g_ctx: dict = {}
+_task_queue: GlobalTaskQueue | None = None
+# 后台调度器上下文按账号组长期持有，不随前台活动账号组切换而销毁。
+_tenant_runtime_contexts: dict[str, dict] = {}
+
+
+def _enqueue_round_task(*, tenant_id: str, round_id: int, topic_count=None,
+                        platforms=None, save_drafts=None, feedback=None):
+    """供自动闭环等后台入口使用；队列归属由运行时闭包固定，不读取活动账号组。"""
+    if _task_queue is None:
+        raise RuntimeError("全局任务队列尚未初始化")
+    return _task_queue.enqueue(
+        task_type="round_run",
+        tenant_id=tenant_id,
+        aggregate_id=str(round_id),
+        payload={
+            "round_id": round_id, "topic_count": topic_count,
+            "platforms": platforms, "save_drafts": save_drafts,
+            "feedback": feedback,
+        },
+    )
+
+
+def _tenant_scoped_hot_topic_status(status: dict, tenant_id: str) -> dict:
+    """热点后台服务独立运行，但状态和结果只对所属账号组可见。"""
+    if status.get("tenant_id") == tenant_id or (
+        status.get("tenant_id") is None and not status.get("running")
+    ):
+        return status
+    return {
+        "running": False, "tenant_id": None, "started_at": None,
+        "finished_at": None, "report": None, "match": None,
+        "error": None, "progress": None,
+    }
+
+
+def _round_task_active(tenant_id: str, round_id: int) -> bool:
+    """检查轮次是否仍在全局队列中等待或执行，兼容旧进程内任务集合。"""
+    if _task_queue is None:
+        return False
+    for aggregate_id in (str(round_id), f"{round_id}:save_pending_drafts"):
+        task = _task_queue.find_latest(
+            tenant_id=tenant_id, task_type="round_run", aggregate_id=aggregate_id,
+        )
+        if task is not None and task.status in ("queued", "running"):
+            return True
+    return False
+
+
+def _tenant_has_active_queue_tasks(tenant_id: str) -> bool:
+    return _task_queue is not None and _task_queue.has_active(tenant_id=tenant_id)
 
 
 def _tenant_switch_policy(cfg=None):
@@ -123,7 +175,6 @@ class TenantRuntimeRollbackError(RuntimeError):
 
 
 # G-22：正在执行的轮次集合。同一轮次并发触发会被拒绝（409），避免重复产出草稿
-_running_rounds: set[int] = set()
 _round_job_status: dict[int, dict] = {}
 _media_generation_lock = threading.Lock()
 
@@ -152,9 +203,13 @@ def _dedupe_once(key: str, produce: Callable[[], dict]) -> tuple[dict, bool]:
 
 
 
-def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: str) -> dict:
+def _build_tenant_runtime_context(
+    tenant_registry: TenantRegistry, tenant_id: str, *,
+    run_startup_maintenance: bool = False,
+) -> dict:
     """为指定账号组构造完整运行时；不启动调度器、不修改当前活动上下文。"""
     cfg = load_config()
+    base_llm_config = cfg.llm.model_dump()
     tenant = tenant_registry.get(tenant_id)
     tenant_paths = None
     if tenant_id != "default":
@@ -208,6 +263,13 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
         if applied_overrides:
             logger.info("账号组热切换已应用 %d 项 SQLite 配置 tenant=%s",
                         len(applied_overrides), tenant_id)
+        from src.core.system_config_repository import migrate_tenant_llm_settings
+        llm_migration = migrate_tenant_llm_settings(
+            cfg, conn, tenant_registry.system_db_file,
+            tenant_id=tenant_id, base_llm=base_llm_config,
+        )
+        if llm_migration["purged"] or llm_migration["conflicts"]:
+            logger.info("账号组模型配置迁移 tenant=%s result=%s", tenant_id, llm_migration)
         from src.core.tenant_business_config import initialize_tenant_business_data
         initialize_tenant_business_data(conn, cfg)
         if tenant_id != "default":
@@ -217,10 +279,8 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
                 if not item.account_key.startswith(prefix):
                     item.account_key = f"{prefix}{item.account_key}"
             cfg.topic_kb.path = str(tenant_paths.kb_dir / "topics.csv")
-        from src.core import account_login, login_manager
-        runtime_data_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
-        account_login.configure_data_dir(runtime_data_dir)
-        login_manager.configure_data_dir(runtime_data_dir)
+        # 运行时构造不得修改模块级登录目录；后台任务将通过 login_manager.tenant_login_dir()
+        # 显式绑定所属账号组，只有前台交互式登录才使用活动账号组默认目录。
         adapters = get_adapters(cfg, conn)
         cb = CircuitBreakerEngine(cfg, conn, adapters)
         rhythm = RhythmController(cfg)
@@ -243,19 +303,26 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
             conn=conn, adapters=adapters, sm_draft=sm_draft, sm_round=sm_round,
             circuit_breaker=cb, notifier=notifier, ops=ops, kb_reader=None,
             spiral=spiral, scoring=scoring, goal_progress=goal_progress, guard=guard,
+            task_queue=_task_queue, tenant_id=tenant_id,
         )
-        recovery_report = RecoveryManager(cfg, conn, scheduler).recover()
+        # 临时任务运行时不执行启动期恢复；常驻账号组调度器只在首次建立上下文时执行一次。
+        recovery_report = {}
         pvm = PlanVersionManager(cfg, conn)
-        invalidation = pvm.invalidate_changed_plans()
-        if invalidation["stale_rounds"]:
-            logger.warning(
-                "账号组热切换计划签名检查 tenant=%s stale_rounds=%d",
-                tenant_id, len(invalidation["stale_rounds"]),
-            )
+        if run_startup_maintenance:
+            recovery_report = RecoveryManager(
+                cfg, conn, scheduler, task_queue=_task_queue, tenant_id=tenant_id,
+            ).recover()
+            invalidation = pvm.invalidate_changed_plans()
+            if invalidation["stale_rounds"]:
+                logger.warning(
+                    "账号组启动计划签名检查 tenant=%s stale_rounds=%d",
+                    tenant_id, len(invalidation["stale_rounds"]),
+                )
         from ..core.autogrow import AutogrowController
         autogrow = AutogrowController(
             cfg, conn, executor, goal_progress=goal_progress,
             notifier=notifier, guard=guard, pvm=pvm,
+            enqueue_task=lambda **kwargs: _enqueue_round_task(tenant_id=tenant_id, **kwargs),
         )
         scheduler.autogrow = autogrow
         return {
@@ -282,135 +349,131 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
         raise
 
 
-async def _wait_for_tenant_background_jobs(timeout_seconds: float = 120.0) -> None:
-    """等待不受 APScheduler 直接管理的热点采集/研判线程完成，避免跨账号组共享运行状态。"""
-    from src.core import hot_topic_service
-    deadline = time.monotonic() + timeout_seconds
-    while True:
-        collecting = hot_topic_service.status().get("running", False)
-        researching = hot_topic_service.research_status().get("running", False)
-        if not collecting and not researching:
-            return
-        if time.monotonic() >= deadline:
-            raise HTTPException(409, "热点采集或研判后台任务仍在执行，已取消账号组切换")
-        await asyncio.sleep(0.05)
-
-
 async def _switch_tenant_runtime(tenant_id: str) -> dict:
-    """安全切换完整运行时；任何失败都尝试恢复原账号组。调用方必须持有切换闸门。"""
+    """只切换前台运行时引用；所有账号组后台调度器和连接继续常驻。"""
     registry = _g_ctx.get("tenant_registry")
     if registry is None:
         raise HTTPException(503, "账号组注册表尚未初始化")
     old_tenant_id = _g_ctx.get("runtime_tenant_id", "default")
     if tenant_id == old_tenant_id:
         registry.select_active(tenant_id)
-        return {"selected": {"id": tenant_id, "name": registry.get(tenant_id).get("name") or tenant_id},
-                "runtime_tenant_id": tenant_id, "restart_required": False,
-                "switch_status": "unchanged", "message": "当前账号组已是运行中的账号组。"}
+        return {
+            "selected": {"id": tenant_id, "name": registry.get(tenant_id).get("name") or tenant_id},
+            "runtime_tenant_id": tenant_id, "restart_required": False,
+            "switch_status": "unchanged", "message": "当前账号组已是运行中的账号组。",
+        }
     try:
         registry.get(tenant_id)
     except TenantError as exc:
         raise HTTPException(404, str(exc)) from exc
-    # 请求闸门已排空普通 API 请求；运行轮次的等待时限由当前账号组策略控制。
-    switch_policy = _tenant_switch_policy(_g_ctx.get("cfg"))
-    round_timeout = switch_policy.round_drain_timeout_seconds
-    round_deadline = time.monotonic() + round_timeout
-    while _running_rounds:
-        if time.monotonic() >= round_deadline:
-            raise HTTPException(409, f"轮次在 {round_timeout} 秒内未能结束，已取消账号组切换")
-        await asyncio.sleep(0.05)
 
     old_context = dict(_g_ctx)
-    old_scheduler = old_context.get("scheduler")
-    old_conn = old_context.get("conn")
-    try:
-        new_context = _build_tenant_runtime_context(registry, tenant_id)
-    except RuntimeError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except Exception as exc:
-        logger.exception("目标账号组运行时初始化失败 tenant=%s", tenant_id)
-        raise HTTPException(500, f"目标账号组初始化失败，当前账号组未变更：{type(exc).__name__}") from exc
+    # 保存切换前最新的前台对象引用；调度器仍使用同一批 cfg/DB/服务对象。
+    _tenant_runtime_contexts[old_tenant_id] = old_context
+    new_context = _tenant_runtime_contexts.get(tenant_id)
+    created_context = False
+    if new_context is None:
+        try:
+            # 服务运行期间全局 worker 可能正执行该账号组任务；热切换只构造运行时，
+            # 不再并发执行启动恢复/计划失效扫描。该类维护在进程启动时已对所有租户执行。
+            new_context = _build_tenant_runtime_context(
+                registry, tenant_id, run_startup_maintenance=False,
+            )
+            new_context["scheduler"].start()
+            _tenant_runtime_contexts[tenant_id] = new_context
+            created_context = True
+        except RuntimeError as exc:
+            _tenant_runtime_contexts[old_tenant_id] = _g_ctx
+            if new_context is not None:
+                try:
+                    new_context["scheduler"].shutdown()
+                except Exception:
+                    pass
+                try:
+                    new_context["conn"].close()
+                except Exception:
+                    pass
+            raise HTTPException(409, str(exc)) from exc
+        except Exception as exc:
+            _tenant_runtime_contexts[old_tenant_id] = _g_ctx
+            if new_context is not None:
+                try:
+                    new_context["scheduler"].shutdown()
+                except Exception:
+                    pass
+                try:
+                    new_context["conn"].close()
+                except Exception:
+                    pass
+            logger.exception("目标账号组后台运行时初始化失败 tenant=%s", tenant_id)
+            raise HTTPException(
+                500, f"目标账号组初始化失败，当前账号组未变更：{type(exc).__name__}",
+            ) from exc
 
-    old_stopped = False
-    new_started = False
-    try:
-        if old_scheduler is not None:
-            drained = await old_scheduler.quiesce(timeout_seconds=switch_policy.scheduler_drain_timeout_seconds)
-            if not drained:
-                raise HTTPException(409, f"旧账号组后台任务未能在 {switch_policy.scheduler_drain_timeout_seconds} 秒内结束，已取消切换")
-            old_stopped = True
-            if old_conn is not None:
-                old_conn.close()
-            # 热点服务另有独立后台线程，APScheduler 结束不代表该线程已退出。
-            await _wait_for_tenant_background_jobs(timeout_seconds=switch_policy.background_jobs_timeout_seconds)
-            from src.core import hot_topic_service
-            hot_topic_service.reset_runtime_state()
+    # 缓存上下文也必须检查待恢复标记，避免复用已被安排恢复的旧连接。
+    new_data_dir = Path(new_context["cfg"].resolve_path(new_context["cfg"].paths.data_dir))
+    if (new_data_dir / ".pending_restore.json").exists():
+        if created_context:
+            try:
+                new_context["scheduler"].shutdown()
+                new_context["conn"].close()
+            finally:
+                _tenant_runtime_contexts.pop(tenant_id, None)
+        _tenant_runtime_contexts[old_tenant_id] = _g_ctx
+        raise HTTPException(409, "目标账号组存在待恢复快照，请先重启服务完成恢复，再执行热切换")
 
-        from src.core import account_login, login_manager
-        # 旧账号组的扫码登录子进程和登录态导出线程必须先退出，避免继续读写旧/新目录。
-        account_login.stop_all_logins(timeout_seconds=switch_policy.login_process_timeout_seconds)
-        new_data_dir = new_context["cfg"].resolve_path(new_context["cfg"].paths.data_dir)
+    from src.core import account_login, login_manager
+    try:
+        # 仅终止前台交互式扫码登录；已入队 Agent 任务和所有账号组调度器不受影响。
+        policy = _tenant_switch_policy(old_context.get("cfg"))
+        account_login.stop_all_logins(timeout_seconds=policy.login_process_timeout_seconds)
         account_login.configure_data_dir(new_data_dir)
         login_manager.configure_data_dir(new_data_dir)
-
-        new_context["scheduler"].start()
-        new_started = True
         selected = registry.select_active(tenant_id)
         set_active_notifier(new_context["notifier"])
         _g_ctx.clear()
         _g_ctx.update(new_context)
-        # 幂等去重结果含业务响应，必须在租户边界切换后清空，避免复用旧租户响应。
+        # 活动账号组缓存直接引用前台字典；切走时会先快照，避免配置更新后缓存陈旧。
+        _tenant_runtime_contexts[tenant_id] = _g_ctx
         with _dedupe_lock:
             _dedupe_cache.clear()
-        logger.info("账号组运行时热切换成功 from=%s to=%s", old_tenant_id, tenant_id)
+        logger.info("账号组前台工作空间切换成功 from=%s to=%s", old_tenant_id, tenant_id)
         return {
             "selected": selected, "runtime_tenant_id": tenant_id,
             "restart_required": False, "switch_status": "completed",
-            "message": f"已切换到账号组「{selected['name']}」，运行时已重建。",
+            "message": f"已切换到账号组「{selected['name']}」，后台任务和定时调度保持运行。",
         }
     except Exception as exc:
-        logger.exception("账号组热切换失败 from=%s to=%s", old_tenant_id, tenant_id)
+        logger.exception("账号组前台切换失败 from=%s to=%s", old_tenant_id, tenant_id)
         try:
-            new_context["scheduler"].shutdown()
-            if new_started:
-                await asyncio.sleep(0.05)
-        except Exception:
-            logger.exception("清理失败的新账号组调度器失败 tenant=%s", tenant_id)
-        try:
-            new_context["conn"].close()
-        except Exception:
-            logger.exception("关闭失败的新账号组连接失败 tenant=%s", tenant_id)
-
-        if not old_stopped:
-            if isinstance(exc, HTTPException):
-                raise exc
-            raise HTTPException(500, f"账号组初始化失败，原运行时未变更：{type(exc).__name__}") from exc
-
-        try:
-            # 旧调度器已停止，重新构造旧账号组而非复用可能已关闭的调度器实例。
-            rollback_context = _build_tenant_runtime_context(registry, old_tenant_id)
-            from src.core import account_login, login_manager
-            old_data_dir = rollback_context["cfg"].resolve_path(rollback_context["cfg"].paths.data_dir)
+            registry.select_active(old_tenant_id)
+            set_active_notifier(old_context["notifier"])
+            old_data_dir = Path(old_context["cfg"].resolve_path(old_context["cfg"].paths.data_dir))
             account_login.configure_data_dir(old_data_dir)
             login_manager.configure_data_dir(old_data_dir)
-            rollback_context["scheduler"].start()
-            registry.select_active(old_tenant_id)
-            set_active_notifier(rollback_context["notifier"])
             _g_ctx.clear()
-            _g_ctx.update(rollback_context)
-            if old_conn is not None:
-                try:
-                    old_conn.close()
-                except Exception:
-                    pass
+            _g_ctx.update(old_context)
+            _tenant_runtime_contexts[old_tenant_id] = _g_ctx
         except Exception as rollback_exc:
-            logger.exception("账号组热切换回滚失败 from=%s to=%s", tenant_id, old_tenant_id)
+            logger.exception("账号组前台切换回滚失败")
             raise TenantRuntimeRollbackError(
-                f"切换失败且旧账号组恢复失败（{type(rollback_exc).__name__}）；为避免串租，系统已阻止新业务请求"
+                f"切换失败且旧账号组前台上下文恢复失败（{type(rollback_exc).__name__}）；系统已阻止新业务请求"
             ) from rollback_exc
+        if created_context:
+            try:
+                new_context["scheduler"].shutdown()
+                new_context["conn"].close()
+            except Exception:
+                logger.exception("清理切换失败的新账号组运行时失败 tenant=%s", tenant_id)
+            _tenant_runtime_contexts.pop(tenant_id, None)
+        elif new_context is not None:
+            # 已缓存的目标账号组没有销毁；恢复它原来的独立上下文快照。
+            _tenant_runtime_contexts[tenant_id] = new_context
         if isinstance(exc, HTTPException):
             raise exc
-        raise HTTPException(500, f"切换失败，已恢复账号组「{old_tenant_id}」：{type(exc).__name__}") from exc
+        raise HTTPException(
+            500, f"切换失败，已恢复账号组「{old_tenant_id}」：{type(exc).__name__}",
+        ) from exc
 
 
 _VALIDATION_FIELD_LABELS = {
@@ -470,10 +533,18 @@ def _build_app() -> FastAPI:
         # 启动阶段
         cfg = load_config()
         # 账号组注册表是共享基础设施；默认组继续使用原有 data/ 与 backups/。
+        global _task_queue
         tenant_registry = TenantRegistry(PROJECT_ROOT, cfg=cfg)
         tenant_registry.initialize()
+        _task_queue = GlobalTaskQueue(tenant_registry.system_db_file)
+        _task_queue.initialize()
+        _tenant_runtime_contexts.clear()
+        # 当前部署约束为单 Uvicorn worker；启动时上一进程已退出，可立即回收遗留 running。
+        _task_queue.recover_orphaned_running()
+        _task_queue.recover_expired()
         active_tenant_id = tenant_registry.active_id()
         active_tenant = tenant_registry.get(active_tenant_id)
+        base_llm_config = cfg.llm.model_dump()
         if active_tenant_id != "default":
             tenant_paths = tenant_registry.paths(
                 active_tenant_id, name=str(active_tenant.get("name") or active_tenant_id),
@@ -544,6 +615,14 @@ def _build_app() -> FastAPI:
         if applied_overrides:
             logger.info("⚙️ 已套用 %d 项 SQLite 运行时配置：%s",
                         len(applied_overrides), applied_overrides)
+        from src.core.system_config_repository import migrate_tenant_llm_settings
+        llm_migration = migrate_tenant_llm_settings(
+            cfg, conn, tenant_registry.system_db_file,
+            tenant_id=active_tenant_id, base_llm=base_llm_config,
+        )
+        if llm_migration["purged"] or llm_migration["conflicts"]:
+            logger.info("系统级模型配置迁移完成 tenant=%s result=%s",
+                        active_tenant_id, llm_migration)
         from src.core.tenant_business_config import initialize_tenant_business_data
         initialize_tenant_business_data(conn, cfg)
         if active_tenant_id != "default":
@@ -600,10 +679,13 @@ def _build_app() -> FastAPI:
             circuit_breaker=cb, notifier=notifier,
             ops=ops, kb_reader=None, spiral=spiral, scoring=scoring,
             goal_progress=_g_ctx["goal_progress"], guard=guard,
+            task_queue=_task_queue, tenant_id=active_tenant_id,
         )
         scheduler.start()
         # 断点恢复（R16/R17）：接续崩溃前未完成的任务，不重复写操作
-        recovery_report = RecoveryManager(cfg, conn, scheduler).recover()
+        recovery_report = RecoveryManager(
+            cfg, conn, scheduler, task_queue=_task_queue, tenant_id=active_tenant_id,
+        ).recover()
         _g_ctx["recovery"] = recovery_report
 
         # R18 母计划签名失效检查：启动时自动标记与当前计划不一致的活跃轮次
@@ -622,22 +704,81 @@ def _build_app() -> FastAPI:
         autogrow = AutogrowController(
             cfg, conn, executor, goal_progress=_g_ctx["goal_progress"],
             notifier=notifier, guard=guard, pvm=pvm,
+            enqueue_task=lambda **kwargs: _enqueue_round_task(
+                tenant_id=active_tenant_id, **kwargs,
+            ),
         )
         _g_ctx["autogrow"] = autogrow
         scheduler.autogrow = autogrow
 
-        # 热点：库里没有新鲜数据时启动后补跑一次后台采集（不阻塞启动）
+        # 当前前台运行时也作为该账号组的常驻后台调度上下文。
+        _tenant_runtime_contexts[active_tenant_id] = _g_ctx
+        # 所有已有账号组的 APScheduler 独立常驻；切换前台工作空间不停止旧组定时任务。
+        for tenant_item in tenant_registry.list():
+            background_tenant_id = str(tenant_item["id"])
+            if background_tenant_id == active_tenant_id:
+                continue
+            background_context = None
+            try:
+                background_context = _build_tenant_runtime_context(
+                    tenant_registry, background_tenant_id,
+                    run_startup_maintenance=True,
+                )
+                background_context["scheduler"].start()
+                _tenant_runtime_contexts[background_tenant_id] = background_context
+                logger.info("账号组后台调度器已启动 tenant=%s", background_tenant_id)
+            except Exception:
+                logger.exception(
+                    "账号组后台调度器初始化失败 tenant=%s；该组切换时将重试初始化",
+                    background_tenant_id,
+                )
+                if background_context is not None:
+                    try:
+                        background_context["scheduler"].shutdown()
+                    except Exception:
+                        pass
+                    try:
+                        background_context["conn"].close()
+                    except Exception:
+                        pass
+
+        # 全局消费者独立于当前活动账号组；每个任务按 tenant_id 构造专属运行时。
+        task_worker_stop = asyncio.Event()
+        task_worker = GlobalTaskWorker(_task_queue, lambda tenant_id: _build_tenant_runtime_context(
+            tenant_registry, tenant_id,
+        ))
+        task_worker_task = asyncio.create_task(
+            task_worker.run(task_worker_stop), name="global-tenant-task-worker",
+        )
+
+        # 热点服务是独立资源池；后台线程持有启动时的账号组配置和独立数据库连接。
         from ..core import hot_topic_service
         if cfg.hot_topics.enabled is not False and hot_topic_service.is_stale(cfg, conn):
-            hot_topic_service.trigger_background(cfg, trigger="startup")
+            hot_topic_service.trigger_background(
+                cfg, trigger="startup", tenant_id=active_tenant_id,
+            )
 
         logger.info("✅ FastAPI 应用启动完成，%d 个模块已加载", len(_g_ctx))
 
         try:
             yield
         finally:
-            scheduler.shutdown()
-            conn.close()
+            task_worker_stop.set()
+            try:
+                await task_worker_task
+            except Exception:
+                logger.exception("全局任务消费者关闭异常")
+            # 停止所有账号组常驻调度器并释放各自的数据库连接。
+            for tenant_id, context in list(_tenant_runtime_contexts.items()):
+                try:
+                    context["scheduler"].shutdown()
+                except Exception:
+                    logger.exception("关闭账号组调度器失败 tenant=%s", tenant_id)
+                try:
+                    context["conn"].close()
+                except Exception:
+                    logger.exception("关闭账号组数据库连接失败 tenant=%s", tenant_id)
+            _tenant_runtime_contexts.clear()
             logger.info("⏹️ FastAPI 应用关闭")
 
     app = FastAPI(
@@ -1559,7 +1700,8 @@ def _register_routes(app: FastAPI) -> None:
             return {"sample_run_id": run_id, "status": "failed", "error_code": error_code,
                     "error_message": error_message}
 
-        # 后台生成期间持有租户切换闸门引用，避免运行时切换关闭旧连接后跨账号组写入。
+        # 后台任务固定使用发起请求时的账号组上下文。账号组运行时会常驻缓存，
+        # 切换前台只替换 _g_ctx 引用，不会关闭该组连接；因此后台样稿无需占用切换闸门。
         conn_bg = conn
         cfg_bg = _g()["cfg"]
 
@@ -1569,7 +1711,7 @@ def _register_routes(app: FastAPI) -> None:
                 "(id, tenant_id, sample_run_id, event_type, event_at, source, metadata_json, idempotency_key) "
                 "VALUES (?, ?, ?, ?, ?, 'web', ?, ?)",
                 (uuid.uuid4().hex, tenant_id, run_id, event_type,
-                 _now().isoformat(sep=" ", timespec="seconds"),
+                 business_now(cfg_bg).isoformat(sep=" ", timespec="seconds"),
                  json.dumps(metadata, ensure_ascii=False), event_key),
             )
             conn_bg.commit()
@@ -1578,7 +1720,7 @@ def _register_routes(app: FastAPI) -> None:
             from src.core.content_pipeline import ContentGenerationError, generate_copy_content
             from src.adapters.base import Platform as PlatformEnum
             try:
-                started = _now().isoformat(sep=" ", timespec="seconds")
+                started = business_now(cfg_bg).isoformat(sep=" ", timespec="seconds")
                 conn_bg.execute("UPDATE sample_runs SET status='generating', started_at=? WHERE id=?",
                                 (started, run_id))
                 conn_bg.commit()
@@ -1676,7 +1818,7 @@ def _register_routes(app: FastAPI) -> None:
                     results.append((angle, title, body, tags, findings))
                 conn_bg.execute("UPDATE sample_runs SET status='quality_check' WHERE id=?", (run_id,))
                 conn_bg.commit()
-                now_done = _now().isoformat(sep=" ", timespec="seconds")
+                now_done = business_now(cfg_bg).isoformat(sep=" ", timespec="seconds")
                 for angle, title, body, tags, findings in results:
                     conn_bg.execute(
                         "INSERT INTO sample_contents "
@@ -1707,20 +1849,14 @@ def _register_routes(app: FastAPI) -> None:
                     logger.exception("快速体验失败事务回滚异常 run=%s", run_id)
                 conn_bg.execute(
                     "UPDATE sample_runs SET status='failed', error_code=?, error_message_safe=?, completed_at=? WHERE id=?",
-                    (code, safe_message[:300], _now().isoformat(sep=" ", timespec="seconds"), run_id),
+                    (code, safe_message[:300], business_now(cfg_bg).isoformat(sep=" ", timespec="seconds"), run_id),
                 )
                 conn_bg.commit()
                 record_sample_event("sample_generation_failed", {"error_code": code},
                                     f"sample-failed:{run_id}")
-            finally:
-                _tenant_switch_gate.leave_request()
-
-        _tenant_switch_gate.enter_request()
-        try:
-            asyncio.create_task(generate_samples(), name=f"activation-samples-{run_id}")
-        except Exception:
-            _tenant_switch_gate.leave_request()
-            raise
+        
+        # 后台协程已捕获 tenant_id / conn_bg / cfg_bg，不再占用前台切换闸门。
+        asyncio.create_task(generate_samples(), name=f"activation-samples-{run_id}")
         return {"sample_run_id": run_id, "status": "generating", "poll_after_ms": 1200}
 
     @app.delete("/api/activation/samples/{sample_run_id}")
@@ -3153,10 +3289,10 @@ def _register_routes(app: FastAPI) -> None:
     def stage_tenant_backup_restore(req: TenantBackupRestoreRequest):
         if not req.confirm:
             raise HTTPException(400, "恢复操作需要显式确认")
-        if _running_rounds:
-            raise HTTPException(409, "当前仍有轮次在执行，不能安排恢复")
-        cfg = _g()["cfg"]
         tenant_id = _g().get("runtime_tenant_id", "default")
+        if _tenant_has_active_queue_tasks(tenant_id):
+            raise HTTPException(409, "当前账号组仍有轮次或后台任务在执行/排队，不能安排恢复")
+        cfg = _g()["cfg"]
         data_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
         backup_dir = Path(cfg.resolve_path(cfg.paths.backup_dir)).resolve()
         backup_name = Path(req.backup_name).name
@@ -3654,6 +3790,58 @@ def _register_routes(app: FastAPI) -> None:
             result.append(item)
         return {"updated": values, "goals": result, "summary": GoalProgressUpdater.summarize(rows, mode=_g()["cfg"].ultimate_goal.goal_mode)}
 
+    # --- 全局任务队列（跨账号组，仅供唯一运营者查看）---
+    @app.get("/api/task-queue")
+    def list_global_task_queue(limit: int = Query(500, ge=1, le=500)):
+        if _task_queue is None:
+            raise HTTPException(503, "全局任务队列尚未初始化")
+        registry = _g().get("tenant_registry")
+        items = []
+        for task in _task_queue.list(limit=limit):
+            try:
+                tenant_name = registry.get(task.tenant_id)["name"] if registry else task.tenant_id
+            except TenantError:
+                tenant_name = task.tenant_id
+            items.append({
+                "queue_order": task.queue_order,
+                "task_id": task.task_id, "task_type": task.task_type,
+                "tenant_id": task.tenant_id, "tenant_name": tenant_name,
+                "aggregate_id": task.aggregate_id, "status": task.status,
+                "created_at": task.created_at, "available_at": task.available_at,
+                "started_at": task.started_at,
+                "finished_at": task.finished_at, "attempts": task.attempts,
+                "error_code": task.error_code, "error_message": task.error_message,
+            })
+        return {"items": items}
+
+    @app.get("/api/task-queue/{task_id}")
+    def get_global_task(task_id: str):
+        if _task_queue is None:
+            raise HTTPException(503, "全局任务队列尚未初始化")
+        task = _task_queue.get(task_id)
+        if task is None:
+            raise HTTPException(404, "任务不存在")
+        return {
+            "queue_order": task.queue_order,
+            "task_id": task.task_id, "task_type": task.task_type,
+            "tenant_id": task.tenant_id, "aggregate_id": task.aggregate_id,
+            "status": task.status, "payload": task.payload, "result": task.result,
+            "created_at": task.created_at, "available_at": task.available_at,
+            "started_at": task.started_at,
+            "finished_at": task.finished_at, "attempts": task.attempts,
+            "error_code": task.error_code, "error_message": task.error_message,
+        }
+
+    @app.post("/api/task-queue/{task_id}/cancel")
+    def cancel_global_task(task_id: str):
+        if _task_queue is None:
+            raise HTTPException(503, "全局任务队列尚未初始化")
+        if _task_queue.get(task_id) is None:
+            raise HTTPException(404, "任务不存在")
+        if not _task_queue.cancel(task_id):
+            raise HTTPException(409, "任务已开始执行或已结束，当前不能取消")
+        return {"task_id": task_id, "status": "cancelled"}
+
     # --- 轮次 ---
     @app.get("/api/rounds")
     def list_rounds(status: Optional[str] = Query(None)):
@@ -3733,48 +3921,70 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/rounds/{round_id}/run", status_code=202)
     async def run_round(round_id: int, req: RunRoundRequest):
-        """异步启动一轮生产，立即返回任务 ID；客户端通过 run_status 轮询结果。"""
-        if round_id in _running_rounds:
-            raise HTTPException(
-                409, f"轮次 {round_id} 正在执行中，请等待本次执行结束（禁止并发重复触发）"
+        """将生产轮次写入跨账号组全局 FIFO 队列；切换前台账号组不会影响任务。"""
+        if _task_queue is None:
+            raise HTTPException(503, "全局任务队列尚未初始化")
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        round_row = _g()["conn"].execute(
+            "SELECT id FROM spiral_rounds WHERE id=?", (round_id,),
+        ).fetchone()
+        if round_row is None:
+            raise HTTPException(404, "当前账号组不存在该生产轮次")
+        try:
+            task, created = _task_queue.enqueue(
+                task_type="round_run",
+                tenant_id=tenant_id,
+                aggregate_id=str(round_id),
+                payload={
+                    "round_id": round_id,
+                    "topic_count": req.topic_count,
+                    "platforms": req.platforms,
+                    "save_drafts": req.save_drafts,
+                },
             )
-        _running_rounds.add(round_id)
-        _round_job_status[round_id] = {
-            "round_id": round_id, "running": True, "started": True,
-            "report": None, "error": None,
+        except (ValueError, sqlite3.Error) as exc:
+            logger.exception("生产任务入队失败 tenant=%s round=%s", tenant_id, round_id)
+            raise HTTPException(503, "任务暂时无法入队，请稍后重试") from exc
+        return {
+            "round_id": round_id, "task_id": task.task_id,
+            "started": True, "created": created,
+            "running": task.status in ("queued", "running"),
+            "queued": task.status == "queued", "status": task.status,
         }
-
-        async def execute_round_job():
-            try:
-                report = await _g()["executor"].run(
-                    round_id,
-                    topic_count=req.topic_count,
-                    platform_values=req.platforms,
-                    save_drafts=req.save_drafts,
-                )
-                _round_job_status[round_id] = {
-                    "round_id": round_id, "running": False,
-                    "report": report, "error": None,
-                }
-            except Exception as exc:  # noqa: BLE001 — 后台任务错误必须可查询
-                logger.exception("后台轮次执行失败 round=%s", round_id)
-                # 仅返回稳定错误码和安全提示，不把供应商原始响应/异常详情暴露给前端。
-                error_code = getattr(exc, "code", "round_execution_failed")
-                safe_message = str(exc) if getattr(exc, "code", None) else "本轮执行失败，请检查运行记录"
-                _round_job_status[round_id] = {
-                    "round_id": round_id, "running": False,
-                    "report": None, "error": safe_message,
-                    "error_code": error_code,
-                }
-            finally:
-                _running_rounds.discard(round_id)
-
-        asyncio.create_task(execute_round_job(), name=f"round-{round_id}")
-        return {"round_id": round_id, "started": True, "running": True}
 
     @app.get("/api/rounds/{round_id}/run_status")
     def round_run_status(round_id: int):
-        """查询后台轮次任务状态与最终报告。"""
+        """查询当前账号组轮次在全局队列中的状态与最终报告。"""
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        if _task_queue is not None:
+            related = (
+                str(round_id),
+                f"{round_id}:save_pending_drafts",
+            )
+            candidates = [
+                _task_queue.find_latest(
+                    tenant_id=tenant_id,
+                    task_type="round_run",
+                    aggregate_id=aggregate_id,
+                )
+                for aggregate_id in related
+            ]
+            task = max(
+                (item for item in candidates if item is not None),
+                key=lambda item: item.queue_order,
+                default=None,
+            )
+            if task is not None:
+                return {
+                    "round_id": round_id, "task_id": task.task_id,
+                    "task_type": task.payload.get("operation", "run"),
+                    "status": task.status,
+                    "running": task.status in ("queued", "running"),
+                    "queued": task.status == "queued",
+                    "report": task.result,
+                    "error": task.error_message,
+                    "error_code": task.error_code,
+                }
         status = _round_job_status.get(round_id)
         if status is not None:
             return dict(status)
@@ -3790,24 +4000,37 @@ def _register_routes(app: FastAPI) -> None:
         # 兼容多 worker：轮次数据库状态为 producing 时，即使轮询落到另一 worker 也继续等待。
         return {
             "round_id": round_id,
-            "running": round_id in _running_rounds or row["status"] == "producing",
+            "running": row["status"] == "producing",
             "report": report, "error": None,
         }
 
-    @app.post("/api/rounds/{round_id}/save_pending")
+    @app.post("/api/rounds/{round_id}/save_pending", status_code=202)
     async def save_pending_drafts(round_id: int):
-        """恢复已生成但尚未存到平台的草稿，不重新生成内容、不执行发布操作。"""
-        if round_id in _running_rounds:
-            raise HTTPException(
-                409, f"轮次 {round_id} 正在执行中，请等待本次执行结束"
-            )
-        _running_rounds.add(round_id)
+        """将待存平台草稿的操作加入全局 FIFO 队列；不重新生成内容，也不自动发布。"""
+        if _task_queue is None:
+            raise HTTPException(503, "全局任务队列尚未初始化")
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        round_row = _g()["conn"].execute(
+            "SELECT id FROM spiral_rounds WHERE id=?", (round_id,),
+        ).fetchone()
+        if round_row is None:
+            raise HTTPException(404, "当前账号组不存在该生产轮次")
         try:
-            return await _g()["executor"].save_pending_drafts(round_id)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        finally:
-            _running_rounds.discard(round_id)
+            task, created = _task_queue.enqueue(
+                task_type="round_run",
+                tenant_id=tenant_id,
+                aggregate_id=f"{round_id}:save_pending_drafts",
+                payload={"operation": "save_pending_drafts", "round_id": round_id},
+            )
+        except (ValueError, sqlite3.Error) as exc:
+            logger.exception("待存草稿任务入队失败 tenant=%s round=%s", tenant_id, round_id)
+            raise HTTPException(503, "任务暂时无法入队，请稍后重试") from exc
+        return {
+            "round_id": round_id, "task_id": task.task_id,
+            "started": True, "created": created,
+            "running": task.status in ("queued", "running"),
+            "queued": task.status == "queued", "status": task.status,
+        }
 
     @app.post("/api/rounds/{round_id}/transition")
     def round_transition(round_id: int, req: TransitionRequest):
@@ -3837,7 +4060,7 @@ def _register_routes(app: FastAPI) -> None:
             if current and current["status"] != "cancelled":
                 # 不能在异步生产仍运行时取消：执行器可能继续调用平台存草稿，
                 # 但轮次已是终态，后续的发布/复盘会失去状态入口。
-                if round_id in _running_rounds:
+                if _round_task_active(_g().get("runtime_tenant_id", "default"), round_id):
                     raise HTTPException(
                         409,
                         "本轮仍在执行，不能中途取消。请等待本次执行结束后再处理草稿",
@@ -4493,8 +4716,8 @@ def _register_routes(app: FastAPI) -> None:
     @app.delete("/api/rounds/{round_id}")
     def delete_round_api(round_id: int):
         from src.core.content_admin import DeleteBlocked, delete_round
-        if round_id in _running_rounds:
-            raise HTTPException(409, f"轮次 {round_id} 正在执行，不能删除")
+        if _round_task_active(_g().get("runtime_tenant_id", "default"), round_id):
+            raise HTTPException(409, f"轮次 {round_id} 正在排队或执行，不能删除")
         try:
             return delete_round(_g()["cfg"], _g()["conn"], round_id)
         except LookupError as exc:
@@ -4511,7 +4734,9 @@ def _register_routes(app: FastAPI) -> None:
 
     def _ensure_content_round_idle(row, operation: str) -> None:
         round_id = row["round_id"]
-        if round_id is not None and round_id in _running_rounds:
+        if round_id is not None and _round_task_active(
+            _g().get("runtime_tenant_id", "default"), round_id,
+        ):
             raise HTTPException(
                 409,
                 f"轮次 {round_id} 正在执行生产/存草稿操作，暂不能{operation}；请等待本轮结束",
@@ -5145,11 +5370,18 @@ def _register_routes(app: FastAPI) -> None:
 
         conn = _g()["conn"]
         cfg = _g()["cfg"]
+        tenant_id = _g().get("runtime_tenant_id", "default")
         if refresh:
-            hot_topic_service.trigger_background(cfg, trigger="manual")
+            hot_topic_service.trigger_background(
+                cfg, trigger="manual", tenant_id=tenant_id,
+            )
         data = HotTopicCollector(cfg, conn).overview()
-        data["refresh_job"] = hot_topic_service.status()
-        data["research_job"] = hot_topic_service.research_status()
+        data["refresh_job"] = _tenant_scoped_hot_topic_status(
+            hot_topic_service.status(), tenant_id,
+        )
+        data["research_job"] = _tenant_scoped_hot_topic_status(
+            hot_topic_service.research_status(), tenant_id,
+        )
         # 研判依赖大模型：未启用时前端把「研判热点」按钮置灰并提示去系统设置开启
         from ..core.hot_topic_matcher import default_llm_fn
         data["research_ready"] = default_llm_fn(cfg) is not None
@@ -5164,27 +5396,32 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/hot_topics/refresh", status_code=202)
     def hot_topics_refresh():
-        """手动触发后台采集 + 标签匹配，立即返回任务状态（前端轮询 GET /api/hot_topics 的 refresh_job）。"""
+        """手动触发后台采集 + 标签匹配，立即返回任务状态。"""
         from ..core import hot_topic_service
 
         cfg = _g()["cfg"]
         if cfg.hot_topics.enabled is False:
             raise HTTPException(409, "热点采集已在配置中关闭（hot_topics.enabled=false）")
-        return hot_topic_service.trigger_background(cfg, trigger="manual")
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        result = hot_topic_service.trigger_background(cfg, trigger="manual", tenant_id=tenant_id)
+        if not result.get("started") and result.get("tenant_id") != tenant_id and result.get("running"):
+            raise HTTPException(409, "另一个账号组的热点采集正在运行，请稍后重试")
+        return result
 
     @app.post("/api/hot_topics/research", status_code=202)
     def hot_topics_research():
-        """手动触发大模型研判（只研判当前榜单，历史热点不参与），立即返回任务状态。
-
-        前端轮询 GET /api/hot_topics 的 research_job 判断是否完成。
-        """
+        """手动触发大模型研判当前账号组的热点，立即返回任务状态。"""
         from ..core import hot_topic_service
         from ..core.hot_topic_matcher import default_llm_fn
 
         cfg = _g()["cfg"]
         if default_llm_fn(cfg) is None:
             raise HTTPException(409, "大模型未启用：请到「系统设置」开启主模型并配置 API Key")
-        return hot_topic_service.trigger_research(cfg)
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        result = hot_topic_service.trigger_research(cfg, tenant_id=tenant_id)
+        if not result.get("started") and result.get("tenant_id") != tenant_id and result.get("running"):
+            raise HTTPException(409, "另一个账号组的热点研判正在运行，请稍后重试")
+        return result
 
     @app.post("/api/hot_topics/import")
     def import_hot_topic(req: dict):
@@ -5598,7 +5835,10 @@ def _register_routes(app: FastAPI) -> None:
         """
         g2 = _g()
         try:
-            result = patch_config(g2["cfg"], g2["conn"], req.updates)
+            result = patch_config(
+                g2["cfg"], g2["conn"], req.updates,
+                system_db_file=g2["tenant_registry"].system_db_file,
+            )
         except ConfigNotAllowedError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except ConfigPatchError as e:
@@ -6287,6 +6527,11 @@ def _register_routes(app: FastAPI) -> None:
         if not handle:
             raise HTTPException(422, "平台账号标识不能为空")
         conn = _g()["conn"]
+        existing_platform = conn.execute(
+            "SELECT id FROM platform_accounts WHERE platform=? LIMIT 1", (req.platform,),
+        ).fetchone()
+        if existing_platform:
+            raise HTTPException(409, "一个账号组内每个平台只能登记一个账号，请编辑现有记录或先删除原记录")
         try:
             cur = conn.execute(
                 "INSERT INTO platform_accounts (platform, account_handle, normalized_handle, display_name, status, notes) "
@@ -6295,7 +6540,7 @@ def _register_routes(app: FastAPI) -> None:
             )
             conn.commit()
         except sqlite3.IntegrityError as exc:
-            raise HTTPException(409, "该平台账号标识已登记；同一平台的账号标识不允许重复") from exc
+            raise HTTPException(409, "账号组内每个平台只能登记一个账号，且平台账号标识不能重复") from exc
         row = conn.execute(
             "SELECT id, platform, account_handle, display_name, status, notes, created_at, updated_at "
             "FROM platform_accounts WHERE id = ?", (cur.lastrowid,),
@@ -6311,6 +6556,12 @@ def _register_routes(app: FastAPI) -> None:
         exists = conn.execute("SELECT id FROM platform_accounts WHERE id = ?", (account_id,)).fetchone()
         if not exists:
             raise HTTPException(404, "登记的平台账号不存在")
+        existing_platform = conn.execute(
+            "SELECT id FROM platform_accounts WHERE platform=? AND id<>? LIMIT 1",
+            (req.platform, account_id),
+        ).fetchone()
+        if existing_platform:
+            raise HTTPException(409, "一个账号组内每个平台只能登记一个账号，请编辑现有记录或先删除原记录")
         try:
             conn.execute(
                 "UPDATE platform_accounts SET platform=?, account_handle=?, normalized_handle=?, display_name=?, status=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",

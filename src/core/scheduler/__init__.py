@@ -72,6 +72,8 @@ class SchedulerEngine:
         # 由 lifespan 注入的运行时依赖（wire()）
         self.conn = None
         self.adapters: dict = {}
+        self.task_queue = None
+        self.tenant_id: str | None = None
         self.sm_draft = None
         self.sm_round = None
         self.cb = None
@@ -92,10 +94,12 @@ class SchedulerEngine:
     def wire(self, *, conn, adapters, sm_draft=None, sm_round=None,
              circuit_breaker=None, notifier=None, ops=None,
              kb_reader=None, spiral=None, scoring=None, goal_progress=None,
-             guard=None) -> None:
+             guard=None, task_queue=None, tenant_id: str | None = None) -> None:
         """注入运行时依赖。必须在 start() 之前调用。"""
         self.conn = conn
         self.adapters = adapters or {}
+        self.task_queue = task_queue
+        self.tenant_id = tenant_id
         self.sm_draft = sm_draft
         self.sm_round = sm_round
         self.cb = circuit_breaker
@@ -285,9 +289,21 @@ class SchedulerEngine:
             (cutoff,),
         ).fetchall()
         n = 0
+        retry_times, _interval_min = self._metrics_retry_params()
         for r in rows:
             pending = [j for j in self.scheduler.get_jobs() if j.id.startswith(f"data_fetch_{r['id']}_")]
-            if pending:
+            queued = False
+            if self.task_queue is not None and self.tenant_id:
+                for attempt in range(1, retry_times + 1):
+                    task = self.task_queue.find_latest(
+                        tenant_id=self.tenant_id,
+                        task_type="scheduler_job",
+                        aggregate_id=f"_job_data_fetch:{r['id']}:{attempt}",
+                    )
+                    if task is not None and task.status in ("queued", "running"):
+                        queued = True
+                        break
+            if pending or queued:
                 continue
             self.schedule_data_fetch(r["id"], business_now(self.cfg) + timedelta(seconds=5))
             n += 1
@@ -298,7 +314,29 @@ class SchedulerEngine:
     def schedule_data_fetch(
         self, draft_id: str, run_at: datetime, attempt: int = 1,
     ) -> None:
-        """为已发布的 draft 注册一次性数据采集任务（attempt 用于失败重试计数）。"""
+        """安排发布后的数据采集；优先写入全局持久化队列，保证非活动账号组也可恢复。"""
+        if self.task_queue is not None and self.tenant_id:
+            self.task_queue.enqueue(
+                task_type="scheduler_job",
+                tenant_id=self.tenant_id,
+                aggregate_id=f"_job_data_fetch:{draft_id}:{attempt}",
+                payload={
+                    "method": "_job_data_fetch",
+                    "args": [draft_id, attempt],
+                },
+                available_at=run_at,
+            )
+            logger.info(
+                "📥 数据采集已延迟入全局队列 draft=%s attempt=%d run_at=%s tenant=%s",
+                draft_id, attempt, run_at.isoformat(), self.tenant_id,
+            )
+            return
+
+        # 无全局队列的旧版/单元测试替身仍保留 APScheduler 兼容路径。
+        active_engine = _ENGINES.get(self.engine_key)
+        if active_engine is not None and active_engine is not self:
+            active_engine.schedule_data_fetch(draft_id, run_at, attempt)
+            return
         self.scheduler.add_job(
             _run_data_fetch,
             DateTrigger(run_date=run_at),
@@ -891,11 +929,13 @@ class SchedulerEngine:
             f"如果你想更深入了解，可以在评论区继续互动，我会第一时间回复！"
         )
 
-    async def _job_hot_topics_refresh(self) -> None:
-        """后台采集热点并做标签匹配；独立连接、在线程里执行，不阻塞事件循环。"""
-        from ..hot_topic_service import run_once
+    async def _job_hot_topics_refresh(self) -> dict:
+        """触发独立热点服务；采集线程持有当前账号组配置与独立数据库连接。"""
+        from ..hot_topic_service import trigger_background
 
-        await asyncio.to_thread(run_once, self.cfg, None, trigger="scheduler")
+        return trigger_background(
+            self.cfg, trigger="scheduler", tenant_id=self.tenant_id,
+        )
 
     async def _job_kb_scan(self) -> None:
         """每天 6:00 扫描选题库增量 — 对比 topic_index 插入新选题。"""
@@ -1318,7 +1358,24 @@ def _engine_for(engine_key: str | None) -> "SchedulerEngine | None":
 
 
 async def _invoke(engine, method_name: str, *args) -> None:
-    """兼容旧测试替身，同时对真实引擎的 job 执行做生命周期跟踪。"""
+    """真实账号组的后台作业统一入全局队列；无队列的测试替身保持直接调用。"""
+    queue = getattr(engine, "task_queue", None)
+    tenant_id = getattr(engine, "tenant_id", None)
+    queued_methods = {
+        "_job_publish_polling", "_job_data_fetch", "_job_daily_ops",
+        "_job_comment_polling", "_job_cb_recovery", "_job_kb_scan",
+        "_job_kb_sync", "_job_data_retention_cleanup",
+        "_job_round_timeout_sweeper", "_job_round_review", "_job_autogrow_next_round",
+    }
+    if queue is not None and tenant_id and method_name in queued_methods:
+        aggregate_id = method_name + (":" + ":".join(map(str, args)) if args else "")
+        queue.enqueue(
+            task_type="scheduler_job",
+            tenant_id=tenant_id,
+            aggregate_id=aggregate_id,
+            payload={"method": method_name, "args": list(args)},
+        )
+        return
     tracked = getattr(engine, "_run_tracked", None)
     if tracked is not None:
         await tracked(method_name, *args)

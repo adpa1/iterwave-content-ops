@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from src.api import main as api_main
 from src.core.goal_progress import GoalProgressUpdater
 from src.core.notify import Notifier
+from src.core.timezone import business_now
 from src.core.plan_version import PlanVersionManager
 from src.core.state_machine import DraftStateMachine
 
@@ -97,7 +98,7 @@ def test_goals_list_uses_scope(client):
 # ---------------------------------------------------------------- action_items
 def test_action_items_goal_not_overdue_on_end_day(client):
     tc, conn = client
-    today = datetime.now().date().isoformat()
+    today = business_now(api_main._g_ctx.get("cfg")).date().isoformat()
     _insert_goal(conn, "today", end=today, current=10)
     ids = [i["id"] for i in tc.get("/api/action_items").json()["items"]]
     assert "goal:today" not in ids
@@ -105,7 +106,7 @@ def test_action_items_goal_not_overdue_on_end_day(client):
 
 def test_action_items_overdue_uses_same_rate_and_display_name(client):
     tc, conn = client
-    past = (datetime.now() - timedelta(days=2)).date().isoformat()
+    past = (business_now(api_main._g_ctx.get("cfg")) - timedelta(days=2)).date().isoformat()
     # delta：基线 900、当前 1000、目标 200 → 50%（旧逻辑 cur/target 会算成 500% 并漏报）
     _insert_goal(conn, "late", target=200, baseline=900, current=1000, end=past)
     _insert_goal(conn, "done", target=100, baseline=0, current=150, end=past)
