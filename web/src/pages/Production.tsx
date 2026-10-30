@@ -481,7 +481,7 @@ export default function Production() {
     setPlanPlatforms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
   };
 
-  const canRun = !!roundDetail && roundDetail.status === "created" && !running && (usePlan || selPlatforms.length > 0);
+  const canRun = !!roundDetail && ["created", "failed"].includes(roundDetail.status) && !running && (usePlan || selPlatforms.length > 0);
   const selectedContent = contents.find((c) => c.id === selectedContentId) ?? null;
   const filteredReviewContents = contents.filter((item) => {
     const query = reviewSearch.trim().toLowerCase();
@@ -851,13 +851,18 @@ export default function Production() {
                 </div>
                 <div style={{ marginTop: 10 }}>
                   <button className="btn primary" onClick={handleRun} disabled={!canRun}>
-                    {running ? "◷ 运行中…" : "▶ 运行本轮"}
+                    {running ? "◷ 运行中…" : roundDetail?.status === "failed" ? "↻ 重试本轮" : "▶ 运行本轮"}
                   </button>
                 </div>
 
-                {roundDetail.status !== "created" && (
+                {roundDetail.status === "failed" && (
                   <div className="note" style={{ marginTop: 8 }}>
-                    只有 created 状态的轮次可运行（当前 {roundDetail.status}）。如需重跑，请新建一轮。
+                    失败轮次可重新预检；仅当本轮尚未产生内容或草稿时允许重试。已有产出时请修复原因后新建一轮，避免重复交付。
+                  </div>
+                )}
+                {!["created", "failed"].includes(roundDetail.status) && (
+                  <div className="note" style={{ marginTop: 8 }}>
+                    当前轮次处于「{ROUND_STATUS_LABEL[roundDetail.status] ?? roundDetail.status}」，不能再次启动。
                   </div>
                 )}
                 {!usePlan && selPlatforms.length === 0 && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>至少选择一个平台</div>}
