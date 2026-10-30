@@ -18,6 +18,8 @@ import re
 import sqlite3
 import tempfile
 import threading
+import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,7 @@ from src.core.config import DEFAULT_JOB_SCHEDULES, JOB_DESCRIPTIONS, Config, Pla
 from src.core.redact import redact, redact_path
 
 logger = logging.getLogger(__name__)
+_OVERRIDES_WRITE_LOCK = threading.RLock()
 
 # 综合热榜覆盖的平台（新增来源时不指定即默认全选）
 AGGREGATE_PLATFORMS = ("weibo", "douyin", "zhihu", "toutiao", "bilibili")
@@ -650,6 +653,45 @@ def load_overrides(cfg: Config) -> dict[str, Any]:
     except (json.JSONDecodeError, OSError) as e:
         logger.error("config_overrides.json 读取失败，本次不套用覆盖值: %s", e)
         return {}
+
+
+def _save_overrides(cfg: Config, overrides: dict[str, Any]) -> None:
+    """仅供旧版 JSON 导入/恢复工具使用；正常 patch_config 永不调用此写入路径。"""
+    path = overrides_path(cfg)
+    payload = json.dumps(overrides, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    with _OVERRIDES_WRITE_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", newline="",
+                prefix=f".{path.name}.", suffix=".tmp",
+                dir=path.parent, delete=False,
+            ) as tmp:
+                tmp_path = Path(tmp.name)
+                try:
+                    os.fchmod(tmp.fileno(), 0o600)
+                except (AttributeError, OSError):
+                    os.chmod(tmp_path, 0o600)
+                tmp.write(payload)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            os.replace(tmp_path, path)
+            try:
+                path.chmod(0o600)
+            except OSError:
+                logger.warning("无法收紧运行时配置覆盖文件权限：%s", path.name)
+            try:
+                dir_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except OSError:
+                pass
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
 
 
 def apply_overrides(cfg: Config, overrides: dict[str, Any]) -> list[str]:
