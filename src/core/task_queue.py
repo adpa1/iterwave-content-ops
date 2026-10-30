@@ -102,29 +102,36 @@ class GlobalTaskQueue:
                 );
                 """
             )
-            # 兼容早期队列表：补齐显式 FIFO 序号，避免时间戳精度/并发提交造成顺序不确定。
-            columns = {
-                row["name"] for row in conn.execute("PRAGMA table_info(global_task_queue)").fetchall()
-            }
-            if "queue_order" not in columns:
-                conn.execute("ALTER TABLE global_task_queue ADD COLUMN queue_order INTEGER")
+            # 跨进程串行执行旧表迁移，避免多 Uvicorn worker 同时 ALTER 同一列。
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                # 兼容早期队列表：补齐显式 FIFO 序号与延迟执行时间。
+                columns = {
+                    row["name"] for row in conn.execute("PRAGMA table_info(global_task_queue)").fetchall()
+                }
+                if "queue_order" not in columns:
+                    conn.execute("ALTER TABLE global_task_queue ADD COLUMN queue_order INTEGER")
+                    conn.execute(
+                        "UPDATE global_task_queue SET queue_order=rowid WHERE queue_order IS NULL"
+                    )
+                if "available_at" not in columns:
+                    conn.execute("ALTER TABLE global_task_queue ADD COLUMN available_at TEXT")
                 conn.execute(
-                    "UPDATE global_task_queue SET queue_order=rowid WHERE queue_order IS NULL"
+                    "UPDATE global_task_queue SET available_at=created_at WHERE available_at IS NULL"
                 )
-            if "available_at" not in columns:
-                conn.execute("ALTER TABLE global_task_queue ADD COLUMN available_at TEXT")
-            conn.execute(
-                "UPDATE global_task_queue SET available_at=created_at WHERE available_at IS NULL"
-            )
-            conn.execute("DROP INDEX IF EXISTS idx_global_task_queue_fifo")
-            conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_global_task_queue_order "
-                "ON global_task_queue(queue_order)"
-            )
-            conn.execute(
-                "CREATE INDEX idx_global_task_queue_fifo "
-                "ON global_task_queue(status, queue_order)"
-            )
+                conn.execute("DROP INDEX IF EXISTS idx_global_task_queue_fifo")
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_global_task_queue_order "
+                    "ON global_task_queue(queue_order)"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_global_task_queue_fifo "
+                    "ON global_task_queue(status, queue_order)"
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
         finally:
             conn.close()
         try:
