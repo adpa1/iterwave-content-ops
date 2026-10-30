@@ -87,12 +87,12 @@ export default function TaskQueue() {
 
   const active = useMemo(
     () => items.filter((item) => item.status === "running" || item.status === "queued")
-      .sort((a, b) => a.created_at.localeCompare(b.created_at)),
+      .sort((a, b) => a.queue_order - b.queue_order),
     [items],
   );
   const history = useMemo(
     () => items.filter((item) => !["running", "queued"].includes(item.status))
-      .sort((a, b) => b.created_at.localeCompare(a.created_at)),
+      .sort((a, b) => b.queue_order - a.queue_order),
     [items],
   );
 
