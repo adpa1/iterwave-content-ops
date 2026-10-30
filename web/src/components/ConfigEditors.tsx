@@ -2,7 +2,7 @@
  * 可编辑配置面板（系统设置 / 首次向导共用）。
  *
  * 所有字段都走后端白名单 PATCH /api/config（SQLite 配置版本 + config_changes 审计 + 立即生效），
- * 配置字段元数据可通过 GET /api/config/metadata 查询；API Key 单独走 POST /api/config/llm_key 写入 config/.env（R23 不回传明文）。
+ * 配置字段元数据可通过 GET /api/config/metadata 查询；服务密钥通过独立接口保存到服务端，前端不会读取或回显明文。
  * 这里的组件只提交「真正改动」的字段，未改动不提交。
  */
 import { useEffect, useState } from "react";
@@ -293,7 +293,7 @@ export function LlmEditor({ view, onSaved }: {
       const r = await withPending("cfg:llm_key", () => api.saveLlmKey(value));
       if (!r) return;
       setApiKey("");
-      showToast(value ? "✓ API Key 已写入 config/.env（chmod 600）" : "✓ 已清除 API Key", "success");
+      showToast(value ? "✓ 服务密钥已安全保存" : "✓ 已清除 API Key", "success");
       onSaved?.();
     } catch (e: any) {
       showToast(`保存 Key 失败: ${e?.message ?? e}`, "error");
@@ -357,7 +357,7 @@ export function LlmEditor({ view, onSaved }: {
       </div>
       <SaveBar onSave={saveModel} busy={busy} />
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-        <Field label={`API Key（写 config/.env，前端不回显；当前：${view.readonly.llm_has_api_key ? "已配置" : "未配置"}）`}>
+        <Field label={`服务密钥（仅保存在服务端，不回显；当前：${view.readonly.llm_has_api_key ? "已配置" : "未配置"}）`}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input style={{ ...inputStyle, flex: "1 1 240px", fontFamily: "monospace" }} type="password"
               value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="粘贴 Key 后点「保存 Key」" />
@@ -433,7 +433,7 @@ export function PlatformToggles({ view, onSaved, loggedIn }: {
         </table>
       </div>
       <SaveBar onSave={save} busy={busy}
-        hint="至少保留 1 个平台；启用 ≠ 可发布，还需在「账号连接」扫码登录" />
+        hint="至少保留 1 个平台；启用 ≠ 可发布，还需在「账号与登录」扫码登录" />
     </>
   );
 }
