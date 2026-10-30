@@ -180,7 +180,7 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
         from src.core.db import LockedConnection
         conn = LockedConnection(db.connect())
         from src.core.config_repository import (
-            import_legacy_overrides, legacy_import_completed, read_settings,
+            import_legacy_overrides, legacy_import_completed, purge_disallowed_settings, read_settings,
         )
         from src.core.config_store import overrides_path
         try:
@@ -188,6 +188,8 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
             if legacy_result["imported"] or legacy_result["rejected"]:
                 logger.info("账号组旧配置回填 tenant=%s imported=%d rejected=%d",
                             tenant_id, legacy_result["imported"], legacy_result["rejected"])
+            # 与启动迁移保持一致：热切换进入任一账号组时清除历史危险路径配置。
+            purge_disallowed_settings(conn, {"topic_kb.path"})
             persisted_settings = read_settings(conn)
         except Exception as exc:
             logger.exception("账号组 SQLite 配置回填失败，回退旧 JSON tenant=%s error=%s",
@@ -1469,11 +1471,12 @@ def _register_routes(app: FastAPI) -> None:
                     ("图片生成失败，详细原因仅记录在服务端日志", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), job_id),
                 )
                 conn.commit()
-                logger.exception("AI 配图任务失败 job=%s", job_id)
                 from src.core.media_generation import ImageGenerationError
                 if isinstance(exc, ImageGenerationError):
-                    # 服务商原文可能包含内部地址或认证信息，不向客户端透传。
-                    raise HTTPException(502, "图片生成服务暂时不可用，请检查服务配置后重试") from exc
+                    # 服务商原文可能包含密钥片段；只记录统一脱敏后的消息，不输出原始异常栈。
+                    logger.warning("AI 配图任务失败 job=%s error=%s", job_id, redact(str(exc)))
+                    raise HTTPException(502, "图片生成服务暂时不可用，请检查服务配置后重试") from None
+                logger.exception("AI 配图任务失败 job=%s", job_id)
                 raise HTTPException(500, "图片生成失败，请稍后重试；如持续失败请联系管理员") from exc
 
         finally:
@@ -1831,7 +1834,9 @@ def _register_routes(app: FastAPI) -> None:
                             ranked_item["score"] = 1000 - len(ai_items)
                             ai_items.append(ranked_item)
                     if ai_items:
-                        ranked = ai_items
+                        # 视觉模型只重排候选子集；其余关键词结果继续保留，避免 limit=20 时缩水为 8 条。
+                        ai_ids = {item["asset_id"] for item in ai_items}
+                        ranked = ai_items + [item for item in ranked if item["asset_id"] not in ai_ids]
                         method = "vision_model"
                         message = "已使用视觉模型结合内容文本进行语义匹配；仅展示已审核素材，仍需人工确认。"
             except Exception as exc:  # noqa: BLE001 — 视觉服务失败必须降级，不影响关键词推荐
