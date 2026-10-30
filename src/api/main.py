@@ -2071,6 +2071,10 @@ def _register_routes(app: FastAPI) -> None:
             "period": {"start": start.date().isoformat(), "end": (end - timedelta(seconds=1)).date().isoformat()},
             "best_content": best, "why_it_may_work": why, "next_actions": next_actions,
             "sample_size": total_samples,
+            "effective_review_count": len({
+                row["content_id"] for row in merged
+                if any(row.get(metric) is not None for metric in metrics_to_compare)
+            }),
             "data_conflicts": data_conflicts,
             "data_sources": sorted({str(r.get("source") or "platform_readback") for r in merged}),
             "limitations": ["只比较同平台数据", "单篇表现不代表因果", "人工与平台读回数据保留各自来源", "周内样本的发布后统计时长可能不同，特征差异仅作假设"],
