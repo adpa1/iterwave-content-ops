@@ -191,6 +191,7 @@ def _dedupe_once(key: str, produce: Callable[[], dict]) -> tuple[dict, bool]:
 def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: str) -> dict:
     """为指定账号组构造完整运行时；不启动调度器、不修改当前活动上下文。"""
     cfg = load_config()
+    base_llm_config = cfg.llm.model_dump()
     tenant = tenant_registry.get(tenant_id)
     tenant_paths = None
     if tenant_id != "default":
@@ -244,6 +245,13 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
         if applied_overrides:
             logger.info("账号组热切换已应用 %d 项 SQLite 配置 tenant=%s",
                         len(applied_overrides), tenant_id)
+        from src.core.system_config_repository import migrate_tenant_llm_settings
+        llm_migration = migrate_tenant_llm_settings(
+            cfg, conn, tenant_registry.system_db_file,
+            tenant_id=tenant_id, base_llm=base_llm_config,
+        )
+        if llm_migration["purged"] or llm_migration["conflicts"]:
+            logger.info("账号组模型配置迁移 tenant=%s result=%s", tenant_id, llm_migration)
         from src.core.tenant_business_config import initialize_tenant_business_data
         initialize_tenant_business_data(conn, cfg)
         if tenant_id != "default":
@@ -514,6 +522,7 @@ def _build_app() -> FastAPI:
         _task_queue.recover_expired()
         active_tenant_id = tenant_registry.active_id()
         active_tenant = tenant_registry.get(active_tenant_id)
+        base_llm_config = cfg.llm.model_dump()
         if active_tenant_id != "default":
             tenant_paths = tenant_registry.paths(
                 active_tenant_id, name=str(active_tenant.get("name") or active_tenant_id),
@@ -584,6 +593,14 @@ def _build_app() -> FastAPI:
         if applied_overrides:
             logger.info("⚙️ 已套用 %d 项 SQLite 运行时配置：%s",
                         len(applied_overrides), applied_overrides)
+        from src.core.system_config_repository import migrate_tenant_llm_settings
+        llm_migration = migrate_tenant_llm_settings(
+            cfg, conn, tenant_registry.system_db_file,
+            tenant_id=active_tenant_id, base_llm=base_llm_config,
+        )
+        if llm_migration["purged"] or llm_migration["conflicts"]:
+            logger.info("系统级模型配置迁移完成 tenant=%s result=%s",
+                        active_tenant_id, llm_migration)
         from src.core.tenant_business_config import initialize_tenant_business_data
         initialize_tenant_business_data(conn, cfg)
         if active_tenant_id != "default":
@@ -5727,7 +5744,10 @@ def _register_routes(app: FastAPI) -> None:
         """
         g2 = _g()
         try:
-            result = patch_config(g2["cfg"], g2["conn"], req.updates)
+            result = patch_config(
+                g2["cfg"], g2["conn"], req.updates,
+                system_db_file=g2["tenant_registry"].system_db_file,
+            )
         except ConfigNotAllowedError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except ConfigPatchError as e:
