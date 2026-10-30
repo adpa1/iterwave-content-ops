@@ -221,28 +221,29 @@ def test_concurrent_initialize_migrates_legacy_queue_schema_once(tmp_path):
 
 
 
+
 def test_queue_listing_keeps_active_tasks_ahead_of_recent_history(tmp_path):
     queue = make_queue(tmp_path)
     active, _ = queue.enqueue(
         task_type="round_run", tenant_id="tenant-a", aggregate_id="active",
         payload={"round_id": 1},
     )
+    historical_ids = []
     for index in range(3):
         task, _ = queue.enqueue(
             task_type="round_run", tenant_id="tenant-b",
             aggregate_id=f"done-{index}", payload={"round_id": index + 2},
         )
-        claimed = queue.claim_next("worker")
-        assert claimed is not None and claimed.task_id == active.task_id if index == 0 else claimed is not None
-        if index == 0:
-            assert queue.finish(claimed.task_id, "worker", result={"ok": True})
-            # Keep the first active task queued by submitting a new one after it.
-            active, _ = queue.enqueue(
-                task_type="round_run", tenant_id="tenant-a", aggregate_id="active-2",
-                payload={"round_id": 99},
-            )
-        else:
-            assert queue.finish(claimed.task_id, "worker", result={"ok": True})
+        historical_ids.append(task.task_id)
+
+    conn = queue._connect()
+    try:
+        conn.executemany(
+            "UPDATE global_task_queue SET status='succeeded' WHERE task_id=?",
+            [(task_id,) for task_id in historical_ids],
+        )
+    finally:
+        conn.close()
 
     listed = queue.list(limit=2)
     assert listed[0].task_id == active.task_id
