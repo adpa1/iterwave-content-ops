@@ -1124,10 +1124,18 @@ export interface RhythmConfig {
 const API = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
 
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(API + path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+  let res: Response;
+  try {
+    res = await fetch(API + path, {
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error("网络连接失败，请检查服务是否运行及网络状态后重试");
+    }
+    throw error;
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     let detail = text || res.statusText;
