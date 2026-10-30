@@ -88,14 +88,20 @@ def initialize_system_config(system_db_file: Path | str) -> None:
             );
             """
         )
-        columns = {
-            row["name"] for row in conn.execute("PRAGMA table_info(system_settings)").fetchall()
-        }
-        if "updated_by" not in columns:
-            conn.execute(
-                "ALTER TABLE system_settings ADD COLUMN updated_by TEXT NOT NULL DEFAULT 'system'"
-            )
-        conn.commit()
+        # 多个 API worker 可能同时启动；串行化列迁移，避免重复 ALTER。
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(system_settings)").fetchall()
+            }
+            if "updated_by" not in columns:
+                conn.execute(
+                    "ALTER TABLE system_settings ADD COLUMN updated_by TEXT NOT NULL DEFAULT 'system'"
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     finally:
         conn.close()
     try:
