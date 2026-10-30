@@ -91,7 +91,7 @@ class RecoveryManager:
             if any(jid.startswith(prefix) for jid in job_ids):
                 continue
             if self.scheduler is not None:
-                run_at = datetime.now() + timedelta(minutes=1)
+                run_at = datetime.now() + timedelta(minutes=self.cfg.timeouts.recovery_retry_delay_minutes)
                 self.scheduler.schedule_data_fetch(draft_id, run_at)
                 requeued.append(draft_id)
 
