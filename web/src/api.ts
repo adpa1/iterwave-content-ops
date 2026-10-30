@@ -627,7 +627,7 @@ export interface SystemConfigView {
     llm_enabled: boolean;
     llm_has_api_key: boolean;
     // 平台连接
-    platforms: Record<string, { enabled: boolean; account_key: string; base_url: string }>;
+    platforms: Record<string, { enabled: boolean }>;
     /** R8：各阶段独立超时（小时），可在线改 */
     timeouts: Record<string, number | string>;
     /** R11 三模式权重 + R12 半衰期（可在线调，每个模式合计必须 100） */
