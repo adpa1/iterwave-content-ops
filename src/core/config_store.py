@@ -74,7 +74,6 @@ STRING_RULES: dict[str, tuple[int, int]] = {
     "vision_ranking.base_url": (1, 256),
     "vision_ranking.model": (1, 128),
     "media_generation.base_url": (1, 256),
-    "media_generation.base_url": (1, 256),
 }
 
 # 字符串列表白名单（账号画像 / 红线词库）：路径 → 最大条数
