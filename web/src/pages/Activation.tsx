@@ -62,8 +62,10 @@ export default function Activation() {
   const start = async () => {
     if (busy) return;
     const description = accountDescription.trim();
-    if (description.length < 10 || description.length > 300) {
-      setError("账号定位请填写 10-300 个字符");
+    const minChars = status?.activation_limits.account_description_min_chars ?? 10;
+    const maxChars = status?.activation_limits.account_description_max_chars ?? 300;
+    if (description.length < minChars || description.length > maxChars) {
+      setError(`账号定位请填写 ${minChars}-${maxChars} 个字符`);
       return;
     }
     setBusy(true);
@@ -159,7 +161,8 @@ export default function Activation() {
         <div style={{ padding: "0 16px 16px" }}>
           <label className="form-label" htmlFor="activation-description">账号定位（10-300 字）</label>
           <textarea
-            id="activation-description" className="field" rows={3} maxLength={300}
+            id="activation-description" className="field" rows={3}
+            maxLength={status?.activation_limits.account_description_max_chars ?? 300}
             value={accountDescription} onChange={(e) => setAccountDescription(e.target.value)}
             placeholder="例如：分享给中小企业产品经理的 AI 工具实践、产品拆解和效率方法"
           />
@@ -179,6 +182,7 @@ export default function Activation() {
           </div>
           <div className="panel-sub" style={{ marginTop: 10 }}>
             {status?.model_message || "正在检查模型服务"}
+            {status?.activation_limits && <span> · 今日剩余体验次数 {status.activation_limits.daily_runs_remaining}/{status.activation_limits.max_runs_per_day}</span>}
             {!status?.model_ready && <span> · <button className="link-btn" onClick={() => navigate("settings")}>前往配置模型</button></span>}
           </div>
           <div className="panel-sub" style={{ marginTop: 6 }}>
