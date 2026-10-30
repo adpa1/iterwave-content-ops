@@ -134,7 +134,8 @@ timeouts:
   publish_confirm_grace_hours: 48               # per-draft 单篇
   collecting_metrics_timeout_hours: 72            # 仅 collecting_metrics 阶段
   metrics_initial_delay_hours: 24                # user_published 后等拉数据
-  metrics_retry_policy: "3次/间隔30min"           # 采集失败重试
+  metrics_retry_attempts: 3                    # 数据采集失败最大尝试次数
+  metrics_retry_interval_minutes: 30            # 数据采集失败重试间隔
   goal_max_rounds: 30                            # 一个目标最大轮数
   round_min_interval_hours: 4                    # 两轮最短间隔
 
@@ -260,6 +261,14 @@ hot_topics:
   # 滚动：每次采集只保留当前榜单（本轮没再上榜的旧热点立即删除，不展示也不参与研判）
   retention_days: 7               # 兜底清理：last_seen_at 早于 N 天的残留行删除（采集失败占位等）
   max_rows: 5000                  # hot_topics 总行数硬上限（超出从最旧的删）
+  max_items_per_source: 30
+  fetch_timeout_seconds: 15
+  max_concurrent_fetches: 8
+  trend_burst_multiplier: 1.5
+  trend_cooled_ratio: 0.6
+  trend_sustained_ratio: 0.9
+  trend_previous_drop_ratio: 0.9
+  trend_min_seen_count: 3
   dedup:
     cross_platform_similarity: 0.8   # 跨平台标题相似度阈值（字符二元组 Jaccard，0.5–1.0）
     cross_platform_window_hours: 48  # 只在该时间窗内找跨平台重复
@@ -327,6 +336,27 @@ autogrow:
   stop_when_goals_achieved: true
   feedback_max_bias: 15
   feedback_lookback_rounds: 3
+  recency_decay: 0.5
+  full_confidence_samples: 5
+  coverage_gap_bias_ratio: 0.6
+  validation_gap_bias_ratio: 0.3
+  min_dimension_bias: 0.5
+  max_reference_titles_per_platform: 2
+  max_copy_hints_per_platform: 6
+  max_copy_hint_chars: 120
+
+copy_generation:
+  topic_summary_max_chars: 300
+  title_max_chars: 20
+  body_min_chars: 150
+  body_max_chars: 400
+  tag_min_count: 3
+  tag_max_count: 5
+  persona_keyword_limit: 8
+  forbidden_direction_limit: 5
+  strategy_hint_max_count: 6
+  strategy_hint_max_chars: 120
+  max_guard_retries: 2
 
 
 # ===== 运行时策略参数（硬安全上限仍由代码强制）=====
@@ -370,6 +400,12 @@ media_quality:
   low_resolution_pixels: 500000
   low_color_count: 3
   color_count_reference: 16
+  composition_near_portrait_multiplier: 0.85
+  composition_square_multiplier: 0.6
+  composition_landscape_multiplier: 0.25
+  sharpness_fallback_contrast_reference: 60
+  sampling_size: 512
+  color_quantization_colors: 16
 
 tenant_switch:
   request_drain_timeout_seconds: 30
@@ -384,6 +420,7 @@ tenant_backup:
 
 hot_topic_matcher:
   match_threshold: 60
+  llm_temperature: 0.1
   keyword_score: 60
   batch_size: 20
   max_per_run: 200
