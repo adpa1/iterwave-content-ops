@@ -206,6 +206,7 @@ export default function Analytics() {
         <div className="metric"><div className="metric-label">数据回流完成率</div><div className="metric-val">{activationMetrics?.data_return_rate == null ? "—" : `${(activationMetrics.data_return_rate * 100).toFixed(0)}%`}</div><div className="metric-foot">发布满 7 天且 7 日内有有效指标快照</div></div>
         <div className="metric"><div className="metric-label">快速体验完成率</div><div className="metric-val">{activationMetrics?.quick_experience_completion_rate == null ? "—" : `${(activationMetrics.quick_experience_completion_rate * 100).toFixed(0)}%`}</div><div className="metric-foot">成功展示三篇合格样稿的账号组</div></div>
         <div className="metric"><div className="metric-label">周采纳发布数</div><div className="metric-val">{activationMetrics?.weekly_adopted_published ?? 0}</div><div className="metric-foot">用户确认采纳并发布的内容</div></div>
+        <div className="metric"><div className="metric-label">周有效复盘数</div><div className="metric-val">{activationMetrics?.weekly_effective_review_count ?? 0}</div><div className="metric-foot">近 7 天有有效指标的已发布内容</div></div>
       </div>
       {activationMetrics?.platform_model_breakdown?.length ? <div className="panel-sub" style={{ marginBottom: 15 }}>
         体验分布：{activationMetrics.platform_model_breakdown.map((item) => `${PLATFORM_NAME[item.platform]} / ${item.model_mode}：${item.ready_count}/${item.run_count} 完成`).join("；")}
@@ -262,7 +263,7 @@ export default function Analytics() {
         <div className="panel-head"><div><div className="panel-title">本周轻量复盘</div><div className="panel-sub">同平台比较；展示数据来源与样本量，不把相关性解释成因果。</div></div></div>
         {!weeklyReport ? <div className="loading"><div className="spinner" />加载周报…</div> : <>
           <div style={{ padding: "0 16px 16px" }}>
-            <div className="panel-sub">{weeklyReport.period.start} 至 {weeklyReport.period.end} · 有效样本 {weeklyReport.sample_size} 篇 · 来源：{weeklyReport.data_sources.join("、") || "暂无"}</div>
+            <div className="panel-sub">{weeklyReport.period.start} 至 {weeklyReport.period.end} · 有效样本 {weeklyReport.sample_size} 篇 · 可复盘 {weeklyReport.effective_review_count ?? 0} 篇 · 来源：{weeklyReport.data_sources.join("、") || "暂无"}</div>
             <h3 style={{ marginTop: 14 }}>表现最好</h3>
             {weeklyReport.best_content.length ? weeklyReport.best_content.map((item) => <div className="task-row" key={`${item.content_id}-${item.metric}`}><div className="task-main"><div className="task-title">{item.title}</div><div className="task-desc">{PLATFORM_NAME[item.platform]} · {item.metric}：{item.value} · {item.source}{item.conflict ? " · 来源冲突，按规则选择" : ""}</div></div></div>) : <div className="panel-sub">暂无有效指标，暂不排名。</div>}
             {!!weeklyReport.data_conflicts?.length && <div className="note" style={{ marginTop: 12 }}>
