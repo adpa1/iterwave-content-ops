@@ -1,11 +1,15 @@
 """租户切换验收护栏。
 
-这些用例验证当前版本已经承诺的安全边界，不代表运行时热切换已经实现。
-真正的 A→B→A 热切换测试须在 TenantRuntime 生命周期管理器落地后补齐。
+运行时热切换已实现，但部署开关默认关闭；即时切换真机验收前必须显式启用。
+这些用例覆盖配置开关和账号组资源隔离边界。
 """
 from __future__ import annotations
 
 import sqlite3
+
+import pytest
+
+import src.api.main as api_main
 from pathlib import Path
 
 from src.adapters.base import Platform
@@ -122,3 +126,21 @@ def test_scheduled_draft_is_not_automatically_marked_published(conn, seed) -> No
     ).fetchone()
     assert row["status"] == "draft_saved"
     assert row["scheduled_publish_at"] == "2099-01-01 10:00:00"
+
+
+
+def test_tenant_hot_switch_flag_defaults_to_disabled(monkeypatch):
+    monkeypatch.delenv("ITERWAVE_ENABLE_TENANT_HOT_SWITCH", raising=False)
+    assert api_main._tenant_hot_switch_enabled() is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on", " TRUE "])
+def test_tenant_hot_switch_flag_accepts_explicit_truthy_values(monkeypatch, value):
+    monkeypatch.setenv("ITERWAVE_ENABLE_TENANT_HOT_SWITCH", value)
+    assert api_main._tenant_hot_switch_enabled() is True
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "enabled"])
+def test_tenant_hot_switch_flag_rejects_non_truthy_values(monkeypatch, value):
+    monkeypatch.setenv("ITERWAVE_ENABLE_TENANT_HOT_SWITCH", value)
+    assert api_main._tenant_hot_switch_enabled() is False
