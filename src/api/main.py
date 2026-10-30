@@ -2218,7 +2218,10 @@ def _register_routes(app: FastAPI) -> None:
         try:
             token = auth.login(password, ip)
         except PermissionError as exc:
-            raise HTTPException(status_code=429, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=429, detail=str(exc),
+                headers={"Retry-After": str(auth.LOGIN_WINDOW_SECONDS)},
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         response.headers["set-cookie"] = auth.session_cookie_header(token, secure=request.url.scheme == "https")
@@ -2241,7 +2244,11 @@ def _register_routes(app: FastAPI) -> None:
             if not local_direct:
                 client_ip = request.client.host if request.client else "unknown"
                 if auth.is_rate_limited(client_ip):
-                    raise HTTPException(status_code=429, detail="引导口令尝试次数过多，请 10 分钟后再试")
+                    raise HTTPException(
+                        status_code=429,
+                        detail="引导口令尝试次数过多，请 10 分钟后再试",
+                        headers={"Retry-After": str(auth.LOGIN_WINDOW_SECONDS)},
+                    )
                 valid_bootstrap = bool(bootstrap and provided) and hmac.compare_digest(provided, bootstrap)
                 if not valid_bootstrap:
                     auth.record_failure(client_ip)
