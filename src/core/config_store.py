@@ -701,8 +701,11 @@ def config_metadata_view(cfg: Config) -> list[dict[str, Any]]:
             continue
         add(key, value, kind="boolean" if kind is bool else "integer" if kind is int else "number",
             minimum=minimum, maximum=maximum)
+    # 部署端点与账号内部标识不属于普通运行策略编辑界面，不向前端元数据接口下发。
+    hidden_runtime_fields = {"vision_ranking.base_url", "media_generation.base_url"}
     for key in STRING_RULES:
-        add(key, _get_value(cfg, key), kind="string")
+        if key not in hidden_runtime_fields:
+            add(key, _get_value(cfg, key), kind="string")
     for key in LIST_RULES:
         add(key, _get_value(cfg, key), kind="array", maximum=LIST_RULES[key])
     for platform in PLATFORM_KEYS:
@@ -710,8 +713,7 @@ def config_metadata_view(cfg: Config) -> list[dict[str, Any]]:
             key = f"rhythm.daily_quotas.{platform}.{field}"
             quota = cfg.rhythm.daily_quotas.get(platform)
             add(key, getattr(quota, field, None) if quota else None, kind="integer", minimum=0, maximum=10000)
-        add(f"platforms.{platform}.base_url", _get_value(cfg, f"platforms.{platform}.base_url"), kind="url")
-        add(f"platforms.{platform}.account_key", _get_value(cfg, f"platforms.{platform}.account_key"), kind="string")
+        # 平台服务端点与 account_key 是部署/内部路由信息，不作为 UI 配置元数据返回。
     for job_id, job in cfg.scheduler.jobs.items():
         add(f"scheduler.jobs.{job_id}.enabled", job.enabled, kind="boolean")
         add(f"scheduler.jobs.{job_id}.interval_minutes", job.interval_minutes, kind="integer", minimum=1, maximum=10080)
