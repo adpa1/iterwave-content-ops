@@ -314,11 +314,24 @@ class GlobalTaskQueue:
     def release_worker(self, owner: str) -> bool:
         conn = self._connect()
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            running = conn.execute(
+                "SELECT 1 FROM global_task_queue WHERE status='running' AND lease_owner=? LIMIT 1",
+                (owner,),
+            ).fetchone()
+            if running:
+                # 不得在任务仍运行时释放全局锁；让任务租约自然过期后由恢复流程接管。
+                conn.commit()
+                return False
             cursor = conn.execute(
                 "DELETE FROM global_task_worker_lease WHERE singleton_id=1 AND owner=?",
                 (owner,),
             )
+            conn.commit()
             return cursor.rowcount == 1
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
