@@ -87,11 +87,28 @@ export default function Activation() {
 
   const copy = async (id: string, title: string, body: string, tags: string[]) => {
     try {
-      await navigator.clipboard.writeText(`${title}\n\n${body}\n\n${tags.map((t) => t.startsWith("#") ? t : `#${t}`).join(" ")}`);
+      const text = `${title}\n\n${body}\n\n${tags.map((t) => t.startsWith("#") ? t : `#${t}`).join(" ")}`;
+      let copied = false;
+      if (navigator.clipboard?.writeText && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        textarea.style.pointerEvents = "none";
+        document.body.appendChild(textarea);
+        textarea.select();
+        copied = document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      if (!copied) throw new Error("浏览器未允许复制，请手动选择正文复制");
       if (runId) await api.activationSampleEvent(runId, id, "copied");
       setToast("已复制，复制行为已记录");
     } catch {
-      setToast("复制失败：请检查浏览器剪贴板权限，未记录采用事件");
+      setToast("复制失败：请手动选择正文复制，未记录复制事件");
     }
   };
 
