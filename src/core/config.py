@@ -592,7 +592,7 @@ class LlmConfig(BaseModel):
     # ⚠️ 通道选择（重要，关乎计费与可用性，R23 安全）：
     #   - /api/v3      → 按量付费通道
     #   - /api/plan/v3 → 专属 Agent Plan 通道（Agent Plan 只支持套餐内模型）
-    # 「系统设置 → 主模型与备用」可在线切换，最终以 config.yaml / config_overrides.json 为准。
+    # 「系统设置 → 主模型与备用」可在线切换，最终以 config.yaml 初始值与账号组 SQLite 运行时配置为准。
     base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     model: str = "doubao-seed-2.1-lite"
     fallback_model: str = "doubao-seed-2.0-mini"   # 主模型失败时的兜底模型；空串 = 不启用
