@@ -1178,6 +1178,10 @@ export interface ActivationSample {
   quality_findings: string[]; adopted_at: string | null; rejected_at: string | null;
   rejection_reason: string | null;
 }
+export interface ActivationSavedSample {
+  id: string; sample_run_id: string; platform: Platform; angle: string; title: string; body: string;
+  hashtags: string[]; adopted_at: string; created_at: string; account_description: string;
+}
 export interface ActivationSampleRun {
   run: {
     id: string; platform: Platform; account_description: string; status: string;
@@ -1642,6 +1646,7 @@ export const api = {
         method: "POST", body: JSON.stringify(data),
       }),
   activationSamples: (id: string) => fetchJson<ActivationSampleRun>(`/api/activation/samples/${id}`),
+  activationSavedSamples: () => fetchJson<{ items: ActivationSavedSample[] }>("/api/activation/saved"),
   deleteActivationSamples: (id: string) =>
     fetchJson<{ sample_run_id: string; deleted: boolean }>(`/api/activation/samples/${id}`, { method: "DELETE" }),
   activationSampleEvent: (runId: string, contentId: string, event_type: "copied" | "saved" | "rejected", reason?: string) =>
