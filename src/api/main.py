@@ -672,7 +672,7 @@ def _build_app() -> FastAPI:
         # 之前用 catch-all GET /{full_path:path} 会抢先匹配 /api/* 带尾部斜杠的请求，
         # 阻止 FastAPI 正常的 307 重定向行为 → 前端调用返回 404
         _SPA_PROTECTED_PREFIXES = (
-            "/api/", "/health", "/docs", "/openapi.json", "/redoc", "/favicon",
+            "/api/", "/health", "/docs", "/openapi.json", "/redoc", "/favicon.ico", "/assets/",
         )
 
         @app.middleware("http")
@@ -1213,6 +1213,12 @@ class CreateAssetRequest(BaseModel):
         if v not in {p.value for p in Platform}:
             raise ValueError(f"未知平台：{v}")
         return v
+
+
+class SmsCodeRequest(BaseModel):
+    """短信验证码回填请求（模块级定义，避免局部类导致 OpenAPI schema 解析失败）。"""
+
+    code: str
 
 
 # =====================================================================
@@ -4748,9 +4754,6 @@ def _register_routes(app: FastAPI) -> None:
         clear_login as _clear_login,
         submit_sms_code as _submit_sms_code,
     )
-
-    class SmsCodeRequest(BaseModel):
-        code: str
 
     def _valid_platform(platform: str) -> str:
         """校验平台代号；非法 raise HTTPException。"""

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview --port 4173"
+    "preview": "vite preview --port 4173",
+    "build:demo": "vite build --config vite.demo.config.ts && python3 scripts/build-demo-singlefile.py"
   },
   "dependencies": {
     "react": "^18.3.1",
