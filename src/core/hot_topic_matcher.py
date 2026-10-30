@@ -34,10 +34,13 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 PROMPT_VERSION = "hot_match_v1"
-MATCH_THRESHOLD = 60.0
-KEYWORD_SCORE = 60.0
-BATCH_SIZE = 20
-MAX_PER_RUN = 200
+from src.core.config import HotTopicMatcherConfig
+
+_DEFAULT_POLICY = HotTopicMatcherConfig()
+MATCH_THRESHOLD = _DEFAULT_POLICY.match_threshold
+KEYWORD_SCORE = _DEFAULT_POLICY.keyword_score
+BATCH_SIZE = _DEFAULT_POLICY.batch_size
+MAX_PER_RUN = _DEFAULT_POLICY.max_per_run
 
 # LLM 调用函数签名：(system_prompt, user_prompt) -> (content, usage)
 LlmFn = Callable[[str, str], tuple[str, dict]]
