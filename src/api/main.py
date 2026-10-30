@@ -439,7 +439,12 @@ def _build_app() -> FastAPI:
             # 回填失败时保留旧 JSON 读路径；不删除源文件，也不阻止可恢复启动。
             logger.exception("SQLite 配置回填失败，临时回退旧 JSON 配置：%s", type(exc).__name__)
             persisted_settings = {}
-        if not persisted_settings and not legacy_import_completed(conn):
+        legacy_complete = False
+        try:
+            legacy_complete = legacy_import_completed(conn)
+        except Exception:
+            logger.warning("无法确认旧配置迁移标记，尝试只读 JSON 回退")
+        if not persisted_settings and not legacy_complete:
             persisted_settings = load_overrides(cfg)
         applied_overrides = apply_overrides(cfg, persisted_settings)
         if applied_overrides:
