@@ -120,6 +120,7 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "media_quality.color_count_reference": (int, 1, 256),
     "tenant_switch.request_drain_timeout_seconds": (int, 1, 120),
     "tenant_switch.scheduler_drain_timeout_seconds": (int, 1, 120),
+    "tenant_switch.round_drain_timeout_seconds": (int, 1, 600),
     "tenant_switch.background_jobs_timeout_seconds": (int, 1, 600),
     "tenant_switch.login_process_timeout_seconds": (int, 1, 60),
     "tenant_backup.max_bytes": (int, 1_048_576, 2 * 1024 * 1024 * 1024),
