@@ -1167,6 +1167,7 @@ export interface ActivationStatus {
   activation_limits: {
     account_description_min_chars: number; account_description_max_chars: number;
     max_runs_per_day: number; sample_max_output_tokens: number;
+    max_model_calls_per_run: number; max_total_output_tokens_per_run: number;
     daily_runs_used: number; daily_runs_remaining: number;
   };
   cohort_started_at: string;
