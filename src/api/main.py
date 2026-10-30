@@ -427,7 +427,7 @@ def _build_app() -> FastAPI:
         db.initialize()
         from src.core.db import LockedConnection
         conn = LockedConnection(db.connect())
-        from src.core.config_repository import import_legacy_overrides, read_settings
+        from src.core.config_repository import import_legacy_overrides, legacy_import_completed, read_settings
         from src.core.config_store import overrides_path
         try:
             legacy_result = import_legacy_overrides(conn, overrides_path(cfg))
@@ -439,7 +439,7 @@ def _build_app() -> FastAPI:
             # 回填失败时保留旧 JSON 读路径；不删除源文件，也不阻止可恢复启动。
             logger.exception("SQLite 配置回填失败，临时回退旧 JSON 配置：%s", type(exc).__name__)
             persisted_settings = {}
-        if not persisted_settings:
+        if not persisted_settings and not legacy_import_completed(conn):
             persisted_settings = load_overrides(cfg)
         applied_overrides = apply_overrides(cfg, persisted_settings)
         if applied_overrides:
