@@ -264,7 +264,13 @@ export default function Analytics() {
           <div style={{ padding: "0 16px 16px" }}>
             <div className="panel-sub">{weeklyReport.period.start} 至 {weeklyReport.period.end} · 有效样本 {weeklyReport.sample_size} 篇 · 来源：{weeklyReport.data_sources.join("、") || "暂无"}</div>
             <h3 style={{ marginTop: 14 }}>表现最好</h3>
-            {weeklyReport.best_content.length ? weeklyReport.best_content.map((item) => <div className="task-row" key={item.content_id}><div className="task-main"><div className="task-title">{item.title}</div><div className="task-desc">{PLATFORM_NAME[item.platform]} · {item.metric}：{item.value} · {item.source}</div></div></div>) : <div className="panel-sub">暂无有效指标，暂不排名。</div>}
+            {weeklyReport.best_content.length ? weeklyReport.best_content.map((item) => <div className="task-row" key={`${item.content_id}-${item.metric}`}><div className="task-main"><div className="task-title">{item.title}</div><div className="task-desc">{PLATFORM_NAME[item.platform]} · {item.metric}：{item.value} · {item.source}{item.conflict ? " · 来源冲突，按规则选择" : ""}</div></div></div>) : <div className="panel-sub">暂无有效指标，暂不排名。</div>}
+            {!!weeklyReport.data_conflicts?.length && <div className="note" style={{ marginTop: 12 }}>
+              <strong>数据来源冲突（保留原始记录）</strong>
+              {weeklyReport.data_conflicts.map((conflict) => <div className="panel-sub" key={conflict.content_id}>
+                {PLATFORM_NAME[conflict.platform]} · 内容 {conflict.content_id.slice(0, 8)} · 指标：{conflict.metrics.join("、")}
+              </div>)}
+            </div>}
             <h3 style={{ marginTop: 14 }}>可能原因</h3>
             {weeklyReport.why_it_may_work.map((item, i) => <p key={i} className="panel-sub">{item.statement}（样本 {item.sample_size}）</p>)}
             <h3 style={{ marginTop: 14 }}>下一轮建议</h3>
