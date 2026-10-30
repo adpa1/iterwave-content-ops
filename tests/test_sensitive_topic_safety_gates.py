@@ -81,24 +81,41 @@ def test_round_run_endpoint_returns_before_background_execution(client, seed, mo
 
     import src.api.main as api_main
 
-    tc, _conn = client
+    _tc, _conn = client
     round_id = seed.round(status="created")
 
     class FakeExecutor:
         async def run(self, *_args, **_kwargs):
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(0)
             return {"round_id": round_id, "final_status": "success", "steps": []}
 
     monkeypatch.setitem(api_main._g_ctx, "executor", FakeExecutor())
     api_main._round_job_status.pop(round_id, None)
-    response = tc.post(f"/api/rounds/{round_id}/run", json={})
-    assert response.status_code == 202
-    assert response.json()["running"] is True
+    run_route = next(
+        route for route in api_main.app.routes
+        if getattr(route, "path", None) == "/api/rounds/{round_id}/run"
+    )
+    status_route = next(
+        route for route in api_main.app.routes
+        if getattr(route, "path", None) == "/api/rounds/{round_id}/run_status"
+    )
 
-    status = None
-    for _ in range(20):
-        status = tc.get(f"/api/rounds/{round_id}/run_status").json()
-        if not status["running"]:
-            break
-    assert status is not None
+    async def exercise():
+        scheduled = []
+        original_create_task = asyncio.create_task
+
+        def capture_task(coro, **kwargs):
+            task = original_create_task(coro, **kwargs)
+            scheduled.append(task)
+            return task
+
+        monkeypatch.setattr(asyncio, "create_task", capture_task)
+        started = await run_route.endpoint(round_id, api_main.RunRoundRequest())
+        assert started["running"] is True
+        assert len(scheduled) == 1
+        await scheduled[0]
+        return status_route.endpoint(round_id)
+
+    status = asyncio.run(exercise())
+    assert status["running"] is False
     assert status["report"]["final_status"] == "success"
