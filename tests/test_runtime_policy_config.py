@@ -230,3 +230,17 @@ def test_spiral_ops_suggestions_use_configured_thresholds(cfg, conn):
 def test_every_scalar_whitelist_field_has_config_metadata(cfg):
     metadata_keys = {item["key"] for item in config_metadata_view(cfg)}
     assert set(SCALAR_RULES) <= metadata_keys
+
+
+
+def test_topic_kb_path_is_not_runtime_editable_or_exposed(cfg, conn):
+    from src.core.config_store import apply_overrides
+
+    original_path = cfg.topic_kb.path
+    assert "topic_kb.path" not in {item["key"] for item in config_metadata_view(cfg)}
+    assert current_config_view(cfg, conn)["readonly"]["kb_path"] == "由内容资产中的选题库来源管理"
+    assert "llm_base_url" not in current_config_view(cfg, conn)["readonly"]
+    with pytest.raises(ConfigNotAllowedError):
+        patch_config(cfg, conn, {"topic_kb.path": "/tmp/evil_topics.csv"})
+    assert apply_overrides(cfg, {"topic_kb.path": "/tmp/evil_topics.csv"}) == []
+    assert cfg.topic_kb.path == original_path
