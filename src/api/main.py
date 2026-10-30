@@ -129,10 +129,13 @@ def _round_task_active(tenant_id: str, round_id: int) -> bool:
         return True
     if _task_queue is None:
         return False
-    task = _task_queue.find_latest(
-        tenant_id=tenant_id, task_type="round_run", aggregate_id=str(round_id),
-    )
-    return task is not None and task.status in ("queued", "running")
+    for aggregate_id in (str(round_id), f"{round_id}:save_pending_drafts"):
+        task = _task_queue.find_latest(
+            tenant_id=tenant_id, task_type="round_run", aggregate_id=aggregate_id,
+        )
+        if task is not None and task.status in ("queued", "running"):
+            return True
+    return False
 
 
 def _tenant_has_active_queue_tasks(tenant_id: str) -> bool:
@@ -3942,7 +3945,7 @@ def _register_routes(app: FastAPI) -> None:
             task, created = _task_queue.enqueue(
                 task_type="round_run",
                 tenant_id=tenant_id,
-                aggregate_id=str(round_id),
+                aggregate_id=f"{round_id}:save_pending_drafts",
                 payload={"operation": "save_pending_drafts", "round_id": round_id},
             )
         except (ValueError, sqlite3.Error) as exc:
