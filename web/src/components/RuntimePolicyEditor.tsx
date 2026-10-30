@@ -19,6 +19,7 @@ const GROUPS: { prefix: string; title: string; exact?: string[] }[] = [
   { prefix: "data_retention.", title: "数据保留策略" },
   { prefix: "insights.", title: "平台分析策略" },
   { prefix: "plan_suggestion.", title: "目标拆分建议策略" },
+  { prefix: "notifications.events.", title: "通知事件开关" },
   { prefix: "timeouts.", title: "采集重试与轮次上限", exact: [
     "timeouts.metrics_retry_attempts",
     "timeouts.metrics_retry_interval_minutes",
@@ -158,7 +159,25 @@ const LABELS: Record<string, string> = {
   freshness_unused_score: "窗口内未使用默认分",
 };
 
+const NOTIFICATION_EVENT_LABELS: Record<string, string> = {
+  draft_saved: "草稿已保存",
+  draft_failed: "草稿保存失败",
+  circuit_broken: "平台熔断",
+  login_expired: "登录态过期",
+  goal_completed: "目标达成",
+  data_fetch_failed: "数据拉取失败",
+  round_completed: "轮次复盘完成",
+  circuit_recovered: "熔断恢复",
+  publish_confirmed: "发布确认",
+  quota_exhausted: "运营配额用尽",
+  round_timeout: "轮次超时",
+};
+
 function labelFor(item: ConfigMetadataItem): string {
+  if (item.key.startsWith("notifications.events.")) {
+    const eventName = item.key.split(".")[2];
+    return `${NOTIFICATION_EVENT_LABELS[eventName] || eventName}通知`;
+  }
   return LABELS[item.key.split(".").pop() || item.key] || item.key;
 }
 
