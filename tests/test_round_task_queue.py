@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+import asyncio
+import sqlite3
+
+import src.api.main as api_main
+from src.core.task_queue import GlobalTaskQueue
+
+
+def test_save_pending_drafts_queues_after_running_round_instead_of_deduping(tmp_path, monkeypatch):
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    running, created = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-a", aggregate_id="7",
+        payload={"round_id": 7, "operation": "run"},
+    )
+    assert created
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE spiral_rounds (id INTEGER PRIMARY KEY)")
+    conn.execute("INSERT INTO spiral_rounds(id) VALUES(7)")
+    monkeypatch.setattr(api_main, "_task_queue", queue)
+    monkeypatch.setattr(api_main, "_running_rounds", set())
+    monkeypatch.setitem(api_main._g_ctx, "conn", conn)
+    monkeypatch.setitem(api_main._g_ctx, "runtime_tenant_id", "tenant-a")
+
+    route = next(
+        route for route in api_main.app.routes
+        if getattr(route, "path", None) == "/api/rounds/{round_id}/save_pending"
+        and "POST" in (getattr(route, "methods", None) or set())
+    )
+    response = asyncio.run(route.endpoint(7))
+
+    pending = queue.find_latest(
+        tenant_id="tenant-a", task_type="round_run",
+        aggregate_id="7:save_pending_drafts",
+    )
+    assert response["created"] is True
+    assert pending is not None and pending.status == "queued"
+    assert pending.queue_order > running.queue_order
+    assert api_main._round_task_active("tenant-a", 7) is True
+    conn.close()
