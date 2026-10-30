@@ -123,38 +123,16 @@ def _enqueue_round_task(*, tenant_id: str, round_id: int, topic_count=None,
     )
 
 
-def _enqueue_scheduler_task(*, tenant_id: str, method: str, args: list | None = None):
-    """将账号组级后台作业写入全局队列，调用方必须显式提供任务归属。"""
-    if _task_queue is None:
-        raise RuntimeError("全局任务队列尚未初始化")
-    normalized_args = list(args or [])
-    aggregate_id = method + (":" + ":".join(map(str, normalized_args)) if normalized_args else "")
-    return _task_queue.enqueue(
-        task_type="scheduler_job",
-        tenant_id=tenant_id,
-        aggregate_id=aggregate_id,
-        payload={"method": method, "args": normalized_args},
-    )
-
-
-def _queued_scheduler_status(tenant_id: str, method: str) -> dict:
-    """返回指定账号组指定后台作业状态，不暴露其他账号组的线程状态。"""
-    if _task_queue is None:
-        return {"running": False, "queued": False, "status": None, "error": None, "progress": None}
-    task = _task_queue.find_latest(
-        tenant_id=tenant_id, task_type="scheduler_job", aggregate_id=method,
-    )
-    if task is None:
-        return {"running": False, "queued": False, "status": None, "error": None, "progress": None}
+def _tenant_scoped_hot_topic_status(status: dict, tenant_id: str) -> dict:
+    """热点后台服务独立运行，但状态和结果只对所属账号组可见。"""
+    if status.get("tenant_id") == tenant_id or (
+        status.get("tenant_id") is None and not status.get("running")
+    ):
+        return status
     return {
-        "task_id": task.task_id,
-        "running": task.status in ("queued", "running"),
-        "queued": task.status == "queued",
-        "status": task.status,
-        "started_at": task.started_at,
-        "finished_at": task.finished_at,
-        "error": task.error_message,
-        "progress": None,
+        "running": False, "tenant_id": None, "started_at": None,
+        "finished_at": None, "report": None, "match": None,
+        "error": None, "progress": None,
     }
 
 
@@ -720,11 +698,11 @@ def _build_app() -> FastAPI:
             task_worker.run(task_worker_stop), name="global-tenant-task-worker",
         )
 
-        # 热点采集与标签匹配依赖当前账号组画像，必须以账号组任务进入全局队列。
-        from ..core.hot_topics import HotTopicCollector
-        if cfg.hot_topics.enabled is not False and not HotTopicCollector(cfg, conn)._is_fresh():
-            _enqueue_scheduler_task(
-                tenant_id=active_tenant_id, method="_job_hot_topics_refresh",
+        # 热点服务是独立资源池；后台线程持有启动时的账号组配置和独立数据库连接。
+        from ..core import hot_topic_service
+        if cfg.hot_topics.enabled is not False and hot_topic_service.is_stale(cfg, conn):
+            hot_topic_service.trigger_background(
+                cfg, trigger="startup", tenant_id=active_tenant_id,
             )
 
         logger.info("✅ FastAPI 应用启动完成，%d 个模块已加载", len(_g_ctx))
@@ -5333,16 +5311,22 @@ def _register_routes(app: FastAPI) -> None:
         """
         from ..core import hot_topic_service
 
+        from ..core import hot_topic_service
+
         conn = _g()["conn"]
         cfg = _g()["cfg"]
         tenant_id = _g().get("runtime_tenant_id", "default")
         if refresh:
-            _enqueue_scheduler_task(
-                tenant_id=tenant_id, method="_job_hot_topics_refresh",
+            hot_topic_service.trigger_background(
+                cfg, trigger="manual", tenant_id=tenant_id,
             )
         data = HotTopicCollector(cfg, conn).overview()
-        data["refresh_job"] = _queued_scheduler_status(tenant_id, "_job_hot_topics_refresh")
-        data["research_job"] = _queued_scheduler_status(tenant_id, "_job_hot_topics_research")
+        data["refresh_job"] = _tenant_scoped_hot_topic_status(
+            hot_topic_service.status(), tenant_id,
+        )
+        data["research_job"] = _tenant_scoped_hot_topic_status(
+            hot_topic_service.research_status(), tenant_id,
+        )
         # 研判依赖大模型：未启用时前端把「研判热点」按钮置灰并提示去系统设置开启
         from ..core.hot_topic_matcher import default_llm_fn
         data["research_ready"] = default_llm_fn(cfg) is not None
@@ -5357,35 +5341,21 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/hot_topics/refresh", status_code=202)
     def hot_topics_refresh():
-        """手动触发后台采集 + 标签匹配，立即返回任务状态（前端轮询 GET /api/hot_topics 的 refresh_job）。"""
+        """手动触发后台采集 + 标签匹配，立即返回任务状态。"""
         from ..core import hot_topic_service
 
         cfg = _g()["cfg"]
         if cfg.hot_topics.enabled is False:
             raise HTTPException(409, "热点采集已在配置中关闭（hot_topics.enabled=false）")
         tenant_id = _g().get("runtime_tenant_id", "default")
-        try:
-            task, created = _enqueue_scheduler_task(
-                tenant_id=tenant_id, method="_job_hot_topics_refresh",
-            )
-        except (ValueError, sqlite3.Error) as exc:
-            logger.exception("热点采集任务入队失败 tenant=%s", tenant_id)
-            raise HTTPException(503, "热点采集任务暂时无法入队，请稍后重试") from exc
-        return {
-            "started": task.status in ("queued", "running"),
-            "created": created,
-            "task_id": task.task_id,
-            "running": task.status in ("queued", "running"),
-            "queued": task.status == "queued",
-            "status": task.status,
-        }
+        result = hot_topic_service.trigger_background(cfg, trigger="manual", tenant_id=tenant_id)
+        if not result.get("started") and result.get("tenant_id") != tenant_id and result.get("running"):
+            raise HTTPException(409, "另一个账号组的热点采集正在运行，请稍后重试")
+        return result
 
     @app.post("/api/hot_topics/research", status_code=202)
     def hot_topics_research():
-        """手动触发大模型研判（只研判当前榜单，历史热点不参与），立即返回任务状态。
-
-        前端轮询 GET /api/hot_topics 的 research_job 判断是否完成。
-        """
+        """手动触发大模型研判当前账号组的热点，立即返回任务状态。"""
         from ..core import hot_topic_service
         from ..core.hot_topic_matcher import default_llm_fn
 
@@ -5393,21 +5363,10 @@ def _register_routes(app: FastAPI) -> None:
         if default_llm_fn(cfg) is None:
             raise HTTPException(409, "大模型未启用：请到「系统设置」开启主模型并配置 API Key")
         tenant_id = _g().get("runtime_tenant_id", "default")
-        try:
-            task, created = _enqueue_scheduler_task(
-                tenant_id=tenant_id, method="_job_hot_topics_research",
-            )
-        except (ValueError, sqlite3.Error) as exc:
-            logger.exception("热点研判任务入队失败 tenant=%s", tenant_id)
-            raise HTTPException(503, "热点研判任务暂时无法入队，请稍后重试") from exc
-        return {
-            "started": task.status in ("queued", "running"),
-            "created": created,
-            "task_id": task.task_id,
-            "running": task.status in ("queued", "running"),
-            "queued": task.status == "queued",
-            "status": task.status,
-        }
+        result = hot_topic_service.trigger_research(cfg, tenant_id=tenant_id)
+        if not result.get("started") and result.get("tenant_id") != tenant_id and result.get("running"):
+            raise HTTPException(409, "另一个账号组的热点研判正在运行，请稍后重试")
+        return result
 
     @app.post("/api/hot_topics/import")
     def import_hot_topic(req: dict):
