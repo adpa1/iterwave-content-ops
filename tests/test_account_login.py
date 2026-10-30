@@ -91,6 +91,11 @@ def test_login_status_redacts_signed_urls(tmp_login):
 
 
 def test_qr_only_returned_in_qr_states(tmp_login):
+    class AliveProcess:
+        def poll(self):
+            return None
+
+    al._LOGIN_PROCESSES["xhs"] = AliveProcess()
     al._files("xhs")["qr"].write_bytes(b"\x89PNG fake")
     _write_status("qr_ready")
     st = al.get_login_status("xhs")
