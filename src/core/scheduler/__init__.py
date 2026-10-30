@@ -308,17 +308,11 @@ class SchedulerEngine:
                     draft_id, attempt, run_at.isoformat())
 
     def _metrics_retry_params(self) -> tuple[int, int]:
-        """解析 timeouts.metrics_retry_policy（"3次/间隔30min"）→ (次数, 间隔分钟)。
-
-        缺省 3 次 / 30min，与设计方案 §14.3 一致。
-        """
-        import re
-        policy = getattr(self.cfg.timeouts, "metrics_retry_policy", "") or ""
-        times_m = re.search(r"(\d+)\s*次", policy)
-        interval_m = re.search(r"(\d+)\s*min", policy, re.IGNORECASE)
-        times = int(times_m.group(1)) if times_m else 3
-        interval = int(interval_m.group(1)) if interval_m else 30
-        return max(1, times), max(1, interval)
+        """返回配置化的数据采集重试次数与间隔（分钟）。"""
+        return (
+            self.cfg.timeouts.metrics_retry_attempts,
+            self.cfg.timeouts.metrics_retry_interval_minutes,
+        )
 
     # ------------------------------------------------------------------
     # 7 类任务实现（全部 stub，Phase 5-6 补真实逻辑）
