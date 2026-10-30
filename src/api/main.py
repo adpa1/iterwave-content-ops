@@ -164,17 +164,6 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
     if pending_restore.exists():
         raise RuntimeError("目标账号组存在待恢复快照，请先重启服务完成恢复，再执行热切换")
 
-    applied_overrides = apply_overrides(cfg, load_overrides(cfg))
-    if applied_overrides:
-        logger.info("账号组热切换已应用 %d 项配置覆盖 tenant=%s", len(applied_overrides), tenant_id)
-    if tenant_id != "default":
-        for platform_cfg in cfg.platforms.model_dump().keys():
-            item = getattr(cfg.platforms, platform_cfg)
-            prefix = f"{tenant_id}__"
-            if not item.account_key.startswith(prefix):
-                item.account_key = f"{prefix}{item.account_key}"
-        cfg.topic_kb.path = str(tenant_paths.kb_dir / "topics.csv")
-
     db = Database(cfg)
     conn = None
     scheduler = None
@@ -182,6 +171,42 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
         db.initialize()
         from src.core.db import LockedConnection
         conn = LockedConnection(db.connect())
+        from src.core.config_repository import (
+            import_legacy_overrides, legacy_import_completed, read_settings,
+        )
+        from src.core.config_store import overrides_path
+        try:
+            legacy_result = import_legacy_overrides(conn, overrides_path(cfg))
+            if legacy_result["imported"] or legacy_result["rejected"]:
+                logger.info("账号组旧配置回填 tenant=%s imported=%d rejected=%d",
+                            tenant_id, legacy_result["imported"], legacy_result["rejected"])
+            persisted_settings = read_settings(conn)
+        except Exception as exc:
+            logger.exception("账号组 SQLite 配置回填失败，回退旧 JSON tenant=%s error=%s",
+                             tenant_id, type(exc).__name__)
+            persisted_settings = {}
+        legacy_complete = False
+        try:
+            legacy_complete = legacy_import_completed(conn)
+        except Exception:
+            logger.warning("无法确认账号组旧配置迁移标记 tenant=%s", tenant_id)
+        if not persisted_settings and not legacy_complete:
+            persisted_settings = load_overrides(cfg)
+        applied_overrides = apply_overrides(cfg, persisted_settings)
+        if applied_overrides:
+            logger.info("账号组热切换已应用 %d 项 SQLite 配置 tenant=%s",
+                        len(applied_overrides), tenant_id)
+        if tenant_id != "default":
+            for platform_cfg in cfg.platforms.model_dump().keys():
+                item = getattr(cfg.platforms, platform_cfg)
+                prefix = f"{tenant_id}__"
+                if not item.account_key.startswith(prefix):
+                    item.account_key = f"{prefix}{item.account_key}"
+            cfg.topic_kb.path = str(tenant_paths.kb_dir / "topics.csv")
+        from src.core import account_login, login_manager
+        runtime_data_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
+        account_login.configure_data_dir(runtime_data_dir)
+        login_manager.configure_data_dir(runtime_data_dir)
         adapters = get_adapters(cfg, conn)
         cb = CircuitBreakerEngine(cfg, conn, adapters)
         rhythm = RhythmController(cfg)
