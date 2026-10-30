@@ -551,6 +551,7 @@ class CopyGenerationConfig(BaseModel):
     strategy_hint_max_count: int = Field(6, ge=0, le=20)
     strategy_hint_max_chars: int = Field(120, ge=20, le=500)
     max_guard_retries: int = Field(2, ge=0, le=10)
+    max_output_tokens: int = Field(1200, ge=128, le=8192)
 
     @model_validator(mode="after")
     def _check_copy_constraints(self) -> "CopyGenerationConfig":
@@ -628,6 +629,21 @@ class LlmConfig(BaseModel):
     retry_backoff_seconds: float = Field(1.0, ge=0.1, le=30.0)
 
 
+class ActivationConfig(BaseModel):
+    """快速体验资源与输入边界；BYOK 仍按供应商实际计费。"""
+    account_description_min_chars: int = Field(10, ge=1, le=100)
+    account_description_max_chars: int = Field(300, ge=20, le=1000)
+    max_runs_per_day: int = Field(5, ge=1, le=100)
+    stale_task_timeout_minutes: int = Field(30, ge=5, le=240)
+    sample_max_output_tokens: int = Field(1200, ge=128, le=8192)
+
+    @model_validator(mode="after")
+    def _check_description_range(self) -> "ActivationConfig":
+        if self.account_description_min_chars > self.account_description_max_chars:
+            raise ValueError("账号定位最小长度不能大于最大长度")
+        return self
+
+
 class Config(BaseModel):
     paths: PathsConfig = Field(default_factory=PathsConfig)
     topic_kb: TopicKbConfig
@@ -637,6 +653,7 @@ class Config(BaseModel):
     platform_link_domains: dict[str, list[str]] = Field(default_factory=dict)
     # 每个平台允许人工回填的逐篇指标字段；来源于平台读回能力与实际可见口径。
     platform_metric_fields: dict[str, list[str]] = Field(default_factory=dict)
+    activation: ActivationConfig = Field(default_factory=ActivationConfig)
     scoring: ScoringConfig
     ultimate_goal: UltimateGoalConfig
     timeouts: TimeoutsConfig
