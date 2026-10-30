@@ -116,12 +116,15 @@ def test_new_runtime_policy_fields_are_whitelisted_and_visible(cfg):
         "scoring.active_dimension_min_uses",
         "scoring.active_dimension_window_days",
         "scoring.shrinkage_m",
+        "scoring.timeliness_half_life_days.news",
+        "scoring.timeliness_half_life_days.evergreen",
         "rhythm.intervals.passive_reply_base_seconds",
         "insights.window_days",
         "plan_suggestion.default_topic_count",
         "platforms.xhs.enabled",
         "topic_kb.field_mapping",
         "ultimate_goal.goal_mode",
+        "notifications.events.draft_saved.enabled",
     }
     assert expected <= keys
 
@@ -188,3 +191,13 @@ def test_internal_platform_identity_and_endpoints_are_not_returned_or_patchable(
         patch_config(cfg, conn, {"media_generation.base_url": "https://internal.example"})
     with pytest.raises(ConfigNotAllowedError):
         patch_config(cfg, conn, {"notifications.channels.feishu.webhook_url_env": "OTHER_SECRET_ENV"})
+
+
+
+def test_notification_event_switch_is_a_tenant_runtime_setting(cfg, conn):
+    patch_config(cfg, conn, {"notifications.events.draft_saved.enabled": False})
+    event = next(item for item in cfg.notifications.events if item.name == "draft_saved")
+    assert event.enabled is False
+    assert _validate("notifications.events.round_timeout.enabled", True) is True
+    with pytest.raises(ConfigNotAllowedError):
+        _validate("notifications.events.unknown_event.enabled", False)
