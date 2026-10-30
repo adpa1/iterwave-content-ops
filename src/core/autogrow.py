@@ -439,7 +439,6 @@ class AutogrowController:
         round_id = created["id"]
         if self.enqueue_task is not None:
             task, created_task = self.enqueue_task(
-                tenant_id=getattr(self, "tenant_id", None),
                 round_id=round_id,
                 topic_count=None if by_plan else ag.topic_count,
                 platforms=verdict["platforms"],
