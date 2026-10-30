@@ -556,3 +556,18 @@ html, body, #root { width: 100%; max-width: 100%; overflow-x: clip; }
   .content .grid { grid-template-columns: minmax(0, 1fr) !important; }
   .content input, .content select, .content textarea { max-width: 100%; }
 }
+
+/* Mobile 390px containment and compact workspace */
+
+@media (max-width: 620px) {
+  /* 手机端保留图标导航，但缩窄占位；导航文字已在平板断点隐藏。 */
+  .sidebar { width: 48px; flex-basis: 48px; padding: 10px 3px; }
+  .brand { padding: 0 7px 16px; }
+  .nav { padding: 10px 3px; }
+  .nav .ni { font-size: 16px; }
+  .topbar { padding: 8px 9px; }
+  .top-actions { gap: 5px; }
+  .tenant-switcher select { max-width: 108px; min-width: 76px; }
+  .content { padding: 10px 9px 28px; }
+  .panel { padding: 11px; }
+}
