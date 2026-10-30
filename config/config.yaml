@@ -151,11 +151,6 @@ circuit_breaker:
   # 默认冷却时间（分钟）
   cooldown_minutes: 30
   recovery_failure_extension_minutes: 60
-  # 3 步恢复验证（R6）
-  recovery:
-    require_cooldown_expired: true
-    require_test_login: true
-    require_lightweight_action: true
 
 # ===== 节奏控制器 =====
 rhythm:
