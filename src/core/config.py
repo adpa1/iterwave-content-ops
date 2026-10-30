@@ -428,6 +428,15 @@ class VisionRankingConfig(BaseModel):
     temperature: float = Field(0.0, ge=0.0, le=2.0)
     max_tokens: int = Field(600, ge=1, le=4000)
 
+    @field_validator("base_url")
+    @classmethod
+    def _safe_vision_url(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+        parsed = urlsplit(value.strip())
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("vision_ranking.base_url 必须是无认证信息的 HTTP(S) URL")
+        return value.strip().rstrip("/")
+
 
 class MediaGenerationConfig(BaseModel):
     base_url: str = "https://api.openai.com/v1"
@@ -436,6 +445,15 @@ class MediaGenerationConfig(BaseModel):
     max_response_bytes: int = Field(20 * 1024 * 1024, ge=1024, le=20 * 1024 * 1024)
     max_dimension: int = Field(20000, ge=256, le=20000)
     max_pixels: int = Field(40_000_000, ge=1_000_000, le=40_000_000)
+
+    @field_validator("base_url")
+    @classmethod
+    def _safe_generation_url(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+        parsed = urlsplit(value.strip())
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("media_generation.base_url 必须是无认证信息的 HTTP(S) URL")
+        return value.strip().rstrip("/")
 
 
 class MediaQualityConfig(BaseModel):
