@@ -635,6 +635,8 @@ class Config(BaseModel):
     platforms: PlatformsConfig
     # 平台发布链接允许域名；用于人工粘贴链接校验，禁止在 API 路由中硬编码。
     platform_link_domains: dict[str, list[str]] = Field(default_factory=dict)
+    # 每个平台允许人工回填的逐篇指标字段；来源于平台读回能力与实际可见口径。
+    platform_metric_fields: dict[str, list[str]] = Field(default_factory=dict)
     scoring: ScoringConfig
     ultimate_goal: UltimateGoalConfig
     timeouts: TimeoutsConfig
