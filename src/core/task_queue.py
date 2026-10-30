@@ -467,13 +467,16 @@ class GlobalTaskQueue:
         try:
             if tenant_id is None:
                 rows = conn.execute(
-                    "SELECT * FROM global_task_queue ORDER BY queue_order DESC LIMIT ?",
+                    "SELECT * FROM global_task_queue "
+                    "ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END, "
+                    "queue_order DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     "SELECT * FROM global_task_queue WHERE tenant_id=? "
-                    "ORDER BY queue_order DESC LIMIT ?", (tenant_id, limit),
+                    "ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END, "
+                    "queue_order DESC LIMIT ?", (tenant_id, limit),
                 ).fetchall()
             return [task for row in rows if (task := self._decode(row)) is not None]
         finally:
