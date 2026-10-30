@@ -32,6 +32,8 @@ from typing import Optional
 from .config import PROJECT_ROOT
 from .kb_reader import KbReader  # noqa: F401 — 兼容旧引用
 from .topic_pool import load_pool
+from .persona import effective_persona
+from .hot_topics import _sensitive_topic_hits
 from .orchestration import Orchestration, step_status_from_report
 from .content_pipeline import generate_copy_content, make_card_set, _llm_available
 from .plan_version import PlanVersionManager
@@ -135,6 +137,18 @@ class RoundExecutor:
         platforms = self._resolve_platforms(platform_values)
         if not platforms:
             raise ValueError("没有可用平台：请检查 config.platforms 的 enabled 与请求参数")
+
+        # 运行前硬门：本轮每个目标平台都必须有可比较的账号定位关键词。
+        missing_persona = [
+            p.value for p in platforms
+            if not effective_persona(self.cfg, p.value).get("persona_keywords")
+        ]
+        if missing_persona:
+            labels = "、".join(Platform(p).display_name for p in missing_persona)
+            raise ValueError(
+                f"运行前检查未通过：{labels} 未配置账号定位关键词，无法判断内容是否符合账号定位。"
+                "请先到「目标与策略」补齐对应平台画像"
+            )
 
         report: dict = {
             "round_id": round_id,
@@ -615,6 +629,25 @@ class RoundExecutor:
         if not items:
             return []
 
+        sensitive_items = [it for it in items if _sensitive_topic_hits(it.title)]
+        if sensitive_items:
+            report["steps"].append({
+                "step": "sensitive_topic_gate",
+                "status": "manual_review_required",
+                "skipped": len(sensitive_items),
+                "items": [
+                    {"topic_id": it.id, "title": it.title,
+                     "categories": _sensitive_topic_hits(it.title)}
+                    for it in sensitive_items
+                ],
+            })
+            report["errors"].append(
+                f"{len(sensitive_items)} 条敏感选题已转人工确认，本轮不自动生成"
+            )
+        items = [it for it in items if not _sensitive_topic_hits(it.title)]
+        if not items:
+            return []
+
         scored = sorted(
             self.scoring.score_topics(items, feedback=getattr(self, "_feedback", None)),
             key=lambda s: s.total_score,
@@ -677,6 +710,17 @@ class RoundExecutor:
         card_first = bool(orch and orch.card_before_gate and make_cards)
         for rank, st in enumerate(scored):
             topic = st.topic
+            # 第二道独立防线：进入内容生产前再次检查原始选题标题。
+            sensitive_hits = _sensitive_topic_hits(topic.title)
+            if sensitive_hits:
+                report["steps"].append({
+                    "step": "sensitive_topic_gate",
+                    "status": "manual_review_required",
+                    "topic_id": topic.id,
+                    "title": topic.title,
+                    "categories": sensitive_hits,
+                })
+                continue
             topic_ids.append(topic.id)
             self._upsert_topic_index(topic)
 
