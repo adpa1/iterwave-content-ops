@@ -228,7 +228,7 @@ class TenantRegistry:
         try:
             data = json.loads(self.active_file.read_text(encoding="utf-8"))
             tenant_id = self._validate_id(data.get("tenant_id"))
-        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError) as exc:
             raise TenantError("旧活动账号组状态无效；为防止串用业务数据，已拒绝自动回退") from exc
         if not any(item["id"] == tenant_id for item in tenants):
             raise TenantError("旧活动账号组不存在于注册表；为防止串用业务数据，已拒绝自动回退")
@@ -321,7 +321,7 @@ class TenantRegistry:
                 return tenant_id
             finally:
                 conn.close()
-        except (OSError, sqlite3.Error, ValueError, TypeError, json.JSONDecodeError) as exc:
+        except (OSError, sqlite3.Error, ValueError, TypeError, AttributeError, json.JSONDecodeError) as exc:
             if isinstance(exc, TenantError):
                 raise
             raise TenantError("当前账号组状态无效；为防止串用业务数据，已拒绝自动回退") from exc
