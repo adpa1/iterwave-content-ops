@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS tenant_settings (
 );
 CREATE TABLE IF NOT EXISTS tenant_setting_versions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    version        INTEGER NOT NULL,
+    version        INTEGER NOT NULL UNIQUE,
     snapshot_json  TEXT NOT NULL,
     changed_at     TEXT NOT NULL,
     changed_by     TEXT NOT NULL DEFAULT 'system',
