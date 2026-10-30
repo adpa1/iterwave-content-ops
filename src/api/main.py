@@ -1769,12 +1769,11 @@ def _register_routes(app: FastAPI) -> None:
         conn.execute(
             "INSERT INTO metric_snapshots "
             "(id, tenant_id, draft_id, content_id, platform, source, views, likes, collects, comments, shares, "
-            "new_followers, measured_at, recorded_at, correction_of, created_at) "
-            "VALUES (?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "measured_at, recorded_at, correction_of, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (snapshot_id, tenant_id, draft_id, row["content_id"], row["platform"],
              values["views"], values["likes"], values["collects"], values["comments"],
-             values["shares"], values["new_followers"], measured_at, now,
-             correction_of, now),
+             values["shares"], measured_at, now, correction_of, now),
         )
         conn.commit()
         _record_content_event("metrics_submitted", content_id=row["content_id"],
