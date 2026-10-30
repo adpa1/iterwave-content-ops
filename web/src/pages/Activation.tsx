@@ -78,6 +78,7 @@ export default function Activation() {
       });
       setRunId(result.sample_run_id);
       await loadRun(result.sample_run_id);
+      setStatus(await api.activationStatus());
       if (result.status === "failed") setBusy(false);
     } catch (e: any) {
       setError(e?.message || "创建体验任务失败");
