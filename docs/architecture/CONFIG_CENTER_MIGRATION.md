@@ -58,7 +58,7 @@
 - change_reason TEXT NULL
 - UNIQUE(version)
 
-现有 config_changes 保留为字段级审计表，但 old_value/new_value 在写入前必须脱敏；版本快照不得包含凭据或秘密值。
+现有 config_changes 保留为字段级审计表，但 old_value/new_value 在写入前必须脱敏；版本快照不得包含 API Key、Webhook 凭据、URL userinfo 等凭据。为兼容现有 RSS 私有源，带签名查询参数的源 URL 仍保留在当前配置值中供采集使用，但审计、版本快照和诊断 API 必须脱敏；数据库文件权限限制为 0600。
 
 ## 5. 统一配置元数据
 
@@ -133,7 +133,7 @@
 - 非法/未知配置可诊断，不会被静默应用。
 - 数据库不可写时不丢失旧 JSON 配置。
 - PATCH 的配置值、版本快照、审计记录原子提交。
-- 凭据不以原文出现在 tenant_settings、tenant_setting_versions、config_changes、日志或 API 响应。
+- LLM API Key、Webhook 凭据和 URL userinfo 不以原文进入配置表/历史/审计；RSS 私有源签名 URL 仅允许存在当前配置值，历史、审计、日志和 API 响应必须脱敏。
 - 账号组之间配置互不可见。
 - 安全硬锁在 API、UI 和存储层均不可被覆盖。
 - 现有 scheduler 即时生效行为和全部既有测试保持通过。
