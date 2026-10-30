@@ -318,9 +318,9 @@ def suggest_plan_from_goal(cfg, conn, goal_id: str, current_plan: Optional[dict]
         else:
             notes.append(f"已发布样本不足 {policy.minimum_sample_count} 篇，无法按产出推算篇数，先按默认节奏起步，样本达标后再用真实数据重算")
     elif metric in PERCENT_METRICS:
-        notes.append("比率类目标靠质量而非数量，节奏按每周一轮、保持每轮复盘调整")
+        notes.append(f"比率类目标靠质量而非数量，按每 {policy.default_interval_days} 天一轮、保持每轮复盘调整")
     else:
-        notes.append(f"指标 {metric} 暂不支持按产出推算，按每周一轮起步")
+        notes.append(f"指标 {metric} 暂不支持按产出推算，按每 {policy.default_interval_days} 天一轮起步")
 
     per_round = topic_count * max(1, len(platforms))
     if contents_needed:
