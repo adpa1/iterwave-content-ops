@@ -789,11 +789,15 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
     changes: list[dict[str, Any]] = []
     persisted: dict[str, Any] = {}
     audit_rows: list[tuple[str, str | None, str]] = []
+    remove_keys: list[str] = []
     for key, value in normalized.items():
         old_value = _jsonable(_get_value(cfg, key))
         if old_value == value:
             continue
         persisted[key] = value
+        other_key = _counterpart(key)
+        if other_key:
+            remove_keys.append(other_key)
         audit_rows.append((
             key,
             None if old_value is None else json.dumps(old_value, ensure_ascii=False, sort_keys=True),
@@ -805,7 +809,7 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
         # Repository writes settings, version snapshot and audit rows in one transaction.
         from src.core.config_repository import save_settings
         try:
-            save_settings(conn, persisted, audit_rows=audit_rows)
+            save_settings(conn, persisted, audit_rows=audit_rows, remove_keys=remove_keys)
         except (ValueError, sqlite3.Error) as exc:
             raise ConfigPatchError(str(exc)) from exc
         for key, value in persisted.items():
