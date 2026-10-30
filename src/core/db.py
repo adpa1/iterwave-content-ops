@@ -266,6 +266,7 @@ class Database:
                 "signature_history", "hot_topics", "plan_settings",
                 "content_assets", "media_assets", "media_asset_usages",
                 "media_generation_settings", "media_generation_jobs",
+                "tenant_settings", "tenant_setting_versions", "tenant_setting_migrations",
             }
             result["missing_tables"] = sorted(expected_tables - existing)
             result["existing_tables"] = sorted(existing & expected_tables)
