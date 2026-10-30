@@ -173,7 +173,13 @@ def test_activation_sample_read_is_tenant_scoped(activation_client, conn):
 
 def test_manual_metrics_preserve_null_and_note_url_is_platform_validated(activation_client, conn, seed):
     round_id = seed.round()
-    draft_id = seed.draft(round_id, platform="xhs", draft_status="published", fetch_status=None)
+    draft_id = seed.draft(round_id, platform="xhs", draft_status="failed", fetch_status=None)
+    from datetime import datetime
+    conn.execute(
+        "UPDATE drafts SET user_confirmed_at=? WHERE id=?",
+        (datetime.now().isoformat(sep=" "), draft_id),
+    )
+    conn.commit()
 
     bad_link = activation_client.post(
         f"/api/drafts/{draft_id}/note_url",
