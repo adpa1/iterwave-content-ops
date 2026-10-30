@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 _LOCK = threading.Lock()
 _STATE: dict = {
     "running": False,
+    "tenant_id": None,
     "started_at": None,
     "finished_at": None,
     "trigger": None,
@@ -34,6 +35,7 @@ _STATE: dict = {
 # 大模型研判单独一条状态，前端轮询 research_job
 _RESEARCH_STATE: dict = {
     "running": False,
+    "tenant_id": None,
     "started_at": None,
     "finished_at": None,
     "report": None,
@@ -51,7 +53,7 @@ def research_status() -> dict:
         return dict(_RESEARCH_STATE)
 
 
-def run_once(cfg, conn=None, *, trigger: str = "manual") -> dict:
+def run_once(cfg, conn=None, *, trigger: str = "manual", tenant_id: str | None = None) -> dict:
     """同步执行一次采集 + 匹配。已有任务在跑时直接返回 {"skipped": True}。
 
     整个过程跑在后台线程里（trigger_background），进度写进 _STATE["progress"]，
@@ -60,7 +62,7 @@ def run_once(cfg, conn=None, *, trigger: str = "manual") -> dict:
     with _LOCK:
         if _STATE["running"]:
             return {"skipped": True, **_STATE}
-        _STATE.update(running=True, trigger=trigger, error=None, progress=None,
+        _STATE.update(running=True, tenant_id=tenant_id, trigger=trigger, error=None, progress=None,
                       started_at=datetime.now().isoformat(timespec="seconds"))
     own_conn = conn is None
     if own_conn:
@@ -123,25 +125,27 @@ def run_once(cfg, conn=None, *, trigger: str = "manual") -> dict:
     return status()
 
 
-def trigger_background(cfg, *, trigger: str = "manual") -> dict:
+def trigger_background(cfg, *, trigger: str = "manual", tenant_id: str | None = None) -> dict:
     """在后台线程启动一次刷新，立即返回当前状态。"""
     with _LOCK:
         if _STATE["running"]:
             return {"started": False, **_STATE}
-    t = threading.Thread(target=run_once, args=(cfg,), kwargs={"trigger": trigger},
-                         name="hot-topics-refresh", daemon=True)
+    t = threading.Thread(
+        target=run_once, args=(cfg,), kwargs={"trigger": trigger, "tenant_id": tenant_id},
+        name=f"hot-topics-refresh-{tenant_id or 'unknown'}", daemon=True,
+    )
     t.start()
     return {"started": True, **status()}
 
 
-def run_research(cfg, conn=None) -> dict:
+def run_research(cfg, conn=None, *, tenant_id: str | None = None) -> dict:
     """同步执行一次大模型研判（只处理当前榜单里尚未研判的条目）。"""
     with _LOCK:
         if _RESEARCH_STATE["running"]:
             return {"skipped": True, **research_status()}
         if _STATE["running"]:
             return {"skipped": True, "reason": "热点正在采集中，稍后再研判", **research_status()}
-        _RESEARCH_STATE.update(running=True, error=None, report=None,
+        _RESEARCH_STATE.update(running=True, tenant_id=tenant_id, error=None, report=None,
                                started_at=datetime.now().isoformat(timespec="seconds"))
     own_conn = conn is None
     if own_conn:
@@ -166,14 +170,17 @@ def run_research(cfg, conn=None) -> dict:
     return research_status()
 
 
-def trigger_research(cfg) -> dict:
+def trigger_research(cfg, *, tenant_id: str | None = None) -> dict:
     """在后台线程启动一次大模型研判，立即返回当前状态。"""
     with _LOCK:
         if _RESEARCH_STATE["running"]:
             return {"started": False, **research_status()}
         if _STATE["running"]:
             return {"started": False, "reason": "热点正在采集中，稍后再研判", **research_status()}
-    t = threading.Thread(target=run_research, args=(cfg,), name="hot-topics-research", daemon=True)
+    t = threading.Thread(
+        target=run_research, args=(cfg,), kwargs={"tenant_id": tenant_id},
+        name=f"hot-topics-research-{tenant_id or 'unknown'}", daemon=True,
+    )
     t.start()
     return {"started": True, **research_status()}
 
@@ -191,9 +198,9 @@ def reset_runtime_state() -> None:
     with _LOCK:
         if _STATE["running"] or _RESEARCH_STATE["running"]:
             raise RuntimeError("热点后台任务仍在执行，不能清理账号组运行状态")
-        _STATE.update(running=False, started_at=None, finished_at=None, trigger=None,
-                      report=None, match=None, error=None, progress=None)
-        _RESEARCH_STATE.update(running=False, started_at=None, finished_at=None,
+        _STATE.update(running=False, tenant_id=None, started_at=None, finished_at=None,
+                      trigger=None, report=None, match=None, error=None, progress=None)
+        _RESEARCH_STATE.update(running=False, tenant_id=None, started_at=None, finished_at=None,
                                report=None, error=None)
 
 
