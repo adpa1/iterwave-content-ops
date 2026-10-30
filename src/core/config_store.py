@@ -762,6 +762,18 @@ def _redact_public_value(value: Any) -> Any:
     return value
 
 
+_INTERNAL_ENDPOINT_KEYS = {"vision_ranking.base_url", "media_generation.base_url"}
+
+
+def _public_overrides(values: dict[str, Any]) -> dict[str, Any]:
+    """Do not echo deployment-only provider endpoints through the general config API."""
+    return {
+        key: _redact_public_value(value)
+        for key, value in values.items()
+        if key not in _INTERNAL_ENDPOINT_KEYS
+    }
+
+
 def current_config_view(cfg: Config, conn) -> dict[str, Any]:
     """Settings 页展示 + 编辑所需的白名单字段当前值。"""
     enabled = cfg.platforms.enabled_keys()
@@ -866,7 +878,7 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             },
         },
         "overrides_file": redact_path(overrides_path(cfg)),
-        "overrides": _redact_public_value(
+        "overrides": _public_overrides(
             __import__("src.core.config_repository", fromlist=["read_settings"]).read_settings(conn)
             or (
                 load_overrides(cfg)
@@ -877,8 +889,8 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
         "audit": [
             {
                 **dict(r),
-                "old_value": _redact_public_value(r["old_value"]),
-                "new_value": _redact_public_value(r["new_value"]),
+                "old_value": ("已隐藏" if r["key"] in _INTERNAL_ENDPOINT_KEYS and r["old_value"] else _redact_public_value(r["old_value"])),
+                "new_value": ("已隐藏" if r["key"] in _INTERNAL_ENDPOINT_KEYS and r["new_value"] else _redact_public_value(r["new_value"])),
             }
             for r in conn.execute(
                 "SELECT id, key, old_value, new_value, changed_at "
