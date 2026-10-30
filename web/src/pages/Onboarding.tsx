@@ -58,6 +58,7 @@ export default function Onboarding() {
   const [cfg, setCfg] = useState<SystemConfigView | null>(null);
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [goals, setGoals] = useState<Goal[]>([]);
+  const [availableTopicCount, setAvailableTopicCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   // ⑥ 阶段目标：向导内直接创建（POST /api/goals → goals 表）
@@ -92,6 +93,12 @@ export default function Onboarding() {
       setCfg(c);
       setStatus(s);
       setGoals(g);
+      try {
+        const pool = await api.topicPool({ status: "active", limit: 1 });
+        setAvailableTopicCount(pool.total);
+      } catch {
+        setAvailableTopicCount(0);
+      }
       setErr(null);
     } catch (e: any) {
       setErr(e.message);
@@ -142,7 +149,7 @@ export default function Onboarding() {
   const checks = {
     persona_ok: cfg.readonly.persona_configured && cfg.readonly.persona_keywords.length > 0,
     platforms_ok: status.enabled_platforms.length >= 1,
-    kb_ok: !!(cfg.readonly.kb_path && cfg.readonly.kb_type),
+    kb_ok: availableTopicCount !== null && availableTopicCount > 0,
     llm_ok: cfg.readonly.llm_has_api_key,
     login_ok: status.logged_in_platforms.length >= 1,
     goals_ok: goals.length >= 1,
@@ -405,7 +412,7 @@ export default function Onboarding() {
               <CheckRow ok={checks.persona_ok}    label="账号画像"       detail={checks.persona_ok ? cfg.readonly.persona_keywords.join("、") : "还没设置账号定位，请填写定位关键词并保存"} />
               <CheckRow ok={checks.platforms_ok}   label="启用平台"       detail={`${status.enabled_platforms.length} 个 (${status.enabled_platforms.map((p) => PLATFORM_NAMES[p]).join(", ")})`} />
               <CheckRow ok={checks.login_ok}       label="登录态"         detail={`${status.logged_in_platforms.length} 个已登录`} />
-              <CheckRow ok={checks.kb_ok}          label="选题库"      detail={`${cfg.readonly.kb_type} @ ${cfg.readonly.kb_path}`} />
+              <CheckRow ok={checks.kb_ok}          label="选题库"      detail={availableTopicCount === null ? "正在检查选题库" : availableTopicCount > 0 ? `可用选题 ${availableTopicCount} 条` : "没有可用选题，请添加或同步知识库来源"} />
               <CheckRow ok={checks.llm_ok}         label="模型服务密钥"    detail={cfg.readonly.llm_has_api_key ? "✓ 已配置" : "✕ 缺失"} />
               <CheckRow ok={checks.goals_ok}        label="阶段目标"       detail={`${goals.length} 条`} />
             </div>
