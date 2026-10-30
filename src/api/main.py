@@ -386,6 +386,7 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
             _tenant_runtime_contexts[tenant_id] = new_context
             created_context = True
         except RuntimeError as exc:
+            _tenant_runtime_contexts[old_tenant_id] = _g_ctx
             if new_context is not None:
                 try:
                     new_context["scheduler"].shutdown()
@@ -397,6 +398,7 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
                     pass
             raise HTTPException(409, str(exc)) from exc
         except Exception as exc:
+            _tenant_runtime_contexts[old_tenant_id] = _g_ctx
             if new_context is not None:
                 try:
                     new_context["scheduler"].shutdown()
@@ -420,6 +422,7 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
                 new_context["conn"].close()
             finally:
                 _tenant_runtime_contexts.pop(tenant_id, None)
+        _tenant_runtime_contexts[old_tenant_id] = _g_ctx
         raise HTTPException(409, "目标账号组存在待恢复快照，请先重启服务完成恢复，再执行热切换")
 
     from src.core import account_login, login_manager
@@ -433,6 +436,8 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
         set_active_notifier(new_context["notifier"])
         _g_ctx.clear()
         _g_ctx.update(new_context)
+        # 活动账号组缓存直接引用前台字典；切走时会先快照，避免配置更新后缓存陈旧。
+        _tenant_runtime_contexts[tenant_id] = _g_ctx
         with _dedupe_lock:
             _dedupe_cache.clear()
         logger.info("账号组前台工作空间切换成功 from=%s to=%s", old_tenant_id, tenant_id)
@@ -451,6 +456,7 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
             login_manager.configure_data_dir(old_data_dir)
             _g_ctx.clear()
             _g_ctx.update(old_context)
+            _tenant_runtime_contexts[old_tenant_id] = _g_ctx
         except Exception as rollback_exc:
             logger.exception("账号组前台切换回滚失败")
             raise TenantRuntimeRollbackError(
@@ -705,7 +711,7 @@ def _build_app() -> FastAPI:
         scheduler.autogrow = autogrow
 
         # 当前前台运行时也作为该账号组的常驻后台调度上下文。
-        _tenant_runtime_contexts[active_tenant_id] = dict(_g_ctx)
+        _tenant_runtime_contexts[active_tenant_id] = _g_ctx
         # 所有已有账号组的 APScheduler 独立常驻；切换前台工作空间不停止旧组定时任务。
         for tenant_item in tenant_registry.list():
             background_tenant_id = str(tenant_item["id"])
