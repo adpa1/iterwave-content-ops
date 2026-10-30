@@ -249,7 +249,7 @@ def test_middleware_requires_login_only_after_password_set(unconfigured_api_clie
     # 脚本口令（X-Access-Token）也能过
     unconfigured_api_client.cookies.clear()
     assert unconfigured_api_client.get("/api/topics", headers={"X-Access-Token": "Secret123!"}).status_code == 200
-    assert unconfigured_api_client.get("/api/topics", headers={"Authorization": "Bearer secret123"}).status_code == 200
+    assert unconfigured_api_client.get("/api/topics", headers={"Authorization": "Bearer Secret123!"}).status_code == 200
 
     # 登出后会话失效
     unconfigured_api_client.post("/api/auth/logout")
