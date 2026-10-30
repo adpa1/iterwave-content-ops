@@ -206,7 +206,15 @@ function labelFor(item: ConfigMetadataItem): string {
     const eventName = item.key.split(".")[2];
     return `${NOTIFICATION_EVENT_LABELS[eventName] || eventName}通知`;
   }
-  return LABELS[item.key.split(".").pop() || item.key] || item.key;
+  return LABELS[item.key.split(".").pop() || item.key] || "参数设置";
+}
+
+function friendlyPolicyError(error: unknown, items: ConfigMetadataItem[]): string {
+  let message = error instanceof Error ? error.message : String(error);
+  for (const item of [...items].sort((a, b) => b.key.length - a.key.length)) {
+    message = message.split(item.key).join(labelFor(item));
+  }
+  return message;
 }
 
 export default function RuntimePolicyEditor() {
@@ -259,7 +267,7 @@ export default function RuntimePolicyEditor() {
         updates[item.key] = raw === "true";
       } else if (item.type === "integer" || item.type === "number") {
         if (!raw.trim() || !Number.isFinite(Number(raw))) {
-          showToast(`${item.key} 必须是有效数字`, "error");
+          showToast(`${labelFor(item)} 必须是有效数字`, "error");
           return;
         }
         updates[item.key] = item.type === "integer" ? Math.trunc(Number(raw)) : Number(raw);
@@ -277,7 +285,7 @@ export default function RuntimePolicyEditor() {
       await load();
       showToast(`已保存 ${Object.keys(updates).length} 项运行策略参数`, "success");
     } catch (e) {
-      showToast(`保存失败：${e instanceof Error ? e.message : String(e)}`, "error");
+      showToast(`保存失败：${friendlyPolicyError(e, items)}`, "error");
     } finally {
       setBusy(false);
     }
@@ -296,10 +304,13 @@ export default function RuntimePolicyEditor() {
           </div>
           <button className="btn primary sm" onClick={save} disabled={busy}>{busy ? "保存中…" : "保存全部修改"}</button>
         </div>
-        {grouped.map((group) => (
-          <section key={group.title} style={{ marginTop: 16 }}>
-            <div className="section-title">{group.title}</div>
-            <div className="grid two">
+        {grouped.map((group, index) => (
+          <details key={group.title} open={index === 0} style={{ marginTop: 12, border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px" }}>
+            <summary style={{ cursor: "pointer", fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+              <span>{group.title}</span>
+              <span className="tag gray">{group.items.length} 项</span>
+            </summary>
+            <div className="grid two" style={{ marginTop: 14 }}>
               {group.items.map((item) => {
                 const numeric = item.type === "integer" || item.type === "number";
                 const boolean = item.type === "boolean";
@@ -325,12 +336,14 @@ export default function RuntimePolicyEditor() {
                         onChange={(event) => setDrafts((prev) => ({ ...prev, [item.key]: event.target.value }))}
                       />
                     )}
-                    <div className="metric-foot">{item.key}{item.min != null || item.max != null ? ` · 范围 ${item.min ?? "不限"}–${item.max ?? "不限"}` : ""}</div>
+                    {(item.min != null || item.max != null) && (
+                      <div className="metric-foot">允许范围：{item.min ?? "不限"}–{item.max ?? "不限"}</div>
+                    )}
                   </div>
                 );
               })}
             </div>
-          </section>
+          </details>
         ))}
       </div>
     </div>
