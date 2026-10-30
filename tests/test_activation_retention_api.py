@@ -381,9 +381,11 @@ def test_weekly_action_feedback_persists_decisions_and_outcomes(activation_clien
 
 def test_saved_sample_promotes_into_created_formal_round_idempotently(activation_client, conn, seed):
     from datetime import datetime
-    from src.core.guard.ultimate_goal_checker import UltimateGoalChecker
+    from types import SimpleNamespace
 
-    main._g_ctx["guard"] = UltimateGoalChecker(main._g_ctx["cfg"])
+    main._g_ctx["guard"] = SimpleNamespace(
+        check_content=lambda *args, **kwargs: SimpleNamespace(passes=True, reason="通过正式质量门")
+    )
     now = datetime.now().isoformat(sep=" ")
     round_id = seed.round(status="created")
     conn.execute(
@@ -428,6 +430,40 @@ def test_saved_sample_promotes_into_created_formal_round_idempotently(activation
     assert conn.execute(
         "SELECT COUNT(*) FROM contents WHERE round_id=?", (round_id,)
     ).fetchone()[0] == 1
+
+
+def test_activation_metrics_reports_ttv_percentiles_for_available_database_cohorts(activation_client, conn):
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    cohorts = [
+        ("default", now - timedelta(minutes=10), 120),
+        ("tenant-b", now - timedelta(minutes=20), 300),
+    ]
+    for tenant_id, started, duration in cohorts:
+        first_seen = started.isoformat(sep=" ")
+        created = (started + timedelta(seconds=10)).isoformat(sep=" ")
+        model_started = (started + timedelta(seconds=20)).isoformat(sep=" ")
+        completed = (started + timedelta(seconds=duration)).isoformat(sep=" ")
+        conn.execute(
+            "INSERT INTO activation_cohort (tenant_id, first_seen_at) VALUES (?, ?)",
+            (tenant_id, first_seen),
+        )
+        conn.execute(
+            "INSERT INTO sample_runs (id, tenant_id, platform, account_description, status, model_mode, "
+            "idempotency_key, created_at, started_at, completed_at) "
+            "VALUES (?, ?, 'xhs', '测试账号定位内容足够长', 'ready', 'byok', ?, ?, ?, ?)",
+            (f"ttv-{tenant_id}", tenant_id, f"ttv-{tenant_id}", created, model_started, completed),
+        )
+    conn.commit()
+
+    response = activation_client.get("/api/activation/metrics")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ttv_sample_count"] == 2
+    assert payload["ttv_p50_seconds"] == 120.0
+    assert payload["ttv_p90_seconds"] == 300.0
+    assert "当前数据库内" in payload["ttv_percentile_scope"]
 
 
 def test_activation_metrics_calculates_completed_cohort_rates_and_ttv(activation_client, conn, seed):
