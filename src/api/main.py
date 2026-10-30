@@ -1491,8 +1491,8 @@ def _register_routes(app: FastAPI) -> None:
                 base_cfg = _g()["cfg"]
                 sample_goal = base_cfg.ultimate_goal.model_copy(update={
                     "positioning": description,
-                    "persona_keywords": [x for x in description.replace("，", ",").split(",") if x.strip()][:8]
-                        or [description[:80]],
+                    "persona_keywords": [],
+                    "platform_personas": {},
                 })
                 sample_cfg = base_cfg.model_copy(deep=True, update={"ultimate_goal": sample_goal})
                 angles = [
@@ -1517,8 +1517,14 @@ def _register_routes(app: FastAPI) -> None:
                         findings.append("正文重复度过高")
                     if any(phrase in body for phrase in ("仅供参考", "总而言之", "希望对你有帮助")):
                         findings.append("包含泛化套话")
+                    from src.core.guard.ultimate_goal_checker import UltimateGoalChecker, CheckResult
+                    guard_result = UltimateGoalChecker(sample_cfg).check_content(
+                        title, body, tags, platform=platform,
+                    )
+                    if guard_result.result != CheckResult.PASS:
+                        findings.append(guard_result.reason or "未通过内容方向与合规检查")
                     if findings:
-                        raise ContentGenerationError("quality_rejected", "样稿未通过基础质量检查：" + "、".join(findings))
+                        raise ContentGenerationError("quality_rejected", "样稿未通过质量检查：" + "、".join(findings))
                     results.append((angle, title, body, tags, findings))
                 conn_bg.execute("UPDATE sample_runs SET status='quality_check' WHERE id=?", (run_id,))
                 conn_bg.commit()
@@ -1727,12 +1733,7 @@ def _register_routes(app: FastAPI) -> None:
             (start.isoformat(sep=" "), end.isoformat(sep=" "), *((platform,) if platform else ())),
         ).fetchall()
         merged = []
-        seen = set()
         for row in list(snapshots) + list(auto_rows):
-            key = (row["content_id"], row["platform"], row["measured_at"])
-            if key in seen:
-                continue
-            seen.add(key)
             merged.append(dict(row))
         if platform is None:
             platforms = sorted({r["platform"] for r in merged})
