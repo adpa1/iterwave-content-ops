@@ -387,6 +387,7 @@ media_quality:
 tenant_switch:
   request_drain_timeout_seconds: 30
   scheduler_drain_timeout_seconds: 30
+  round_drain_timeout_seconds: 120
   background_jobs_timeout_seconds: 120
   login_process_timeout_seconds: 10
 
