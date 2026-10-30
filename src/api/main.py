@@ -140,8 +140,6 @@ def _tenant_scoped_hot_topic_status(status: dict, tenant_id: str) -> dict:
 
 def _round_task_active(tenant_id: str, round_id: int) -> bool:
     """检查轮次是否仍在全局队列中等待或执行，兼容旧进程内任务集合。"""
-    if round_id in _running_rounds:
-        return True
     if _task_queue is None:
         return False
     for aggregate_id in (str(round_id), f"{round_id}:save_pending_drafts"):
@@ -177,7 +175,6 @@ class TenantRuntimeRollbackError(RuntimeError):
 
 
 # G-22：正在执行的轮次集合。同一轮次并发触发会被拒绝（409），避免重复产出草稿
-_running_rounds: set[int] = set()
 _round_job_status: dict[int, dict] = {}
 _media_generation_lock = threading.Lock()
 
@@ -542,7 +539,8 @@ def _build_app() -> FastAPI:
         _task_queue = GlobalTaskQueue(tenant_registry.system_db_file)
         _task_queue.initialize()
         _tenant_runtime_contexts.clear()
-        # queued 任务在重启后继续执行；过期 running 任务转 interrupted，避免重复副作用。
+        # 当前部署约束为单 Uvicorn worker；启动时上一进程已退出，可立即回收遗留 running。
+        _task_queue.recover_orphaned_running()
         _task_queue.recover_expired()
         active_tenant_id = tenant_registry.active_id()
         active_tenant = tenant_registry.get(active_tenant_id)
@@ -3292,7 +3290,7 @@ def _register_routes(app: FastAPI) -> None:
         if not req.confirm:
             raise HTTPException(400, "恢复操作需要显式确认")
         tenant_id = _g().get("runtime_tenant_id", "default")
-        if _running_rounds or _tenant_has_active_queue_tasks(tenant_id):
+        if _tenant_has_active_queue_tasks(tenant_id):
             raise HTTPException(409, "当前账号组仍有轮次或后台任务在执行/排队，不能安排恢复")
         cfg = _g()["cfg"]
         data_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
@@ -4002,7 +4000,7 @@ def _register_routes(app: FastAPI) -> None:
         # 兼容多 worker：轮次数据库状态为 producing 时，即使轮询落到另一 worker 也继续等待。
         return {
             "round_id": round_id,
-            "running": round_id in _running_rounds or row["status"] == "producing",
+            "running": row["status"] == "producing",
             "report": report, "error": None,
         }
 

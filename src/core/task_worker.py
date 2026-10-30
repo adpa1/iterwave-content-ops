@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import threading
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -30,12 +32,19 @@ class GlobalTaskWorker:
         poll_interval_seconds: float = 0.5,
         lease_seconds: int = 90,
         heartbeat_seconds: float = 20,
+        shutdown_grace_seconds: float | None = None,
     ):
         self.queue = queue
         self.build_tenant_context = build_tenant_context
         self.poll_interval_seconds = poll_interval_seconds
         self.lease_seconds = lease_seconds
         self.heartbeat_seconds = heartbeat_seconds
+        if shutdown_grace_seconds is None:
+            try:
+                shutdown_grace_seconds = float(os.getenv("ITERWAVE_TASK_SHUTDOWN_GRACE_SECONDS", "30"))
+            except (TypeError, ValueError):
+                shutdown_grace_seconds = 30.0
+        self.shutdown_grace_seconds = max(0.0, min(float(shutdown_grace_seconds), 300.0))
         self.owner = uuid.uuid4().hex
 
     async def run(self, stop_event: asyncio.Event) -> None:
@@ -52,7 +61,7 @@ class GlobalTaskWorker:
                 if task is None:
                     await self._wait(stop_event, self.poll_interval_seconds)
                     continue
-                await self._execute(task)
+                await self._execute(task, stop_event=stop_event)
         finally:
             self.queue.release_worker(self.owner)
             logger.info("全局任务消费者退出 worker=%s", self.owner[:8])
@@ -63,20 +72,23 @@ class GlobalTaskWorker:
         except asyncio.TimeoutError:
             pass
 
-    async def _heartbeat(self, task: QueuedTask, lease_lost: asyncio.Event) -> None:
-        while True:
-            await asyncio.sleep(self.heartbeat_seconds)
+    def _heartbeat_loop(
+        self, task: QueuedTask, stop_event: threading.Event,
+        loop: asyncio.AbstractEventLoop, lease_lost: asyncio.Event,
+    ) -> None:
+        """在线程中续租，避免同步 I/O 阻塞事件循环时心跳也停止。"""
+        while not stop_event.wait(self.heartbeat_seconds):
             try:
                 renewed = self.queue.renew(
                     task.task_id, self.owner, lease_seconds=self.lease_seconds,
                 )
             except Exception:
                 logger.exception("任务租约续期异常 task_id=%s", task.task_id)
-                lease_lost.set()
+                loop.call_soon_threadsafe(lease_lost.set)
                 return
             if not renewed:
                 logger.error("任务租约续期失败，停止执行 task_id=%s", task.task_id)
-                lease_lost.set()
+                loop.call_soon_threadsafe(lease_lost.set)
                 return
 
     async def _run_task(self, task: QueuedTask) -> dict[str, Any]:
@@ -136,14 +148,43 @@ class GlobalTaskWorker:
                 except Exception:
                     logger.exception("关闭任务账号组数据库连接失败")
 
-    async def _execute(self, task: QueuedTask) -> None:
+    async def _execute(
+        self, task: QueuedTask, *, stop_event: asyncio.Event | None = None,
+    ) -> None:
         lease_lost = asyncio.Event()
-        heartbeat = asyncio.create_task(self._heartbeat(task, lease_lost))
+        heartbeat_stop = threading.Event()
+        loop = asyncio.get_running_loop()
+        heartbeat = asyncio.create_task(asyncio.to_thread(
+            self._heartbeat_loop, task, heartbeat_stop, loop, lease_lost,
+        ))
         execution = asyncio.create_task(self._run_task(task))
+        stop_waiter = asyncio.create_task(stop_event.wait()) if stop_event is not None else None
         try:
-            done, _ = await asyncio.wait(
-                {execution, heartbeat}, return_when=asyncio.FIRST_COMPLETED,
-            )
+            wait_for = {execution, heartbeat}
+            if stop_waiter is not None:
+                wait_for.add(stop_waiter)
+            done, _ = await asyncio.wait(wait_for, return_when=asyncio.FIRST_COMPLETED)
+
+            if stop_waiter is not None and stop_waiter in done and not execution.done():
+                completed, _ = await asyncio.wait(
+                    {execution}, timeout=self.shutdown_grace_seconds,
+                )
+                if not completed:
+                    execution.cancel()
+                    try:
+                        await execution
+                    except asyncio.CancelledError:
+                        pass
+                    heartbeat_stop.set()
+                    await heartbeat
+                    if not self.queue.interrupt(task.task_id, self.owner):
+                        raise WorkerLeaseLost("停机时任务租约已失效，无法安全写入 interrupted")
+                    logger.warning(
+                        "服务停止超出宽限期，任务已中断 task_id=%s tenant_id=%s",
+                        task.task_id, task.tenant_id,
+                    )
+                    return
+
             if heartbeat in done and not execution.done():
                 execution.cancel()
                 try:
@@ -157,7 +198,6 @@ class GlobalTaskWorker:
             if not self.queue.finish(task.task_id, self.owner, result=report):
                 raise WorkerLeaseLost("任务完成状态写入失败，租约可能已失效")
         except WorkerLeaseLost:
-            # 不尝试覆盖其他 worker 的状态；租约过期后由恢复流程标记 interrupted。
             logger.error(
                 "任务因租约丢失停止 task_id=%s tenant_id=%s",
                 task.task_id, task.tenant_id,
@@ -169,11 +209,9 @@ class GlobalTaskWorker:
             from src.core.redact import redact
             error_code = redact(str(getattr(exc, "code", "round_execution_failed")))[:80]
             if getattr(exc, "code", None) or getattr(exc, "safe_for_user", False):
-                # 仅展示明确标记为用户可读的业务异常；第三方/未知异常继续使用通用文案。
                 safe_message = redact(str(exc))[:500]
             else:
                 safe_message = "本轮执行失败，请检查运行记录"
-            # 不记录原始异常栈，避免第三方错误文本中的密钥进入服务日志。
             logger.error(
                 "全局队列任务执行失败 task_id=%s tenant_id=%s error=%s",
                 task.task_id, task.tenant_id, safe_message,
@@ -184,7 +222,6 @@ class GlobalTaskWorker:
                     error_code=error_code, error_message=safe_message,
                 )
             except Exception:
-                # 数据库短暂不可用时不能杀死消费者；租约过期后恢复流程会标记 interrupted。
                 logger.exception("写入任务失败状态异常 task_id=%s", task.task_id)
         finally:
             if not execution.done():
@@ -193,8 +230,12 @@ class GlobalTaskWorker:
                     await execution
                 except asyncio.CancelledError:
                     pass
-            heartbeat.cancel()
-            try:
+            heartbeat_stop.set()
+            if not heartbeat.done():
                 await heartbeat
-            except asyncio.CancelledError:
-                pass
+            if stop_waiter is not None:
+                stop_waiter.cancel()
+                try:
+                    await stop_waiter
+                except asyncio.CancelledError:
+                    pass

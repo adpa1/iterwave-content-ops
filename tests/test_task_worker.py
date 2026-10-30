@@ -381,3 +381,95 @@ def test_worker_keeps_unknown_value_error_generic(tmp_path):
     saved = queue.get(task.task_id)
     assert saved is not None and saved.status == "failed"
     assert saved.error_message == "本轮执行失败，请检查运行记录"
+
+
+def test_worker_shutdown_cancels_long_task_after_grace_and_marks_interrupted(tmp_path):
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    first, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-a", aggregate_id="first",
+        payload={"round_id": 1, "operation": "run"},
+    )
+    second, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-b", aggregate_id="second",
+        payload={"round_id": 2, "operation": "run"},
+    )
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class FakeExecutor:
+        async def run(self, round_id, **kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+    def build_context(tenant_id):
+        return {
+            "cfg": SimpleNamespace(
+                paths=SimpleNamespace(data_dir=str(tmp_path / tenant_id / "data")),
+                resolve_path=lambda value: value,
+            ),
+            "executor": FakeExecutor(),
+            "scheduler": SimpleNamespace(shutdown=lambda: None),
+            "conn": SimpleNamespace(close=lambda: None),
+        }
+
+    async def scenario():
+        stop = asyncio.Event()
+        worker = GlobalTaskWorker(
+            queue, build_context, poll_interval_seconds=0.005,
+            lease_seconds=30, heartbeat_seconds=0.01,
+            shutdown_grace_seconds=0.01,
+        )
+        worker_task = asyncio.create_task(worker.run(stop))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        stop.set()
+        await asyncio.wait_for(worker_task, timeout=1)
+        assert cancelled.is_set()
+
+    asyncio.run(scenario())
+    saved_first = queue.get(first.task_id)
+    saved_second = queue.get(second.task_id)
+    assert saved_first is not None and saved_first.status == "interrupted"
+    assert saved_first.error_code == "worker_shutdown"
+    assert saved_second is not None and saved_second.status == "queued"
+    next_task = queue.claim_next("replacement-worker")
+    assert next_task is not None and next_task.task_id == second.task_id
+
+
+def test_worker_heartbeat_runs_in_background_thread(tmp_path):
+    import threading
+    import time
+
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    task, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-a", aggregate_id="heartbeat",
+        payload={"round_id": 1},
+    )
+    claimed = queue.claim_next("worker-heartbeat", lease_seconds=30)
+    assert claimed is not None
+    worker = GlobalTaskWorker(queue, lambda tenant_id: {}, heartbeat_seconds=0.01)
+    loop = asyncio.new_event_loop()
+    stopped = threading.Event()
+    renewed = []
+    original_renew = queue.renew
+
+    def recording_renew(*args, **kwargs):
+        renewed.append(time.monotonic())
+        return original_renew(*args, **kwargs)
+
+    queue.renew = recording_renew
+    thread = threading.Thread(
+        target=worker._heartbeat_loop, args=(claimed, stopped, loop, asyncio.Event()),
+    )
+    thread.start()
+    time.sleep(0.06)
+    stopped.set()
+    thread.join(timeout=1)
+    loop.close()
+    assert not thread.is_alive()
+    assert len(renewed) >= 2
