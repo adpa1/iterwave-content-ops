@@ -188,8 +188,8 @@ class CircuitBreakerEngine:
         results["steps"]["test_login"] = login_ok
 
         if not login_ok:
-            results["reason"] = "登录态无效，延长全部事件 cooldown 1h"
-            self._extend_all_cooldowns(platform, 60)
+            results["reason"] = f"登录态无效，延长全部事件 cooldown {self.cfg.circuit_breaker.recovery_failure_extension_minutes} 分钟"
+            self._extend_all_cooldowns(platform, self.cfg.circuit_breaker.recovery_failure_extension_minutes)
             return results
 
         # Step 3: test_lightweight_action
@@ -201,7 +201,7 @@ class CircuitBreakerEngine:
         results["steps"]["test_lightweight_action"] = light_ok
 
         if not light_ok:
-            results["reason"] = "轻量动作失败，延长全部事件 cooldown 1h"
+            results["reason"] = f"轻量动作失败，延长全部事件 cooldown {self.cfg.circuit_breaker.recovery_failure_extension_minutes} 分钟"
             self._extend_all_cooldowns(platform, 60)
             return results
 
