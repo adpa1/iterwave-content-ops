@@ -26,7 +26,11 @@ class ImageGenerationError(RuntimeError):
     pass
 
 
-def validate_image_bytes(raw: bytes) -> tuple[str, str, int, int]:
+def validate_image_bytes(raw: bytes, cfg=None) -> tuple[str, str, int, int]:
+    if cfg is None:
+        from src.core.config import get_config
+        cfg = get_config()
+    policy = cfg.media_generation
     try:
         with Image.open(io.BytesIO(raw)) as image:
             image.verify()
@@ -37,7 +41,7 @@ def validate_image_bytes(raw: bytes) -> tuple[str, str, int, int]:
         raise ImageGenerationError("生成结果不是有效的图片文件或超过安全像素限制") from exc
     if image_format not in _FORMATS:
         raise ImageGenerationError("生成结果格式不支持，仅接受 JPEG、PNG、WebP、GIF")
-    if width < 1 or height < 1 or width > 20000 or height > 20000 or width * height > 40_000_000:
+    if width < 1 or height < 1 or width > min(policy.max_dimension, 20000) or height > min(policy.max_dimension, 20000) or width * height > min(policy.max_pixels, 40_000_000):
         raise ImageGenerationError("生成结果尺寸超出允许范围（总像素不超过 4000 万）")
     mime_type, suffix = _FORMATS[image_format]
     return mime_type, suffix, width, height
@@ -51,9 +55,14 @@ def generate_image_bytes(
     source_path: Path | None = None,
     source_mime_type: str | None = None,
     source_filename: str | None = None,
+    cfg=None,
 ) -> tuple[bytes, str, str, int, int]:
     """调用兼容 images/generations 或 images/edits 的 API，返回校验后的图片与元数据。"""
-    base_url = os.getenv("ITERWAVE_IMAGE_API_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    if cfg is None:
+        from src.core.config import get_config
+        cfg = get_config()
+    policy = cfg.media_generation
+    base_url = os.getenv("ITERWAVE_IMAGE_API_BASE_URL", policy.base_url).rstrip("/")
     key_env = os.getenv("ITERWAVE_IMAGE_API_KEY_ENV", "OPENAI_API_KEY").strip()
     api_key = os.getenv(key_env) if key_env else None
     if not api_key:
@@ -66,7 +75,7 @@ def generate_image_bytes(
     headers = {"Authorization": f"Bearer {api_key}"}
     data = {"model": model, "prompt": prompt, "size": size, "n": "1"}
     try:
-        with httpx.Client(timeout=httpx.Timeout(150.0, connect=15.0), follow_redirects=False) as client:
+        with httpx.Client(timeout=httpx.Timeout(policy.timeout_seconds, connect=policy.connect_timeout_seconds), follow_redirects=False) as client:
             if source_path:
                 source_bytes = source_path.read_bytes()
                 files = {
@@ -104,7 +113,7 @@ def generate_image_bytes(
         raw = base64.b64decode(encoded, validate=True)
     except (ValueError, base64.binascii.Error) as exc:
         raise ImageGenerationError("图片服务返回的 base64 无效") from exc
-    if not raw or len(raw) > 20 * 1024 * 1024:
+    if not raw or len(raw) > min(policy.max_response_bytes, 20 * 1024 * 1024):
         raise ImageGenerationError("图片服务返回内容为空或超过 20MB")
-    mime_type, suffix, width, height = validate_image_bytes(raw)
+    mime_type, suffix, width, height = validate_image_bytes(raw, cfg=cfg)
     return raw, mime_type, suffix, width, height
