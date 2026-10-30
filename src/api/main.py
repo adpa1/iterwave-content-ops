@@ -106,6 +106,23 @@ _g_ctx: dict = {}
 _task_queue: GlobalTaskQueue | None = None
 
 
+def _enqueue_round_task(*, tenant_id: str, round_id: int, topic_count=None,
+                        platforms=None, save_drafts=None, feedback=None):
+    """供自动闭环等后台入口使用；队列归属由运行时闭包固定，不读取活动账号组。"""
+    if _task_queue is None:
+        raise RuntimeError("全局任务队列尚未初始化")
+    return _task_queue.enqueue(
+        task_type="round_run",
+        tenant_id=tenant_id,
+        aggregate_id=str(round_id),
+        payload={
+            "round_id": round_id, "topic_count": topic_count,
+            "platforms": platforms, "save_drafts": save_drafts,
+            "feedback": feedback,
+        },
+    )
+
+
 def _tenant_switch_policy(cfg=None):
     policy = getattr(cfg, "tenant_switch", None) if cfg is not None else None
     if policy is not None:
@@ -257,6 +274,7 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
         autogrow = AutogrowController(
             cfg, conn, executor, goal_progress=goal_progress,
             notifier=notifier, guard=guard, pvm=pvm,
+            enqueue_task=lambda **kwargs: _enqueue_round_task(tenant_id=tenant_id, **kwargs),
         )
         scheduler.autogrow = autogrow
         return {
@@ -628,6 +646,9 @@ def _build_app() -> FastAPI:
         autogrow = AutogrowController(
             cfg, conn, executor, goal_progress=_g_ctx["goal_progress"],
             notifier=notifier, guard=guard, pvm=pvm,
+            enqueue_task=lambda **kwargs: _enqueue_round_task(
+                tenant_id=active_tenant_id, **kwargs,
+            ),
         )
         _g_ctx["autogrow"] = autogrow
         scheduler.autogrow = autogrow
