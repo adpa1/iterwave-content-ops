@@ -29,13 +29,21 @@ def activation_client(cfg, conn, test_auth, monkeypatch):
         yield client
 
 
-def test_activation_status_creates_one_cohort_event(activation_client, conn):
-    first = activation_client.get("/api/activation/status")
-    second = activation_client.get("/api/activation/status")
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert first.json()["model_mode"] == "byok"
-    assert first.json()["model_ready"] is False
+def test_activation_status_is_read_only_and_start_is_idempotent(activation_client, conn):
+    first_status = activation_client.get("/api/activation/status")
+    second_status = activation_client.get("/api/activation/status")
+    assert first_status.status_code == 200
+    assert second_status.status_code == 200
+    assert first_status.json()["model_mode"] == "byok"
+    assert first_status.json()["model_ready"] is False
+    assert first_status.json()["cohort_started_at"] is None
+    assert conn.execute("SELECT COUNT(*) FROM activation_cohort").fetchone()[0] == 0
+
+    started = activation_client.post("/api/activation/start")
+    repeated = activation_client.post("/api/activation/start")
+    assert started.status_code == 200
+    assert repeated.status_code == 200
+    assert started.json()["first_seen_at"] == repeated.json()["first_seen_at"]
     assert conn.execute("SELECT COUNT(*) FROM activation_cohort").fetchone()[0] == 1
     assert conn.execute(
         "SELECT COUNT(*) FROM content_events WHERE event_type='activation_started'"
@@ -43,10 +51,10 @@ def test_activation_status_creates_one_cohort_event(activation_client, conn):
 
 
 def test_activation_cohort_is_independent_per_tenant(activation_client, conn):
-    first = activation_client.get("/api/activation/status")
+    first = activation_client.post("/api/activation/start")
     assert first.status_code == 200
     main._g_ctx["runtime_tenant_id"] = "tenant-b"
-    second = activation_client.get("/api/activation/status")
+    second = activation_client.post("/api/activation/start")
     assert second.status_code == 200
     assert conn.execute("SELECT COUNT(*) FROM activation_cohort").fetchone()[0] == 2
     rows = conn.execute(
