@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, ActivationSampleRun, ActivationStatus, Platform } from "../api";
+import { api, ActivationSampleRun, ActivationSavedSample, ActivationStatus, Platform } from "../api";
 import { navigate } from "../nav";
 
 const PLATFORMS: { value: Platform; label: string }[] = [
@@ -16,6 +16,7 @@ export default function Activation() {
   const [platform, setPlatform] = useState<Platform>("xhs");
   const [runId, setRunId] = useState<string | null>(null);
   const [run, setRun] = useState<ActivationSampleRun | null>(null);
+  const [savedSamples, setSavedSamples] = useState<ActivationSavedSample[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -29,12 +30,18 @@ export default function Activation() {
     setBusy(["created", "generating", "quality_check"].includes(data.run.status));
   };
 
+  const loadSaved = async () => {
+    const data = await api.activationSavedSamples();
+    setSavedSamples(data.items);
+  };
+
   useEffect(() => {
     (async () => {
       try {
         await api.startActivation();
         const s = await api.activationStatus();
         setStatus(s);
+        await loadSaved();
         if (s.latest_sample_run?.id) {
           setRunId(s.latest_sample_run.id);
           await loadRun(s.latest_sample_run.id);
@@ -78,6 +85,7 @@ export default function Activation() {
       setRunId(result.sample_run_id);
       await loadRun(result.sample_run_id);
       setStatus(await api.activationStatus());
+      await loadSaved();
       if (result.status === "failed") setBusy(false);
     } catch (e: any) {
       setError(e?.message || "创建体验任务失败");
@@ -85,7 +93,7 @@ export default function Activation() {
     }
   };
 
-  const copy = async (id: string, title: string, body: string, tags: string[]) => {
+  const copy = async (id: string, title: string, body: string, tags: string[], sourceRunId = runId) => {
     try {
       const text = `${title}\n\n${body}\n\n${tags.map((t) => t.startsWith("#") ? t : `#${t}`).join(" ")}`;
       let copied = false;
@@ -105,7 +113,7 @@ export default function Activation() {
         document.body.removeChild(textarea);
       }
       if (!copied) throw new Error("浏览器未允许复制，请手动选择正文复制");
-      if (runId) await api.activationSampleEvent(runId, id, "copied");
+      if (sourceRunId) await api.activationSampleEvent(sourceRunId, id, "copied");
       setToast("已复制，复制行为已记录");
     } catch {
       setToast("复制失败：请手动选择正文复制，未记录复制事件");
@@ -117,7 +125,8 @@ export default function Activation() {
     try {
       await api.activationSampleEvent(runId, id, "saved");
       await loadRun(runId);
-      setToast("已保存到体验草稿区");
+      await loadSaved();
+      setToast("已保存到体验草稿区，可在下方「已保存样稿」中找回");
     } catch (e: any) {
       setError(e.message || "保存失败");
     }
@@ -205,6 +214,9 @@ export default function Activation() {
           <div className="panel-sub" style={{ marginTop: 6 }}>
             账号定位会发送给你配置的模型供应商用于生成；IterWave 不会把 API Key 返回浏览器。体验样稿不会发布到任何平台。
           </div>
+          <div className="panel-sub" style={{ marginTop: 6 }}>
+            样稿由 AI 辅助生成，不会自动发布。发布前请人工核实事实、补充个人经验，并按平台要求声明 AI 生成内容。
+          </div>
         </div>
       </div>
 
@@ -259,6 +271,31 @@ export default function Activation() {
           </div>
         </div>
       )}
+      <section className="panel" style={{ marginTop: 20, maxWidth: 1120 }}>
+        <div className="panel-head">
+          <div>
+            <div className="panel-title">已保存样稿</div>
+            <div className="panel-sub">跨体验批次保留，可随时找回；当前版本仍需人工复制到正式内容流程。</div>
+          </div>
+          <button className="btn sm" onClick={loadSaved}>刷新</button>
+        </div>
+        {savedSamples.length === 0 ? (
+          <div className="panel-sub" style={{ padding: 16 }}>还没有保存的样稿。生成体验内容后，点击「保存到体验草稿」即可在这里找回。</div>
+        ) : (
+          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, padding: 12 }}>
+            {savedSamples.map((item) => (
+              <article className="task-row" key={item.id} style={{ display: "block", padding: 14 }}>
+                <div className="panel-sub">{PLATFORMS.find((p) => p.value === item.platform)?.label || item.platform} · {item.angle} · 已保存于 {item.adopted_at}</div>
+                <h3 style={{ margin: "8px 0" }}>{item.title}</h3>
+                <div className="panel-sub" style={{ whiteSpace: "pre-wrap", maxHeight: 150, overflow: "auto" }}>{item.body}</div>
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                  <button className="btn sm" onClick={() => copy(item.id, item.title, item.body, item.hashtags, item.sample_run_id)}>复制</button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
     </>
   );
 }
