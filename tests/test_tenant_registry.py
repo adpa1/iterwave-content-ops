@@ -108,3 +108,25 @@ def test_existing_json_registry_and_active_state_are_imported_once(tmp_path: Pat
     registry.active_file.write_text(json.dumps({"tenant_id": "missing"}), encoding="utf-8")
     registry.initialize()
     assert registry.active_id() == "brand_a"
+
+
+def test_corrupt_legacy_registry_blocks_first_migration(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "tenant_registry.json").write_text("{broken", encoding="utf-8")
+    with pytest.raises(TenantError, match="拒绝回退"):
+        TenantRegistry(tmp_path).initialize()
+
+
+def test_unknown_legacy_active_tenant_blocks_first_migration(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "tenant_registry.json").write_text(json.dumps({
+        "version": 1,
+        "tenants": [{"id": "default", "name": "默认账号组"}],
+    }), encoding="utf-8")
+    (shared / "active_tenant.json").write_text(
+        json.dumps({"tenant_id": "missing"}), encoding="utf-8",
+    )
+    with pytest.raises(TenantError, match="拒绝自动回退"):
+        TenantRegistry(tmp_path).initialize()
