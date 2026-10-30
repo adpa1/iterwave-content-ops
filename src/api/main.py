@@ -1472,7 +1472,7 @@ def _register_routes(app: FastAPI) -> None:
                 "daily_runs_used": int(daily_runs_used),
                 "daily_runs_remaining": max(0, cfg.activation.max_runs_per_day - int(daily_runs_used)),
             },
-            "model_message": "自带模型已就绪" if _llm_available(cfg) else "需要先配置自己的模型服务和 API Key",
+            "model_message": "模型配置已就绪，首次生成时验证连通性" if _llm_available(cfg) else "需要先配置自己的模型服务和 API Key",
             "formal_setup": {
                 "persona_configured": bool(str(getattr(cfg.ultimate_goal, "positioning", "") or "").strip()
                     or cfg.ultimate_goal.persona_keywords),
