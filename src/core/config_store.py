@@ -788,7 +788,11 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
         "overrides_file": redact_path(overrides_path(cfg)),
         "overrides": _redact_public_value(
             __import__("src.core.config_repository", fromlist=["read_settings"]).read_settings(conn)
-            or load_overrides(cfg)
+            or (
+                load_overrides(cfg)
+                if not __import__("src.core.config_repository", fromlist=["legacy_import_completed"]).legacy_import_completed(conn)
+                else {}
+            )
         ),
         "audit": [
             {
