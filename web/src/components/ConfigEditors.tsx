@@ -779,8 +779,8 @@ export function NotifyChannelsEditor({ view, onSaved }: {
                     {k === "macos"
                       ? <span className="tag gray">无需配置</span>
                       : ch?.has_webhook_url
-                        ? <span className="tag green">{ch.webhook_url_env} 已设置</span>
-                        : <span className="tag orange">{ch?.webhook_url_env || "未配置"} 缺失（.env）</span>}
+                        ? <span className="tag green">已配置</span>
+                        : <span className="tag orange">未配置（.env）</span>}
                   </td>
                 </tr>
               );
