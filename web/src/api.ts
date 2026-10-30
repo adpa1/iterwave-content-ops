@@ -619,7 +619,6 @@ export interface SystemConfigView {
     llm_provider: string;
     llm_model: string;
     llm_fallback_model: string;
-    llm_base_url: string;
     /** 计费通道：plan=Agent Plan 专属通道，metered=按量付费，custom=自定义端点 */
     llm_channel: "plan" | "metered" | "custom";
     llm_temperature: number;
