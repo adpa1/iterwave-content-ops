@@ -162,7 +162,7 @@ ITERWAVE_ENABLE_TENANT_HOT_SWITCH=1
 ## 停机与崩溃恢复（2026-10-31）
 
 - **进程异常退出 / SIGKILL：** 当前部署必须是单 Uvicorn worker。新进程启动时会立即把上一实例遗留的全部 `running` 任务标记为 `interrupted`，不再等待 90 秒租约过期；租约过期恢复仍保留作兜底。queued 任务保持原顺序继续执行。
-- **正常 SIGTERM：** Worker 默认给正在执行的任务 30 秒宽限期。宽限期内任务完成则正常落 succeeded；超时则取消协程并将任务标记为 `interrupted`，错误码为 `worker_shutdown`。可通过部署环境变量 `ITERWAVE_TASK_SHUTDOWN_GRACE_SECONDS` 设置 0–300 秒，默认 30 秒。
+- **正常 SIGTERM：** Worker 默认给正在执行的任务 30 秒宽限期。对可协作取消的异步任务，宽限期内完成则正常落 succeeded；超时则取消协程并将任务标记为 `interrupted`，错误码为 `worker_shutdown`。可通过部署环境变量 `ITERWAVE_TASK_SHUTDOWN_GRACE_SECONDS` 设置 0–300 秒，默认 30 秒。**注意：** 若任务正处于不让出事件循环的同步阻塞调用，Python 无法在该调用返回前处理停机事件；线程心跳可维持租约，但不能强行中断同步调用。应避免在事件循环中执行长时间同步 I/O，部署停止超时仍需覆盖最长不可中断调用时长。
 - systemd / 容器编排的停止超时应大于上述宽限期并留出应用清理余量。停机中断的任务不得自动重放；必须先核实平台侧是否已存草稿/执行外部动作，再人工恢复。
 - 心跳续租在线程中执行，不依赖 asyncio 事件循环调度；同步 I/O 阻塞事件循环时，不会因此停止续租。
 
