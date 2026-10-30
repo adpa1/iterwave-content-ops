@@ -310,22 +310,9 @@ data_retention:
   ai_calls_detail_days: 180       # AI 调用明细保留（聚合统计永久）
 
 # ===== 定时任务（APScheduler，本地时区 R5）=====
-# 每个任务：enabled 开关 + 触发方式二选一（interval_minutes 或 5 段 cron「分 时 日 月 周」）
-# 未列出的任务使用代码默认值（src/core/config.py DEFAULT_JOB_SCHEDULES）；
-# 也可在「运营中心 → 定时任务」页面在线修改，写入账号组 SQLite 并立即重排
-scheduler:
-  jobs:
-    publish_polling:        { enabled: true, interval_minutes: 30 }   # 发布轮询
-    daily_ops:              { enabled: true, cron: "0 8 * * *" }      # 每日运营
-    comment_polling:        { enabled: true, interval_minutes: 30 }   # 评论轮询
-    cb_recovery:            { enabled: true, interval_minutes: 5 }    # 熔断恢复检查
-    kb_scan:                { enabled: true, cron: "0 6 * * *" }      # 选题库增量扫描
-    kb_sync:                { enabled: true, cron: "0 7 * * *" }      # 远程选题库每日同步
-    data_retention_cleanup: { enabled: true, cron: "10 6 * * *" }     # 过期数据清理
-    round_timeout_sweeper:  { enabled: true, interval_minutes: 60 }   # 轮次阶段超时
-    round_review:           { enabled: true, interval_minutes: 10 }   # 轮次复盘收口
-    hot_topics_refresh:     { enabled: true, interval_minutes: 120 }  # 热点采集 + 标签匹配
-    autogrow_next_round:    { enabled: true, interval_minutes: 60 }   # 自动闭环检查（满足条件才开轮）
+# 默认触发规则以 src/core/config.py DEFAULT_JOB_SCHEDULES 为唯一代码默认源；
+# 运行时调整写入账号组 SQLite，避免 YAML 与 Python 双重维护。
+scheduler: {}
 
 # ===== 自动闭环（自生长）=====
 # 复盘结论 → 下一轮选题加减分 + 文案要点；满足条件时自动开下一轮并生成草稿。
