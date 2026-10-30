@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import tempfile
 import threading
 from datetime import datetime
@@ -596,6 +597,56 @@ def scheduler_jobs_view(cfg: Config) -> dict[str, dict[str, Any]]:
     }
 
 
+def config_metadata_view(cfg: Config) -> list[dict[str, Any]]:
+    """前端配置编辑器的后端元数据视图；白名单校验仍由 _validate 强制执行。"""
+    items: dict[str, dict[str, Any]] = {}
+
+    def add(key: str, value: Any, *, kind: str | None = None,
+            minimum: float | None = None, maximum: float | None = None,
+            editable: bool = True, description: str = "") -> None:
+        items[key] = {
+            "key": key, "type": kind or ("boolean" if isinstance(value, bool)
+                else "integer" if isinstance(value, int)
+                else "number" if isinstance(value, float)
+                else "array" if isinstance(value, list)
+                else "object" if isinstance(value, dict) else "string"),
+            "value": _redact_public_value(value),
+            "min": minimum, "max": maximum, "editable": editable,
+            "tenant_scoped": True, "restart_required": False,
+            "sensitive": False, "description": description,
+        }
+
+    for key, (kind, minimum, maximum) in SCALAR_RULES.items():
+        try:
+            value = _get_value(cfg, key)
+        except (AttributeError, KeyError, TypeError):
+            continue
+        add(key, value, kind="boolean" if kind is bool else "integer" if kind is int else "number",
+            minimum=minimum, maximum=maximum)
+    for key in STRING_RULES:
+        add(key, _get_value(cfg, key), kind="string")
+    for key in LIST_RULES:
+        add(key, _get_value(cfg, key), kind="array", maximum=LIST_RULES[key])
+    for platform in PLATFORM_KEYS:
+        for field in QUOTA_FIELDS:
+            key = f"rhythm.daily_quotas.{platform}.{field}"
+            quota = cfg.rhythm.daily_quotas.get(platform)
+            add(key, getattr(quota, field, None) if quota else None, kind="integer", minimum=0, maximum=10000)
+        add(f"platforms.{platform}.base_url", _get_value(cfg, f"platforms.{platform}.base_url"), kind="url")
+        add(f"platforms.{platform}.account_key", _get_value(cfg, f"platforms.{platform}.account_key"), kind="string")
+    for job_id, job in cfg.scheduler.jobs.items():
+        add(f"scheduler.jobs.{job_id}.enabled", job.enabled, kind="boolean")
+        add(f"scheduler.jobs.{job_id}.interval_minutes", job.interval_minutes, kind="integer", minimum=1, maximum=10080)
+        add(f"scheduler.jobs.{job_id}.cron", job.cron, kind="cron")
+    for mode in SCORING_MODES:
+        for field in SCORING_WEIGHT_FIELDS:
+            key = f"scoring.{mode}.{field}"
+            add(key, _get_value(cfg, key), kind="integer", minimum=0, maximum=100)
+    for key, value in HARD_LOCKED_KEYS.items():
+        add(key, True, kind="boolean", editable=False, description=value)
+    return [items[key] for key in sorted(items)]
+
+
 def changed_job_ids(keys) -> set[str]:
     """从修改过的配置键里找出需要重排的定时任务。"""
     out: set[str] = set()
@@ -735,7 +786,14 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             },
         },
         "overrides_file": redact_path(overrides_path(cfg)),
-        "overrides": _redact_public_value(load_overrides(cfg)),
+        "overrides": _redact_public_value(
+            __import__("src.core.config_repository", fromlist=["read_settings"]).read_settings(conn)
+            or (
+                load_overrides(cfg)
+                if not __import__("src.core.config_repository", fromlist=["legacy_import_completed"]).legacy_import_completed(conn)
+                else {}
+            )
+        ),
         "audit": [
             {
                 **dict(r),
@@ -751,10 +809,7 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
 
 
 def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
-    """白名单批量修改：校验 → 改内存 → 持久化覆盖 → 写审计。
-
-    任一条不合法 → 整体拒绝（不做部分成功），避免半套配置生效。
-    """
+    """白名单批量修改：校验 → SQLite 原子持久化/审计 → 更新内存配置。"""
     if not updates:
         raise ConfigPatchError("updates 不能为空")
 
@@ -762,25 +817,14 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
     for key, value in updates.items():
         normalized[key] = _validate(key, value)
 
-    # 时段窗口 start < end（R5 本地时区语义，不能跨越成空窗口）
     for win in ("ops", "draft_save"):
-        if (
-            f"rhythm.windows.{win}.start_hour" in normalized
-            or f"rhythm.windows.{win}.end_hour" in normalized
-        ):
-            start = normalized.get(
-                f"rhythm.windows.{win}.start_hour",
-                _get_value(cfg, f"rhythm.windows.{win}.start_hour"),
-            )
-            end = normalized.get(
-                f"rhythm.windows.{win}.end_hour",
-                _get_value(cfg, f"rhythm.windows.{win}.end_hour"),
-            )
+        if f"rhythm.windows.{win}.start_hour" in normalized or f"rhythm.windows.{win}.end_hour" in normalized:
+            start = normalized.get(f"rhythm.windows.{win}.start_hour", _get_value(cfg, f"rhythm.windows.{win}.start_hour"))
+            end = normalized.get(f"rhythm.windows.{win}.end_hour", _get_value(cfg, f"rhythm.windows.{win}.end_hour"))
             if start is not None and end is not None and start >= end:
                 label = "运营时段" if win == "ops" else "存草稿时段"
                 raise ConfigPatchError(f"{label} start_hour 必须小于 end_hour")
 
-    # 平台启用开关：至少保留 1 个，否则整条生产链无法工作
     prospective = {
         p: bool(normalized.get(f"platforms.{p}.enabled", _get_value(cfg, f"platforms.{p}.enabled")))
         for p in PLATFORM_KEYS
@@ -788,54 +832,44 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
     if not any(prospective.values()):
         raise ConfigPatchError("至少必须启用 1 个平台")
 
-    # R8：producing 超时必须小于 awaiting_publish 超时，两者独立计时但不能倒挂
-    round_h = normalized.get(
-        "timeouts.round_timeout_hours", _get_value(cfg, "timeouts.round_timeout_hours")
-    )
-    await_h = normalized.get(
-        "timeouts.awaiting_publish_timeout_hours",
-        _get_value(cfg, "timeouts.awaiting_publish_timeout_hours"),
-    )
+    round_h = normalized.get("timeouts.round_timeout_hours", _get_value(cfg, "timeouts.round_timeout_hours"))
+    await_h = normalized.get("timeouts.awaiting_publish_timeout_hours", _get_value(cfg, "timeouts.awaiting_publish_timeout_hours"))
     if round_h is not None and await_h is not None and round_h >= await_h:
         raise ConfigPatchError("round_timeout_hours（producing）必须小于 awaiting_publish_timeout_hours")
 
-    # R11：改权重不能破坏「每个模式合计 100%」
     for mode in SCORING_MODES:
-        total = sum(
-            int(normalized.get(f"scoring.{mode}.{field}", _get_value(cfg, f"scoring.{mode}.{field}")) or 0)
-            for field in SCORING_WEIGHT_FIELDS
-        )
+        total = sum(int(normalized.get(f"scoring.{mode}.{field}", _get_value(cfg, f"scoring.{mode}.{field}")) or 0)
+                    for field in SCORING_WEIGHT_FIELDS)
         if total != 100:
-            raise ConfigPatchError(
-                f"{mode} 权重合计必须 = 100%，按本次修改后为 {total}%（请同时调整其它维度）"
-            )
+            raise ConfigPatchError(f"{mode} 权重合计必须 = 100%，按本次修改后为 {total}%（请同时调整其它维度）")
 
     changes: list[dict[str, Any]] = []
-    overrides = load_overrides(cfg)
+    persisted: dict[str, Any] = {}
+    audit_rows: list[tuple[str, str | None, str]] = []
+    remove_keys: list[str] = []
     for key, value in normalized.items():
-        old = _jsonable(_get_value(cfg, key))
-        if old == value:
+        old_value = _jsonable(_get_value(cfg, key))
+        if old_value == value:
             continue
-        _set_value(cfg, key, value)
-        overrides[key] = value
-        other = _counterpart(key)
-        if other:
-            overrides.pop(other, None)
-        conn.execute(
-            "INSERT INTO config_changes (key, old_value, new_value, changed_at) "
-            "VALUES (?, ?, ?, ?)",
-            (
-                key,
-                None if old is None else str(old),
-                str(value),
-                # R5：本地时区（表默认 CURRENT_TIMESTAMP 是 UTC，必须显式覆盖）
-                datetime.now().isoformat(timespec="seconds"),
-            ),
-        )
-        changes.append({"key": key, "old": old, "new": value})
+        persisted[key] = value
+        other_key = _counterpart(key)
+        if other_key:
+            remove_keys.append(other_key)
+        audit_rows.append((
+            key,
+            None if old_value is None else json.dumps(old_value, ensure_ascii=False, sort_keys=True),
+            json.dumps(value, ensure_ascii=False, sort_keys=True),
+        ))
+        changes.append({"key": key, "old": old_value, "new": value})
 
-    if changes:
-        _save_overrides(cfg, overrides)
-        conn.commit()
+    if persisted:
+        # Repository writes settings, version snapshot and audit rows in one transaction.
+        from src.core.config_repository import save_settings
+        try:
+            save_settings(conn, persisted, audit_rows=audit_rows, remove_keys=remove_keys)
+        except (ValueError, sqlite3.Error) as exc:
+            raise ConfigPatchError(str(exc)) from exc
+        for key, value in persisted.items():
+            _set_value(cfg, key, value)
         logger.info("⚙️ 配置已修改 %d 项：%s", len(changes), [c["key"] for c in changes])
     return {"changed": changes, "applied": normalized, "noop": len(changes) == 0}

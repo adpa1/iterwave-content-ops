@@ -1,8 +1,8 @@
 /**
  * 可编辑配置面板（系统设置 / 首次向导共用）。
  *
- * 所有字段都走后端白名单 PATCH /api/config（写 config_changes 审计 + 立即生效），
- * API Key 单独走 POST /api/config/llm_key 写入 config/.env（R23 不回传明文）。
+ * 所有字段都走后端白名单 PATCH /api/config（SQLite 配置版本 + config_changes 审计 + 立即生效），
+ * 配置字段元数据可通过 GET /api/config/metadata 查询；API Key 单独走 POST /api/config/llm_key 写入 config/.env（R23 不回传明文）。
  * 这里的组件只提交「真正改动」的字段，未改动不提交。
  */
 import { useEffect, useState } from "react";

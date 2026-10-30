@@ -87,7 +87,7 @@ from src.core.insights import PlatformInsightsEngine
 from src.core.plan_version import PlanVersionManager
 from src.core.ops.pause import pause_state, set_ops_paused
 from src.core.config_store import (
-    ConfigNotAllowedError, ConfigPatchError, apply_overrides, current_config_view,
+    ConfigNotAllowedError, ConfigPatchError, apply_overrides, config_metadata_view, current_config_view,
     changed_job_ids, load_overrides, patch_config, scheduler_jobs_view,
 )
 from src.adapters.base import Platform
@@ -164,17 +164,6 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
     if pending_restore.exists():
         raise RuntimeError("目标账号组存在待恢复快照，请先重启服务完成恢复，再执行热切换")
 
-    applied_overrides = apply_overrides(cfg, load_overrides(cfg))
-    if applied_overrides:
-        logger.info("账号组热切换已应用 %d 项配置覆盖 tenant=%s", len(applied_overrides), tenant_id)
-    if tenant_id != "default":
-        for platform_cfg in cfg.platforms.model_dump().keys():
-            item = getattr(cfg.platforms, platform_cfg)
-            prefix = f"{tenant_id}__"
-            if not item.account_key.startswith(prefix):
-                item.account_key = f"{prefix}{item.account_key}"
-        cfg.topic_kb.path = str(tenant_paths.kb_dir / "topics.csv")
-
     db = Database(cfg)
     conn = None
     scheduler = None
@@ -182,6 +171,42 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
         db.initialize()
         from src.core.db import LockedConnection
         conn = LockedConnection(db.connect())
+        from src.core.config_repository import (
+            import_legacy_overrides, legacy_import_completed, read_settings,
+        )
+        from src.core.config_store import overrides_path
+        try:
+            legacy_result = import_legacy_overrides(conn, overrides_path(cfg))
+            if legacy_result["imported"] or legacy_result["rejected"]:
+                logger.info("账号组旧配置回填 tenant=%s imported=%d rejected=%d",
+                            tenant_id, legacy_result["imported"], legacy_result["rejected"])
+            persisted_settings = read_settings(conn)
+        except Exception as exc:
+            logger.exception("账号组 SQLite 配置回填失败，回退旧 JSON tenant=%s error=%s",
+                             tenant_id, type(exc).__name__)
+            persisted_settings = {}
+        legacy_complete = False
+        try:
+            legacy_complete = legacy_import_completed(conn)
+        except Exception:
+            logger.warning("无法确认账号组旧配置迁移标记 tenant=%s", tenant_id)
+        if not persisted_settings and not legacy_complete:
+            persisted_settings = load_overrides(cfg)
+        applied_overrides = apply_overrides(cfg, persisted_settings)
+        if applied_overrides:
+            logger.info("账号组热切换已应用 %d 项 SQLite 配置 tenant=%s",
+                        len(applied_overrides), tenant_id)
+        if tenant_id != "default":
+            for platform_cfg in cfg.platforms.model_dump().keys():
+                item = getattr(cfg.platforms, platform_cfg)
+                prefix = f"{tenant_id}__"
+                if not item.account_key.startswith(prefix):
+                    item.account_key = f"{prefix}{item.account_key}"
+            cfg.topic_kb.path = str(tenant_paths.kb_dir / "topics.csv")
+        from src.core import account_login, login_manager
+        runtime_data_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
+        account_login.configure_data_dir(runtime_data_dir)
+        login_manager.configure_data_dir(runtime_data_dir)
         adapters = get_adapters(cfg, conn)
         cb = CircuitBreakerEngine(cfg, conn, adapters)
         rhythm = RhythmController(cfg)
@@ -421,11 +446,34 @@ def _build_app() -> FastAPI:
             except Exception as exc:  # noqa: BLE001 — 恢复失败必须阻止启动，不能悄悄使用旧库
                 logger.exception("账号组快照恢复失败，拒绝启动 tenant=%s", active_tenant_id)
                 raise RuntimeError(f"账号组恢复失败，应用未启动：{exc}") from exc
-        # G-13：先套用 Web 端持久化的覆盖值（租户各自的 data/config_overrides.json），
-        # 再构造各模块 —— 保证 scheduler/adapter/ops 拿到的是同一份生效配置
-        applied_overrides = apply_overrides(cfg, load_overrides(cfg))
+        # 配置中心位于账号组自己的 SQLite 中。先完成待恢复快照，再初始化数据库，
+        # 随后回填旧 JSON 并读取数据库配置，避免使用尚未初始化的连接。
+        db = Database(cfg)
+        db.initialize()
+        from src.core.db import LockedConnection
+        conn = LockedConnection(db.connect())
+        from src.core.config_repository import import_legacy_overrides, legacy_import_completed, read_settings
+        from src.core.config_store import overrides_path
+        try:
+            legacy_result = import_legacy_overrides(conn, overrides_path(cfg))
+            if legacy_result["imported"] or legacy_result["rejected"]:
+                logger.info("旧配置回填完成 imported=%d rejected=%d",
+                            legacy_result["imported"], legacy_result["rejected"])
+            persisted_settings = read_settings(conn)
+        except Exception as exc:
+            # 回填失败时保留旧 JSON 读路径；不删除源文件，也不阻止可恢复启动。
+            logger.exception("SQLite 配置回填失败，临时回退旧 JSON 配置：%s", type(exc).__name__)
+            persisted_settings = {}
+        legacy_complete = False
+        try:
+            legacy_complete = legacy_import_completed(conn)
+        except Exception:
+            logger.warning("无法确认旧配置迁移标记，尝试只读 JSON 回退")
+        if not persisted_settings and not legacy_complete:
+            persisted_settings = load_overrides(cfg)
+        applied_overrides = apply_overrides(cfg, persisted_settings)
         if applied_overrides:
-            logger.info("⚙️ 已套用 %d 项运行时配置覆盖：%s",
+            logger.info("⚙️ 已套用 %d 项 SQLite 运行时配置：%s",
                         len(applied_overrides), applied_overrides)
         if active_tenant_id != "default":
             # 在覆盖值应用后再次强制命名空间化，避免旧配置覆盖把登录态指回 default。
@@ -441,11 +489,7 @@ def _build_app() -> FastAPI:
         runtime_data_dir = cfg.resolve_path(cfg.paths.data_dir)
         account_login.configure_data_dir(runtime_data_dir)
         login_manager.configure_data_dir(runtime_data_dir)
-        db = Database(cfg)
-        db.initialize()
-        # 线程安全包装：路由线程池 / 调度器 / 执行器共用这一个连接
-        from src.core.db import LockedConnection
-        conn = LockedConnection(db.connect())
+        # conn/db 已在运行时配置加载前初始化，后续模块共用该连接。
 
         adapters = get_adapters(cfg, conn)
         cb = CircuitBreakerEngine(cfg, conn, adapters)
@@ -1420,6 +1464,8 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(404, "目标内容不存在")
         title = str(row["title"] or "内容配图")
         body = str(row["body"] or "")
+        if not body.strip():
+            raise HTTPException(422, "请先补充正文后再生成配图")
         role_label = {"cover": "封面主视觉", "illustration": "正文插图", "background": "背景图"}[usage_role]
         prompt = (f"为当前平台内容生成一张{role_label}。主题：{title}。正文摘要：{body[:900]}。" +
                   "画面与主题直接相关，构图清晰，适合移动端阅读；不要生成文字、二维码、水印或虚构品牌标识。" +
@@ -4125,6 +4171,11 @@ def _register_routes(app: FastAPI) -> None:
         }
 
     # --- 系统配置（G-13：白名单可写 + config_changes 审计）---
+    @app.get("/api/config/metadata")
+    def get_config_metadata():
+        """配置编辑元数据；可编辑性与取值仍由后端白名单校验决定。"""
+        return {"items": config_metadata_view(_g()["cfg"])}
+
     @app.get("/api/config")
     def get_config():
         g2 = _g()
