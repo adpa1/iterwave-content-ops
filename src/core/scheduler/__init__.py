@@ -72,6 +72,8 @@ class SchedulerEngine:
         # 由 lifespan 注入的运行时依赖（wire()）
         self.conn = None
         self.adapters: dict = {}
+        self.task_queue = None
+        self.tenant_id: str | None = None
         self.sm_draft = None
         self.sm_round = None
         self.cb = None
@@ -92,10 +94,12 @@ class SchedulerEngine:
     def wire(self, *, conn, adapters, sm_draft=None, sm_round=None,
              circuit_breaker=None, notifier=None, ops=None,
              kb_reader=None, spiral=None, scoring=None, goal_progress=None,
-             guard=None) -> None:
+             guard=None, task_queue=None, tenant_id: str | None = None) -> None:
         """注入运行时依赖。必须在 start() 之前调用。"""
         self.conn = conn
         self.adapters = adapters or {}
+        self.task_queue = task_queue
+        self.tenant_id = tenant_id
         self.sm_draft = sm_draft
         self.sm_round = sm_round
         self.cb = circuit_breaker
@@ -1318,7 +1322,24 @@ def _engine_for(engine_key: str | None) -> "SchedulerEngine | None":
 
 
 async def _invoke(engine, method_name: str, *args) -> None:
-    """兼容旧测试替身，同时对真实引擎的 job 执行做生命周期跟踪。"""
+    """真实账号组的后台作业统一入全局队列；无队列的测试替身保持直接调用。"""
+    queue = getattr(engine, "task_queue", None)
+    tenant_id = getattr(engine, "tenant_id", None)
+    queued_methods = {
+        "_job_publish_polling", "_job_data_fetch", "_job_daily_ops",
+        "_job_comment_polling", "_job_cb_recovery", "_job_kb_scan",
+        "_job_kb_sync", "_job_data_retention_cleanup",
+        "_job_round_timeout_sweeper", "_job_round_review",
+    }
+    if queue is not None and tenant_id and method_name in queued_methods:
+        aggregate_id = method_name + (":" + ":".join(map(str, args)) if args else "")
+        queue.enqueue(
+            task_type="scheduler_job",
+            tenant_id=tenant_id,
+            aggregate_id=aggregate_id,
+            payload={"method": method_name, "args": list(args)},
+        )
+        return
     tracked = getattr(engine, "_run_tracked", None)
     if tracked is not None:
         await tracked(method_name, *args)
