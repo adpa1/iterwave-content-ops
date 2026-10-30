@@ -40,6 +40,8 @@ def test_runtime_policy_patch_cannot_relax_hard_limits():
     with pytest.raises(ConfigPatchError):
         _validate("tenant_switch.request_drain_timeout_seconds", 0)
     with pytest.raises(ConfigPatchError):
+        _validate("tenant_backup.retention_count", 4.5)
+    with pytest.raises(ConfigPatchError):
         _validate("scoring.stable_exploration_percent", 51)
 
 
