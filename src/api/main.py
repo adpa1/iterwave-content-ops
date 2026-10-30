@@ -6436,6 +6436,11 @@ def _register_routes(app: FastAPI) -> None:
         if not handle:
             raise HTTPException(422, "平台账号标识不能为空")
         conn = _g()["conn"]
+        existing_platform = conn.execute(
+            "SELECT id FROM platform_accounts WHERE platform=? LIMIT 1", (req.platform,),
+        ).fetchone()
+        if existing_platform:
+            raise HTTPException(409, "一个账号组内每个平台只能登记一个账号，请编辑现有记录或先删除原记录")
         try:
             cur = conn.execute(
                 "INSERT INTO platform_accounts (platform, account_handle, normalized_handle, display_name, status, notes) "
@@ -6444,7 +6449,7 @@ def _register_routes(app: FastAPI) -> None:
             )
             conn.commit()
         except sqlite3.IntegrityError as exc:
-            raise HTTPException(409, "该平台账号标识已登记；同一平台的账号标识不允许重复") from exc
+            raise HTTPException(409, "账号组内每个平台只能登记一个账号，且平台账号标识不能重复") from exc
         row = conn.execute(
             "SELECT id, platform, account_handle, display_name, status, notes, created_at, updated_at "
             "FROM platform_accounts WHERE id = ?", (cur.lastrowid,),
@@ -6460,6 +6465,12 @@ def _register_routes(app: FastAPI) -> None:
         exists = conn.execute("SELECT id FROM platform_accounts WHERE id = ?", (account_id,)).fetchone()
         if not exists:
             raise HTTPException(404, "登记的平台账号不存在")
+        existing_platform = conn.execute(
+            "SELECT id FROM platform_accounts WHERE platform=? AND id<>? LIMIT 1",
+            (req.platform, account_id),
+        ).fetchone()
+        if existing_platform:
+            raise HTTPException(409, "一个账号组内每个平台只能登记一个账号，请编辑现有记录或先删除原记录")
         try:
             conn.execute(
                 "UPDATE platform_accounts SET platform=?, account_handle=?, normalized_handle=?, display_name=?, status=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
