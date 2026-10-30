@@ -234,6 +234,10 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "timeouts.round_min_interval_hours": (int, 0, 168),
     "timeouts.metrics_retry_attempts": (int, 1, 20),
     "timeouts.metrics_retry_interval_minutes": (int, 1, 1440),
+    "timeouts.login_timeout_seconds": (int, 60, 1800),
+    "timeouts.login_export_timeout_seconds": (int, 10, 600),
+    "timeouts.recovery_retry_delay_minutes": (int, 1, 60),
+    "topic_kb.remote_timeout_seconds": (int, 1, 120),
     # 存草稿时段窗口（本地时区，R5）
     "rhythm.windows.draft_save.start_hour": (int, 0, 23),
     "rhythm.windows.draft_save.end_hour": (int, 0, 23),
