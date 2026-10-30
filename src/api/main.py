@@ -3799,7 +3799,7 @@ def _register_routes(app: FastAPI) -> None:
 
     # --- 全局任务队列（跨账号组，仅供唯一运营者查看）---
     @app.get("/api/task-queue")
-    def list_global_task_queue(limit: int = Query(100, ge=1, le=500)):
+    def list_global_task_queue(limit: int = Query(500, ge=1, le=500)):
         if _task_queue is None:
             raise HTTPException(503, "全局任务队列尚未初始化")
         registry = _g().get("tenant_registry")
