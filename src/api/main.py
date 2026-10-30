@@ -3968,10 +3968,23 @@ def _register_routes(app: FastAPI) -> None:
         source = str((req or {}).get("source") or "").strip()
         raw_url = str((req or {}).get("url") or "").strip()
         dimension = str((req or {}).get("dimension") or "").strip()
+        confirmed_by = str((req or {}).get("confirmed_by") or "").strip()[:80]
+        from ..core.hot_topics import _sensitive_topic_hits
+        sensitive_hits = _sensitive_topic_hits(title)
         if len(title) < 4:
             raise HTTPException(400, "标题过短，不能入库")
         if not source or not raw_url:
             raise HTTPException(400, "缺少来源或原文链接：热点入库必须有证据（R22）")
+        if sensitive_hits and not confirmed_by:
+            raise HTTPException(
+                409,
+                {
+                    "code": "manual_confirmation_required",
+                    "message": "该热点命中敏感类别，必须由操作人明确确认后才能入库",
+                    "categories": sensitive_hits,
+                    "title": title,
+                },
+            )
 
         topic_id = "hot-" + hashlib.sha1(
             f"{source}|{title}".encode("utf-8")
@@ -3998,7 +4011,17 @@ def _register_routes(app: FastAPI) -> None:
             ),
         )
         conn.commit()
-        return {"id": topic_id, "imported": True, "title": title}
+        if sensitive_hits:
+            # 留存人工确认审计，不把确认人混入选题正文或摘要。
+            conn.execute(
+                "INSERT INTO hot_topic_import_audit "
+                "(topic_id, title, categories, confirmed_by, confirmed_at) VALUES (?, ?, ?, ?, ?)",
+                (topic_id, title, json.dumps(sensitive_hits, ensure_ascii=False),
+                 confirmed_by, datetime.now().isoformat(timespec="seconds")),
+            )
+            conn.commit()
+        return {"id": topic_id, "imported": True, "title": title,
+                "manual_confirmation_recorded": bool(sensitive_hits)}
 
     # === 运营控制台补充路由 ===
 
