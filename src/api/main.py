@@ -298,11 +298,13 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
         registry.get(tenant_id)
     except TenantError as exc:
         raise HTTPException(404, str(exc)) from exc
-    # 请求闸门已排空普通 API 请求；仍在运行的轮次最多等待 120 秒，超时则安全中止。
-    round_deadline = time.monotonic() + 120.0
+    # 请求闸门已排空普通 API 请求；运行轮次的等待时限由当前账号组策略控制。
+    switch_policy = _g_ctx.get("cfg").tenant_switch
+    round_timeout = switch_policy.round_drain_timeout_seconds
+    round_deadline = time.monotonic() + round_timeout
     while _running_rounds:
         if time.monotonic() >= round_deadline:
-            raise HTTPException(409, "轮次在 120 秒内未能结束，已取消账号组切换")
+            raise HTTPException(409, f"轮次在 {round_timeout} 秒内未能结束，已取消账号组切换")
         await asyncio.sleep(0.05)
 
     old_context = dict(_g_ctx)
@@ -320,20 +322,20 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
     new_started = False
     try:
         if old_scheduler is not None:
-            drained = await old_scheduler.quiesce(timeout_seconds=30.0)
+            drained = await old_scheduler.quiesce(timeout_seconds=switch_policy.scheduler_drain_timeout_seconds)
             if not drained:
-                raise HTTPException(409, "旧账号组后台任务未能在 30 秒内结束，已取消切换")
+                raise HTTPException(409, f"旧账号组后台任务未能在 {switch_policy.scheduler_drain_timeout_seconds} 秒内结束，已取消切换")
             old_stopped = True
             if old_conn is not None:
                 old_conn.close()
             # 热点服务另有独立后台线程，APScheduler 结束不代表该线程已退出。
-            await _wait_for_tenant_background_jobs(timeout_seconds=120.0)
+            await _wait_for_tenant_background_jobs(timeout_seconds=switch_policy.background_jobs_timeout_seconds)
             from src.core import hot_topic_service
             hot_topic_service.reset_runtime_state()
 
         from src.core import account_login, login_manager
         # 旧账号组的扫码登录子进程和登录态导出线程必须先退出，避免继续读写旧/新目录。
-        account_login.stop_all_logins(timeout_seconds=10.0)
+        account_login.stop_all_logins(timeout_seconds=switch_policy.login_process_timeout_seconds)
         new_data_dir = new_context["cfg"].resolve_path(new_context["cfg"].paths.data_dir)
         account_login.configure_data_dir(new_data_dir)
         login_manager.configure_data_dir(new_data_dir)
@@ -1917,7 +1919,7 @@ def _register_routes(app: FastAPI) -> None:
                 ),
             }
         try:
-            await _tenant_switch_gate.begin_switch(timeout_seconds=30.0)
+            await _tenant_switch_gate.begin_switch(timeout_seconds=_g()["cfg"].tenant_switch.request_drain_timeout_seconds)
         except (TenantSwitchInProgress, TimeoutError) as exc:
             raise HTTPException(409, str(exc)) from exc
         keep_gate_closed = False
