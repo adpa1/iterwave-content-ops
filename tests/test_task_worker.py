@@ -50,3 +50,47 @@ def test_worker_uses_task_tenant_context_not_active_login_directory(tmp_path):
     saved = queue.get(task.task_id)
     assert saved is not None and saved.status == "succeeded"
     assert saved.result == {"round_id": 17, "final_status": "completed"}
+
+
+def test_worker_cancels_execution_when_lease_renewal_fails(tmp_path, monkeypatch):
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    task, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-a", aggregate_id="18",
+        payload={"round_id": 18, "operation": "run"},
+    )
+    claimed = queue.claim_next("worker-a", lease_seconds=30)
+    assert claimed is not None
+    cancelled = asyncio.Event()
+
+    class FakeExecutor:
+        async def run(self, round_id, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+    monkeypatch.setattr(queue, "renew", lambda *args, **kwargs: False)
+
+    def build_context(tenant_id):
+        assert tenant_id == "tenant-a"
+        return {
+            "cfg": SimpleNamespace(
+                paths=SimpleNamespace(data_dir=str(tmp_path / "tenant-a" / "data")),
+                resolve_path=lambda value: value,
+            ),
+            "executor": FakeExecutor(),
+            "scheduler": SimpleNamespace(shutdown=lambda: None),
+            "conn": SimpleNamespace(close=lambda: None),
+        }
+
+    worker = GlobalTaskWorker(
+        queue, build_context, lease_seconds=30, heartbeat_seconds=0.01,
+    )
+    asyncio.run(worker._execute(claimed))
+
+    assert cancelled.is_set()
+    # 不得把已失去租约的任务伪装成成功或失败；恢复流程稍后会标记 interrupted。
+    saved = queue.get(task.task_id)
+    assert saved is not None and saved.status == "running"
