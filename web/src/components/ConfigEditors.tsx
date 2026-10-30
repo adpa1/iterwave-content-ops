@@ -317,8 +317,8 @@ export function LlmEditor({ view, onSaved }: {
             setChannel(next);
             if (ARK_CHANNEL_BASE[next]) setBaseUrl(ARK_CHANNEL_BASE[next]);
           }}>
-          <option value="plan">专属 Agent Plan（/api/plan/v3）</option>
-          <option value="metered">按量付费（/api/v3）</option>
+          <option value="plan">专属 Agent Plan</option>
+          <option value="metered">按量付费</option>
           <option value="custom">自定义端点</option>
         </select>
       </Field>
