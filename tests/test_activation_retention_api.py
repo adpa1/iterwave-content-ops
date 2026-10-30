@@ -263,9 +263,9 @@ def test_activation_metrics_calculates_completed_cohort_rates_and_ttv(activation
     )
     conn.execute(
         "INSERT INTO sample_runs "
-        "(id, tenant_id, platform, account_description, status, idempotency_key, created_at, completed_at) "
-        "VALUES ('cohort-run', 'default', 'xhs', '分享产品经理实践方法', 'ready', 'cohort-key', ?, ?)",
-        (started.isoformat(sep=" "), completed.isoformat(sep=" ")),
+        "(id, tenant_id, platform, account_description, status, idempotency_key, created_at, started_at, completed_at) "
+        "VALUES ('cohort-run', 'default', 'xhs', '分享产品经理实践方法', 'ready', 'cohort-key', ?, ?, ?)",
+        (started.isoformat(sep=" "), started.isoformat(sep=" "), completed.isoformat(sep=" ")),
     )
     conn.execute(
         "INSERT INTO sample_contents "
