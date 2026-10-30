@@ -140,7 +140,7 @@ export default function Onboarding() {
 
   // 预检项
   const checks = {
-    persona_ok: cfg.readonly.persona_keywords.length > 0,
+    persona_ok: cfg.readonly.persona_configured && cfg.readonly.persona_keywords.length > 0,
     platforms_ok: status.enabled_platforms.length >= 1,
     kb_ok: !!(cfg.readonly.kb_path && cfg.readonly.kb_type),
     llm_ok: cfg.readonly.llm_has_api_key,
@@ -402,7 +402,7 @@ export default function Onboarding() {
               {diagBusy ? "诊断中…" : "↻ 重新诊断"}
             </button>
             <div className="list">
-              <CheckRow ok={checks.persona_ok}    label="账号画像"       detail={cfg.readonly.persona_keywords.join(", ")} />
+              <CheckRow ok={checks.persona_ok}    label="账号画像"       detail={checks.persona_ok ? cfg.readonly.persona_keywords.join("、") : "还没设置账号定位，请填写定位关键词并保存"} />
               <CheckRow ok={checks.platforms_ok}   label="启用平台"       detail={`${status.enabled_platforms.length} 个 (${status.enabled_platforms.map((p) => PLATFORM_NAMES[p]).join(", ")})`} />
               <CheckRow ok={checks.login_ok}       label="登录态"         detail={`${status.logged_in_platforms.length} 个已登录`} />
               <CheckRow ok={checks.kb_ok}          label="选题库"      detail={`${cfg.readonly.kb_type} @ ${cfg.readonly.kb_path}`} />
