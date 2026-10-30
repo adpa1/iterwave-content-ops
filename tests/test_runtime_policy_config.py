@@ -162,9 +162,9 @@ def test_copy_hint_block_uses_configured_limits():
     from src.core.config import CopyGenerationConfig
     from src.core.content_pipeline import build_hint_block
 
-    policy = CopyGenerationConfig(strategy_hint_max_count=1, strategy_hint_max_chars=4)
-    block = build_hint_block(["abcdefgh", "second hint"], policy)
-    assert "abcd" in block
+    policy = CopyGenerationConfig(strategy_hint_max_count=1, strategy_hint_max_chars=20)
+    block = build_hint_block(["abcdefghijklmnopqrstuvwx", "second hint"], policy)
+    assert "abcdefghijklmnopqrst" in block
     assert "second hint" not in block
 
 
