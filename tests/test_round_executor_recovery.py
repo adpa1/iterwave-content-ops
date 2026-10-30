@@ -43,6 +43,40 @@ def _executor(cfg, conn, adapters=None, guard=None):
     )
 
 
+def test_empty_topic_pool_is_blocked_before_round_enters_producing(cfg, conn, seed):
+    round_id = seed.round(status="created")
+    executor = _executor(cfg, conn)
+    try:
+        asyncio.run(executor.run(round_id))
+    except ValueError as exc:
+        assert "运行前检查未通过" in str(exc)
+        assert "选题" in str(exc)
+    else:
+        raise AssertionError("empty topic pool must be blocked before execution")
+
+    status = conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0]
+    assert status == "created"
+
+
+def test_failed_round_with_existing_content_cannot_be_retried(cfg, conn, seed):
+    round_id = seed.round(status="failed")
+    seed.draft(round_id, platform="xhs", draft_status="draft_pending", fetch_status=None)
+    executor = _executor(cfg, conn)
+    try:
+        asyncio.run(executor.run(round_id))
+    except ValueError as exc:
+        assert "已有内容或草稿" in str(exc)
+    else:
+        raise AssertionError("failed round with output must not be rerun")
+
+    status = conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0]
+    assert status == "failed"
+
+
 def test_dry_run_pending_drafts_can_be_saved_without_regenerating(cfg, conn, seed):
     round_id = seed.round(status="producing")
     draft_id = seed.draft(round_id, platform="xhs", draft_status="draft_pending", fetch_status=None)
