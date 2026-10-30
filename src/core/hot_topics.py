@@ -144,7 +144,7 @@ def _trend_of(it: dict, median: float | None, policy=None) -> tuple[str, str]:
     if seen >= policy.trend_min_seen_count and heat <= peak * policy.trend_cooled_ratio:
         return "已降温", f"较峰值 {peak:.0f} 已回落 {(1 - heat / peak) * 100:.0f}%"
     if seen >= policy.trend_min_seen_count and heat >= peak * policy.trend_sustained_ratio:
-        return "持续爆发", f"连续 {seen} 轮在榜，热度仍在峰值 90% 以上"
+        return "持续爆发", f"连续 {seen} 轮在榜，热度仍在峰值 {policy.trend_sustained_ratio:.0%} 以上"
     if prev is not None and prev > 0 and heat <= prev * policy.trend_previous_drop_ratio:
         return "降温中", f"较上轮 {prev:.0f} 下降 {(1 - heat / prev) * 100:.0f}%"
     return "平稳", "热度与前几轮基本持平"
@@ -363,7 +363,7 @@ class HotTopicCollector:
         if not url.startswith(("http://", "https://")):
             raise ValueError("行业源地址无效")
         body, content_type = _fetch_public_text(
-            url, timeout=_FETCH_TIMEOUT_SECONDS,
+            url, timeout=self.hcfg.fetch_timeout_seconds,
             headers={**{str(k): str(v) for k, v in (source.get("headers") or {}).items() if k},
                      "User-Agent": "iterwave/0.1 (+local)"},
         )
