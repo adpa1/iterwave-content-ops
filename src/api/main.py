@@ -2115,7 +2115,7 @@ def _register_routes(app: FastAPI) -> None:
     def activation_metrics():
         conn = _g()["conn"]
         tenant_id = _tenant_id()
-        cohort = conn.execute("SELECT first_seen_at FROM activation_cohort WHERE id=1 AND tenant_id=?",
+        cohort = conn.execute("SELECT first_seen_at FROM activation_cohort WHERE tenant_id=?",
                               (tenant_id,)).fetchone()
         now = datetime.now()
         if cohort is None:
