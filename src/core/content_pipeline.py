@@ -284,7 +284,13 @@ def _generate_via_llm(
         elif status == 429:
             retry_after_header = exc.response.headers.get("Retry-After")
             try:
-                retry_after_seconds = max(0.1, min(float(retry_after_header), 300.0)) if retry_after_header else None
+                parsed_retry_after = float(retry_after_header) if retry_after_header else None
+                # 仅在可控的短等待窗口内自动重试；更长 Retry-After 直接返回限流错误。
+                retry_after_seconds = (
+                    parsed_retry_after
+                    if parsed_retry_after is not None and 0.1 <= parsed_retry_after <= 30.0
+                    else None
+                )
             except (TypeError, ValueError):
                 retry_after_seconds = None
             code, message, retryable = (
