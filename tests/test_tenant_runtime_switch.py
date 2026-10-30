@@ -166,8 +166,6 @@ def test_runtime_switch_rolls_back_if_target_scheduler_fails(monkeypatch):
     try:
         asyncio.run(run())
     finally:
-        api_main._tenant_runtime_contexts.clear()
-        api_main._tenant_runtime_contexts.update(previous_runtimes)
         monkeypatch.setattr(api_main, "_g_ctx", {})
         monkeypatch.setattr(api_main, "_running_rounds", set())
 
