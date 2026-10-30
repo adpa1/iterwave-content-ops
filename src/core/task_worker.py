@@ -169,10 +169,11 @@ class GlobalTaskWorker:
                 task.task_id, task.tenant_id,
             )
             error_code = getattr(exc, "code", "round_execution_failed")
-            safe_message = (
-                str(exc) if getattr(exc, "code", None)
-                else "本轮执行失败，请检查运行记录"
-            )
+            if getattr(exc, "code", None):
+                from src.core.redact import redact
+                safe_message = redact(str(exc))[:500]
+            else:
+                safe_message = "本轮执行失败，请检查运行记录"
             try:
                 self.queue.fail(
                     task.task_id, self.owner,
