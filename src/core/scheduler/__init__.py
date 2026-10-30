@@ -930,16 +930,12 @@ class SchedulerEngine:
         )
 
     async def _job_hot_topics_refresh(self) -> dict:
-        """按当前任务账号组采集热点并匹配画像；执行由全局队列串行调度。"""
-        from ..hot_topic_service import run_once
+        """触发独立热点服务；采集线程持有当前账号组配置与独立数据库连接。"""
+        from ..hot_topic_service import trigger_background
 
-        return await asyncio.to_thread(run_once, self.cfg, None, trigger="scheduler")
-
-    async def _job_hot_topics_research(self) -> dict:
-        """按当前任务账号组研判热点；不读取或修改前台活动账号组。"""
-        from ..hot_topic_service import run_research
-
-        return await asyncio.to_thread(run_research, self.cfg, None)
+        return trigger_background(
+            self.cfg, trigger="scheduler", tenant_id=self.tenant_id,
+        )
 
     async def _job_kb_scan(self) -> None:
         """每天 6:00 扫描选题库增量 — 对比 topic_index 插入新选题。"""
@@ -1370,7 +1366,6 @@ async def _invoke(engine, method_name: str, *args) -> None:
         "_job_comment_polling", "_job_cb_recovery", "_job_kb_scan",
         "_job_kb_sync", "_job_data_retention_cleanup",
         "_job_round_timeout_sweeper", "_job_round_review", "_job_autogrow_next_round",
-        "_job_hot_topics_refresh", "_job_hot_topics_research",
     }
     if queue is not None and tenant_id and method_name in queued_methods:
         aggregate_id = method_name + (":" + ":".join(map(str, args)) if args else "")
