@@ -45,7 +45,7 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 import httpx
@@ -1659,6 +1659,18 @@ def _register_routes(app: FastAPI) -> None:
         if len(measured_at) > 40:
             raise HTTPException(422, "统计时间格式无效")
         now = datetime.now().isoformat(sep=" ", timespec="seconds")
+        correction_of = (req or {}).get("correction_of")
+        if correction_of:
+            original = conn.execute(
+                "SELECT id FROM metric_snapshots WHERE id=? AND tenant_id=? AND draft_id=?",
+                (str(correction_of), tenant_id, draft_id),
+            ).fetchone()
+            if original is None:
+                raise HTTPException(422, "修正记录必须属于当前账号组和同一篇内容")
+        try:
+            measured_at = datetime.fromisoformat(measured_at).isoformat(sep=" ", timespec="seconds")
+        except ValueError:
+            raise HTTPException(422, "统计时间必须是有效的 ISO 日期时间")
         snapshot_id = uuid.uuid4().hex
         conn.execute(
             "INSERT INTO metric_snapshots "
@@ -1668,7 +1680,7 @@ def _register_routes(app: FastAPI) -> None:
             (snapshot_id, tenant_id, draft_id, row["content_id"], row["platform"],
              values["views"], values["likes"], values["collects"], values["comments"],
              values["shares"], values["new_followers"], measured_at, now,
-             (req or {}).get("correction_of"), now),
+             correction_of, now),
         )
         conn.commit()
         _record_content_event("metrics_submitted", content_id=row["content_id"],
@@ -1800,12 +1812,12 @@ def _register_routes(app: FastAPI) -> None:
         published = conn.execute(
             "SELECT COUNT(DISTINCT d.id) FROM drafts d WHERE d.user_confirmed_at IS NOT NULL"
         ).fetchone()[0]
-        data_returned = conn.execute(
-            "SELECT COUNT(DISTINCT ms.draft_id) FROM metric_snapshots ms WHERE ms.tenant_id=? "
-            "UNION SELECT COUNT(DISTINCT m.draft_id) FROM metrics m WHERE m.fetch_status IN ('success','partial')"
-            " AND m.draft_id IS NOT NULL"
-        , (tenant_id,)).fetchall()
-        returned_count = sum(int(r[0] or 0) for r in data_returned)
+        returned_count = conn.execute(
+            "SELECT COUNT(DISTINCT draft_id) FROM ("
+            "SELECT draft_id FROM metric_snapshots WHERE tenant_id=? "
+            "UNION SELECT draft_id FROM metrics WHERE fetch_status IN ('success','partial') AND draft_id IS NOT NULL)"
+            , (tenant_id,),
+        ).fetchone()[0]
         weekly = conn.execute(
             "SELECT COUNT(DISTINCT e.content_id) FROM content_events e "
             "WHERE e.tenant_id=? AND e.event_type='publish_confirmed' AND e.event_at>=?",
@@ -3207,8 +3219,7 @@ def _register_routes(app: FastAPI) -> None:
             outcome = result.get("guard_outcome")
             result["review_rejected"] = bool(result.get("review_rejected"))
             result["guard_confirmation_allowed"] = (
-                not result["review_rejected"]
-                and (outcome == "pass" or (outcome == "warn" and not llm_available))
+                not result["review_rejected"] and outcome == "pass"
             )
             if result.get("status") == "draft_pending":
                 result["platform_content_sync"] = "local_only"
@@ -3255,8 +3266,8 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(404, f"草稿 {draft_id} 不存在")
 
         note_url = (req.note_url or "").strip() if req else ""
-        if note_url and not note_url.startswith(("http://", "https://")):
-            raise HTTPException(422, "note_url 必须是完整的 http(s) 链接")
+        if note_url:
+            note_url = _validate_platform_note_url(row["platform"], note_url)
 
         # 重复确认应幂等：不重新注册采集任务，不重复推进轮次；已发布记录保留原状态。
         if row["status"] in ("user_published", "data_fetching", "published"):
@@ -3287,9 +3298,7 @@ def _register_routes(app: FastAPI) -> None:
         from src.core.content_pipeline import _llm_available
         guard_outcome = row["guard_outcome"]
         llm_available = _llm_available(_g()["cfg"])
-        guard_accepted = guard_outcome == "pass" or (
-            guard_outcome == "warn" and not llm_available
-        )
+        guard_accepted = guard_outcome == "pass"
         review_rejected = bool(row["review_rejected"])
         review_rejection_reason = row["review_rejection_reason"] or ""
         override_reason = (req.quality_override_reason or "").strip() if req else ""
@@ -3429,6 +3438,17 @@ def _register_routes(app: FastAPI) -> None:
             message,
             platform=dict(row)["platform"] if row else None,
         )
+        _record_content_event(
+            "publish_confirmed", content_id=row["content_id"],
+            metadata={"draft_id": draft_id, "platform": row["platform"]},
+            idempotency_key=f"publish-confirmed:{draft_id}",
+        )
+        if note_url:
+            _record_content_event(
+                "note_url_added", content_id=row["content_id"],
+                metadata={"platform": row["platform"]},
+                idempotency_key=f"note-url:{draft_id}:{hashlib.sha256(note_url.encode()).hexdigest()[:16]}",
+            )
         return {"draft_id": draft_id, "status": "user_published", "note_url": note_url or None}
 
     @app.post("/api/drafts/{draft_id}/confirm_platform_sync")
