@@ -1181,6 +1181,7 @@ export interface ActivationSample {
 export interface ActivationSavedSample {
   id: string; sample_run_id: string; platform: Platform; angle: string; title: string; body: string;
   hashtags: string[]; adopted_at: string; created_at: string; account_description: string;
+  promoted_content_id?: string | null; promoted_at?: string | null;
 }
 export interface ActivationSampleRun {
   run: {
@@ -1649,6 +1650,11 @@ export const api = {
       }),
   activationSamples: (id: string) => fetchJson<ActivationSampleRun>(`/api/activation/samples/${id}`),
   activationSavedSamples: () => fetchJson<{ items: ActivationSavedSample[] }>("/api/activation/saved"),
+  promoteActivationSample: (sampleContentId: string, roundId: number) =>
+    fetchJson<{ sample_content_id: string; content_id: string; draft_id?: string; round_id: number; already_promoted: boolean }>(
+      `/api/activation/saved/${sampleContentId}/promote`,
+      { method: "POST", body: JSON.stringify({ round_id: roundId }) },
+    ),
   deleteActivationSamples: (id: string) =>
     fetchJson<{ sample_run_id: string; deleted: boolean }>(`/api/activation/samples/${id}`, { method: "DELETE" }),
   activationSampleEvent: (runId: string, contentId: string, event_type: "copied" | "saved" | "rejected", reason?: string) =>
