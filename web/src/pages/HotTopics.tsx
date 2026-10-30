@@ -214,7 +214,7 @@ export default function HotTopics() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">DISCOVER & TREND RIDING</div>
+          <div className="eyebrow">热点发现与趋势</div>
           <h1 className="page-title">热点雷达</h1>
           <div className="page-desc">
             后台定时采集各平台热榜（{hot?.refresh_enabled === false ? "已关闭" : hot?.refresh_schedule ?? "按配置"}），先判断是否服务于账号定位，再决定转选题、观察或放弃。每次采集只保留当前榜单，旧热点自动清理。
