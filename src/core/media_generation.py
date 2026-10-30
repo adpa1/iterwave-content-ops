@@ -9,6 +9,7 @@ import base64
 import io
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from PIL import Image, UnidentifiedImageError
@@ -69,8 +70,18 @@ def generate_image_bytes(
         raise ImageGenerationError(
             f"未配置图片生成 API 密钥。请在服务端环境中设置 {key_env or 'ITERWAVE_IMAGE_API_KEY_ENV'}"
         )
-    if not base_url.startswith(("https://", "http://")):
-        raise ImageGenerationError("图片 API 地址必须是 HTTP(S) URL")
+    try:
+        parsed_base_url = urlsplit(base_url)
+        valid_base_url = (
+            parsed_base_url.scheme in ("https", "http")
+            and bool(parsed_base_url.hostname)
+            and parsed_base_url.username is None
+            and parsed_base_url.password is None
+        )
+    except ValueError:
+        valid_base_url = False
+    if not valid_base_url:
+        raise ImageGenerationError("图片 API 地址必须是无认证信息的 HTTP(S) URL")
     endpoint = base_url + ("/images/edits" if source_path else "/images/generations")
     headers = {"Authorization": f"Bearer {api_key}"}
     data = {"model": model, "prompt": prompt, "size": size, "n": "1"}
