@@ -23,14 +23,11 @@ def _safe_value(key: str, value: Any) -> bool:
         return False
     if isinstance(value, str):
         # Do not persist URL userinfo, even if a future whitelist accidentally allows it.
-        from urllib.parse import parse_qsl, urlsplit
+        from urllib.parse import urlsplit
         if value.startswith(("http://", "https://")):
             try:
                 parts = urlsplit(value)
                 if parts.username is not None or parts.password is not None:
-                    return False
-                if any(re.search(r"(token|secret|api[_-]?key|signature|credential)", name, re.I)
-                       for name, _ in parse_qsl(parts.query, keep_blank_values=True)):
                     return False
             except ValueError:
                 return False
