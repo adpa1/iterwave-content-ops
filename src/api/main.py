@@ -2414,7 +2414,8 @@ def _register_routes(app: FastAPI) -> None:
         # TTV 分位数按当前数据库内可观察的账号组 cohort 计算；不伪装成跨安装实例统计。
         ttv_values: list[float] = []
         for cohort_row in conn.execute(
-            "SELECT tenant_id, first_seen_at FROM activation_cohort"
+            "SELECT tenant_id, first_seen_at FROM activation_cohort WHERE tenant_id=?",
+            (tenant_id,),
         ).fetchall():
             ready_row = conn.execute(
                 "SELECT completed_at FROM sample_runs WHERE tenant_id=? AND status='ready' "
@@ -2509,7 +2510,7 @@ def _register_routes(app: FastAPI) -> None:
             ).fetchall()
         ]
         complete = now >= started + timedelta(days=7)
-        cohort_size = int(conn.execute("SELECT COUNT(*) FROM activation_cohort").fetchone()[0])
+        cohort_size = int(conn.execute("SELECT COUNT(*) FROM activation_cohort WHERE tenant_id=?", (tenant_id,)).fetchone()[0])
         return {
             "cohort_size": cohort_size,
             "sample_attempted_count": int(sample_counts["attempted"] or 0),
