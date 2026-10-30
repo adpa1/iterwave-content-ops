@@ -195,7 +195,7 @@ class GlobalTaskQueue:
             )
             row = conn.execute(
                 "SELECT * FROM global_task_queue WHERE status='queued' "
-                "ORDER BY created_at ASC, task_id ASC LIMIT 1"
+                "ORDER BY created_at ASC, rowid ASC LIMIT 1"
             ).fetchone()
             if row is None:
                 conn.commit()
@@ -259,10 +259,6 @@ class GlobalTaskQueue:
                 "WHERE task_id=? AND status='running' AND lease_owner=?",
                 (_stamp(), result_json, task_id, owner),
             )
-            if cursor.rowcount:
-                conn.execute(
-                    "DELETE FROM global_task_worker_lease WHERE singleton_id=1 AND owner=?", (owner,)
-                )
             conn.commit()
             return cursor.rowcount == 1
         except Exception:
@@ -284,10 +280,6 @@ class GlobalTaskQueue:
                 "WHERE task_id=? AND status='running' AND lease_owner=?",
                 (_stamp(), error_code[:80], error_message[:500], task_id, owner),
             )
-            if cursor.rowcount:
-                conn.execute(
-                    "DELETE FROM global_task_worker_lease WHERE singleton_id=1 AND owner=?", (owner,)
-                )
             conn.commit()
             return cursor.rowcount == 1
         except Exception:
