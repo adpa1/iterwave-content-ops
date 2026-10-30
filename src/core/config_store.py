@@ -875,7 +875,7 @@ def _redact_public_value(value: Any) -> Any:
 
 _INTERNAL_ENDPOINT_KEYS = {
     "vision_ranking.base_url", "media_generation.base_url", "topic_kb.path",
-    *(f"platforms.{platform}.{field" for platform in PLATFORM_KEYS
+    *(f"platforms.{platform}.{field}" for platform in PLATFORM_KEYS
       for field in ("base_url", "account_key")),
 }
 
@@ -1015,7 +1015,7 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
 
     blocked_runtime_fields = {
         "vision_ranking.base_url", "media_generation.base_url", "topic_kb.path",
-        *(f"platforms.{platform}.{field" for platform in PLATFORM_KEYS
+        *(f"platforms.{platform}.{field}" for platform in PLATFORM_KEYS
           for field in ("base_url", "account_key")),
         *(f"notifications.channels.{channel}.webhook_url_env" for channel in ("wecom", "feishu")),
     }
