@@ -78,12 +78,10 @@ export default function Analytics() {
   useEffect(() => { loadGaps(); }, []);
   useEffect(() => { loadMetrics(platformFilter); }, [platformFilter]);
   useEffect(() => {
-    Promise.all([
-      api.drafts(),
-      api.weeklyReport(),
-      api.activationMetrics(),
-      api.activationStatus(),
-    ]).then(([allDrafts, report, metrics, status]) => {
+    Promise.all([api.drafts(), api.weeklyReport()]).then(async ([allDrafts, report]) => {
+      // 先建立/读取 cohort，再计算 activation 指标，避免首次进入 Analytics 时发生初始化竞态。
+      const status = await api.activationStatus();
+      const metrics = await api.activationMetrics();
       const published = allDrafts.filter((d) => !!d.user_confirmed_at);
       setPublishedDrafts(published);
       setWeeklyReport(report);
@@ -131,12 +129,19 @@ export default function Analytics() {
       if (value.note_url.trim() !== (draft.platform_note_url || "")) {
         await api.updateDraftNoteUrl(draft.id, value.note_url.trim());
       }
-      if (numeric.some((key) => value[key].trim())) {
+      const metricsSubmitted = numeric.some((key) => value[key].trim());
+      if (metricsSubmitted) {
         await api.submitManualMetrics(draft.id, {
           ...metrics,
           measured_at: value.measured_at || undefined,
           correction_of: value.correction_of || null,
         });
+      }
+      if (metricsSubmitted) {
+        const [report, activation] = await Promise.all([api.weeklyReport(), api.activationMetrics()]);
+        setWeeklyReport(report);
+        setActivationMetrics(activation);
+        setSnapshotHistory((prev) => ({ ...prev, [draft.id]: undefined as any }));
       }
       const refreshed = await api.drafts();
       setPublishedDrafts(refreshed.filter((d) => !!d.user_confirmed_at));
