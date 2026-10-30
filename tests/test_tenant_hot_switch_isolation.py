@@ -105,6 +105,11 @@ def test_runtime_builder_uses_distinct_real_sqlite_files_per_tenant(monkeypatch,
     monkeypatch.setattr(api_main, "load_config", lambda: FakeConfig(tmp_path))
     monkeypatch.setattr(api_main, "load_overrides", lambda cfg: {})
     monkeypatch.setattr(api_main, "apply_overrides", lambda cfg, overrides: [])
+    from src.core import system_config_repository
+    monkeypatch.setattr(
+        system_config_repository, "migrate_tenant_llm_settings",
+        lambda *args, **kwargs: {"purged": 0, "conflicts": 0, "applied": 0},
+    )
     monkeypatch.setattr(api_main, "Database", FakeDatabase)
     monkeypatch.setattr(db_module, "LockedConnection", lambda conn: conn)
     monkeypatch.setattr(api_main, "get_adapters", lambda cfg, conn: {})
