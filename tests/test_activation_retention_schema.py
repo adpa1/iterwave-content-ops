@@ -20,6 +20,10 @@ def test_activation_retention_migration_creates_tenant_scoped_tables(conn):
 
     sample_columns = {row[1] for row in conn.execute("PRAGMA table_info(sample_contents)")}
     assert {"sample_run_id", "tenant_id", "quality_status", "adopted_at", "rejected_at"} <= sample_columns
+    run_columns = {row[1] for row in conn.execute("PRAGMA table_info(sample_runs)")}
+    assert "attempt_count" in run_columns
+    event_columns = {row[1] for row in conn.execute("PRAGMA table_info(content_events)")}
+    assert "sample_run_id" in event_columns
     metric_columns = {row[1] for row in conn.execute("PRAGMA table_info(metric_snapshots)")}
     assert {"source", "measured_at", "recorded_at", "correction_of"} <= metric_columns
 
