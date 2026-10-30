@@ -425,7 +425,7 @@ class VisionRankingConfig(BaseModel):
     model: str = "gpt-4o-mini"
     timeout_seconds: int = Field(25, ge=1, le=120)
     candidate_limit: int = Field(8, ge=1, le=32)
-    max_image_bytes: int = Field(4 * 1024 * 1024, ge=1024, le=16 * 1024 * 1024)
+    max_image_bytes: int = Field(4 * 1024 * 1024, ge=1024, le=4 * 1024 * 1024)
     max_body_chars: int = Field(1800, ge=100, le=10000)
     temperature: float = Field(0.0, ge=0.0, le=2.0)
     max_tokens: int = Field(600, ge=1, le=4000)
