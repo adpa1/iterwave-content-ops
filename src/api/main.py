@@ -2509,8 +2509,9 @@ def _register_routes(app: FastAPI) -> None:
             ).fetchall()
         ]
         complete = now >= started + timedelta(days=7)
+        cohort_size = int(conn.execute("SELECT COUNT(*) FROM activation_cohort").fetchone()[0])
         return {
-            "cohort_size": 1,
+            "cohort_size": cohort_size,
             "sample_attempted_count": int(sample_counts["attempted"] or 0),
             "sample_ready_count": int(sample_counts["completed"] or 0),
             "quick_experience_completion_rate": (
@@ -5610,7 +5611,9 @@ def _register_routes(app: FastAPI) -> None:
                 except Exception as e:  # noqa: BLE001
                     logger.exception("重排定时任务失败 %s", job_id)
                     rescheduled.append({"job_id": job_id, "error": redact(str(e))})
+        timezone_changed = any(change["key"] == "business_timezone" for change in result["changed"])
         result["rescheduled"] = rescheduled
+        result["restart_required"] = timezone_changed
         return {**result, "config": current_config_view(g2["cfg"], g2["conn"])["editable"]}
 
     @app.post("/api/config/llm_key")
