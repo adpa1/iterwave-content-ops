@@ -889,7 +889,6 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             "notification_channels": {
                 name: {
                     "enabled": bool(ch.enabled),
-                    "webhook_url_env": ch.webhook_url_env,
                     "has_webhook_url": bool(
                         ch.webhook_url_env and os.environ.get(ch.webhook_url_env)
                     ),
