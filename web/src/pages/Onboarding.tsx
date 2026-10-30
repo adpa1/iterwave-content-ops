@@ -296,7 +296,7 @@ export default function Onboarding() {
           <div>
             <div className="panel-title" style={{ marginBottom: 16 }}>⑥ 阶段目标</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              每个目标必须同时定义 6 个字段（指标 + 目标值 + 口径 + 基线 + 周期 + 来源）。
+              建议补齐指标、目标值、统计口径、基线、周期和数据来源，便于后续计算与复盘。
             </p>
 
             <div style={{ display: "grid", gap: 12, padding: 14, border: "1px solid var(--border)", borderRadius: 10, marginBottom: 16 }}>
