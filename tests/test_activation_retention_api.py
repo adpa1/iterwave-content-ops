@@ -111,6 +111,11 @@ def test_daily_quota_is_configured_and_idempotency_precedes_quota(activation_cli
 def test_platform_metric_fields_are_enforced(activation_client, seed):
     round_id = seed.round()
     draft_id = seed.draft(round_id, platform="douyin", draft_status="published", fetch_status=None)
+    from datetime import datetime
+    conn = seed.conn
+    conn.execute("UPDATE drafts SET user_confirmed_at=? WHERE id=?",
+                 (datetime.now().isoformat(sep=" "), draft_id))
+    conn.commit()
     unsupported = activation_client.post(
         f"/api/drafts/{draft_id}/metrics/manual",
         json={"views": 20, "collects": 3},
@@ -225,6 +230,9 @@ def test_weekly_report_uses_latest_corrected_snapshot_and_within_platform_eviden
     drafts = []
     for i, views in enumerate((100, 200, 300), start=1):
         draft_id = seed.draft(round_id, platform="xhs", draft_status="published", fetch_status=None, topic_id=f"weekly-{i}")
+        conn.execute("UPDATE drafts SET user_confirmed_at=? WHERE id=?",
+                     (now, draft_id))
+        conn.commit()
         content_id = conn.execute("SELECT content_id FROM drafts WHERE id=?", (draft_id,)).fetchone()[0]
         conn.execute("UPDATE contents SET title=?, body=? WHERE id=?",
                      (f"第{i}篇实测标题", f"用于复盘的正文样本 {i}", content_id))
