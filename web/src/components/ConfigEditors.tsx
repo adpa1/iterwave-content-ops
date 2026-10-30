@@ -112,7 +112,7 @@ export function PersonaEditor({ view, onSaved }: {
 // =====================================================================
 // 选题库 KB：类型 / 路径 / 数据表
 // 路径来自后端脱敏（项目外绝对路径显示为 ~/…/x 或 …/x），脱敏值不能回写，
-// 所以脱敏状态下只读，统一到「内容资产 → 字段映射检查」的选题库来源管理里维护。
+// 所以脱敏状态下只读，统一到「内容资产 → 知识库来源」里维护。
 //
 // =====================================================================
 export function KbEditor({ view, onSaved }: {
@@ -194,7 +194,7 @@ export function KbEditor({ view, onSaved }: {
       <div className="note" style={{ fontSize: 11 }}>
         选题库可以来自多个来源（本地上传 / 远程地址 / 服务器路径），统一在
         <button type="button" className="btn sm" style={{ marginLeft: 6 }}
-          onClick={() => navigate("assets", "mapping")}>内容资产 → 字段映射检查</button>
+          onClick={() => navigate("assets", "mapping")}>内容资产 → 知识库来源</button>
         管理，支持自动识别字段与预览。
       </div>
       <Field label="数据表名（数据库专用）">
@@ -269,7 +269,7 @@ export function LlmEditor({ view, onSaved }: {
     if (baseUrl.trim()) updates["llm.base_url"] = baseUrl.trim();
     const temp = Number(temperature);
     if (temperature !== "" && temp !== Number(view.readonly.llm_temperature)) {
-      if (!Number.isFinite(temp) || temp < 0 || temp > 2) { showToast("temperature 必须在 0-2 之间", "error"); return; }
+      if (!Number.isFinite(temp) || temp < 0 || temp > 2) { showToast("生成随机度必须在 0-2 之间", "error"); return; }
       updates["llm.temperature"] = temp;
     }
     const tsec = Number(timeoutSec);
@@ -304,9 +304,9 @@ export function LlmEditor({ view, onSaved }: {
     <div style={{ display: "grid", gap: 14 }}>
       <label style={{ fontSize: 13, display: "flex", gap: 8, alignItems: "center" }}>
         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-        启用 LLM（关闭时选题评分 / 文案生成自动降级为模板）
+        启用大模型（关闭时选题评分 / 文案生成自动降级为模板）
       </label>
-      <Field label="Provider">
+      <Field label="模型服务商">
         <input style={{ ...inputStyle, width: 200 }} value={provider}
           onChange={(e) => setProvider(e.target.value)} placeholder="ark" />
       </Field>
@@ -346,7 +346,7 @@ export function LlmEditor({ view, onSaved }: {
         </div>
       )}
       <div className="grid three" style={{ gap: 10 }}>
-        <Field label="temperature（0-2）">
+        <Field label="生成随机度（0-2）">
           <input className="field" type="number" step="0.1" min={0} max={2} style={{ width: "100%" }}
             value={temperature} onChange={(e) => setTemperature(e.target.value)} />
         </Field>
@@ -875,8 +875,8 @@ export function PlatformStyleEditor() {
   return (
     <div style={{ display: "grid", gap: 14 }}>
       <div className="note" style={{ fontSize: 12 }}>
-        这些内容存在 <code>platform_styles</code> 表里，文案生成时实时读取（LLM 提示词 + 模板降级都走它）。
-        话题标签留空 = 只带选题维度标签，不会再出现写死的垂类话题。
+        平台文案风格会在生成内容时实时读取，大模型生成与模板降级使用同一套设置。
+        话题标签留空时，只使用选题所属方向的标签。
       </div>
       {styles.map((s) => {
         const d = drafts[s.platform];
