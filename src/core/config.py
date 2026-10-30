@@ -430,6 +430,7 @@ class VisionRankingConfig(BaseModel):
 
 
 class MediaGenerationConfig(BaseModel):
+    base_url: str = "https://api.openai.com/v1"
     timeout_seconds: int = Field(150, ge=1, le=300)
     connect_timeout_seconds: int = Field(15, ge=1, le=60)
     max_response_bytes: int = Field(20 * 1024 * 1024, ge=1024, le=20 * 1024 * 1024)
