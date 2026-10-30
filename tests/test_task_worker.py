@@ -167,3 +167,37 @@ def test_worker_survives_failure_status_write_error(tmp_path, monkeypatch):
     )
     # 持久化失败状态的异常不能逸出 _execute 并终止全局消费者。
     asyncio.run(worker._execute(claimed))
+
+
+def test_worker_redacts_sensitive_failure_details_before_queue_storage(tmp_path):
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    task, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-a", aggregate_id="20",
+        payload={"round_id": 20, "operation": "run"},
+    )
+    claimed = queue.claim_next("worker-d")
+
+    class SafeCodeError(RuntimeError):
+        code = "provider_error"
+
+    class FakeExecutor:
+        async def run(self, round_id, **kwargs):
+            raise SafeCodeError("provider rejected api_key=sk-abcdef123456")
+
+    context = {
+        "cfg": SimpleNamespace(
+            paths=SimpleNamespace(data_dir=str(tmp_path / "tenant-a" / "data")),
+            resolve_path=lambda value: value,
+        ),
+        "executor": FakeExecutor(),
+        "scheduler": SimpleNamespace(shutdown=lambda: None),
+        "conn": SimpleNamespace(close=lambda: None),
+    }
+    worker = GlobalTaskWorker(queue, lambda tenant_id: context)
+    asyncio.run(worker._execute(claimed))
+
+    saved = queue.get(task.task_id)
+    assert saved is not None and saved.status == "failed"
+    assert "sk-abcdef123456" not in (saved.error_message or "")
+    assert "sk-***" in (saved.error_message or "")
