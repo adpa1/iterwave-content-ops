@@ -208,15 +208,19 @@ def diagnose(cfg, conn, *, cb=None, live_llm: bool = False) -> dict:
     from ..adapters.base import Platform
     from .kb_sources import read_all_for_check
     from .login_manager import has_login_state
+    from .topic_pool import list_topics
 
     items: list[dict] = []
     enabled = cfg.platforms.enabled_keys()
 
-    # 1 选题库来源（真实读一遍：上传 / 远程 / 服务器路径）
+    # 1 选题库来源（真实读一遍：上传 / 远程 / 服务器路径）。
+    # 计数统一复用选题池 API 的 active 口径，避免向导检查清单与页面列表数字不一致。
     kb_check = read_all_for_check(cfg)
     kb_status = kb_check["status"]
+    active_pool = list_topics(cfg, conn, status="active", limit=1)
+    kb_message = f"{kb_check['message']} · 当前可用选题 {active_pool['total']} 条"
     items.append(_item(
-        1, "选题库来源可读", kb_status, kb_check["message"], "assets", "mapping"))
+        1, "选题库来源可读", kb_status, kb_message, "assets", "mapping"))
 
     # 2 账号画像
     ug = cfg.ultimate_goal
