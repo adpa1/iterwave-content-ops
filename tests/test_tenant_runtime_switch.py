@@ -73,7 +73,6 @@ def make_context(registry, tenant_id, *, fail_start=False):
 
 def patch_runtime(monkeypatch, registry, contexts):
     monkeypatch.setattr(api_main, "_g_ctx", contexts["A"])
-    monkeypatch.setattr(api_main, "_running_rounds", set())
     monkeypatch.setattr(api_main, "set_active_notifier", lambda notifier: None)
     monkeypatch.setattr(
         api_main, "_build_tenant_runtime_context",
@@ -94,7 +93,6 @@ def test_runtime_switch_supports_a_to_b_to_a(monkeypatch):
     original_a = contexts["A"]()
     monkeypatch.setattr(api_main, "_g_ctx", original_a)
     monkeypatch.setattr(api_main, "_tenant_runtime_contexts", {})
-    monkeypatch.setattr(api_main, "_running_rounds", set())
     monkeypatch.setattr(api_main, "set_active_notifier", lambda notifier: None)
     monkeypatch.setattr(api_main, "_build_tenant_runtime_context", lambda _r, tid, run_startup_maintenance=False: contexts[tid]())
     from src.core import account_login, login_manager
@@ -123,8 +121,7 @@ def test_runtime_switch_supports_a_to_b_to_a(monkeypatch):
         asyncio.run(run())
     finally:
         monkeypatch.setattr(api_main, "_g_ctx", {})
-        monkeypatch.setattr(api_main, "_running_rounds", set())
-
+    
 
 def test_runtime_switch_rolls_back_if_target_scheduler_fails(monkeypatch):
     registry = FakeRegistry()
@@ -143,7 +140,6 @@ def test_runtime_switch_rolls_back_if_target_scheduler_fails(monkeypatch):
 
     monkeypatch.setattr(api_main, "_g_ctx", old)
     monkeypatch.setattr(api_main, "_tenant_runtime_contexts", {})
-    monkeypatch.setattr(api_main, "_running_rounds", set())
     monkeypatch.setattr(api_main, "set_active_notifier", lambda notifier: None)
     monkeypatch.setattr(api_main, "_build_tenant_runtime_context", build)
     from src.core import account_login, login_manager
@@ -169,15 +165,13 @@ def test_runtime_switch_rolls_back_if_target_scheduler_fails(monkeypatch):
         asyncio.run(run())
     finally:
         monkeypatch.setattr(api_main, "_g_ctx", {})
-        monkeypatch.setattr(api_main, "_running_rounds", set())
-
+    
 
 def test_target_initialization_failure_does_not_stop_old_runtime(monkeypatch):
     registry = FakeRegistry()
     old = make_context(registry, "A")
     monkeypatch.setattr(api_main, "_g_ctx", old)
     monkeypatch.setattr(api_main, "_tenant_runtime_contexts", {})
-    monkeypatch.setattr(api_main, "_running_rounds", set())
     monkeypatch.setattr(
         api_main, "_build_tenant_runtime_context",
         lambda _registry, tenant_id, run_startup_maintenance=False: (_ for _ in ()).throw(RuntimeError("pending restore")),
@@ -195,4 +189,4 @@ def test_target_initialization_failure_does_not_stop_old_runtime(monkeypatch):
         asyncio.run(run())
     finally:
         monkeypatch.setattr(api_main, "_g_ctx", {})
-        monkeypatch.setattr(api_main, "_running_rounds", set())
+    

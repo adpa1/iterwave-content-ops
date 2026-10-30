@@ -21,7 +21,6 @@ def test_save_pending_drafts_queues_after_running_round_instead_of_deduping(tmp_
     conn.execute("CREATE TABLE spiral_rounds (id INTEGER PRIMARY KEY)")
     conn.execute("INSERT INTO spiral_rounds(id) VALUES(7)")
     monkeypatch.setattr(api_main, "_task_queue", queue)
-    monkeypatch.setattr(api_main, "_running_rounds", set())
     monkeypatch.setitem(api_main._g_ctx, "conn", conn)
     monkeypatch.setitem(api_main._g_ctx, "runtime_tenant_id", "tenant-a")
 

@@ -453,6 +453,7 @@ def test_worker_heartbeat_runs_in_background_thread(tmp_path):
     claimed = queue.claim_next("worker-heartbeat", lease_seconds=30)
     assert claimed is not None
     worker = GlobalTaskWorker(queue, lambda tenant_id: {}, heartbeat_seconds=0.01)
+    worker.owner = "worker-heartbeat"
     loop = asyncio.new_event_loop()
     stopped = threading.Event()
     renewed = []
