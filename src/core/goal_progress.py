@@ -13,6 +13,8 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from .timezone import business_now
+
 logger = logging.getLogger(__name__)
 
 # target_metric → (metrics 列名, 聚合方式)
@@ -61,13 +63,13 @@ class GoalProgressUpdater:
         # 人工录入的目标：当前值由人填写，自动刷新不能把它覆盖成 NULL
         if (get("data_source") or "") == "manual":
             cur = get("current_value")
-            self._maybe_complete(row, cur, datetime.now().isoformat(timespec="seconds"))
+            self._maybe_complete(row, cur, business_now(self.cfg).isoformat(timespec="seconds"))
             return cur
         # 涨粉类目标：优先用账号级快照（作品级读回没有新增粉丝字段）
         if row["target_metric"] in ("followers_gained", "new_followers"):
             snap_value = self._followers_from_snapshots(row)
             if snap_value is not None:
-                now = datetime.now().isoformat(timespec="seconds")
+                now = business_now(self.cfg).isoformat(timespec="seconds")
                 self.conn.execute(
                     "UPDATE goals SET current_value = ?, progress_updated_at = ? WHERE id = ?",
                     (snap_value, now, row["id"]),
@@ -102,7 +104,7 @@ class GoalProgressUpdater:
         if value is not None and row["target_metric"] in PERCENT_METRICS:
             value = round(value * 100.0, 4)  # 0.038 → 3.8（%）
 
-        now = datetime.now().isoformat(timespec="seconds")
+        now = business_now(self.cfg).isoformat(timespec="seconds")
         self.conn.execute(
             "UPDATE goals SET current_value = ?, progress_updated_at = ? WHERE id = ?",
             (value, now if value is not None else None, row["id"]),
@@ -204,7 +206,7 @@ class GoalProgressUpdater:
           否则用挂在总目标下的平台子目标按 weight 加权平均；平台各自进度仍在 by_platform。
         没有任何数据 → percent = None（R21：未知 ≠ 0）。
         """
-        now = now or datetime.now()
+        now = now or business_now()
         active = [dict(r) for r in rows if (dict(r).get("status") or "active") == "active"]
 
         def _rate(g: dict) -> Optional[float]:

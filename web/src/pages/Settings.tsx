@@ -42,6 +42,7 @@ export default function Settings() {
   const [quotas, setQuotas] = useState<Record<string, Record<string, string>>>({});
   const [opsWindow, setOpsWindow] = useState<{ start: string; end: string }>({ start: "", end: "" });
   const [cooldown, setCooldown] = useState("");
+  const [businessTimezone, setBusinessTimezone] = useState("Asia/Shanghai");
   const [hotFilters, setHotFilters] = useState({
     heat: "", heatOn: true, hours: "", timeOn: true,
   });
@@ -75,6 +76,7 @@ export default function Settings() {
         end: _str(v.editable.ops_window.end_hour),
       });
       setCooldown(_str(v.editable.cooldown_minutes));
+      setBusinessTimezone(v.editable.business_timezone || "Asia/Shanghai");
       setHotFilters({
         heat: _str(v.editable.hot_topics.heat_threshold),
         heatOn: v.editable.hot_topics.heat_filter_enabled ?? true,
@@ -110,6 +112,9 @@ export default function Settings() {
     if (cooldown !== "" && Number(cooldown) !== ed.cooldown_minutes) {
       updates["circuit_breaker.cooldown_minutes"] = Number(cooldown);
     }
+    if (businessTimezone.trim() && businessTimezone.trim() !== ed.business_timezone) {
+      updates["business_timezone"] = businessTimezone.trim();
+    }
     if (hotFilters.heat !== "" && Number(hotFilters.heat) !== ed.hot_topics.heat_threshold) {
       updates["hot_topics.filters.heat_threshold"] = Number(hotFilters.heat);
     }
@@ -130,7 +135,9 @@ export default function Settings() {
     try {
       const res = await withPending("config:save", () => api.patchConfig(updates));
       if (!res) return;
-      showToast(`✓ 已保存 ${res.changed.length} 项配置`, "success");
+      showToast(res.restart_required
+        ? `已保存 ${res.changed.length} 项配置；业务时区将在服务重启后完整生效`
+        : `✓ 已保存 ${res.changed.length} 项配置`, res.restart_required ? "info" : "success");
       await loadConfig();
     } catch (e: any) {
       showToast(`保存失败: ${e?.message ?? e}`, "error");
@@ -221,9 +228,16 @@ export default function Settings() {
               </table>
             </div>
 
+            <div className="metric" style={{ marginTop: 14, maxWidth: 420 }}>
+              <div className="metric-label">业务时区（IANA）</div>
+              <input className="field" value={businessTimezone}
+                placeholder="Asia/Shanghai"
+                onChange={(e) => setBusinessTimezone(e.target.value)} />
+              <div className="metric-foot">例如 Asia/Shanghai、Asia/Tokyo、UTC。保存后影响运营时段和每日配额日界线；定时任务将在服务重启后切换。</div>
+            </div>
             <div className="grid three" style={{ marginTop: 14 }}>
               <div className="metric">
-                <div className="metric-label">运营时段（本地时区）</div>
+                <div className="metric-label">运营时段（业务时区）</div>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
                   <input className="field" type="number" min={0} max={23} value={opsWindow.start}
                     style={{ width: 70 }}

@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Optional
 
 from ...adapters.base import Platform
+from ..timezone import business_now
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class RhythmController:
 
         action: "ops" 或 "draft_save"
         """
-        now = datetime.now()
+        now = business_now(self.cfg)
         window = self.cfg.rhythm.windows.get(action)
         if not window:
             return True  # 没配置窗口则不限制

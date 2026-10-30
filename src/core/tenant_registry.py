@@ -16,6 +16,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from .timezone import business_now
+
 TENANT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 DEFAULT_TENANT_ID = "default"
 REGISTRY_MIGRATION = "tenant_registry_json_to_system_db_v1"
@@ -78,7 +80,8 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
 class TenantRegistry:
     """持久化账号组目录。注册表是共享基础设施，不承载任何业务结果。"""
 
-    def __init__(self, project_root: Path | str):
+    def __init__(self, project_root: Path | str, cfg=None):
+        self.cfg = cfg
         self.project_root = Path(project_root).resolve()
         self.shared_dir = self.project_root / "shared"
         self.raw_dir = self.shared_dir / "raw"
@@ -138,9 +141,9 @@ class TenantRegistry:
                         conn.execute(
                             "INSERT OR IGNORE INTO tenants(id,name,created_at) VALUES(?,?,?)",
                             (item["id"], item.get("name") or item["id"],
-                             item.get("created_at") or datetime.now().isoformat(timespec="seconds")),
+                             item.get("created_at") or business_now(self.cfg).isoformat(timespec="seconds")),
                         )
-                    now = datetime.now().isoformat(timespec="seconds")
+                    now = business_now(self.cfg).isoformat(timespec="seconds")
                     conn.execute(
                         "INSERT INTO system_settings(key,value_json,updated_at) VALUES(?,?,?) "
                         "ON CONFLICT(key) DO NOTHING",
@@ -153,7 +156,7 @@ class TenantRegistry:
                 else:
                     conn.execute(
                         "INSERT OR IGNORE INTO tenants(id,name,created_at) VALUES(?,?,?)",
-                        (DEFAULT_TENANT_ID, "默认账号组", datetime.now().isoformat(timespec="seconds")),
+                        (DEFAULT_TENANT_ID, "默认账号组", business_now(self.cfg).isoformat(timespec="seconds")),
                     )
                     row = conn.execute(
                         "SELECT 1 FROM system_settings WHERE key='active_tenant_id'"
@@ -162,7 +165,7 @@ class TenantRegistry:
                         conn.execute(
                             "INSERT INTO system_settings(key,value_json,updated_at) VALUES(?,?,?)",
                             ("active_tenant_id", json.dumps(DEFAULT_TENANT_ID),
-                             datetime.now().isoformat(timespec="seconds")),
+                             business_now(self.cfg).isoformat(timespec="seconds")),
                         )
                 conn.commit()
                 rows = conn.execute("SELECT id,name FROM tenants ORDER BY created_at,id").fetchall()
@@ -193,7 +196,7 @@ class TenantRegistry:
             return [{
                 "id": DEFAULT_TENANT_ID,
                 "name": "默认账号组",
-                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "created_at": business_now(self.cfg).isoformat(timespec="seconds"),
             }]
         registry = self._read_registry()
         tenants = registry.get("tenants")
@@ -211,13 +214,13 @@ class TenantRegistry:
             normalized.append({
                 "id": tenant_id,
                 "name": str(item.get("name") or tenant_id),
-                "created_at": item.get("created_at") or datetime.now().isoformat(timespec="seconds"),
+                "created_at": item.get("created_at") or business_now(self.cfg).isoformat(timespec="seconds"),
             })
         if DEFAULT_TENANT_ID not in seen:
             normalized.insert(0, {
                 "id": DEFAULT_TENANT_ID,
                 "name": "默认账号组",
-                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "created_at": business_now(self.cfg).isoformat(timespec="seconds"),
             })
         return normalized
 
@@ -272,7 +275,7 @@ class TenantRegistry:
                 paths = self.paths(tenant_id, name=name, create=True)
                 conn.execute(
                     "INSERT INTO tenants(id,name,created_at) VALUES(?,?,?)",
-                    (tenant_id, name, datetime.now().isoformat(timespec="seconds")),
+                    (tenant_id, name, business_now(self.cfg).isoformat(timespec="seconds")),
                 )
                 conn.commit()
                 return paths
@@ -294,7 +297,7 @@ class TenantRegistry:
                     "INSERT INTO system_settings(key,value_json,updated_at) VALUES(?,?,?) "
                     "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",
                     ("active_tenant_id", json.dumps(tenant_id),
-                     datetime.now().isoformat(timespec="seconds")),
+                     business_now(self.cfg).isoformat(timespec="seconds")),
                 )
                 conn.commit()
             except Exception:

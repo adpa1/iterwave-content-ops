@@ -62,6 +62,7 @@ RHYTHM_INTERVAL_FIELDS = (
 
 # 字符串白名单：路径 → (最小长度, 最大长度)
 STRING_RULES: dict[str, tuple[int, int]] = {
+    "business_timezone": (1, 64),
     "topic_kb.table_name": (1, 64),
     "topic_kb.default_dimension": (1, 20),
     "render.font_path": (0, 512),
@@ -533,6 +534,16 @@ def _validate(key: str, value: Any) -> Any:
             links.append({"source": src, "target": tgt, "relation": rel, "note": note})
         return links
 
+    if key == "business_timezone":
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        if not isinstance(value, str):
+            raise ConfigPatchError("business_timezone 必须是 IANA 时区名称")
+        try:
+            ZoneInfo(value.strip())
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ConfigPatchError("business_timezone 必须是有效的 IANA 时区名称") from exc
+        return value.strip()
+
     if key in STRING_RULES:
         lo, hi = STRING_RULES[key]
         if not isinstance(value, str):
@@ -910,6 +921,7 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
     )
     return {
         "editable": {
+            "business_timezone": cfg.business_timezone,
             "daily_quotas": quotas,
             "ops_window": {
                 "start_hour": cfg.rhythm.windows.get("ops").start_hour

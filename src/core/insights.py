@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
+from .timezone import business_now
+
 logger = logging.getLogger(__name__)
 
 PLATFORMS = ("xhs", "douyin", "kuaishou", "wechat_channels")
@@ -119,7 +121,7 @@ class PlatformInsightsEngine:
             "SELECT MAX(analyzed_at) FROM platform_insights"
         ).fetchone()
         last = self._parse_dt(rows[0]) if rows and rows[0] else None
-        if last is not None and datetime.now() - last <= timedelta(minutes=max_age_minutes):
+        if last is not None and business_now(self.cfg) - last <= timedelta(minutes=max_age_minutes):
             cached = self.latest()
             if cached:
                 return cached
@@ -130,7 +132,7 @@ class PlatformInsightsEngine:
     # ------------------------------------------------------------------
 
     def _analyze_one(self, platform: str, round_id: Optional[int], days: int) -> PlatformInsight:
-        since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+        since = (business_now(self.cfg) - timedelta(days=days)).isoformat(timespec="seconds")
         rows = self.db.execute(
             "SELECT m.interaction_rate, m.like_rate, m.collect_rate, "
             "       c.title, c.word_count, c.card_style, t.dimension, "
@@ -319,7 +321,7 @@ class PlatformInsightsEngine:
             (
                 insight.round_id,
                 insight.platform,
-                datetime.now().isoformat(timespec="seconds"),
+                business_now(self.cfg).isoformat(timespec="seconds"),
                 insight.days_analyzed,
                 json.dumps({
                     "avg": insight.avg_interaction_rate,
