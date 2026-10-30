@@ -144,6 +144,95 @@ def test_weekly_report_does_not_invent_reasons_for_small_sample(activation_clien
     assert "样本不足" in payload["why_it_may_work"][0]["statement"]
 
 
+def test_weekly_report_uses_latest_corrected_snapshot_and_within_platform_evidence(activation_client, conn, seed):
+    now = __import__("datetime").datetime.now().isoformat(sep=" ")
+    round_id = seed.round()
+    drafts = []
+    for i, views in enumerate((100, 200, 300), start=1):
+        draft_id = seed.draft(round_id, platform="xhs", draft_status="published", fetch_status=None, topic_id=f"weekly-{i}")
+        content_id = conn.execute("SELECT content_id FROM drafts WHERE id=?", (draft_id,)).fetchone()[0]
+        conn.execute("UPDATE contents SET title=?, body=? WHERE id=?",
+                     (f"第{i}篇实测标题", f"用于复盘的正文样本 {i}", content_id))
+        conn.commit()
+        submitted = activation_client.post(
+            f"/api/drafts/{draft_id}/metrics/manual",
+            json={"views": views, "measured_at": now},
+        )
+        assert submitted.status_code == 200, submitted.text
+        drafts.append((draft_id, content_id, submitted.json()["snapshot_id"]))
+
+    correction = activation_client.post(
+        f"/api/drafts/{drafts[2][0]}/metrics/manual",
+        json={"views": 50, "measured_at": now, "correction_of": drafts[2][2]},
+    )
+    assert correction.status_code == 200, correction.text
+
+    report = activation_client.get("/api/reports/weekly").json()
+    views_winner = next(item for item in report["best_content"] if item["metric"] == "views")
+    assert views_winner["content_id"] == drafts[1][1]
+    assert views_winner["value"] == 200
+    assert report["sample_size"] == 3
+    assert report["why_it_may_work"][0]["sample_size"] == 3
+    assert report["next_actions"][0]["evidence_content_ids"]
+
+
+def test_activation_metrics_calculates_completed_cohort_rates_and_ttv(activation_client, conn, seed):
+    from datetime import datetime, timedelta
+    started = datetime.now() - timedelta(days=8)
+    completed = started + timedelta(seconds=120)
+    now = datetime.now()
+    conn.execute(
+        "INSERT INTO activation_cohort (id, tenant_id, first_seen_at) VALUES (1, 'default', ?)",
+        (started.isoformat(sep=" "),),
+    )
+    conn.execute(
+        "INSERT INTO sample_runs "
+        "(id, tenant_id, platform, account_description, status, idempotency_key, created_at, completed_at) "
+        "VALUES ('cohort-run', 'default', 'xhs', '分享产品经理实践方法', 'ready', 'cohort-key', ?, ?)",
+        (started.isoformat(sep=" "), completed.isoformat(sep=" ")),
+    )
+    conn.execute(
+        "INSERT INTO sample_contents "
+        "(id, sample_run_id, tenant_id, platform, angle, title, body, hashtags_json, quality_status, "
+        "quality_findings_json, created_at, updated_at) "
+        "VALUES ('cohort-sample', 'cohort-run', 'default', 'xhs', '经验洞察', '样稿标题', '样稿正文', '[]', 'pass', '[]', ?, ?)",
+        (started.isoformat(sep=" "), started.isoformat(sep=" ")),
+    )
+    _round = seed.round()
+    draft_id = seed.draft(_round, platform="xhs", draft_status="published", fetch_status=None)
+    content_id = conn.execute("SELECT content_id FROM drafts WHERE id=?", (draft_id,)).fetchone()[0]
+    conn.execute("UPDATE drafts SET user_confirmed_at=? WHERE id=?",
+                 ((started + timedelta(hours=2)).isoformat(sep=" "), draft_id))
+    conn.execute(
+        "INSERT INTO content_events (id, tenant_id, sample_content_id, event_type, event_at, source, metadata_json) "
+        "VALUES ('cohort-save', 'default', 'cohort-sample', 'content_saved', ?, 'web', '{}')",
+        ((started + timedelta(hours=1)).isoformat(sep=" "),),
+    )
+    conn.execute(
+        "INSERT INTO content_events (id, tenant_id, content_id, event_type, event_at, source, metadata_json) "
+        "VALUES ('cohort-publish', 'default', ?, 'publish_confirmed', ?, 'web', '{}')",
+        (content_id, (started + timedelta(hours=2)).isoformat(sep=" ")),
+    )
+    now_text = now.isoformat(sep=" ")
+    conn.execute(
+        "INSERT INTO metric_snapshots "
+        "(id, tenant_id, draft_id, content_id, platform, source, views, measured_at, recorded_at, created_at) "
+        "VALUES ('cohort-metric', 'default', ?, ?, 'xhs', 'manual', 10, ?, ?, ?)",
+        (draft_id, content_id, now_text, now_text, now_text),
+    )
+    conn.commit()
+
+    result = activation_client.get("/api/activation/metrics")
+    assert result.status_code == 200
+    payload = result.json()
+    assert payload["cohort_size"] == 1
+    assert payload["observation_window_complete"] is True
+    assert payload["ttv_seconds"] == pytest.approx(120, abs=1)
+    assert payload["seven_day_activation_rate"] == 1.0
+    assert payload["first_publish_rate"] == 1.0
+    assert payload["data_return_rate"] == 1.0
+
+
 def test_activation_metrics_marks_unfinished_seven_day_window_as_observing(activation_client):
     response = activation_client.get("/api/activation/metrics")
     assert response.status_code == 200
