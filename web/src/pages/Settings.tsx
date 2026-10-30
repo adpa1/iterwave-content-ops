@@ -233,11 +233,11 @@ export default function Settings() {
               <input className="field" value={businessTimezone}
                 placeholder="Asia/Shanghai"
                 onChange={(e) => setBusinessTimezone(e.target.value)} />
-              <div className="metric-foot">例如 Asia/Shanghai、Asia/Tokyo、UTC。保存后影响运营时段、每日配额日界线和定时任务。</div>
+              <div className="metric-foot">例如 Asia/Shanghai、Asia/Tokyo、UTC。保存后影响运营时段和每日配额日界线；定时任务将在服务重启后切换。</div>
             </div>
             <div className="grid three" style={{ marginTop: 14 }}>
               <div className="metric">
-                <div className="metric-label">运营时段（本地时区）</div>
+                <div className="metric-label">运营时段（业务时区）</div>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
                   <input className="field" type="number" min={0} max={23} value={opsWindow.start}
                     style={{ width: 70 }}
