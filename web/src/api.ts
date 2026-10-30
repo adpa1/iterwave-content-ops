@@ -1267,8 +1267,8 @@ export const api = {
       { method: "POST", body: JSON.stringify({ dimensions }) },
     ),
   /** 热点 → 选题库（R22：必须有 source + 原文链接） */
-  importHotTopic: (payload: { title: string; source: string; url: string; dimension?: string }) =>
-    fetchJson<{ id: string; imported: boolean; message?: string }>("/api/hot_topics/import", {
+  importHotTopic: (payload: { title: string; source: string; url: string; dimension?: string; confirmed_by?: string }) =>
+    fetchJson<{ id: string; imported: boolean; message?: string; manual_confirmation_recorded?: boolean }>("/api/hot_topics/import", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
