@@ -119,7 +119,7 @@ def import_legacy_overrides(conn: sqlite3.Connection, legacy_path: Path) -> dict
                  type(value).__name__, 1, now, "legacy_import"),
             )
         if accepted:
-            snapshot = json.dumps(accepted, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            snapshot = json.dumps(_history_safe(accepted), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             conn.execute(
                 "INSERT INTO tenant_setting_versions(version,snapshot_json,changed_at,changed_by,change_reason) VALUES(1,?,?,?,?)",
                 (snapshot, now, "legacy_import", "config_overrides.json migration"),
