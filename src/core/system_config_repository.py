@@ -8,12 +8,14 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
+_SYSTEM_WAL_LOCK = threading.Lock()
 
 SYSTEM_LLM_KEYS = frozenset({
     "llm.enabled",
@@ -47,7 +49,6 @@ def connect_system(system_db_file: Path | str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
@@ -56,6 +57,12 @@ def initialize_system_config(system_db_file: Path | str) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     conn = connect_system(db_path)
     try:
+        with _SYSTEM_WAL_LOCK:
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower():
+                    raise
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS system_settings (
