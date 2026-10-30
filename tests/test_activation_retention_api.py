@@ -219,7 +219,7 @@ def test_sample_delete_hides_history_but_preserves_quota_audit_and_saved_content
     conn.commit()
     response = activation_client.delete("/api/activation/samples/delete-run")
     assert response.status_code == 200
-    assert conn.execute("SELECT deleted_at FROM sample_runs WHERE id='delete-run'").fetchone()[0] is not None
+    assert conn.execute("SELECT deleted_at FROM activation_run_deletions WHERE sample_run_id='delete-run'").fetchone()[0] is not None
     assert conn.execute("SELECT COUNT(*) FROM sample_contents WHERE id='delete-sample'").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM content_events WHERE id IN ('delete-start','delete-save')").fetchone()[0] == 2
 
@@ -480,7 +480,7 @@ def test_activation_saved_library_survives_soft_delete_and_quota_is_not_refunded
     assert deleted.status_code == 200
     after = activation_client.get("/api/activation/status").json()["activation_limits"]["daily_runs_used"]
     assert after == before
-    assert conn.execute("SELECT deleted_at FROM sample_runs WHERE id='saved-run'").fetchone()[0] is not None
+    assert conn.execute("SELECT deleted_at FROM activation_run_deletions WHERE sample_run_id='saved-run'").fetchone()[0] is not None
     assert conn.execute("SELECT COUNT(*) FROM content_events WHERE sample_run_id='saved-run'").fetchone()[0] == 0
 
 
