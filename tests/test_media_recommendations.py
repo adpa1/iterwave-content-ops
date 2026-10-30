@@ -28,7 +28,7 @@ def test_media_recommendations_match_keywords_and_exclude_unapproved(test_auth):
         2, "青岛海鲜候选图", "candidate.jpg", "candidate.jpg", "海鲜店内",
         '["青岛", "海鲜"]', 95, 1200, 900, "active", "pending_review", "2026-10-02"
     ))
-    conn.execute("INSERT INTO media_assets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (
+    conn.execute("INSERT INTO media_assets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (
         3, "无关风景图", "mountain.jpg", "mountain.jpg", "山景",
         '["山景", "旅行"]', 99, 1200, 900, "active", "approved", "2026-10-03"
     ))
