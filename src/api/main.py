@@ -519,6 +519,7 @@ def _build_app() -> FastAPI:
         tenant_registry.initialize()
         _task_queue = GlobalTaskQueue(tenant_registry.system_db_file)
         _task_queue.initialize()
+        _tenant_runtime_contexts.clear()
         # queued 任务在重启后继续执行；过期 running 任务转 interrupted，避免重复副作用。
         _task_queue.recover_expired()
         active_tenant_id = tenant_registry.active_id()
@@ -690,6 +691,37 @@ def _build_app() -> FastAPI:
         _g_ctx["autogrow"] = autogrow
         scheduler.autogrow = autogrow
 
+        # 当前前台运行时也作为该账号组的常驻后台调度上下文。
+        _tenant_runtime_contexts[active_tenant_id] = dict(_g_ctx)
+        # 所有已有账号组的 APScheduler 独立常驻；切换前台工作空间不停止旧组定时任务。
+        for tenant_item in tenant_registry.list():
+            background_tenant_id = str(tenant_item["id"])
+            if background_tenant_id == active_tenant_id:
+                continue
+            background_context = None
+            try:
+                background_context = _build_tenant_runtime_context(
+                    tenant_registry, background_tenant_id,
+                    run_startup_maintenance=True,
+                )
+                background_context["scheduler"].start()
+                _tenant_runtime_contexts[background_tenant_id] = background_context
+                logger.info("账号组后台调度器已启动 tenant=%s", background_tenant_id)
+            except Exception:
+                logger.exception(
+                    "账号组后台调度器初始化失败 tenant=%s；该组切换时将重试初始化",
+                    background_tenant_id,
+                )
+                if background_context is not None:
+                    try:
+                        background_context["scheduler"].shutdown()
+                    except Exception:
+                        pass
+                    try:
+                        background_context["conn"].close()
+                    except Exception:
+                        pass
+
         # 全局消费者独立于当前活动账号组；每个任务按 tenant_id 构造专属运行时。
         task_worker_stop = asyncio.Event()
         task_worker = GlobalTaskWorker(_task_queue, lambda tenant_id: _build_tenant_runtime_context(
@@ -716,8 +748,17 @@ def _build_app() -> FastAPI:
                 await task_worker_task
             except Exception:
                 logger.exception("全局任务消费者关闭异常")
-            scheduler.shutdown()
-            conn.close()
+            # 停止所有账号组常驻调度器并释放各自的数据库连接。
+            for tenant_id, context in list(_tenant_runtime_contexts.items()):
+                try:
+                    context["scheduler"].shutdown()
+                except Exception:
+                    logger.exception("关闭账号组调度器失败 tenant=%s", tenant_id)
+                try:
+                    context["conn"].close()
+                except Exception:
+                    logger.exception("关闭账号组数据库连接失败 tenant=%s", tenant_id)
+            _tenant_runtime_contexts.clear()
             logger.info("⏹️ FastAPI 应用关闭")
 
     app = FastAPI(
