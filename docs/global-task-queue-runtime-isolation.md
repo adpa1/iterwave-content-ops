@@ -133,6 +133,10 @@ ITERWAVE_ENABLE_TENANT_HOT_SWITCH=1
 10. 平台账号同组同平台最多一条，数据库并发写入也必须失败关闭。
 
 
+## 部署进程数约束
+
+当前应用 lifespan 会在每个 Uvicorn 进程内启动各账号组 APScheduler。全局任务消费者通过 system.db 租约实现跨进程单消费者，但 APScheduler 本身尚无跨进程 leader election；多个 Uvicorn worker 可能重复触发同一批定时作业。**当前部署必须使用单个 Uvicorn worker**（默认启动方式即可），在实现并验证调度器选主前，不得通过 `--workers N` 扩容。此限制不影响单进程内 A/B/C 前台切换和全局 FIFO 队列。
+
 ## 当前代码验收基线（2026-10-30）
 
 以下结果对应 PR #49 当前 head，不代表已完成真机验收：
