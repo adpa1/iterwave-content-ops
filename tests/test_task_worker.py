@@ -94,3 +94,40 @@ def test_worker_cancels_execution_when_lease_renewal_fails(tmp_path, monkeypatch
     # 不得把已失去租约的任务伪装成成功或失败；恢复流程稍后会标记 interrupted。
     saved = queue.get(task.task_id)
     assert saved is not None and saved.status == "running"
+
+
+def test_worker_executes_queued_scheduler_job_in_its_tenant_context(tmp_path):
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    task, _ = queue.enqueue(
+        task_type="scheduler_job", tenant_id="tenant-b",
+        aggregate_id="_job_daily_ops",
+        payload={"method": "_job_daily_ops", "args": []},
+    )
+    claimed = queue.claim_next("worker-b")
+    assert claimed is not None
+    observed = {}
+
+    class FakeScheduler:
+        async def _job_daily_ops(self):
+            observed["login_path"] = login_manager._platform_state_path(Platform.XHS)
+            return None
+
+        def shutdown(self):
+            return None
+
+    context = {
+        "cfg": SimpleNamespace(
+            paths=SimpleNamespace(data_dir=str(tmp_path / "tenant-b" / "data")),
+            resolve_path=lambda value: value,
+        ),
+        "scheduler": FakeScheduler(),
+        "conn": SimpleNamespace(close=lambda: None),
+    }
+    worker = GlobalTaskWorker(queue, lambda tenant_id: context)
+    result = asyncio.run(worker._run_task(claimed))
+
+    assert result is None
+    assert observed["login_path"] == tmp_path / "tenant-b" / "data" / "login_states" / "xhs.json"
+    saved = queue.get(task.task_id)
+    assert saved is not None and saved.status == "running"
