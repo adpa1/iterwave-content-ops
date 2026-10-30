@@ -244,6 +244,7 @@ def _generate_via_llm(
             {"role": "user", "content": user_prompt},
         ],
         "temperature": llm.temperature,
+        "max_tokens": cfg.copy_generation.max_output_tokens,
         "response_format": {"type": "json_object"},
     }
     started = time.monotonic()
