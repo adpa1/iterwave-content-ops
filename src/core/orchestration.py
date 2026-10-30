@@ -34,7 +34,7 @@ STEP_DEFS: dict[str, dict] = {
     },
     "quality_gate": {
         "label": "③ 质量门检查", "skill": "ultimate_goal_check", "locked": True, "requires": ["copywriting"],
-        "desc": "R2 终极目标检查：红线 / 禁止方向 / 维度偏离，不通过打回重写，最多 2 次",
+        "desc": "R2 终极目标检查：红线 / 禁止方向 / 维度偏离，不通过打回重写，重试次数按文案生产配置",
         "inputs": ["文案"],
     },
     "image_card": {
