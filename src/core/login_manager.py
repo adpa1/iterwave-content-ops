@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from playwright.async_api import Browser, BrowserContext, async_playwright
 
@@ -32,17 +34,38 @@ from .config import PROJECT_ROOT
 logger = logging.getLogger(__name__)
 
 LOGIN_DIR = PROJECT_ROOT / "data" / "login_states"
+_TENANT_LOGIN_DIR: ContextVar[Path | None] = ContextVar("iterwave_tenant_login_dir", default=None)
 
 
 def configure_data_dir(data_dir: Path | str) -> None:
-    """按当前账号组切换 storage_state 目录；default 保留原有 data/login_states。"""
+    """兼容前台扫码登录：设置当前交互账号组目录。
+
+    后台 Agent 任务必须使用 tenant_login_dir() 显式绑定目录，不得依赖此进程级默认值。
+    """
     global LOGIN_DIR
     LOGIN_DIR = Path(data_dir).resolve() / "login_states"
 
 
+@contextmanager
+def tenant_login_dir(data_dir: Path | str) -> Iterator[None]:
+    """将 storage_state 目录绑定到当前异步任务上下文，退出时自动恢复。
+
+    ContextVar 可随 asyncio Task 隔离，避免账号组切换覆盖正在执行任务的登录态路径。
+    """
+    token = _TENANT_LOGIN_DIR.set(Path(data_dir).resolve() / "login_states")
+    try:
+        yield
+    finally:
+        _TENANT_LOGIN_DIR.reset(token)
+
+
+def _effective_login_dir() -> Path:
+    return _TENANT_LOGIN_DIR.get() or LOGIN_DIR
+
+
 def _platform_state_path(platform: Platform) -> Path:
     """某平台 storage_state.json 的路径。"""
-    return LOGIN_DIR / f"{platform.value}.json"
+    return _effective_login_dir() / f"{platform.value}.json"
 
 
 def has_login_state(platform: Platform) -> bool:
@@ -76,11 +99,12 @@ async def get_or_create_context(browser: Browser, platform: Platform) -> Browser
 
 def save_context_state(context: BrowserContext, platform: Platform) -> Path:
     """把当前 context 的 storage_state 保存到文件。"""
-    LOGIN_DIR.mkdir(parents=True, exist_ok=True)
+    login_dir = _effective_login_dir()
+    login_dir.mkdir(parents=True, exist_ok=True)
     path = _platform_state_path(platform)
     context.storage_state(path=str(path))
     # R23 安全：chmod 600 / 700
-    os.chmod(LOGIN_DIR, 0o700)
+    os.chmod(login_dir, 0o700)
     os.chmod(path, 0o600)
     logger.info("✅ %s 登录态已保存: %s (权限 600)", platform.value, path)
     return path
