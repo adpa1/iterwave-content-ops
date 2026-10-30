@@ -200,8 +200,13 @@ export default function Analytics() {
         <div className="metric"><div className="metric-label">首次价值时间 TTV</div><div className="metric-val">{activationMetrics?.ttv_seconds == null ? "—" : `${Math.round(activationMetrics.ttv_seconds)} 秒`}</div><div className="metric-foot">首次进入快速体验至首批样稿生成</div></div>
         <div className="metric"><div className="metric-label">7 日激活率</div><div className="metric-val">{activationMetrics?.seven_day_activation_rate == null ? "观察中" : `${(activationMetrics.seven_day_activation_rate * 100).toFixed(0)}%`}</div><div className="metric-foot">复制或保存至少一篇合格样稿</div></div>
         <div className="metric"><div className="metric-label">首次发布率</div><div className="metric-val">{activationMetrics?.first_publish_rate == null ? "观察中" : `${(activationMetrics.first_publish_rate * 100).toFixed(0)}%`}</div><div className="metric-foot">初始化后 7 日内确认发布</div></div>
-        <div className="metric"><div className="metric-label">数据回流完成率</div><div className="metric-val">{activationMetrics?.data_return_rate == null ? "—" : `${(activationMetrics.data_return_rate * 100).toFixed(0)}%`}</div><div className="metric-foot">已确认发布内容中至少有一份指标快照</div></div>
+        <div className="metric"><div className="metric-label">数据回流完成率</div><div className="metric-val">{activationMetrics?.data_return_rate == null ? "—" : `${(activationMetrics.data_return_rate * 100).toFixed(0)}%`}</div><div className="metric-foot">发布满 7 天且 7 日内有有效指标快照</div></div>
+        <div className="metric"><div className="metric-label">快速体验完成率</div><div className="metric-val">{activationMetrics?.quick_experience_completion_rate == null ? "—" : `${(activationMetrics.quick_experience_completion_rate * 100).toFixed(0)}%`}</div><div className="metric-foot">成功展示三篇合格样稿的账号组</div></div>
+        <div className="metric"><div className="metric-label">周采纳发布数</div><div className="metric-val">{activationMetrics?.weekly_adopted_published ?? 0}</div><div className="metric-foot">用户确认采纳并发布的内容</div></div>
       </div>
+      {activationMetrics?.platform_model_breakdown?.length ? <div className="panel-sub" style={{ marginBottom: 15 }}>
+        体验分布：{activationMetrics.platform_model_breakdown.map((item) => `${PLATFORM_NAME[item.platform]} / ${item.model_mode}：${item.ready_count}/${item.run_count} 完成`).join("；")}
+      </div> : null}
 
       <div className="panel" style={{ marginBottom: 15 }}>
         <div className="panel-head"><div><div className="panel-title">发布后数据回填</div><div className="panel-sub">可补充发布链接和人工指标。每次提交保留独立快照，未填写字段保持未知。</div></div></div>
