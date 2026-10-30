@@ -1409,8 +1409,13 @@ def _register_routes(app: FastAPI) -> None:
         from src.core.content_pipeline import _llm_available
         cfg = _g()["cfg"]
         status = _g().get("status") or {}
+        latest_run = conn.execute(
+            "SELECT id, status FROM sample_runs WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1",
+            (tenant_id,),
+        ).fetchone()
         return {
             "tenant_id": tenant_id,
+            "latest_sample_run": dict(latest_run) if latest_run else None,
             "model_mode": "byok",
             "model_ready": _llm_available(cfg),
             "model_message": "自带模型已就绪" if _llm_available(cfg) else "需要先配置自己的模型服务和 API Key",
