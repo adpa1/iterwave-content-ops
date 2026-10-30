@@ -551,7 +551,7 @@ def sync_remote(cfg, source: dict) -> dict:
     source_id = str(source.get("id") or "")
     if not _SOURCE_ID_RE.fullmatch(source_id):
         raise ValueError("选题库来源 ID 格式不合法")
-    columns, rows = fetch_remote(source)
+    columns, rows = fetch_remote(source, timeout=cfg.topic_kb.remote_timeout_seconds)
     fmt = detect_format(str(source.get("url") or ""), source.get("format") or "auto")
     cache = cache_dir(cfg) / f"{source_id}.{_guess_ext({**source, 'format': fmt})}"
     if fmt == "json":
