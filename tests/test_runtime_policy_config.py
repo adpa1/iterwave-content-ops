@@ -112,6 +112,7 @@ def test_new_runtime_policy_fields_are_whitelisted_and_visible(cfg):
         "autogrow.max_copy_hint_chars",
         "copy_generation.max_guard_retries",
         "copy_generation.title_max_chars",
+        "scheduler.misfire_grace_minutes",
         "timeouts.metrics_retry_attempts",
         "timeouts.metrics_retry_interval_minutes",
         "timeouts.login_timeout_seconds",
