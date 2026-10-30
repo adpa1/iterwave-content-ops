@@ -115,11 +115,6 @@ class GlobalTaskWorker:
                 error_code=error_code, error_message=safe_message,
             )
         finally:
-            heartbeat.cancel()
-            try:
-                await heartbeat
-            except asyncio.CancelledError:
-                pass
             if context is not None:
                 scheduler = context.get("scheduler")
                 if scheduler is not None:
@@ -133,3 +128,9 @@ class GlobalTaskWorker:
                         conn.close()
                     except Exception:
                         logger.exception("关闭任务账号组数据库连接失败")
+            # 直到任务上下文完全释放后才停止续租，避免另一消费者提前启动下一项。
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
