@@ -37,6 +37,22 @@ def client(cfg, conn, test_auth):
         api_main._g_ctx.update(saved)
 
 
+def test_hot_topic_publishability_fails_closed_for_sensitive_and_unreviewed_topics():
+    from src.core.hot_topics import _publishability_status, _sensitive_topic_hits
+
+    political = "中共中央举行新闻发布会"
+    military = "国防部回应美日近期军演"
+    taiwan = "国防部称以台制华必付沉重代价"
+    for title in (political, military, taiwan):
+        assert _sensitive_topic_hits(title)
+        assert _publishability_status(title, [], False, True, True) == "需人工确认"
+
+    assert _publishability_status("个人成长复盘方法", [], False, True, False) == "未研判"
+    assert _publishability_status("个人成长复盘方法", [], False, None, True) == "未研判"
+    assert _publishability_status("个人成长复盘方法", ["敏感红线"], False, True, True) == "不可发布"
+    assert _publishability_status("个人成长复盘方法", [], False, True, True) == "可发布"
+
+
 def test_hot_source_fetch_rejects_private_destinations(monkeypatch):
     with pytest.raises(ValueError, match="内网|本机|保留"):
         _fetch_public_text("http://127.0.0.1/internal", headers={}, timeout=1)
