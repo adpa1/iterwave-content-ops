@@ -45,7 +45,7 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 import httpx
@@ -416,6 +416,19 @@ _VALIDATION_FIELD_LABELS = {
     "tenant_id": "账号组标识", "name": "名称", "path": "文件位置",
     "email": "邮箱", "url": "链接", "content_id": "内容标识",
 }
+
+
+def _api_datetime(value):
+    """API 时间统一携带时区；历史无时区时间按旧部署的 UTC 存储约定解释。"""
+    if not value or not isinstance(value, str):
+        return value
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.isoformat()
 
 
 def _friendly_validation_messages(errors: list[dict]) -> list[str]:
@@ -1991,7 +2004,10 @@ def _register_routes(app: FastAPI) -> None:
                 "selected_tenant_id": registry.active_id(),
                 "restart_required": registry.active_id() != _g().get("runtime_tenant_id", "default"),
                 "hot_switch_enabled": _tenant_hot_switch_enabled(),
-                "items": registry.list(),
+                "items": [
+                    {**item, "created_at": _api_datetime(item.get("created_at"))}
+                    for item in registry.list()
+                ],
             }
         except TenantError as exc:
             raise HTTPException(503, str(exc)) from exc
