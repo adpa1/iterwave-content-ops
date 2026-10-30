@@ -121,6 +121,8 @@ def test_new_runtime_policy_fields_are_whitelisted_and_visible(cfg):
         "scoring.active_dimension_min_uses",
         "scoring.active_dimension_window_days",
         "scoring.shrinkage_m",
+        "scoring.stable_exploration_percent",
+        "scoring.normalization_window_days",
         "scoring.timeliness_half_life_days.news",
         "scoring.timeliness_half_life_days.evergreen",
         "rhythm.intervals.passive_reply_base_seconds",
