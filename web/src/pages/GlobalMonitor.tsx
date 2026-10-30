@@ -134,7 +134,7 @@ export default function GlobalMonitor() {
                 <tbody>
                   {visibleTenants.map((tenant) => (
                     <tr key={tenant.tenant_id}>
-                      <td><strong>{tenant.tenant_name}</strong><div className="panel-sub"><code>{tenant.tenant_id}</code></div></td>
+                      <td><strong>{tenant.tenant_name}</strong></td>
                       <td><span className={tenant.db_available ? "tag green" : "tag orange"}>{tenant.db_available ? "可读取" : "不可用"}</span></td>
                       <td>{tenant.db_available ? tenant.contents_period : "—"}</td>
                       <td>{tenant.db_available ? tenant.contents_all : "—"}</td>
