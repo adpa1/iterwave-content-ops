@@ -193,7 +193,7 @@ export function KbEditor({ view, onSaved }: {
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
-      <Field label="KB 类型">
+      <Field label="选题库数据格式">
         <select style={{ ...inputStyle, width: 200 }} value={kbType} onChange={(e) => setKbType(e.target.value)}>
           {KB_TYPES.map((t) => <option key={t} value={t}>{KB_TYPE_LABELS[t]}</option>)}
         </select>
@@ -222,7 +222,7 @@ export function KbEditor({ view, onSaved }: {
         可用字段：{Object.values(KB_FIELD_LABELS).join(" / ")}
       </div>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 4 }}>
-        <SaveBar onSave={save} busy={busy} hint="路径改动会在下一次选题读取时生效，无需重启后端" />
+        <SaveBar onSave={save} busy={busy} hint="保存后立即更新配置；下一轮运行读取选题时使用新路径，无需重启后端" />
         <button className="btn sm" onClick={inspect}>⌕ 诊断选题库</button>
       </div>
       {inspectMsg && <div className="note">{inspectMsg}</div>}
@@ -308,7 +308,7 @@ export function LlmEditor({ view, onSaved }: {
       showToast(value ? "✓ 服务密钥已安全保存" : "✓ 已清除 API Key", "success");
       onSaved?.();
     } catch (e: any) {
-      showToast(`保存 Key 失败: ${e?.message ?? e}`, "error");
+      showToast(`保存密钥失败: ${e?.message ?? e}`, "error");
     }
   };
 
@@ -369,19 +369,19 @@ export function LlmEditor({ view, onSaved }: {
       </div>
       <SaveBar onSave={saveModel} busy={busy} />
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-        <Field label={`服务密钥（仅保存在服务端，不回显；当前：${view.readonly.llm_has_api_key ? "已配置" : "未配置"}）`}>
+        <Field label={`服务密钥（仅保存在服务器环境配置中，不回显；当前：${view.readonly.llm_has_api_key ? "已配置" : "未配置"}）`}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input style={{ ...inputStyle, flex: "1 1 240px", fontFamily: "monospace" }} type="password"
-              value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="粘贴 Key 后点「保存 Key」" />
+              value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="粘贴密钥后点击「保存密钥」" />
             <button className="btn primary sm" disabled={!apiKey.trim() || keyBusy}
-              onClick={() => saveKey(apiKey)}>保存 Key</button>
+              onClick={() => saveKey(apiKey)}>保存密钥</button>
             {view.readonly.llm_has_api_key && (
               <button className="btn sm" disabled={keyBusy} onClick={() => saveKey("")}>清除 Key</button>
             )}
           </div>
         </Field>
         <div style={{ fontSize: 11, color: "var(--subtle)", marginTop: 8 }}>
-          Key 只保存在本机配置文件中，不写日志、不回显到页面。
+          密钥保存在运行服务所在服务器的本机环境配置文件中（.env），不写入应用日志，也不会回显到页面。
         </div>
       </div>
     </div>
