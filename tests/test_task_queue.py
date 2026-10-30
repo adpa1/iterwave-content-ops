@@ -161,3 +161,16 @@ def test_delayed_task_does_not_block_ready_fifo_tasks(tmp_path):
 
     due = queue.claim_next("worker-1")
     assert due is not None and due.task_id == delayed.task_id
+
+
+def test_idle_worker_releases_global_lease_for_failover(tmp_path):
+    queue = make_queue(tmp_path)
+    assert queue.claim_next("idle-worker") is None
+
+    task, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-next",
+        aggregate_id="9", payload={"round_id": 9},
+    )
+    claimed = queue.claim_next("replacement-worker")
+    assert claimed is not None
+    assert claimed.task_id == task.task_id
