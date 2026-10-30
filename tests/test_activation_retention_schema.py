@@ -26,7 +26,7 @@ def test_activation_retention_migration_creates_tenant_scoped_tables(conn):
 
 def test_sample_run_idempotency_is_scoped_to_tenant(conn):
     now = datetime.now().isoformat(sep=" ")
-    values = ("run-a", "tenant-a", "xhs", "分享产品经理实践", "created", "key-1", now)
+    values = ("run-a", "tenant-a", "xhs", "分享产品经理实践方法", "created", "key-1", now)
     conn.execute(
         "INSERT INTO sample_runs (id, tenant_id, platform, account_description, status, idempotency_key, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)", values,
@@ -35,12 +35,12 @@ def test_sample_run_idempotency_is_scoped_to_tenant(conn):
         conn.execute(
             "INSERT INTO sample_runs (id, tenant_id, platform, account_description, status, idempotency_key, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("run-b", "tenant-a", "xhs", "分享产品经理实践", "created", "key-1", now),
+            ("run-b", "tenant-a", "xhs", "分享产品经理实践方法", "created", "key-1", now),
         )
     conn.execute(
         "INSERT INTO sample_runs (id, tenant_id, platform, account_description, status, idempotency_key, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("run-c", "tenant-b", "xhs", "分享产品经理实践", "created", "key-1", now),
+        ("run-c", "tenant-b", "xhs", "分享产品经理实践方法", "created", "key-1", now),
     )
     conn.commit()
     assert conn.execute("SELECT COUNT(*) FROM sample_runs").fetchone()[0] == 2
@@ -50,7 +50,7 @@ def test_sample_content_events_are_idempotent_and_tenant_scoped(conn):
     now = datetime.now().isoformat(sep=" ")
     conn.execute(
         "INSERT INTO sample_runs (id, tenant_id, platform, account_description, status, idempotency_key, created_at) "
-        "VALUES ('run-1', 'tenant-a', 'xhs', '分享产品经理实践', 'ready', 'request-1', ?)", (now,),
+        "VALUES ('run-1', 'tenant-a', 'xhs', '分享产品经理实践方法', 'ready', 'request-1', ?)", (now,),
     )
     conn.execute(
         "INSERT INTO sample_contents "
