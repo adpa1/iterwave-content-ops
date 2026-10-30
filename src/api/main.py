@@ -4230,8 +4230,7 @@ def _register_routes(app: FastAPI) -> None:
         value = req.api_key.strip()
         write_env(key_name, value)
         # R23：只回报状态，绝不回报 Key 本身
-        return {"ok": True, "has_key": bool(os.environ.get(key_name)),
-                "env_file": str(env_file())}
+        return {"ok": True, "has_key": bool(os.environ.get(key_name))}
 
     # --- 内容资产（G-13：外部参考 / 个人观点 / 内容模板）---
     @app.get("/api/assets")
