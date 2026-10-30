@@ -72,3 +72,17 @@ def test_metadata_exposes_hard_locks_as_read_only(cfg):
     assert locked["editable"] is False
     assert locked["tenant_scoped"] is True
     assert items["timeouts.round_timeout_hours"]["type"] == "integer"
+
+
+def test_secret_query_is_redacted_from_history_but_preserved_for_runtime(conn):
+    url = "https://feeds.example/rss?access_token=TOPSECRET"
+    save_settings(
+        conn,
+        {"hot_topics.sources": [{"name": "private", "type": "rss", "url": url}]},
+        audit_rows=[("hot_topics.sources", None, url)],
+    )
+    assert read_settings(conn)["hot_topics.sources"][0]["url"] == url
+    snapshot = conn.execute("SELECT snapshot_json FROM tenant_setting_versions").fetchone()[0]
+    audit = conn.execute("SELECT new_value FROM config_changes").fetchone()[0]
+    assert "TOPSECRET" not in snapshot
+    assert "TOPSECRET" not in audit
