@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from src.core.config import DEFAULT_JOB_SCHEDULES, JOB_DESCRIPTIONS, Config, validate_cron
+from src.core.config import DEFAULT_JOB_SCHEDULES, JOB_DESCRIPTIONS, Config, PlatformPersonaConfig, validate_cron
 from src.core.redact import redact, redact_path
 
 logger = logging.getLogger(__name__)
@@ -737,9 +737,7 @@ def config_metadata_view(cfg: Config) -> list[dict[str, Any]]:
     add("ultimate_goal.platform_links",
         [item.model_dump() for item in cfg.ultimate_goal.platform_links], kind="array")
     for platform in PLATFORM_KEYS:
-        persona = cfg.ultimate_goal.platform_personas.get(platform)
-        if persona is None:
-            continue
+        persona = cfg.ultimate_goal.platform_personas.get(platform) or PlatformPersonaConfig()
         for field in ("inherit_global", "account_name", "positioning", "audience",
                       "role", "persona_keywords", "forbidden_directions", "extra_redlines"):
             add(f"ultimate_goal.platform_personas.{platform}.{field}", getattr(persona, field))
@@ -971,6 +969,20 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
         raise ConfigPatchError("media_quality.brightness_min 必须小于 brightness_max")
     if not portrait_min < portrait_max < square_max < landscape_max:
         raise ConfigPatchError("图片构图比例阈值必须依次递增：portrait_min < portrait_max < square_max < landscape_max")
+
+    trend_cooled = normalized.get("hot_topics.trend_cooled_ratio", cfg.hot_topics.trend_cooled_ratio)
+    trend_sustained = normalized.get("hot_topics.trend_sustained_ratio", cfg.hot_topics.trend_sustained_ratio)
+    if trend_cooled >= trend_sustained:
+        raise ConfigPatchError("热点趋势阈值必须满足 trend_cooled_ratio < trend_sustained_ratio")
+
+    body_min = normalized.get("copy_generation.body_min_chars", cfg.copy_generation.body_min_chars)
+    body_max = normalized.get("copy_generation.body_max_chars", cfg.copy_generation.body_max_chars)
+    tag_min = normalized.get("copy_generation.tag_min_count", cfg.copy_generation.tag_min_count)
+    tag_max = normalized.get("copy_generation.tag_max_count", cfg.copy_generation.tag_max_count)
+    if body_min > body_max:
+        raise ConfigPatchError("文案正文长度下限不能大于上限")
+    if tag_min > tag_max:
+        raise ConfigPatchError("文案标签数量下限不能大于上限")
 
     changes: list[dict[str, Any]] = []
     persisted: dict[str, Any] = {}
