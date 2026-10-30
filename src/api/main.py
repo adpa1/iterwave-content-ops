@@ -1740,42 +1740,52 @@ def _register_routes(app: FastAPI) -> None:
         else:
             platforms = [platform]
         best = []
+        metrics_to_compare = ("views", "likes", "collects", "comments", "shares")
         for p in platforms:
             rows = [r for r in merged if r["platform"] == p]
-            metric = "views" if any(r.get("views") is not None for r in rows) else "likes"
-            comparable = [r for r in rows if r.get(metric) is not None]
-            if comparable:
-                winner = max(comparable, key=lambda r: r[metric])
-                best.append({
-                    "platform": p, "metric": metric, "value": winner[metric],
-                    "content_id": winner["content_id"], "title": winner["title"],
-                    "measured_at": winner["measured_at"],
-                    "source": "manual" if winner.get("source") == "manual" else "platform_readback",
-                })
+            # 不擅自选定点赞或播放作为唯一主指标；同平台分别给出可用指标的领先内容。
+            for metric in metrics_to_compare:
+                comparable = [r for r in rows if r.get(metric) is not None]
+                if comparable:
+                    winner = max(comparable, key=lambda r: r[metric])
+                    best.append({
+                        "platform": p, "metric": metric, "value": winner[metric],
+                        "content_id": winner["content_id"], "title": winner["title"],
+                        "measured_at": winner["measured_at"],
+                        "source": "manual" if winner.get("source") == "manual" else "platform_readback",
+                    })
         total_samples = len({(r["content_id"], r["platform"]) for r in merged})
         why = []
         next_actions = []
-        if total_samples >= 3:
-            # 只给可观察到的描述，不推断因果。共同特征以样本事实为依据。
-            winner_ids = {x["content_id"] for x in best}
-            winners = [r for r in merged if r["content_id"] in winner_ids]
-            dimensions = [str(r.get("title") or "")[:12] for r in winners if r.get("title")]
+        evidence_ids = set()
+        for p in platforms:
+            platform_rows = [r for r in merged if r["platform"] == p]
+            platform_sample_count = len({r["content_id"] for r in platform_rows})
+            if platform_sample_count < 3:
+                continue
+            platform_best = [item for item in best if item["platform"] == p]
+            winner_ids = {item["content_id"] for item in platform_best}
+            evidence_ids.update(winner_ids)
+            titles = list(dict.fromkeys(
+                str(r.get("title") or "")[:24] for r in platform_rows
+                if r["content_id"] in winner_ids and r.get("title")
+            ))
             why.append({
-                "statement": "当前样本中表现靠前的内容标题主题可供人工对照；这不是因果结论。",
-                "sample_size": total_samples,
-                "evidence_content_ids": list(winner_ids),
-                "examples": dimensions[:3],
+                "statement": f"{p} 平台内表现靠前内容的标题主题可供人工对照；这不是因果结论。",
+                "sample_size": platform_sample_count,
+                "evidence_content_ids": sorted(winner_ids),
+                "examples": titles[:3],
             })
-            next_actions = [{
-                "action": "选取表现靠前内容的主题和表达结构，下一周做一组对照内容。",
-                "basis": "同平台样本的实际指标排序",
-                "verification": "使用相同统计窗口比较下一组内容",
-                "evidence_content_ids": list(winner_ids),
-                "sample_size": total_samples,
-            }]
-        else:
-            why.append({"statement": "样本不足，暂不推断表现原因。", "sample_size": total_samples,
-                        "evidence_content_ids": []})
+            next_actions.append({
+                "action": f"在 {p} 平台选取表现靠前内容的主题和表达结构，下一周做一组对照内容。",
+                "basis": "同平台同指标的实际数据排序",
+                "verification": "使用相同统计窗口和指标比较下一组内容",
+                "evidence_content_ids": sorted(winner_ids),
+                "sample_size": platform_sample_count,
+            })
+        if not why:
+            why.append({"statement": "同一平台的可比样本不足 3 篇，暂不推断表现原因。",
+                        "sample_size": total_samples, "evidence_content_ids": []})
         _record_content_event("weekly_report_viewed", idempotency_key=f"weekly-view:{start.date()}:{platform or 'all'}")
         return {
             "period": {"start": start.date().isoformat(), "end": (end - timedelta(seconds=1)).date().isoformat()},
