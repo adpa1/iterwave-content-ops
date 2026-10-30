@@ -4,6 +4,7 @@ import { useUrlTab } from "../nav";
 import DemoBadge from "../components/DemoBadge";
 import EmptyHint from "../components/EmptyHint";
 import AutogrowPanel from "../components/AutogrowPanel";
+import OpsTargetsEditor from "../components/OpsTargetsEditor";
 import { NotifyChannelsEditor } from "../components/ConfigEditors";
 import {
   api, Platform, CircuitBreakerEvent, Draft,
@@ -1072,6 +1073,7 @@ function RhythmPane({ rhythm, onSaved }: { rhythm: RhythmConfig | null; onSaved?
           </div>
         )}
       </div>
+      <OpsTargetsEditor />
     </div>
   );
 }
