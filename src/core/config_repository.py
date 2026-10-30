@@ -56,6 +56,14 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def legacy_import_completed(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM tenant_setting_migrations WHERE migration_key=?",
+        (LEGACY_MIGRATION_KEY,),
+    ).fetchone()
+    return row is not None
+
+
 def read_settings(conn: sqlite3.Connection) -> dict[str, Any]:
     rows = conn.execute("SELECT key, value_json FROM tenant_settings ORDER BY key").fetchall()
     result: dict[str, Any] = {}
