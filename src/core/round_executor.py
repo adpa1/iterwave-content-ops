@@ -140,13 +140,6 @@ class RoundExecutor:
         if not platforms:
             raise ValueError("没有可用平台：请检查 config.platforms 的 enabled 与请求参数")
 
-        # P0：正式生产必须先确认自带模型已配置；不能进入生产后再生成模板伪稿。
-        if not _llm_available(self.cfg):
-            raise ContentGenerationError(
-                "model_not_configured",
-                "尚未配置可用模型，请先配置模型服务和 API Key 后再运行",
-            )
-
         # 运行前硬门：本轮每个目标平台都必须有可比较的账号定位关键词。
         missing_persona = [
             p.value for p in platforms
@@ -207,6 +200,14 @@ class RoundExecutor:
                 except Exception:  # noqa: BLE001 — 失败报告尽量持久化，但不遮盖主错误
                     logger.exception("空选题失败报告写入失败 round=%s", round_id)
                 return report
+
+            # P0：只有确认本轮确实有内容需要生成后，才检查模型配置。
+            # 放在统一失败收尾内，确保失败报告和 task_run 状态可追踪。
+            if not _llm_available(self.cfg):
+                raise ContentGenerationError(
+                    "model_not_configured",
+                    "尚未配置可用模型，请先配置模型服务和 API Key 后再运行",
+                )
 
             # §19 母计划签名（R18）：选题分布确定后立即固化，改计划可追溯
             self._record_plan_signature(round_id, topic_count, platforms, scored, report)
