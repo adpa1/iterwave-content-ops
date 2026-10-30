@@ -218,3 +218,32 @@ def test_concurrent_initialize_migrates_legacy_queue_schema_once(tmp_path):
     assert migrated is not None
     assert migrated.queue_order == 1
     assert migrated.available_at == migrated.created_at
+
+
+
+def test_queue_listing_keeps_active_tasks_ahead_of_recent_history(tmp_path):
+    queue = make_queue(tmp_path)
+    active, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-a", aggregate_id="active",
+        payload={"round_id": 1},
+    )
+    for index in range(3):
+        task, _ = queue.enqueue(
+            task_type="round_run", tenant_id="tenant-b",
+            aggregate_id=f"done-{index}", payload={"round_id": index + 2},
+        )
+        claimed = queue.claim_next("worker")
+        assert claimed is not None and claimed.task_id == active.task_id if index == 0 else claimed is not None
+        if index == 0:
+            assert queue.finish(claimed.task_id, "worker", result={"ok": True})
+            # Keep the first active task queued by submitting a new one after it.
+            active, _ = queue.enqueue(
+                task_type="round_run", tenant_id="tenant-a", aggregate_id="active-2",
+                payload={"round_id": 99},
+            )
+        else:
+            assert queue.finish(claimed.task_id, "worker", result={"ok": True})
+
+    listed = queue.list(limit=2)
+    assert listed[0].task_id == active.task_id
+    assert listed[0].status == "queued"
