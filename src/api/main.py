@@ -2384,7 +2384,7 @@ def _register_routes(app: FastAPI) -> None:
         if cohort is None:
             return {"cohort_size": 0, "ttv_seconds": None, "ttv_sample_count": 0,
                     "ttv_p50_seconds": None, "ttv_p90_seconds": None,
-                    "ttv_percentile_scope": "当前数据库内账号组；不代表跨安装实例总体", "seven_day_activation_rate": None,
+                    "ttv_percentile_scope": "当前账号组；不代表跨安装实例总体", "seven_day_activation_rate": None,
                     "first_publish_rate": None, "data_return_rate": None, "weekly_adopted_published": 0,
                     "activation_input_wait_seconds": None, "model_queue_wait_seconds": None,
                     "generation_processing_seconds": None,
@@ -2523,7 +2523,7 @@ def _register_routes(app: FastAPI) -> None:
             "ttv_sample_count": len(ttv_values),
             "ttv_p50_seconds": _ttv_percentile(0.50),
             "ttv_p90_seconds": _ttv_percentile(0.90),
-            "ttv_percentile_scope": "当前数据库内已完成首次价值的账号组；跨安装实例需集中汇总",
+            "ttv_percentile_scope": "当前账号组内已完成首次价值的 cohort；跨安装实例需集中汇总",
             "activation_input_wait_seconds": round(activation_input_wait_seconds, 1) if activation_input_wait_seconds is not None else None,
             "model_queue_wait_seconds": round(model_queue_wait_seconds, 1) if model_queue_wait_seconds is not None else None,
             "generation_processing_seconds": round(generation_processing_seconds, 1) if generation_processing_seconds is not None else None,
