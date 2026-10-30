@@ -53,62 +53,66 @@ def research_status() -> dict:
         return dict(_RESEARCH_STATE)
 
 
-def run_once(cfg, conn=None, *, trigger: str = "manual", tenant_id: str | None = None) -> dict:
-    """同步执行一次采集 + 匹配。已有任务在跑时直接返回 {"skipped": True}。
-
-    整个过程跑在后台线程里（trigger_background），进度写进 _STATE["progress"]，
-    前端切换页签 / 离开页面都不会影响采集本身。
-    """
-    with _LOCK:
-        if _STATE["running"] or _RESEARCH_STATE["running"]:
-            busy = _STATE if _STATE["running"] else _RESEARCH_STATE
-            return {"skipped": True, "reason": "热点后台任务正在执行", **busy}
-        _STATE.update(running=True, tenant_id=tenant_id, trigger=trigger, error=None, progress=None,
-                      started_at=datetime.now().isoformat(timespec="seconds"))
+def run_once(
+    cfg, conn=None, *, trigger: str = "manual",
+    tenant_id: str | None = None, _reserved: bool = False,
+) -> dict:
+    """同步执行一次采集 + 匹配；可由后台线程以预占状态启动。"""
+    if not _reserved:
+        with _LOCK:
+            if _STATE["running"]:
+                return {"skipped": True, **_STATE}
+            _STATE.update(
+                running=True, tenant_id=tenant_id, trigger=trigger, error=None, progress=None,
+                started_at=datetime.now().isoformat(timespec="seconds"),
+            )
     own_conn = conn is None
-    if own_conn:
-        from .db import Database
-        conn = Database(cfg).connect()
 
     def on_progress(update: dict) -> None:
         with _LOCK:
             prog = dict(_STATE.get("progress") or {})
             prog.update(update)
-            # 后续阶段（写入/匹配）没有新的数据源明细时，沿用抓取阶段的清单
             prog["sources"] = update.get("sources") or prog.get("sources") or []
             prog["updated_at"] = datetime.now().isoformat(timespec="seconds")
             _STATE["progress"] = prog
 
     report, match, error = None, None, None
     try:
+        if own_conn:
+            from .db import Database
+            conn = Database(cfg).connect()
         from .hot_topics import HotTopicCollector
         from .hot_topic_matcher import HotTopicMatcher
-        from .shared_raw_topics import (
-            import_to_tenant, publish_from_tenant, shared_snapshot_fresh,
-        )
-        collector = HotTopicCollector(cfg, conn)
-        # 先把当前账号组的原始字段发布到共享快照；SQL 只允许新数据覆盖旧数据。
+        from .shared_raw_topics import publish_from_tenant
+
+        # 原始采集数据发布到共享快照；标签匹配和结果仍写入当前账号组数据库。
         publish_from_tenant(conn)
-        reused_shared = False
         if cfg.hot_topics.enabled is not False:
             report = HotTopicCollector(cfg, conn).refresh(on_progress=on_progress)
-        on_progress({"stage": "matching", "label": "标签匹配 / 研判", "percent": 92,
-                     "message": "按账号画像匹配定位关联"})
+        on_progress({
+            "stage": "matching", "label": "标签匹配 / 研判", "percent": 92,
+            "message": "按账号画像匹配定位关联",
+        })
         try:
             match = HotTopicMatcher(cfg, conn).run()
         except Exception as exc:  # noqa: BLE001 — 匹配失败不回滚采集结果
-            logger.exception("热点标签匹配失败")
-            match = {"error": str(exc)}
+            from .redact import redact
+            logger.error("热点标签匹配失败 tenant=%s error=%s", tenant_id, redact(str(exc))[:500])
+            match = {"error": redact(str(exc))[:500]}
         logger.info(
-            "🔥 热点后台刷新完成（%s）：共享复用=%s · 采集/同步 %s · 本组匹配 %s",
-            trigger, reused_shared, report, match,
+            "热点后台刷新完成 trigger=%s tenant=%s report=%s",
+            trigger, tenant_id, report,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.exception("热点后台刷新失败")
-        error = str(exc)
+        from .redact import redact
+        error = redact(str(exc))[:500]
+        logger.error("热点后台刷新失败 tenant=%s error=%s", tenant_id, error)
     finally:
-        if own_conn:
-            conn.close()
+        if own_conn and conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                logger.exception("关闭热点后台数据库连接失败 tenant=%s", tenant_id)
         with _LOCK:
             prog = dict(_STATE.get("progress") or {})
             collected = sum(1 for v in (report or {}).values() if v == "collected")
@@ -120,11 +124,11 @@ def run_once(cfg, conn=None, *, trigger: str = "manual", tenant_id: str | None =
             })
             prog["sources"] = prog.get("sources") or []
             prog["updated_at"] = datetime.now().isoformat(timespec="seconds")
-            _STATE.update(running=False, report=report, match=match, error=error,
-                          progress=prog,
-                          finished_at=datetime.now().isoformat(timespec="seconds"))
+            _STATE.update(
+                running=False, report=report, match=match, error=error,
+                progress=prog, finished_at=datetime.now().isoformat(timespec="seconds"),
+            )
     return status()
-
 
 def trigger_background(cfg, *, trigger: str = "manual", tenant_id: str | None = None) -> dict:
     """在后台线程启动一次刷新，立即返回当前状态。"""
