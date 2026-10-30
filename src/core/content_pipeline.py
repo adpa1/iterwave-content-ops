@@ -25,6 +25,16 @@ from ..adapters.base import Platform
 
 logger = logging.getLogger(__name__)
 
+class ContentGenerationError(RuntimeError):
+    """模型生成失败；携带稳定错误码和可安全展示给用户的提示。"""
+
+    def __init__(self, code: str, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+
+
 
 # =====================================================================
 # 平台文案风格（migrations/016_platform_styles.sql，Settings 页可编辑）
@@ -99,31 +109,40 @@ def generate_copy_content(
     reject_reason: Optional[str] = None,
     strategy_hints: Optional[list[str]] = None,
 ) -> tuple[str, str, list[str]]:
-    """生成单平台文案。LLM 可用则用 LLM，否则模板降级。
+    """生成单平台文案。正式生成必须由可用模型完成，失败时明确抛出业务错误。
 
-    返回 (title, body, tags)。任何异常都不抛出，降级到模板，
-    保证 G2 检查器一定能拿到内容做判定（R2：不能让空内容溜过去）。
+    返回 (title, body, tags)。模板只允许作为显式 demo 素材，不进入正式生成链路。
 
-    reject_reason：上一版被 G2 拒收的原因。非空表示这是重生成，
-    LLM 会收到改写要求；模板降级无法自我改写，仍会原样返回（由调用方判定重试上限）。
-
+    reject_reason：上一版被 G2 拒收的原因；LLM 会收到改写要求。
     conn 不为空时，LLM 调用会写 ai_calls 审计表（tokens/latency/success）。
     """
     style = load_platform_style(platform, conn)
+    if cfg is None or not _llm_available(cfg):
+        raise ContentGenerationError(
+            "model_not_configured",
+            "尚未配置可用模型，请先配置模型服务和 API Key 后再生成",
+        )
 
-    if cfg is not None and _llm_available(cfg):
-        try:
-            result = _generate_via_llm(
-                cfg, topic_title, topic_summary, dimension, platform, style,
-                conn=conn, topic_id=topic_id, round_id=round_id,
-                reject_reason=reject_reason, strategy_hints=strategy_hints,
-            )
-            if result:
-                return result
-        except Exception:  # noqa: BLE001 — LLM 失败必须降级而不是中断
-            logger.exception("LLM 文案生成失败，降级为模板 platform=%s", platform.value)
+    try:
+        result = _generate_via_llm(
+            cfg, topic_title, topic_summary, dimension, platform, style,
+            conn=conn, topic_id=topic_id, round_id=round_id,
+            reject_reason=reject_reason, strategy_hints=strategy_hints,
+        )
+    except ContentGenerationError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — 未分类异常也必须 fail closed
+        logger.exception("LLM 文案生成失败 platform=%s", platform.value)
+        raise ContentGenerationError(
+            "model_unavailable", "模型服务暂时不可用，请检查服务状态后重试",
+            retryable=True,
+        ) from exc
 
-    return _generate_via_template(topic_title, topic_summary, dimension, platform, style)
+    if not result:
+        raise ContentGenerationError(
+            "model_output_invalid", "模型未返回有效文案，请调整要求后重试",
+        )
+    return result
 
 
 def build_hint_block(strategy_hints: Optional[list[str]], policy=None) -> str:
@@ -236,53 +255,127 @@ def _generate_via_llm(
         )
         resp.raise_for_status()
         data = resp.json()
+    except httpx.TimeoutException as exc:
+        _log_ai_call(
+            conn, platform, llm.model, topic_id, round_id,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            tokens_in=None, tokens_out=None, success=False, output_valid=False,
+        )
+        raise ContentGenerationError(
+            "model_timeout", "模型请求超时，请稍后重试", retryable=True,
+        ) from exc
+    except httpx.HTTPStatusError as exc:
+        _log_ai_call(
+            conn, platform, llm.model, topic_id, round_id,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            tokens_in=None, tokens_out=None, success=False, output_valid=False,
+        )
+        status = exc.response.status_code
+        if status in (401, 403):
+            code, message, retryable = "model_auth_failed", "模型鉴权失败，请检查 API Key", False
+        elif status == 402:
+            code, message, retryable = "model_quota_exceeded", "模型额度不足，请检查账户额度", False
+        elif status == 429:
+            code, message, retryable = "model_rate_limited", "模型请求过于频繁，请稍后重试", True
+        elif status in (408, 504):
+            code, message, retryable = "model_timeout", "模型请求超时，请稍后重试", True
+        elif status >= 500:
+            code, message, retryable = "model_unavailable", "模型服务暂时不可用，请稍后重试", True
+        else:
+            code, message, retryable = "model_request_failed", "模型请求失败，请检查模型配置", False
+        raise ContentGenerationError(code, message, retryable=retryable) from exc
+    except httpx.RequestError as exc:
+        _log_ai_call(
+            conn, platform, llm.model, topic_id, round_id,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            tokens_in=None, tokens_out=None, success=False, output_valid=False,
+        )
+        raise ContentGenerationError(
+            "model_unavailable", "无法连接模型服务，请检查网络或服务地址",
+            retryable=True,
+        ) from exc
     except Exception as exc:
         _log_ai_call(
             conn, platform, llm.model, topic_id, round_id,
             latency_ms=int((time.monotonic() - started) * 1000),
             tokens_in=None, tokens_out=None, success=False, output_valid=False,
         )
-        raise exc
+        raise ContentGenerationError(
+            "model_unavailable", "模型服务暂时不可用，请检查服务状态后重试",
+            retryable=True,
+        ) from exc
     finally:
         if client is not None:
             client.close()
 
     latency_ms = int((time.monotonic() - started) * 1000)
-    content = data["choices"][0]["message"]["content"]
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        _log_ai_call(
+            conn, platform, llm.model, topic_id, round_id,
+            latency_ms=latency_ms, tokens_in=None, tokens_out=None,
+            success=False, output_valid=False,
+        )
+        raise ContentGenerationError(
+            "model_output_invalid", "模型返回结构不完整，请重试",
+        )
+
     usage = data.get("usage") or {}
     tokens_in = usage.get("prompt_tokens")
     tokens_out = usage.get("completion_tokens")
-
     try:
         parsed = json.loads(content)
     except (TypeError, ValueError):
         _log_ai_call(
             conn, platform, llm.model, topic_id, round_id,
             latency_ms=latency_ms, tokens_in=tokens_in, tokens_out=tokens_out,
-            success=True, output_valid=False,
+            success=False, output_valid=False,
         )
-        logger.warning("LLM 输出非 JSON，降级模板")
-        return None
-    title = str(parsed.get("title") or "").strip()
-    body = str(parsed.get("body") or "").strip()
-    # 标签兜底顺序：LLM 输出 → 库里配置的平台标签 → 选题维度标签
-    tags = parsed.get("tags") or style["hashtags"] or [f"#{dimension}"]
-    if isinstance(tags, str):
-        tags = [t for t in re.split(r"[,\s]+", tags) if t]
-    tags = [f"#{str(t).strip().lstrip('#')}" for t in tags if str(t).strip()][:cfg.copy_generation.tag_max_count]
+        raise ContentGenerationError(
+            "model_output_invalid", "模型返回内容格式不正确，请重试",
+        )
+
+    if not isinstance(parsed, dict):
+        _log_ai_call(
+            conn, platform, llm.model, topic_id, round_id,
+            latency_ms=latency_ms, tokens_in=tokens_in, tokens_out=tokens_out,
+            success=False, output_valid=False,
+        )
+        raise ContentGenerationError(
+            "model_output_invalid", "模型返回内容结构不正确，请重试",
+        )
+
+    title = parsed.get("title")
+    body = parsed.get("body")
+    title = title.strip() if isinstance(title, str) else ""
+    body = body.strip() if isinstance(body, str) else ""
     output_valid = bool(title and body)
     _log_ai_call(
         conn, platform, llm.model, topic_id, round_id,
         latency_ms=latency_ms, tokens_in=tokens_in, tokens_out=tokens_out,
-        success=True, output_valid=output_valid,
+        success=output_valid, output_valid=output_valid,
     )
-
     if not output_valid:
-        logger.warning("LLM 返回字段不完整，降级模板")
-        return None
+        raise ContentGenerationError(
+            "model_output_invalid", "模型未返回标题或正文，请重试",
+        )
+
+    # 标签是可选项；缺失时只使用账号配置的平台标签，不构造模板正文。
+    tags = parsed.get("tags")
+    if isinstance(tags, str):
+        tags = [t for t in re.split(r"[,\\s]+", tags) if t]
     if not isinstance(tags, list):
-        tags = style["hashtags"] or [f"#{dimension}"]
-    return title[:cfg.copy_generation.title_max_chars], body, [str(t) for t in tags][:cfg.copy_generation.tag_max_count]
+        tags = style["hashtags"]
+    normalized_tags = [
+        f"#{str(tag).strip().lstrip('#')}"
+        for tag in tags if str(tag).strip()
+    ][:cfg.copy_generation.tag_max_count]
+    return (
+        title[:cfg.copy_generation.title_max_chars],
+        body[:cfg.copy_generation.body_max_chars],
+        normalized_tags,
+    )
 
 
 def _log_ai_call(
