@@ -179,9 +179,12 @@ def test_metrics_retry_settings_are_typed_and_bounded():
 def test_internal_platform_identity_and_endpoints_are_not_returned_or_patchable(cfg, conn):
     view = current_config_view(cfg, conn)
     assert set(view["readonly"]["platforms"]["xhs"]) == {"enabled"}
+    assert "webhook_url_env" not in view["readonly"]["notification_channels"]["feishu"]
     with pytest.raises(ConfigNotAllowedError):
         patch_config(cfg, conn, {"platforms.xhs.account_key": "xhs_other"})
     with pytest.raises(ConfigNotAllowedError):
         patch_config(cfg, conn, {"platforms.xhs.base_url": "https://internal.example"})
     with pytest.raises(ConfigNotAllowedError):
         patch_config(cfg, conn, {"media_generation.base_url": "https://internal.example"})
+    with pytest.raises(ConfigNotAllowedError):
+        patch_config(cfg, conn, {"notifications.channels.feishu.webhook_url_env": "OTHER_SECRET_ENV"})
