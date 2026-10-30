@@ -1702,7 +1702,8 @@ def _register_routes(app: FastAPI) -> None:
             return {"sample_run_id": run_id, "status": "failed", "error_code": error_code,
                     "error_message": error_message}
 
-        # 后台生成期间持有租户切换闸门引用，避免运行时切换关闭旧连接后跨账号组写入。
+        # 后台任务固定使用发起请求时的账号组上下文。账号组运行时会常驻缓存，
+        # 切换前台只替换 _g_ctx 引用，不会关闭该组连接；因此后台样稿无需占用切换闸门。
         conn_bg = conn
         cfg_bg = _g()["cfg"]
 
@@ -1712,7 +1713,7 @@ def _register_routes(app: FastAPI) -> None:
                 "(id, tenant_id, sample_run_id, event_type, event_at, source, metadata_json, idempotency_key) "
                 "VALUES (?, ?, ?, ?, ?, 'web', ?, ?)",
                 (uuid.uuid4().hex, tenant_id, run_id, event_type,
-                 _now().isoformat(sep=" ", timespec="seconds"),
+                 business_now(cfg_bg).isoformat(sep=" ", timespec="seconds"),
                  json.dumps(metadata, ensure_ascii=False), event_key),
             )
             conn_bg.commit()
@@ -1721,7 +1722,7 @@ def _register_routes(app: FastAPI) -> None:
             from src.core.content_pipeline import ContentGenerationError, generate_copy_content
             from src.adapters.base import Platform as PlatformEnum
             try:
-                started = _now().isoformat(sep=" ", timespec="seconds")
+                started = business_now(cfg_bg).isoformat(sep=" ", timespec="seconds")
                 conn_bg.execute("UPDATE sample_runs SET status='generating', started_at=? WHERE id=?",
                                 (started, run_id))
                 conn_bg.commit()
@@ -1819,7 +1820,7 @@ def _register_routes(app: FastAPI) -> None:
                     results.append((angle, title, body, tags, findings))
                 conn_bg.execute("UPDATE sample_runs SET status='quality_check' WHERE id=?", (run_id,))
                 conn_bg.commit()
-                now_done = _now().isoformat(sep=" ", timespec="seconds")
+                now_done = business_now(cfg_bg).isoformat(sep=" ", timespec="seconds")
                 for angle, title, body, tags, findings in results:
                     conn_bg.execute(
                         "INSERT INTO sample_contents "
@@ -1850,20 +1851,14 @@ def _register_routes(app: FastAPI) -> None:
                     logger.exception("快速体验失败事务回滚异常 run=%s", run_id)
                 conn_bg.execute(
                     "UPDATE sample_runs SET status='failed', error_code=?, error_message_safe=?, completed_at=? WHERE id=?",
-                    (code, safe_message[:300], _now().isoformat(sep=" ", timespec="seconds"), run_id),
+                    (code, safe_message[:300], business_now(cfg_bg).isoformat(sep=" ", timespec="seconds"), run_id),
                 )
                 conn_bg.commit()
                 record_sample_event("sample_generation_failed", {"error_code": code},
                                     f"sample-failed:{run_id}")
-            finally:
-                _tenant_switch_gate.leave_request()
-
-        _tenant_switch_gate.enter_request()
-        try:
-            asyncio.create_task(generate_samples(), name=f"activation-samples-{run_id}")
-        except Exception:
-            _tenant_switch_gate.leave_request()
-            raise
+        
+        # 后台协程已捕获 tenant_id / conn_bg / cfg_bg，不再占用前台切换闸门。
+        asyncio.create_task(generate_samples(), name=f"activation-samples-{run_id}")
         return {"sample_run_id": run_id, "status": "generating", "poll_after_ms": 1200}
 
     @app.delete("/api/activation/samples/{sample_run_id}")

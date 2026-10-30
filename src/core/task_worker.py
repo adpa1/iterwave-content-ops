@@ -168,7 +168,8 @@ class GlobalTaskWorker:
         except Exception as exc:  # noqa: BLE001 — 单任务失败不得终止消费者
             from src.core.redact import redact
             error_code = redact(str(getattr(exc, "code", "round_execution_failed")))[:80]
-            if getattr(exc, "code", None):
+            if getattr(exc, "code", None) or getattr(exc, "safe_for_user", False):
+                # 仅展示明确标记为用户可读的业务异常；第三方/未知异常继续使用通用文案。
                 safe_message = redact(str(exc))[:500]
             else:
                 safe_message = "本轮执行失败，请检查运行记录"

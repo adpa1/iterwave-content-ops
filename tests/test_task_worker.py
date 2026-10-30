@@ -312,3 +312,72 @@ def test_worker_with_no_task_notifier_does_not_fall_back_to_foreground(tmp_path,
     assert foreground_c.events == []
     # 任务结束后必须恢复前台默认通知器。
     assert notify.get_active() is foreground_c
+
+
+def test_worker_shows_redacted_user_facing_precondition_error(tmp_path):
+    from src.core.round_executor import RoundPreconditionError
+
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    task, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-a", aggregate_id="23",
+        payload={"round_id": 23, "operation": "run"},
+    )
+    claimed = queue.claim_next("worker-safe-error")
+
+    class FakeExecutor:
+        async def run(self, round_id, **kwargs):
+            raise RoundPreconditionError(
+                "运行前检查未通过：选题库没有可用选题。请先补充或恢复选题；api_key=sk-abcdef123456"
+            )
+
+    context = {
+        "cfg": SimpleNamespace(
+            paths=SimpleNamespace(data_dir=str(tmp_path / "tenant-a" / "data")),
+            resolve_path=lambda value: value,
+        ),
+        "executor": FakeExecutor(),
+        "scheduler": SimpleNamespace(shutdown=lambda: None),
+        "conn": SimpleNamespace(close=lambda: None),
+    }
+    worker = GlobalTaskWorker(queue, lambda tenant_id: context)
+    worker.owner = "worker-safe-error"
+    asyncio.run(worker._execute(claimed))
+
+    saved = queue.get(task.task_id)
+    assert saved is not None and saved.status == "failed"
+    assert "运行前检查未通过" in (saved.error_message or "")
+    assert "请先补充或恢复选题" in (saved.error_message or "")
+    assert "sk-abcdef123456" not in (saved.error_message or "")
+    assert "sk-a***" in (saved.error_message or "")
+
+
+def test_worker_keeps_unknown_value_error_generic(tmp_path):
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    task, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-a", aggregate_id="24",
+        payload={"round_id": 24, "operation": "run"},
+    )
+    claimed = queue.claim_next("worker-unknown-error")
+
+    class FakeExecutor:
+        async def run(self, round_id, **kwargs):
+            raise ValueError("third-party internal failure api_key=sk-abcdef123456")
+
+    context = {
+        "cfg": SimpleNamespace(
+            paths=SimpleNamespace(data_dir=str(tmp_path / "tenant-a" / "data")),
+            resolve_path=lambda value: value,
+        ),
+        "executor": FakeExecutor(),
+        "scheduler": SimpleNamespace(shutdown=lambda: None),
+        "conn": SimpleNamespace(close=lambda: None),
+    }
+    worker = GlobalTaskWorker(queue, lambda tenant_id: context)
+    worker.owner = "worker-unknown-error"
+    asyncio.run(worker._execute(claimed))
+
+    saved = queue.get(task.task_id)
+    assert saved is not None and saved.status == "failed"
+    assert saved.error_message == "本轮执行失败，请检查运行记录"

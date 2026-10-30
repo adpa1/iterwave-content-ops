@@ -47,6 +47,12 @@ from ..adapters.base import DraftStatus, CircuitBreakerReason
 
 logger = logging.getLogger(__name__)
 
+class RoundPreconditionError(ValueError):
+    """执行前置条件不满足；错误文案经过业务层整理，可安全展示给用户。"""
+
+    safe_for_user = True
+
+
 # 平台未启用 / 熔断时不给该平台产出内容
 _SKIP_REASON_CIRCUIT = "平台熔断中，跳过本轮产出"
 
@@ -98,7 +104,7 @@ class RoundExecutor:
             (round_id,),
         ).fetchone()
         if not round_row:
-            raise ValueError(f"轮次 {round_id} 不存在")
+            raise RoundPreconditionError(f"轮次 {round_id} 不存在")
         current_status = round_row["status"]
         if current_status == "failed":
             # 只允许没有产生任何内容/草稿的失败轮次重试，避免重复生成或覆盖已有交付物。
@@ -110,11 +116,11 @@ class RoundExecutor:
                 (round_id,),
             ).fetchone()[0]
             if existing_contents or existing_drafts:
-                raise ValueError("本轮失败前已产生内容或草稿，为避免重复交付，请修复问题后新建一轮")
+                raise RoundPreconditionError("本轮失败前已产生内容或草稿，为避免重复交付，请修复问题后新建一轮")
             if not self.sm_round.transition(round_id, "created", "用户发起安全重试（无已生成内容）"):
-                raise ValueError("失败轮次无法重置，请新建一轮")
+                raise RoundPreconditionError("失败轮次无法重置，请新建一轮")
         elif current_status != "created":
-            raise ValueError(
+            raise RoundPreconditionError(
                 f"轮次 {round_id} 当前状态为 {current_status}，仅新建或可安全重试的失败轮次可执行"
             )
 
@@ -122,7 +128,7 @@ class RoundExecutor:
         available_topics, pool_report = load_pool(self.cfg, self.conn)
         if not available_topics:
             detail = pool_report.get("kb_error") or "选题库当前没有可用选题"
-            raise ValueError(f"运行前检查未通过：{detail}。请先补充或恢复选题，再运行本轮")
+            raise RoundPreconditionError(f"运行前检查未通过：{detail}。请先补充或恢复选题，再运行本轮")
 
         # 母计划 v2：未显式传参时按母计划执行（选题数 / 平台 / 维度配额 / 平台分项篇数）
         self._pvm = PlanVersionManager(self.cfg, self.conn)
@@ -140,7 +146,7 @@ class RoundExecutor:
 
         platforms = self._resolve_platforms(platform_values)
         if not platforms:
-            raise ValueError("没有可用平台：请检查 config.platforms 的 enabled 与请求参数")
+            raise RoundPreconditionError("没有可用平台：请检查 config.platforms 的 enabled 与请求参数")
 
         # 运行前硬门：本轮每个目标平台都必须有可比较的账号定位关键词。
         missing_persona = [
@@ -149,7 +155,7 @@ class RoundExecutor:
         ]
         if missing_persona:
             labels = "、".join(Platform(p).display_name for p in missing_persona)
-            raise ValueError(
+            raise RoundPreconditionError(
                 f"运行前检查未通过：{labels} 未配置账号定位关键词，无法判断内容是否符合账号定位。"
                 "请先到「目标与策略」补齐对应平台画像"
             )
