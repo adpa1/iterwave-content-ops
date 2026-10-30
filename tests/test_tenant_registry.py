@@ -102,6 +102,8 @@ def test_existing_json_registry_and_active_state_are_imported_once(tmp_path: Pat
     assert registry.active_file.stat().st_mode & 0o777 == 0o400
 
     # Once imported, legacy files are no longer authoritative.
+    registry.registry_file.chmod(0o600)
+    registry.active_file.chmod(0o600)
     registry.registry_file.write_text("{broken", encoding="utf-8")
     registry.active_file.write_text(json.dumps({"tenant_id": "missing"}), encoding="utf-8")
     registry.initialize()
