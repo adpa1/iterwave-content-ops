@@ -64,6 +64,8 @@ from src.core.config import load_config, get_config, DEFAULT_ENV_PATH
 from src.core.timezone import business_now
 from src.core.config import PROJECT_ROOT
 from src.core.tenant_registry import TenantRegistry, TenantError
+from src.core.task_queue import GlobalTaskQueue
+from src.core.task_worker import GlobalTaskWorker
 from src.core.tenant_switch_gate import TenantSwitchGate, TenantSwitchInProgress
 from src.core.db import Database
 from src.core.state_machine import RoundStateMachine, DraftStateMachine
@@ -101,6 +103,7 @@ logger = logging.getLogger(__name__)
 # =====================================================================
 
 _g_ctx: dict = {}
+_task_queue: GlobalTaskQueue | None = None
 
 
 def _tenant_switch_policy(cfg=None):
@@ -468,8 +471,13 @@ def _build_app() -> FastAPI:
         # 启动阶段
         cfg = load_config()
         # 账号组注册表是共享基础设施；默认组继续使用原有 data/ 与 backups/。
+        global _task_queue
         tenant_registry = TenantRegistry(PROJECT_ROOT, cfg=cfg)
         tenant_registry.initialize()
+        _task_queue = GlobalTaskQueue(tenant_registry.system_db_file)
+        _task_queue.initialize()
+        # queued 任务在重启后继续执行；过期 running 任务转 interrupted，避免重复副作用。
+        _task_queue.recover_expired()
         active_tenant_id = tenant_registry.active_id()
         active_tenant = tenant_registry.get(active_tenant_id)
         if active_tenant_id != "default":
@@ -624,6 +632,15 @@ def _build_app() -> FastAPI:
         _g_ctx["autogrow"] = autogrow
         scheduler.autogrow = autogrow
 
+        # 全局消费者独立于当前活动账号组；每个任务按 tenant_id 构造专属运行时。
+        task_worker_stop = asyncio.Event()
+        task_worker = GlobalTaskWorker(_task_queue, lambda tenant_id: _build_tenant_runtime_context(
+            tenant_registry, tenant_id,
+        ))
+        task_worker_task = asyncio.create_task(
+            task_worker.run(task_worker_stop), name="global-tenant-task-worker",
+        )
+
         # 热点：库里没有新鲜数据时启动后补跑一次后台采集（不阻塞启动）
         from ..core import hot_topic_service
         if cfg.hot_topics.enabled is not False and hot_topic_service.is_stale(cfg, conn):
@@ -634,6 +651,11 @@ def _build_app() -> FastAPI:
         try:
             yield
         finally:
+            task_worker_stop.set()
+            try:
+                await task_worker_task
+            except Exception:
+                logger.exception("全局任务消费者关闭异常")
             scheduler.shutdown()
             conn.close()
             logger.info("⏹️ FastAPI 应用关闭")
@@ -3731,48 +3753,54 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/rounds/{round_id}/run", status_code=202)
     async def run_round(round_id: int, req: RunRoundRequest):
-        """异步启动一轮生产，立即返回任务 ID；客户端通过 run_status 轮询结果。"""
-        if round_id in _running_rounds:
-            raise HTTPException(
-                409, f"轮次 {round_id} 正在执行中，请等待本次执行结束（禁止并发重复触发）"
+        """将生产轮次写入跨账号组全局 FIFO 队列；切换前台账号组不会影响任务。"""
+        if _task_queue is None:
+            raise HTTPException(503, "全局任务队列尚未初始化")
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        round_row = _g()["conn"].execute(
+            "SELECT id FROM spiral_rounds WHERE id=?", (round_id,),
+        ).fetchone()
+        if round_row is None:
+            raise HTTPException(404, "当前账号组不存在该生产轮次")
+        try:
+            task, created = _task_queue.enqueue(
+                task_type="round_run",
+                tenant_id=tenant_id,
+                aggregate_id=str(round_id),
+                payload={
+                    "round_id": round_id,
+                    "topic_count": req.topic_count,
+                    "platforms": req.platforms,
+                    "save_drafts": req.save_drafts,
+                },
             )
-        _running_rounds.add(round_id)
-        _round_job_status[round_id] = {
-            "round_id": round_id, "running": True, "started": True,
-            "report": None, "error": None,
+        except (ValueError, sqlite3.Error) as exc:
+            logger.exception("生产任务入队失败 tenant=%s round=%s", tenant_id, round_id)
+            raise HTTPException(503, "任务暂时无法入队，请稍后重试") from exc
+        return {
+            "round_id": round_id, "task_id": task.task_id,
+            "started": created, "running": task.status in ("queued", "running"),
+            "queued": task.status == "queued", "status": task.status,
         }
-
-        async def execute_round_job():
-            try:
-                report = await _g()["executor"].run(
-                    round_id,
-                    topic_count=req.topic_count,
-                    platform_values=req.platforms,
-                    save_drafts=req.save_drafts,
-                )
-                _round_job_status[round_id] = {
-                    "round_id": round_id, "running": False,
-                    "report": report, "error": None,
-                }
-            except Exception as exc:  # noqa: BLE001 — 后台任务错误必须可查询
-                logger.exception("后台轮次执行失败 round=%s", round_id)
-                # 仅返回稳定错误码和安全提示，不把供应商原始响应/异常详情暴露给前端。
-                error_code = getattr(exc, "code", "round_execution_failed")
-                safe_message = str(exc) if getattr(exc, "code", None) else "本轮执行失败，请检查运行记录"
-                _round_job_status[round_id] = {
-                    "round_id": round_id, "running": False,
-                    "report": None, "error": safe_message,
-                    "error_code": error_code,
-                }
-            finally:
-                _running_rounds.discard(round_id)
-
-        asyncio.create_task(execute_round_job(), name=f"round-{round_id}")
-        return {"round_id": round_id, "started": True, "running": True}
 
     @app.get("/api/rounds/{round_id}/run_status")
     def round_run_status(round_id: int):
-        """查询后台轮次任务状态与最终报告。"""
+        """查询当前账号组轮次在全局队列中的状态与最终报告。"""
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        if _task_queue is not None:
+            task = _task_queue.find_latest(
+                tenant_id=tenant_id, task_type="round_run", aggregate_id=str(round_id),
+            )
+            if task is not None:
+                return {
+                    "round_id": round_id, "task_id": task.task_id,
+                    "status": task.status,
+                    "running": task.status in ("queued", "running"),
+                    "queued": task.status == "queued",
+                    "report": task.result,
+                    "error": task.error_message,
+                    "error_code": task.error_code,
+                }
         status = _round_job_status.get(round_id)
         if status is not None:
             return dict(status)
