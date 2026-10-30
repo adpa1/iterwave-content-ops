@@ -34,6 +34,8 @@ const GROUPS: { prefix: string; title: string; exact?: string[] }[] = [
   { prefix: "scoring.", title: "选题策略", exact: [
     "scoring.cold_start_min_published",
     "scoring.stable_dimension_min_samples",
+    "scoring.stable_exploration_percent",
+    "scoring.normalization_window_days",
     "scoring.history_normalization_scale",
     "scoring.freshness_window_days",
     "scoring.dimension_gap_ratio",
