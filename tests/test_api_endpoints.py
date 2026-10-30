@@ -63,8 +63,8 @@ def test_create_round_rolls_back_when_plan_signature_fails(client, monkeypatch):
         PlanVersionManager, "record",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("signature write failed")),
     )
-    response = tc.post("/api/rounds", json={"topic_count": 6})
-    assert response.status_code == 500
+    with pytest.raises(RuntimeError, match="signature write failed"):
+        tc.post("/api/rounds", json={"topic_count": 6})
     assert conn.execute("SELECT COUNT(*) FROM spiral_rounds").fetchone()[0] == 0
 
 
