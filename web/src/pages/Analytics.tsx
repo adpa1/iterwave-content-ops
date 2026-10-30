@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import EmptyHint from "../components/EmptyHint";
-import { api, MetricsResponse, MetricRow, Platform, SpiralAnalysis } from "../api";
+import { api, MetricsResponse, MetricRow, Platform, SpiralAnalysis, Draft, WeeklyReport, ActivationMetrics } from "../api";
 
 const PLATFORM_NAME: Record<Platform, string> = {
   xhs: "小红书", douyin: "抖音",
@@ -33,6 +33,15 @@ export default function Analytics() {
   const [gapsError, setGapsError] = useState<string | null>(null);
   const [adopting, setAdopting] = useState<string | null>(null);
   const [adoptMsg, setAdoptMsg] = useState<string | null>(null);
+  const [publishedDrafts, setPublishedDrafts] = useState<Draft[]>([]);
+  const [backfillBusy, setBackfillBusy] = useState<string | null>(null);
+  const [backfillValues, setBackfillValues] = useState<Record<string, {
+    note_url: string; views: string; likes: string; collects: string;
+    comments: string; shares: string; new_followers: string;
+  }>>({});
+  const [weeklyReport, setWeeklyReport] = useState<WeeklyReport | null>(null);
+  const [activationMetrics, setActivationMetrics] = useState<ActivationMetrics | null>(null);
+  const [reportError, setReportError] = useState<string | null>(null);
 
   const loadGaps = () => {
     setGapsError(null);
@@ -59,6 +68,59 @@ export default function Analytics() {
 
   useEffect(() => { loadGaps(); }, []);
   useEffect(() => { loadMetrics(platformFilter); }, [platformFilter]);
+  useEffect(() => {
+    Promise.all([
+      api.drafts(),
+      api.weeklyReport(),
+      api.activationMetrics(),
+    ]).then(([allDrafts, report, metrics]) => {
+      const published = allDrafts.filter((d) => ["user_published", "data_fetching", "published"].includes(d.status));
+      setPublishedDrafts(published);
+      setWeeklyReport(report);
+      setActivationMetrics(metrics);
+      setBackfillValues(Object.fromEntries(published.map((d) => [d.id, {
+        note_url: d.platform_note_url || "", views: "", likes: "", collects: "",
+        comments: "", shares: "", new_followers: "",
+      }])));
+    }).catch((e) => setReportError(e?.message || "发布回填与周报数据加载失败"));
+  }, []);
+
+  const saveBackfill = async (draft: Draft) => {
+    const value = backfillValues[draft.id];
+    if (!value) return;
+    setBackfillBusy(draft.id);
+    setReportError(null);
+    try {
+      if (value.note_url.trim() !== (draft.platform_note_url || "")) {
+        await api.updateDraftNoteUrl(draft.id, value.note_url.trim());
+      }
+      const numeric = ["views", "likes", "collects", "comments", "shares", "new_followers"] as const;
+      const metrics: Record<string, number | null> = {};
+      for (const key of numeric) {
+        const raw = value[key].trim();
+        if (!raw) metrics[key] = null;
+        else {
+          const n = Number(raw);
+          if (!Number.isInteger(n) || n < 0) throw new Error(`${key} 必须填写非负整数`);
+          metrics[key] = n;
+        }
+      }
+      if (numeric.some((key) => value[key].trim())) {
+        await api.submitManualMetrics(draft.id, metrics);
+      }
+      const refreshed = await api.drafts();
+      setPublishedDrafts(refreshed.filter((d) => ["user_published", "data_fetching", "published"].includes(d.status)));
+      setBackfillValues((prev) => ({ ...prev, [draft.id]: {
+        ...prev[draft.id], views: "", likes: "", collects: "", comments: "", shares: "", new_followers: "",
+      }}));
+      setWeeklyReport(await api.weeklyReport());
+      setActivationMetrics(await api.activationMetrics());
+    } catch (e: any) {
+      setReportError(e?.message || "保存失败");
+    } finally {
+      setBackfillBusy(null);
+    }
+  };
 
   const rows: MetricRow[] = metrics?.items ?? [];
   const zStats = metrics?.z_stats ?? [];
@@ -104,6 +166,51 @@ export default function Analytics() {
           <div className="metric-val">{adjustments.length} <span className="metric-unit">条</span></div>
           <div className="metric-foot">来自最近一轮复盘</div>
         </div>
+      </div>
+
+      <div className="grid kpis" style={{ marginBottom: 15 }}>
+        <div className="metric"><div className="metric-label">首次价值时间 TTV</div><div className="metric-val">{activationMetrics?.ttv_seconds == null ? "—" : `${Math.round(activationMetrics.ttv_seconds)} 秒`}</div><div className="metric-foot">首次进入快速体验至首批样稿生成</div></div>
+        <div className="metric"><div className="metric-label">7 日激活率</div><div className="metric-val">{activationMetrics?.seven_day_activation_rate == null ? "观察中" : `${(activationMetrics.seven_day_activation_rate * 100).toFixed(0)}%`}</div><div className="metric-foot">复制或保存至少一篇合格样稿</div></div>
+        <div className="metric"><div className="metric-label">首次发布率</div><div className="metric-val">{activationMetrics?.first_publish_rate == null ? "观察中" : `${(activationMetrics.first_publish_rate * 100).toFixed(0)}%`}</div><div className="metric-foot">初始化后 7 日内确认发布</div></div>
+        <div className="metric"><div className="metric-label">数据回流完成率</div><div className="metric-val">{activationMetrics?.data_return_rate == null ? "—" : `${(activationMetrics.data_return_rate * 100).toFixed(0)}%`}</div><div className="metric-foot">已确认发布内容中至少有一份指标快照</div></div>
+      </div>
+
+      <div className="panel" style={{ marginBottom: 15 }}>
+        <div className="panel-head"><div><div className="panel-title">发布后数据回填</div><div className="panel-sub">可补充发布链接和人工指标。每次提交保留独立快照，未填写字段保持未知。</div></div></div>
+        {reportError && <div className="note" role="alert" style={{ color: "var(--red)", padding: 12 }}>{reportError}</div>}
+        {publishedDrafts.length === 0 ? <EmptyHint next="在内容生产页确认一篇内容已发布后，可在这里补填链接与数据">暂无已确认发布的内容</EmptyHint> : (
+          <div className="list" style={{ padding: "0 16px 16px" }}>
+            {publishedDrafts.map((draft) => {
+              const value = backfillValues[draft.id];
+              if (!value) return null;
+              return <div className="task-row" key={draft.id} style={{ display: "block", padding: "12px 0" }}>
+                <div className="task-title">{draft.title || "未命名内容"} · {PLATFORM_NAME[draft.platform]}</div>
+                <label className="form-label">发布链接（可稍后补填）</label>
+                <input className="field" value={value.note_url} placeholder="https://…" onChange={(e) => setBackfillValues((p) => ({ ...p, [draft.id]: { ...p[draft.id], note_url: e.target.value } }))} />
+                <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8, marginTop: 8 }}>
+                  {(["views", "likes", "collects", "comments", "shares", "new_followers"] as const).map((key) => <label key={key} className="form-label">{({views:"曝光/播放",likes:"点赞",collects:"收藏",comments:"评论",shares:"分享",new_followers:"新增粉丝"})[key]}<input className="field" inputMode="numeric" value={value[key]} placeholder="留空=未知" onChange={(e) => setBackfillValues((p) => ({ ...p, [draft.id]: { ...p[draft.id], [key]: e.target.value } }))} /></label>)}
+                </div>
+                <button className="btn sm primary" style={{ marginTop: 10 }} disabled={backfillBusy === draft.id} onClick={() => saveBackfill(draft)}>{backfillBusy === draft.id ? "保存中…" : "保存链接与指标"}</button>
+              </div>;
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="panel" style={{ marginBottom: 15 }}>
+        <div className="panel-head"><div><div className="panel-title">本周轻量复盘</div><div className="panel-sub">同平台比较；展示数据来源与样本量，不把相关性解释成因果。</div></div></div>
+        {!weeklyReport ? <div className="loading"><div className="spinner" />加载周报…</div> : <>
+          <div style={{ padding: "0 16px 16px" }}>
+            <div className="panel-sub">{weeklyReport.period.start} 至 {weeklyReport.period.end} · 有效样本 {weeklyReport.sample_size} 篇 · 来源：{weeklyReport.data_sources.join("、") || "暂无"}</div>
+            <h3 style={{ marginTop: 14 }}>表现最好</h3>
+            {weeklyReport.best_content.length ? weeklyReport.best_content.map((item) => <div className="task-row" key={item.content_id}><div className="task-main"><div className="task-title">{item.title}</div><div className="task-desc">{PLATFORM_NAME[item.platform]} · {item.metric}：{item.value} · {item.source}</div></div></div>) : <div className="panel-sub">暂无有效指标，暂不排名。</div>}
+            <h3 style={{ marginTop: 14 }}>可能原因</h3>
+            {weeklyReport.why_it_may_work.map((item, i) => <p key={i} className="panel-sub">{item.statement}（样本 {item.sample_size}）</p>)}
+            <h3 style={{ marginTop: 14 }}>下一轮建议</h3>
+            {weeklyReport.next_actions.length ? weeklyReport.next_actions.map((item, i) => <div key={i} className="task-row"><div className="task-main"><div className="task-title">{item.action}</div><div className="task-desc">依据：{item.basis} · 验证：{item.verification}</div></div></div>) : <div className="panel-sub">样本不足，先补充发布数据，再生成策略建议。</div>}
+            <div className="panel-sub" style={{ marginTop: 10 }}>限制：{weeklyReport.limitations.join("；")}</div>
+          </div>
+        </>}
       </div>
 
       {/* G-08 逐篇数据 */}
