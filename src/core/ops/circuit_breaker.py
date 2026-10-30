@@ -1,7 +1,7 @@
 """
 熔断器 — 5 信号检测 + 3 步恢复验证（R6/R6.5）。
 
-5 种触发信号（config.yaml circuit_breaker.signals）：
+5 种触发信号由 CircuitBreakerReason 枚举和适配器事件定义，属于代码协议：
 - captcha       出现验证码
 - rate_limit    限流
 - login_expired 登录态过期
@@ -12,7 +12,7 @@
 1. 冷却期是否已到期
 2. adapter.test_login() → 返回 True
 3. adapter.test_lightweight_action() → 读取创作者中心首页成功
-任何一步没过 → 延长 cooldown 1h，再次检查。
+任何一步没过 → 按账号组配置的恢复失败延长时间，再次检查。
 """
 
 from __future__ import annotations
@@ -202,7 +202,7 @@ class CircuitBreakerEngine:
 
         if not light_ok:
             results["reason"] = f"轻量动作失败，延长全部事件 cooldown {self.cfg.circuit_breaker.recovery_failure_extension_minutes} 分钟"
-            self._extend_all_cooldowns(platform, 60)
+            self._extend_all_cooldowns(platform, self.cfg.circuit_breaker.recovery_failure_extension_minutes)
             return results
 
         # 三步全部通过 → 批量 resolved 该平台所有未 resolved 事件

@@ -215,12 +215,13 @@ class SpiralEngine:
             avg_ir = p_row[1] if p_row else None
 
             # validation_gap — 样本不足（Agent 自己试水）
-            if sample_count < 5:
+            policy = self.cfg.spiral
+            if sample_count < policy.min_dimension_samples:
                 gaps.append(GapSuggestion(
                     dimension=dim,
                     gap_type="validation_gap",
                     audience="agent",
-                    suggestion_text=f"下一轮给【{dim}】分配 2-3 个选题试水（验证缺口）",
+                    suggestion_text=f"下一轮给【{dim}】分配 {policy.validation_gap_topic_min}-{policy.validation_gap_topic_max} 个选题试水（验证缺口）",
                     current_count=count,
                     sample_count=sample_count,
                     avg_interaction_rate=avg_ir,
@@ -230,11 +231,11 @@ class SpiralEngine:
 
             # coverage_gap — 覆盖缺口（库内少且表现好；全局均值为 NULL 时无法比较）
             if (
-                global_avg_ir is not None and count < median * 0.5
-                and avg_ir and avg_ir > global_avg_ir * 1.5
+                global_avg_ir is not None and count < median * policy.coverage_gap_ratio
+                and avg_ir and avg_ir > global_avg_ir * policy.coverage_performance_multiplier
             ):
                 target_count = int(median)
-                suggested_add = max(50, target_count - count)
+                suggested_add = max(policy.min_suggested_add, target_count - count)
                 gaps.append(GapSuggestion(
                     dimension=dim,
                     gap_type="coverage_gap",
@@ -263,10 +264,11 @@ class SpiralEngine:
         for platform, pm in by_platform.items():
             # R3：只对有效互动率样本求均值；无有效样本的平台不产出建议
             valid = [m for m in pm if m["interaction_rate"] is not None]
-            if len(valid) < 3:
+            policy = self.cfg.spiral
+            if len(valid) < policy.min_platform_samples:
                 continue
             avg_ir = sum(m["interaction_rate"] for m in valid) / len(valid)
-            if avg_ir < 0.02:
+            if avg_ir < policy.low_interaction_rate_threshold:
                 adjustments.append(StrategyAdjustment(
                     type="dimension_pivot",
                     description=f"平台 {platform} 互动率偏低（{avg_ir:.2%}），建议增加缺口分析维度的选题占比",
@@ -278,8 +280,9 @@ class SpiralEngine:
     def _suggest_ops(self, metrics: list[dict]) -> list[str]:
         """运营调整建议。"""
         suggestions: list[str] = []
-        if len(metrics) < 3:
-            suggestions.append("本轮样本 < 3，建议下一轮增加选题数量后再做运营调整")
+        policy = self.cfg.spiral
+        if len(metrics) < policy.min_metrics_for_ops_adjustment:
+            suggestions.append(f"本轮样本 < {policy.min_metrics_for_ops_adjustment}，建议下一轮增加选题数量后再做运营调整")
         else:
-            suggestions.append("维持当前运营配额节奏，等 ≥5 轮数据后做系统性调整")
+            suggestions.append(f"维持当前运营配额节奏，等 ≥{policy.min_rounds_for_systematic_adjustment} 轮数据后做系统性调整")
         return suggestions

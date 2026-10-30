@@ -77,12 +77,6 @@ def read_settings(conn: sqlite3.Connection) -> dict[str, Any]:
 
 def import_legacy_overrides(conn: sqlite3.Connection, legacy_path: Path) -> dict[str, int]:
     """Import legacy JSON exactly once; keep the source file untouched for rollback."""
-    marker = conn.execute(
-        "SELECT 1 FROM tenant_setting_migrations WHERE migration_key=?",
-        (LEGACY_MIGRATION_KEY,),
-    ).fetchone()
-    if marker:
-        return {"imported": 0, "rejected": 0}
     try:
         raw = json.loads(legacy_path.read_text(encoding="utf-8")) if legacy_path.exists() else {}
     except (OSError, ValueError) as exc:
@@ -90,16 +84,6 @@ def import_legacy_overrides(conn: sqlite3.Connection, legacy_path: Path) -> dict
         return {"imported": 0, "rejected": 0}
     if not isinstance(raw, dict):
         logger.error("旧配置文件结构无效，保留文件并跳过回填")
-        return {"imported": 0, "rejected": 0}
-
-    existing = conn.execute("SELECT COUNT(*) FROM tenant_settings").fetchone()[0]
-    if existing:
-        # Existing DB settings win; mark import complete to avoid replaying stale JSON.
-        conn.execute(
-            "INSERT INTO tenant_setting_migrations(migration_key,completed_at,imported_count,rejected_count) VALUES(?,?,0,0)",
-            (LEGACY_MIGRATION_KEY, _now()),
-        )
-        conn.commit()
         return {"imported": 0, "rejected": 0}
 
     accepted: dict[str, Any] = {}
@@ -119,7 +103,27 @@ def import_legacy_overrides(conn: sqlite3.Connection, legacy_path: Path) -> dict
     if lock:
         lock.acquire()
     try:
+        # Recheck both the migration marker and existing DB values while holding
+        # SQLite's write reservation. Two workers may have read the same legacy
+        # file before either one acquired this transaction.
         conn.execute("BEGIN IMMEDIATE")
+        marker = conn.execute(
+            "SELECT 1 FROM tenant_setting_migrations WHERE migration_key=?",
+            (LEGACY_MIGRATION_KEY,),
+        ).fetchone()
+        if marker:
+            conn.commit()
+            return {"imported": 0, "rejected": 0}
+
+        existing = conn.execute("SELECT COUNT(*) FROM tenant_settings").fetchone()[0]
+        if existing:
+            conn.execute(
+                "INSERT INTO tenant_setting_migrations(migration_key,completed_at,imported_count,rejected_count) VALUES(?,?,0,0)",
+                (LEGACY_MIGRATION_KEY, now),
+            )
+            conn.commit()
+            return {"imported": 0, "rejected": 0}
+
         for key, value in accepted.items():
             conn.execute(
                 "INSERT INTO tenant_settings(key,value_json,value_type,version,updated_at,updated_by) VALUES(?,?,?,?,?,?)",

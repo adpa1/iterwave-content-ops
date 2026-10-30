@@ -37,20 +37,27 @@ class PlatformStats:
 class Normalizer:
     """跨平台数据归一化。"""
 
-    def __init__(self, db_conn):
+    def __init__(self, db_conn, cfg=None):
         self.db = db_conn
+        self.cfg = cfg
 
     # ------------------------------------------------------------------
     # 计算平台内部 mean / std
     # ------------------------------------------------------------------
 
     def compute_platform_stats(
-        self, platform: Platform, metric: str, window_days: int = 90,
+        self, platform: Platform, metric: str, window_days: Optional[int] = None,
     ) -> Optional[PlatformStats]:
         """计算某平台某指标的历史均值和标准差。
 
-        window_days: 时效窗口（近 90 天），过期样本不参与评分。
+        window_days: 时效窗口；缺省读取评分配置。
         """
+        if window_days is None:
+            cfg = self.cfg
+            if cfg is None:
+                from ..config import get_config
+                cfg = get_config()
+            window_days = cfg.scoring.normalization_window_days
         # 可直接做 z-score 的比率指标
         rate_metrics = {
             "interaction_rate", "like_rate", "collect_rate", "follower_efficiency",

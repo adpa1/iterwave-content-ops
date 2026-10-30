@@ -80,10 +80,11 @@ class PlatformInsightsEngine:
     def analyze(
         self,
         round_id: Optional[int] = None,
-        days: int = 90,
+        days: Optional[int] = None,
         platforms: Optional[list[str]] = None,
     ) -> list[PlatformInsight]:
         """重新分析并落库，返回结果。"""
+        days = self.cfg.insights.window_days if days is None else days
         targets = platforms or list(PLATFORMS)
         results: list[PlatformInsight] = []
         for p in targets:
@@ -108,9 +109,12 @@ class PlatformInsightsEngine:
         ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-    def ensure_fresh(self, round_id: Optional[int] = None, days: int = 90,
-                     max_age_minutes: int = 60) -> list[dict]:
+    def ensure_fresh(self, round_id: Optional[int] = None, days: Optional[int] = None,
+                     max_age_minutes: Optional[int] = None) -> list[dict]:
         """有缓存且足够新就直接读，否则重算（避免每次 GET 都跑聚合）。"""
+        days = self.cfg.insights.window_days if days is None else days
+        max_age_minutes = (self.cfg.insights.cache_max_age_minutes
+                           if max_age_minutes is None else max_age_minutes)
         rows = self.db.execute(
             "SELECT MAX(analyzed_at) FROM platform_insights"
         ).fetchone()
@@ -199,7 +203,7 @@ class PlatformInsightsEngine:
                 -d["sample_count"],
             )
         )
-        return out[:5]
+        return out[:self.cfg.insights.top_dimensions_limit]
 
     def _group_by_hour(self, samples: list[dict]) -> list[dict]:
         buckets: dict[int, list[Optional[float]]] = {}
@@ -218,7 +222,7 @@ class PlatformInsightsEngine:
                 "avg_interaction_rate": round(sum(valid) / len(valid), 6) if valid else None,
             })
         out.sort(key=lambda d: (-(d["avg_interaction_rate"] or 0), -d["sample_count"]))
-        return out[:3]
+        return out[:self.cfg.insights.top_hours_limit]
 
     def _title_style(self, samples: list[dict]) -> dict:
         """按标题长度分桶看互动率，找出更优的长度区间。"""

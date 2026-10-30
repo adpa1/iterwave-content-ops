@@ -68,6 +68,7 @@ class TopicKbConfig(BaseModel):
     field_mapping: dict[str, str] = Field(default_factory=dict)
     # 没有维度列时归到这个默认维度（不猜测垂类）
     default_dimension: str = "综合"
+    remote_timeout_seconds: int = Field(20, ge=1, le=120)
 
 
 class RenderConfig(BaseModel):
@@ -120,6 +121,7 @@ class ScoringConfig(BaseModel):
     active_dimension_min_uses: int = 2
     active_dimension_window_days: int = 90
     shrinkage_m: int = 5
+    normalization_window_days: int = Field(90, ge=1, le=3650)
     cold_start_min_published: int = Field(10, ge=1, le=1000)
     stable_dimension_min_samples: int = Field(5, ge=1, le=100)
     history_normalization_scale: int = Field(2000, ge=1, le=10000)
@@ -202,7 +204,11 @@ class TimeoutsConfig(BaseModel):
     publish_confirm_grace_hours: int = 48
     collecting_metrics_timeout_hours: int = 72
     metrics_initial_delay_hours: int = 24
-    metrics_retry_policy: str = "3次/间隔30min"
+    metrics_retry_attempts: int = Field(3, ge=1, le=20)
+    metrics_retry_interval_minutes: int = Field(30, ge=1, le=1440)
+    login_timeout_seconds: int = Field(240, ge=60, le=1800)
+    login_export_timeout_seconds: int = Field(90, ge=10, le=600)
+    recovery_retry_delay_minutes: int = Field(1, ge=1, le=60)
     goal_max_rounds: int = 30
     round_min_interval_hours: int = 4
 
@@ -218,20 +224,9 @@ class TimeoutsConfig(BaseModel):
 
 
 class CircuitBreakerConfig(BaseModel):
-    signals: list[str] = Field(
-        default_factory=lambda: [
-            "captcha", "rate_limit", "login_expired", "action_blocked", "device_verify",
-        ]
-    )
-    cooldown_minutes: int = 30
+    # 三步恢复验证是安全流程，固定在代码中，不提供可关闭的配置项。
+    cooldown_minutes: int = Field(30, ge=1, le=1440)
     recovery_failure_extension_minutes: int = Field(60, ge=1, le=1440)
-    recovery: dict[str, bool] = Field(
-        default_factory=lambda: {
-            "require_cooldown_expired": True,
-            "require_test_login": True,
-            "require_lightweight_action": True,
-        }
-    )
 
 
 class RhythmWindowsConfig(BaseModel):
@@ -302,12 +297,11 @@ class HotTopicDedupConfig(BaseModel):
     cross_platform_similarity: float = Field(0.8, ge=0.5, le=1.0)
     # 规则 3：只在这个时间窗内找跨平台重复（避免把一个月前的同名旧闻并进来）
     cross_platform_window_hours: int = Field(48, ge=1, le=720)
+    length_prefilter_ratio: float = Field(0.5, ge=0.0, le=1.0)
 
 
 class HotTopicsConfig(BaseModel):
     enabled: bool = True
-    # 已废弃：采集频率改由 scheduler.jobs.hot_topics_refresh 配置（写了也不再生效，启动时告警）
-    refresh_interval_minutes: Optional[int] = None
     sources: list[dict] = Field(default_factory=list)
     filters: dict[str, object] = Field(default_factory=dict)
     # 滚动：每次采集只保留当前榜单（本轮没再上榜的旧热点立即删除，不展示也不参与研判）
@@ -315,6 +309,20 @@ class HotTopicsConfig(BaseModel):
     retention_days: int = Field(7, ge=1, le=365)
     max_rows: int = Field(5000, ge=100, le=1_000_000)
     dedup: HotTopicDedupConfig = Field(default_factory=HotTopicDedupConfig)
+    max_items_per_source: int = Field(30, ge=1, le=500)
+    fetch_timeout_seconds: int = Field(15, ge=1, le=120)
+    max_concurrent_fetches: int = Field(8, ge=1, le=32)
+    trend_burst_multiplier: float = Field(1.5, ge=1.01, le=10.0)
+    trend_cooled_ratio: float = Field(0.6, ge=0.05, le=0.95)
+    trend_sustained_ratio: float = Field(0.9, ge=0.05, le=1.0)
+    trend_previous_drop_ratio: float = Field(0.9, ge=0.05, le=1.0)
+    trend_min_seen_count: int = Field(3, ge=2, le=20)
+
+    @model_validator(mode="after")
+    def _check_trend_policy(self) -> "HotTopicsConfig":
+        if self.trend_cooled_ratio >= self.trend_sustained_ratio:
+            raise ValueError("trend_cooled_ratio 必须小于 trend_sustained_ratio")
+        return self
 
 
 # =====================================================================
@@ -387,6 +395,7 @@ DEFAULT_JOB_SCHEDULES: dict[str, dict] = {
 
 
 class SchedulerConfig(BaseModel):
+    misfire_grace_minutes: int = Field(360, ge=1, le=1440)
     jobs: dict[str, JobScheduleConfig] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -418,6 +427,14 @@ class AutogrowConfig(BaseModel):
     stop_when_goals_achieved: bool = True    # 所有目标达成 → 停止自动开轮
     feedback_max_bias: float = Field(15.0, ge=0, le=50)  # 单维度评分加/减分上限（总分 0-100 制）
     feedback_lookback_rounds: int = Field(3, ge=1, le=20)  # 取最近 N 轮复盘结论
+    recency_decay: float = Field(0.5, ge=0.0, le=1.0)
+    full_confidence_samples: int = Field(5, ge=1, le=100)
+    coverage_gap_bias_ratio: float = Field(0.6, ge=0.0, le=1.0)
+    validation_gap_bias_ratio: float = Field(0.3, ge=0.0, le=1.0)
+    min_dimension_bias: float = Field(0.5, ge=0.0, le=10.0)
+    max_reference_titles_per_platform: int = Field(2, ge=0, le=10)
+    max_copy_hints_per_platform: int = Field(6, ge=1, le=20)
+    max_copy_hint_chars: int = Field(120, ge=20, le=500)
 
 
 class VisionRankingConfig(BaseModel):
@@ -480,6 +497,12 @@ class MediaQualityConfig(BaseModel):
     low_resolution_pixels: int = Field(500_000, ge=10_000, le=20_000_000)
     low_color_count: int = Field(3, ge=1, le=16)
     color_count_reference: int = Field(16, ge=1, le=256)
+    composition_near_square_multiplier: float = Field(0.85, ge=0.0, le=1.0)
+    composition_wide_multiplier: float = Field(0.6, ge=0.0, le=1.0)
+    composition_extreme_multiplier: float = Field(0.25, ge=0.0, le=1.0)
+    sharpness_fallback_contrast_reference: float = Field(60.0, ge=1.0, le=255.0)
+    sampling_size: int = Field(512, ge=128, le=2048)
+    color_quantization_colors: int = Field(16, ge=2, le=256)
 
     @model_validator(mode="after")
     def _check_quality_ranges(self) -> "MediaQualityConfig":
@@ -509,9 +532,71 @@ class TenantBackupConfig(BaseModel):
 
 class HotTopicMatcherConfig(BaseModel):
     match_threshold: float = Field(60.0, ge=0.0, le=100.0)
+    llm_temperature: float = Field(0.1, ge=0.0, le=2.0)
     keyword_score: float = Field(60.0, ge=0.0, le=100.0)
     batch_size: int = Field(20, ge=1, le=100)
     max_per_run: int = Field(200, ge=1, le=2000)
+
+
+class CopyGenerationConfig(BaseModel):
+    """文案生成的可调输出约束；提示词结构与安全规则仍由代码版本化。"""
+    topic_summary_max_chars: int = Field(300, ge=50, le=2000)
+    title_max_chars: int = Field(20, ge=5, le=40)
+    body_min_chars: int = Field(150, ge=0, le=5000)
+    body_max_chars: int = Field(400, ge=50, le=10000)
+    tag_min_count: int = Field(3, ge=0, le=20)
+    tag_max_count: int = Field(5, ge=1, le=30)
+    persona_keyword_limit: int = Field(8, ge=1, le=50)
+    forbidden_direction_limit: int = Field(5, ge=1, le=50)
+    strategy_hint_max_count: int = Field(6, ge=0, le=20)
+    strategy_hint_max_chars: int = Field(120, ge=20, le=500)
+    max_guard_retries: int = Field(2, ge=0, le=10)
+
+    @model_validator(mode="after")
+    def _check_copy_constraints(self) -> "CopyGenerationConfig":
+        if self.body_min_chars > self.body_max_chars:
+            raise ValueError("body_min_chars 必须小于等于 body_max_chars")
+        if self.tag_min_count > self.tag_max_count:
+            raise ValueError("tag_min_count 必须小于等于 tag_max_count")
+        return self
+
+
+class SpiralConfig(BaseModel):
+    """复盘缺口识别与运营建议阈值。"""
+    min_dimension_samples: int = Field(5, ge=1, le=100)
+    validation_gap_topic_min: int = Field(2, ge=1, le=20)
+    validation_gap_topic_max: int = Field(3, ge=1, le=20)
+    coverage_gap_ratio: float = Field(0.5, ge=0.05, le=1.0)
+    coverage_performance_multiplier: float = Field(1.5, ge=1.0, le=10.0)
+    min_suggested_add: int = Field(50, ge=1, le=10000)
+    min_platform_samples: int = Field(3, ge=1, le=100)
+    low_interaction_rate_threshold: float = Field(0.02, ge=0.0, le=1.0)
+    min_metrics_for_ops_adjustment: int = Field(3, ge=1, le=100)
+    min_rounds_for_systematic_adjustment: int = Field(5, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def _check_validation_gap_range(self) -> "SpiralConfig":
+        if self.validation_gap_topic_min > self.validation_gap_topic_max:
+            raise ValueError("validation_gap_topic_min 必须小于等于 validation_gap_topic_max")
+        return self
+
+
+class InsightsConfig(BaseModel):
+    """平台纵深分析的窗口、缓存与结果条数。"""
+    window_days: int = Field(90, ge=1, le=3650)
+    cache_max_age_minutes: int = Field(60, ge=1, le=10080)
+    top_dimensions_limit: int = Field(5, ge=1, le=20)
+    top_hours_limit: int = Field(3, ge=1, le=24)
+
+
+class PlanSuggestionConfig(BaseModel):
+    """目标拆分建议策略；不替用户自动承诺产能。"""
+    default_topic_count: int = Field(5, ge=1, le=50)
+    default_period_days: int = Field(28, ge=1, le=3650)
+    minimum_sample_count: int = Field(3, ge=1, le=100)
+    max_topics_per_platform: int = Field(50, ge=1, le=200)
+    max_rounds: int = Field(60, ge=1, le=500)
+    default_interval_days: int = Field(7, ge=1, le=365)
 
 
 class DataRetentionConfig(BaseModel):
@@ -532,7 +617,7 @@ class LlmConfig(BaseModel):
     # ⚠️ 通道选择（重要，关乎计费与可用性，R23 安全）：
     #   - /api/v3      → 按量付费通道
     #   - /api/plan/v3 → 专属 Agent Plan 通道（Agent Plan 只支持套餐内模型）
-    # 「系统设置 → 主模型与备用」可在线切换，最终以 config.yaml / config_overrides.json 为准。
+    # 「系统设置 → 主模型与备用」可在线切换，最终以 config.yaml 初始值与账号组 SQLite 运行时配置为准。
     base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     model: str = "doubao-seed-2.1-lite"
     fallback_model: str = "doubao-seed-2.0-mini"   # 主模型失败时的兜底模型；空串 = 不启用
@@ -565,6 +650,10 @@ class Config(BaseModel):
     llm: LlmConfig = Field(default_factory=LlmConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     autogrow: AutogrowConfig = Field(default_factory=AutogrowConfig)
+    copy_generation: CopyGenerationConfig = Field(default_factory=CopyGenerationConfig)
+    insights: InsightsConfig = Field(default_factory=InsightsConfig)
+    plan_suggestion: PlanSuggestionConfig = Field(default_factory=PlanSuggestionConfig)
+    spiral: SpiralConfig = Field(default_factory=SpiralConfig)
 
     def resolve_path(self, relative: str) -> Path:
         """把 config 中的相对路径解析为相对于项目根的绝对路径。"""

@@ -16,6 +16,10 @@ function fileAsBase64(file: File): Promise<string> {
   });
 }
 
+const PLATFORM_LABELS: Record<string, string> = { xhs: "小红书", douyin: "抖音", kuaishou: "快手", wechat_channels: "视频号" };
+const DRAFT_STATUS_LABELS: Record<string, string> = { draft_pending: "待存草稿", draft_saved: "已存草稿" };
+const VISUAL_STATUS_LABELS: Record<string, string> = { media_asset: "已有素材图", generated: "AI 配图", degraded: "待更换配图" };
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -35,7 +39,7 @@ export default function MediaLibraryPane() {
   const [altText, setAltText] = useState("");
   const [tagsText, setTagsText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [purpose, setPurpose] = useState("门店环境");
+  const [purpose, setPurpose] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [targetWarning, setTargetWarning] = useState("");
@@ -108,7 +112,7 @@ export default function MediaLibraryPane() {
             filename: item.name,
             title: (files.length === 1 && title.trim()) ? title.trim() : item.name.replace(/\.[^.]+$/, ""),
             alt_text: altText.trim(),
-            tags: Array.from(new Set([purpose, ...customTags])).slice(0, 30),
+            tags: Array.from(new Set([...(purpose.trim() ? [purpose.trim()] : []), ...customTags])).slice(0, 30),
             data_base64: data,
           });
           if (result.duplicate) duplicates += 1;
@@ -262,11 +266,8 @@ export default function MediaLibraryPane() {
             <input id="media-upload-input" type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => chooseFiles(Array.from(event.target.files ?? []))} />
           </label>
           <label className="field">
-            <span className="field-label">用途分类（批量应用）</span>
-            <select value={purpose} onChange={(event) => setPurpose(event.target.value)}>
-              <option>封面</option><option>商品/菜品</option><option>门店环境</option><option>团队人物</option>
-              <option>服务过程</option><option>活动海报</option><option>品牌标识</option><option>其他</option>
-            </select>
+            <span className="field-label">自定义用途标签（批量应用）</span>
+            <input value={purpose} maxLength={60} onChange={(event) => setPurpose(event.target.value)} placeholder="按实际素材填写，例如：产品细节、服务场景、活动现场" />
           </label>
           <label className="field">
             <span className="field-label">素材名称（单张上传时使用）</span>
@@ -331,7 +332,7 @@ export default function MediaLibraryPane() {
               <textarea rows={3} maxLength={2000} value={generationSettings.prompt_prefix} onChange={(event) => setGenerationSettings({ ...generationSettings, prompt_prefix: event.target.value })} placeholder="例如：真实摄影风格、构图简洁、避免文字水印；根据账号品牌风格统一视觉表现" />
             </label>
             <div className="panel-sub" style={{ marginTop: 8 }}>
-              本月已请求 {generationSettings.used_this_month} 次 / 配额 {generationSettings.monthly_quota} 次。服务地址：{generationSettings.api_base_url} · 密钥环境变量：{generationSettings.api_key_env}
+              本月成功生成 {generationSettings.used_this_month} 次 / 配额 {generationSettings.monthly_quota} 次。失败任务不计入已用额度。
             </div>
             <div className="panel-sub" style={{ marginTop: 4 }}>
               视觉初筛依据分辨率、构图、亮度、对比度、清晰度和颜色多样性给出可解释分数；它不判断图片是否符合文案语义，也不替代人工审核。
@@ -396,7 +397,7 @@ export default function MediaLibraryPane() {
             <select value={selectedContentId} onChange={(event) => { setSelectedContentId(event.target.value); setTargetWarning(""); setRecommendations([]); setRecommendationMessage(""); }} style={{ minWidth: 260, maxWidth: "100%" }}>
               {targets.map((target) => (
                 <option value={target.id} key={target.id}>
-                  {target.title} · {target.platform} · {target.draft_status} · {target.visual_status === "media_asset" ? "已有素材图" : target.visual_status === "generated" ? "AI 配图" : "模板降级图"} · #{target.id}
+                  {target.title || "未命名内容"} · {PLATFORM_LABELS[target.platform] ?? "其他平台"} · {DRAFT_STATUS_LABELS[target.draft_status] ?? "待处理"} · {VISUAL_STATUS_LABELS[target.visual_status] ?? "待配图"}{target.round_id ? ` · 第 ${target.round_id} 轮` : ""}
                 </option>
               ))}
             </select>

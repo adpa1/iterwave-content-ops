@@ -521,9 +521,12 @@ def read_table(path: Path, fmt: str, table_name: Optional[str] = None) -> tuple[
 # 远程来源
 # ----------------------------------------------------------------------
 
-def fetch_remote(source: dict, timeout: int = 20) -> tuple[list[str], list[dict]]:
+def fetch_remote(source: dict, timeout: int | None = None) -> tuple[list[str], list[dict]]:
     """通过固定到已验证公网 IP 的连接抓取远程来源。"""
     from .safe_http import fetch_public_bytes
+    if timeout is None:
+        from .config import get_config
+        timeout = get_config().topic_kb.remote_timeout_seconds
 
     url = (source.get("url") or "").strip()
     headers = {str(k): str(v) for k, v in (source.get("headers") or {}).items() if k and v}
@@ -551,7 +554,7 @@ def sync_remote(cfg, source: dict) -> dict:
     source_id = str(source.get("id") or "")
     if not _SOURCE_ID_RE.fullmatch(source_id):
         raise ValueError("选题库来源 ID 格式不合法")
-    columns, rows = fetch_remote(source)
+    columns, rows = fetch_remote(source, timeout=cfg.topic_kb.remote_timeout_seconds)
     fmt = detect_format(str(source.get("url") or ""), source.get("format") or "auto")
     cache = cache_dir(cfg) / f"{source_id}.{_guess_ext({**source, 'format': fmt})}"
     if fmt == "json":

@@ -58,8 +58,8 @@ class SchedulerEngine:
                 "default": SQLAlchemyJobStore(url=f"sqlite:///{db_path}"),
             },
             timezone=None,  # APScheduler 接受 None 表示本地时区（R5）
-            # 应用关着时到点的任务：6 小时内重启仍补跑（默认 1 秒会把一次性数据采集直接丢掉）
-            job_defaults={"misfire_grace_time": 6 * 3600, "coalesce": True},
+            # 应用关闭期间错过的任务：按配置的宽限期决定重启后是否补跑。
+            job_defaults={"misfire_grace_time": self.cfg.scheduler.misfire_grace_minutes * 60, "coalesce": True},
         )
         # 每平台一把 asyncio.Lock（R13.3）
         from ...adapters.base import Platform
@@ -308,17 +308,11 @@ class SchedulerEngine:
                     draft_id, attempt, run_at.isoformat())
 
     def _metrics_retry_params(self) -> tuple[int, int]:
-        """解析 timeouts.metrics_retry_policy（"3次/间隔30min"）→ (次数, 间隔分钟)。
-
-        缺省 3 次 / 30min，与设计方案 §14.3 一致。
-        """
-        import re
-        policy = getattr(self.cfg.timeouts, "metrics_retry_policy", "") or ""
-        times_m = re.search(r"(\d+)\s*次", policy)
-        interval_m = re.search(r"(\d+)\s*min", policy, re.IGNORECASE)
-        times = int(times_m.group(1)) if times_m else 3
-        interval = int(interval_m.group(1)) if interval_m else 30
-        return max(1, times), max(1, interval)
+        """返回配置化的数据采集重试次数与间隔（分钟）。"""
+        return (
+            self.cfg.timeouts.metrics_retry_attempts,
+            self.cfg.timeouts.metrics_retry_interval_minutes,
+        )
 
     # ------------------------------------------------------------------
     # 7 类任务实现（全部 stub，Phase 5-6 补真实逻辑）
@@ -460,7 +454,7 @@ class SchedulerEngine:
     async def _job_data_fetch(self, draft_id: str, attempt: int = 1) -> None:
         """发布后 metrics_initial_delay_hours（默认 24h）拉取平台数据。
 
-        失败按 timeouts.metrics_retry_policy（默认 3 次 / 间隔 30min）重试；
+        失败按 timeouts.metrics_retry_attempts / metrics_retry_interval_minutes 配置重试；
         耗尽后保留 fetch_status=failed，由 round_timeout_sweeper 按 R8 收口。
         """
         import json  # noqa: F401 — 保留供后续 raw 扩展

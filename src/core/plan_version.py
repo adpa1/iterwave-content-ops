@@ -118,7 +118,7 @@ class PlanVersionManager:
                 n = len(json.loads(row["topic_ids"])) if row and row["topic_ids"] else 0
             except (TypeError, ValueError):
                 n = 0
-            topic_count_per_platform = n or 5
+            topic_count_per_platform = n or self.cfg.plan_suggestion.default_topic_count
         return self.build_plan(
             topic_count_per_platform=topic_count_per_platform,
             platforms=self.cfg.platforms.enabled_keys(),
@@ -283,11 +283,12 @@ def suggest_plan_from_goal(cfg, conn, goal_id: str, current_plan: Optional[dict]
     plan = dict(current_plan or {})
     platforms = [g["target_platform"]] if g.get("target_platform") else (
         plan.get("enabled_platforms") or cfg.platforms.enabled_keys())
-    topic_count = int(plan.get("topic_count_per_platform") or 5)
+    policy = cfg.plan_suggestion
+    topic_count = int(plan.get("topic_count_per_platform") or policy.default_topic_count)
     notes: list[str] = []
 
     today = datetime.now().date()
-    period_days = 28
+    period_days = policy.default_period_days
     if g.get("metric_period_end"):
         try:
             end = datetime.fromisoformat(str(g["metric_period_end"])[:10]).date()
@@ -295,7 +296,7 @@ def suggest_plan_from_goal(cfg, conn, goal_id: str, current_plan: Optional[dict]
         except ValueError:
             pass
     else:
-        notes.append("目标没有截止日期，按 4 周规划")
+        notes.append(f"目标没有截止日期，按 {policy.default_period_days} 天规划")
 
     metric = g.get("target_metric")
     col = METRIC_COLUMNS.get(metric)
@@ -311,26 +312,26 @@ def suggest_plan_from_goal(cfg, conn, goal_id: str, current_plan: Optional[dict]
             g.get("current_value"), g.get("baseline_value"), g.get("target_value"), g.get("metric_scope"))
         done_ratio = max(0.0, (rate or 0) / 100.0)
         remaining = max(0.0, float(g["target_value"]) * (1 - done_ratio))
-        if per_content and per_content > 0 and n >= 3:
+        if per_content and per_content > 0 and n >= policy.minimum_sample_count:
             contents_needed = math.ceil(remaining / per_content)
             notes.append(f"历史每篇平均 {per_content:.1f} {metric}（样本 {n}），剩余 {remaining:.0f} → 约需 {contents_needed} 篇")
         else:
-            notes.append("已发布样本不足 3 篇，无法按产出推算篇数，先按每周一轮起步，3 轮后再用真实数据重算")
+            notes.append(f"已发布样本不足 {policy.minimum_sample_count} 篇，无法按产出推算篇数，先按默认节奏起步，样本达标后再用真实数据重算")
     elif metric in PERCENT_METRICS:
-        notes.append("比率类目标靠质量而非数量，节奏按每周一轮、保持每轮复盘调整")
+        notes.append(f"比率类目标靠质量而非数量，按每 {policy.default_interval_days} 天一轮、保持每轮复盘调整")
     else:
-        notes.append(f"指标 {metric} 暂不支持按产出推算，按每周一轮起步")
+        notes.append(f"指标 {metric} 暂不支持按产出推算，按每 {policy.default_interval_days} 天一轮起步")
 
     per_round = topic_count * max(1, len(platforms))
     if contents_needed:
         rounds = max(1, math.ceil(contents_needed / per_round))
         if rounds > period_days:  # 每天一轮也来不及 → 提高每轮篇数
-            topic_count = min(50, math.ceil(contents_needed / (period_days * max(1, len(platforms)))))
+            topic_count = min(policy.max_topics_per_platform, math.ceil(contents_needed / (period_days * max(1, len(platforms)))))
             rounds = period_days
             notes.append(f"按天开轮仍不够，建议每平台每轮提到 {topic_count} 篇")
     else:
-        rounds = max(1, period_days // 7)
-    rounds = min(rounds, 60)
+        rounds = max(1, period_days // policy.default_interval_days)
+    rounds = min(rounds, policy.max_rounds)
     interval = max(1, period_days // rounds)
     notes.append(f"{period_days} 天内开 {rounds} 轮，每 {interval} 天一轮，每轮每平台 {topic_count} 篇")
     return {

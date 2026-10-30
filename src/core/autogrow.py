@@ -29,11 +29,6 @@ ACTIVE_ROUND_STATUSES = ("created", "producing", "awaiting_publish", "collecting
 TERMINAL_OK = ("completed", "partial_completed")
 TERMINAL_ALL = ("completed", "partial_completed", "failed", "cancelled")
 
-# 复盘轮次的时间衰减权重：最近一轮 1.0，往前依次减半
-_RECENCY_DECAY = 0.5
-# 维度样本数达到该值视为置信度满
-_FULL_CONFIDENCE_SAMPLES = 5
-
 
 # =====================================================================
 # 复盘结论 → 可执行反馈
@@ -99,7 +94,7 @@ def build_feedback(cfg, conn, guard=None) -> StrategyFeedback:
     for idx, row in enumerate(rows):
         round_id = int(row[0])
         fb.source_round_ids.append(round_id)
-        weight = _RECENCY_DECAY ** idx
+        weight = ag.recency_decay ** idx
 
         # ① 维度表现：本轮维度均值 vs 本轮整体均值（R3：NULL 不计入）
         perf = conn.execute(
@@ -116,9 +111,9 @@ def build_feedback(cfg, conn, guard=None) -> StrategyFeedback:
             if overall > 0 and len(perf) >= 2:
                 for dim, avg_ir, n in perf:
                     rel = max(-1.0, min(1.0, float(avg_ir) / overall - 1.0))
-                    conf = min(1.0, int(n) / _FULL_CONFIDENCE_SAMPLES)
+                    conf = min(1.0, int(n) / ag.full_confidence_samples)
                     delta = max_bias * rel * conf * weight
-                    if abs(delta) >= 0.5:
+                    if abs(delta) >= ag.min_dimension_bias:
                         add(dim, delta, f"第{round_id}号轮互动率为整体的 {float(avg_ir) / overall:.0%}（样本 {n}）")
 
         decision = _load_decision(row[1])
@@ -129,9 +124,9 @@ def build_feedback(cfg, conn, guard=None) -> StrategyFeedback:
         for gap in decision.get("gaps") or []:
             dim = gap.get("dimension")
             if gap.get("gap_type") == "coverage_gap":
-                add(dim, max_bias * 0.6, "覆盖缺口：表现好但库存少")
+                add(dim, max_bias * ag.coverage_gap_bias_ratio, "覆盖缺口：表现好但库存少")
             elif gap.get("gap_type") == "validation_gap":
-                add(dim, max_bias * 0.3, "验证缺口：样本不足，试水")
+                add(dim, max_bias * ag.validation_gap_bias_ratio, "验证缺口：样本不足，试水")
 
         # ③ 平台洞察 → 文案要点
         for ins in decision.get("platform_insights") or []:
@@ -146,12 +141,12 @@ def build_feedback(cfg, conn, guard=None) -> StrategyFeedback:
             if tops and tops[0].get("dimension"):
                 hints.append(f"该平台近期「{tops[0]['dimension']}」方向表现最好，可借鉴其切入角度")
             if ins.get("conclusion"):
-                hints.append(str(ins["conclusion"])[:120])
+                hints.append(str(ins["conclusion"])[:ag.max_copy_hint_chars])
 
         # ④ 策略调整描述 → 通用要点
         for adj in decision.get("strategy_adjustments") or []:
             if adj.get("description"):
-                fb.copy_hints.setdefault("*", []).append(str(adj["description"])[:120])
+                fb.copy_hints.setdefault("*", []).append(str(adj["description"])[:ag.max_copy_hint_chars])
 
     # ⑤ 最近几轮各平台互动率最高的标题，作为写法参考（不照抄）
     if fb.source_round_ids:
@@ -166,13 +161,13 @@ def build_feedback(cfg, conn, guard=None) -> StrategyFeedback:
         ).fetchall()
         per_platform: dict[str, int] = {}
         for platform, title, _ir in best:
-            if per_platform.get(platform, 0) >= 2 or not title:
+            if per_platform.get(platform, 0) >= ag.max_reference_titles_per_platform or not title:
                 continue
             per_platform[platform] = per_platform.get(platform, 0) + 1
-            fb.copy_hints.setdefault(platform, []).append(f"上一轮高互动标题参考写法（不要照抄）：「{title[:30]}」")
+            fb.copy_hints.setdefault(platform, []).append(f"上一轮高互动标题参考写法（不要照抄）：「{title[:ag.max_copy_hint_chars]}」")
 
     fb.dimension_bias = {
-        d: round(max(-max_bias, min(max_bias, v)), 2) for d, v in raw_bias.items() if abs(v) >= 0.5
+        d: round(max(-max_bias, min(max_bias, v)), 2) for d, v in raw_bias.items() if abs(v) >= ag.min_dimension_bias
     }
 
     # 合规闸门：要点先过终极目标方向检查，命中红线直接丢弃（R2）
@@ -187,7 +182,7 @@ def build_feedback(cfg, conn, guard=None) -> StrategyFeedback:
                     ok = False
                 (kept if ok else fb.dropped_hints).append(h)
             fb.copy_hints[key] = kept
-    fb.copy_hints = {k: list(dict.fromkeys(v))[:6] for k, v in fb.copy_hints.items() if v}
+    fb.copy_hints = {k: list(dict.fromkeys(v))[:ag.max_copy_hints_per_platform] for k, v in fb.copy_hints.items() if v}
     return fb
 
 

@@ -43,8 +43,6 @@ _HEAT_UNIT = {
     "bilibili": "播放量",
 }
 
-_MAX_ITEMS_PER_PLATFORM = 30
-_FETCH_TIMEOUT_SECONDS = 15
 
 # 配置里的平台名 → 60s API 路径名（bilibili 的接口路径是 bili）
 _PLATFORM_PATH = {"bilibili": "bili"}
@@ -124,11 +122,14 @@ def _parse_event_ts(raw: dict) -> Optional[datetime]:
     return None
 
 
-def _trend_of(it: dict, median: float | None) -> tuple[str, str]:
+def _trend_of(it: dict, median: float | None, policy=None) -> tuple[str, str]:
     """趋势辅助标签：爆发 / 持续爆发 / 降温中 / 已降温 / 平稳。
 
     只用库里的真实数据判断：没有上轮数据（seen_count=1）绝不编「降温」，热度为 NULL 不判（R3）。
     """
+    if policy is None:
+        from .config import HotTopicsConfig
+        policy = HotTopicsConfig()
     heat, prev, peak = it["heat"], it["heat_prev"], it["heat_peak"]
     seen = it["seen_count"] or 1
     if heat is None:
@@ -137,14 +138,14 @@ def _trend_of(it: dict, median: float | None) -> tuple[str, str]:
     if not peak or peak <= 0:
         return "平稳", "缺少峰值数据"
     if seen <= 1:
-        if median and heat >= median * 1.5:
+        if median and heat >= median * policy.trend_burst_multiplier:
             return "爆发", f"首次上榜，热度是同源中位数的 {heat / median:.1f} 倍"
         return "平稳", "首次上榜，热度未明显高于同源中位数"
-    if seen >= 3 and heat <= peak * 0.6:
+    if seen >= policy.trend_min_seen_count and heat <= peak * policy.trend_cooled_ratio:
         return "已降温", f"较峰值 {peak:.0f} 已回落 {(1 - heat / peak) * 100:.0f}%"
-    if seen >= 3 and heat >= peak * 0.9:
-        return "持续爆发", f"连续 {seen} 轮在榜，热度仍在峰值 90% 以上"
-    if prev is not None and prev > 0 and heat <= prev * 0.9:
+    if seen >= policy.trend_min_seen_count and heat >= peak * policy.trend_sustained_ratio:
+        return "持续爆发", f"连续 {seen} 轮在榜，热度仍在峰值 {policy.trend_sustained_ratio:.0%} 以上"
+    if prev is not None and prev > 0 and heat <= prev * policy.trend_previous_drop_ratio:
         return "降温中", f"较上轮 {prev:.0f} 下降 {(1 - heat / prev) * 100:.0f}%"
     return "平稳", "热度与前几轮基本持平"
 
@@ -160,13 +161,11 @@ class HotTopicCollector:
         # 来源类型：aggregate（综合热榜，默认）/ rss / json（自定义行业源）
         self.aggregate_sources = [s for s in configured if s.get("type", "aggregate") == "aggregate"]
         self.custom_sources = [s for s in configured if s.get("type") in ("rss", "json")]
-        if not configured:
-            self.aggregate_sources = [{"name": "60s.viki.moe", "url": "https://60s.viki.moe",
-                                       "platforms": ["weibo", "douyin"]}]
+        # 数据源唯一默认定义在 config/config.yaml；显式清空来源即停止采集，不再静默回退到硬编码公网源。
         self.source = self.aggregate_sources[0] if self.aggregate_sources else {}
-        self.base_url = (self.source.get("url") or "https://60s.viki.moe").rstrip("/")
-        self.platforms = list(self.source.get("platforms") or ["weibo", "douyin"])
-        self.source_name = self.source.get("name") or "60s.viki.moe"
+        self.base_url = (self.source.get("url") or "").rstrip("/")
+        self.platforms = list(self.source.get("platforms") or [])
+        self.source_name = self.source.get("name") or ""
 
     # ------------------------------------------------------------------
     # 对外入口
@@ -255,7 +254,7 @@ class HotTopicCollector:
 
         emit("fetching", "抓取平台热榜", 5, message=f"共 {total} 个数据源")
 
-        with ThreadPoolExecutor(max_workers=max(1, total)) as pool:
+        with ThreadPoolExecutor(max_workers=min(self.hcfg.max_concurrent_fetches, max(1, total))) as pool:
             futures = {pool.submit(fn): (key, label) for key, label, fn in jobs}
             results: dict[str, tuple[str, list[dict] | Exception]] = {}
             done = 0
@@ -307,7 +306,8 @@ class HotTopicCollector:
             "merged_legacy": backfill(self.conn),
             "cross_platform_duplicates": mark_cross_platform(
                 self.conn, threshold=d.cross_platform_similarity,
-                window_hours=d.cross_platform_window_hours),
+                window_hours=d.cross_platform_window_hours,
+                length_prefilter_ratio=d.length_prefilter_ratio),
             "pruned": prune(self.conn, retention_days=self.hcfg.retention_days,
                             max_rows=self.hcfg.max_rows),
             "rows": self.conn.execute("SELECT COUNT(*) FROM hot_topics").fetchone()[0],
@@ -324,7 +324,7 @@ class HotTopicCollector:
         path = _PLATFORM_PATH.get(platform, platform)
         url = f"{base_url}/v2/{path}"
         body, _content_type = _fetch_public_text(
-            url, timeout=_FETCH_TIMEOUT_SECONDS,
+            url, timeout=self.hcfg.fetch_timeout_seconds,
             headers={"User-Agent": "iterwave/0.1 (+local)"},
         )
         payload = json.loads(body)
@@ -334,7 +334,7 @@ class HotTopicCollector:
         window_h = self.hcfg.filters.get("time_window_hours")
         now = datetime.now()
         out: list[dict] = []
-        for raw in (payload.get("data") or [])[:_MAX_ITEMS_PER_PLATFORM]:
+        for raw in (payload.get("data") or [])[:self.hcfg.max_items_per_source]:
             title = (raw.get("title") or "").strip()
             if not title:
                 continue
@@ -362,7 +362,7 @@ class HotTopicCollector:
         if not url.startswith(("http://", "https://")):
             raise ValueError("行业源地址无效")
         body, content_type = _fetch_public_text(
-            url, timeout=_FETCH_TIMEOUT_SECONDS,
+            url, timeout=self.hcfg.fetch_timeout_seconds,
             headers={**{str(k): str(v) for k, v in (source.get("headers") or {}).items() if k},
                      "User-Agent": "iterwave/0.1 (+local)"},
         )
@@ -389,7 +389,7 @@ class HotTopicCollector:
         window_h = self.hcfg.filters.get("time_window_hours")
         now = datetime.now()
         out: list[dict] = []
-        for raw in rows[:_MAX_ITEMS_PER_PLATFORM]:
+        for raw in rows[:self.hcfg.max_items_per_source]:
             title = (raw.get("title") or "").strip()
             if not title:
                 continue
@@ -643,7 +643,7 @@ class HotTopicCollector:
                 heats_by_platform.setdefault(it["platform"], []).append(float(it["heat"]))
         medians = {p: statistics.median(v) for p, v in heats_by_platform.items() if v}
         for it in items:
-            it["trend"], it["trend_reason"] = _trend_of(it, medians.get(it["platform"]))
+            it["trend"], it["trend_reason"] = _trend_of(it, medians.get(it["platform"]), self.hcfg)
 
         for it in items:
             it["also_on"] = also_on.get(it["id"], [])

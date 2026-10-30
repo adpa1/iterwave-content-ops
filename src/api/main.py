@@ -1685,7 +1685,7 @@ def _register_routes(app: FastAPI) -> None:
     def recommend_media_assets(
         content_id: str = Query(..., min_length=1, max_length=128),
         usage_role: str = Query("cover", pattern="^(cover|illustration|background)$"),
-        limit: int = Query(8, ge=1, le=20),
+        limit: int = Query(20, ge=1, le=50),
     ):
         """基于内容文本与素材标题/标签的可解释关键词匹配；只推荐已审核且未归档素材，不自动分配。"""
         conn = _g()["conn"]
@@ -3981,7 +3981,7 @@ def _register_routes(app: FastAPI) -> None:
             except (ConfigNotAllowedError, ConfigPatchError) as e:
                 raise HTTPException(422, str(e)) from e
         return {"ok": True, "channel": channel, "enabled": bool(getattr(ccfg, "enabled", False)),
-                "has_webhook_url": bool(read_env(env_name)), "env_name": env_name}
+                "has_webhook_url": bool(read_env(env_name))}
 
     # --- 运营日志（ops_logs）---
     @app.get("/api/ops_logs")
@@ -4230,8 +4230,7 @@ def _register_routes(app: FastAPI) -> None:
         value = req.api_key.strip()
         write_env(key_name, value)
         # R23：只回报状态，绝不回报 Key 本身
-        return {"ok": True, "has_key": bool(os.environ.get(key_name)),
-                "env_file": str(env_file())}
+        return {"ok": True, "has_key": bool(os.environ.get(key_name))}
 
     # --- 内容资产（G-13：外部参考 / 个人观点 / 内容模板）---
     @app.get("/api/assets")

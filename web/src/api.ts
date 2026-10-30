@@ -513,8 +513,6 @@ export interface MediaGenerationSettings {
   updated_at: string | null;
   used_this_month: number;
   provider_configured: boolean;
-  api_base_url?: string | null;
-  api_key_env?: string | null;
 }
 export interface MediaUsageTarget {
   id: string;
@@ -629,7 +627,7 @@ export interface SystemConfigView {
     llm_enabled: boolean;
     llm_has_api_key: boolean;
     // 平台连接
-    platforms: Record<string, { enabled: boolean; account_key: string; base_url: string }>;
+    platforms: Record<string, { enabled: boolean }>;
     /** R8：各阶段独立超时（小时），可在线改 */
     timeouts: Record<string, number | string>;
     /** R11 三模式权重 + R12 半衰期（可在线调，每个模式合计必须 100） */
@@ -649,7 +647,6 @@ export interface SystemConfigView {
     /** 通知通道（webhook URL 只在 .env，这里只回是否已配置） */
     notification_channels: Record<string, {
       enabled: boolean;
-      webhook_url_env: string | null;
       has_webhook_url: boolean;
       available?: boolean;
     }>;
@@ -1385,7 +1382,7 @@ export const api = {
   saveHotSources: (items: HotSource[]) =>
     fetchJson<{ items: HotSource[] }>("/api/hot_topics/sources", { method: "PUT", body: JSON.stringify({ items }) }),
   saveWebhook: (channel: "wecom" | "feishu", url: string) =>
-    fetchJson<{ ok: boolean; channel: string; enabled: boolean; has_webhook_url: boolean; env_name: string }>(
+    fetchJson<{ ok: boolean; channel: string; enabled: boolean; has_webhook_url: boolean }>(
       "/api/notify/webhook", { method: "POST", body: JSON.stringify({ channel, url }) },
     ),
   // === 主动运营目标（账号组 SQLite 业务数据）===
@@ -1403,7 +1400,7 @@ export const api = {
     ),
   /** R23：Key 只写 config/.env（chmod 600）；返回值只有状态，无明文 */
   saveLlmKey: (apiKey: string) =>
-    fetchJson<{ ok: boolean; has_key: boolean; env_file: string }>("/api/config/llm_key", {
+    fetchJson<{ ok: boolean; has_key: boolean }>("/api/config/llm_key", {
       method: "POST", body: JSON.stringify({ api_key: apiKey }),
     }),
   notifyRules: () => fetchJson<NotifyRule[]>("/api/notify_rules"),

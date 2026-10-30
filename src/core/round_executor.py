@@ -44,9 +44,6 @@ logger = logging.getLogger(__name__)
 # 平台未启用 / 熔断时不给该平台产出内容
 _SKIP_REASON_CIRCUIT = "平台熔断中，跳过本轮产出"
 
-# R2：G2 FAIL/ERROR → 丢弃重生成，最多重试 2 次（即最多 3 次生成）
-MAX_GUARD_RETRIES = 2
-
 
 class RoundExecutor:
     """轮次执行器：选题 → 文案 → 检查 → 卡片 → 存草稿。"""
@@ -105,7 +102,7 @@ class RoundExecutor:
         self._pvm = PlanVersionManager(self.cfg, self.conn)
         self._plan, self._plan_sig, _at, self._plan_source = self._pvm.load_plan()
         if topic_count is None:
-            topic_count = int(self._plan.get("topic_count_per_platform") or 5)
+            topic_count = int(self._plan.get("topic_count_per_platform") or self.cfg.plan_suggestion.default_topic_count)
         if platform_values is None and self._plan_source == "plan_settings":
             platform_values = list(self._plan.get("enabled_platforms") or []) or None
         # Agent 编排：存草稿 / 出图 / 自动排期按编排开关运行
@@ -677,7 +674,7 @@ class RoundExecutor:
                 accepted = None
                 image_paths: list = []
                 reject_reason: Optional[str] = None
-                for attempt in range(MAX_GUARD_RETRIES + 1):
+                for attempt in range(self.cfg.copy_generation.max_guard_retries + 1):
                     # LLM 为阻塞调用，放到线程池避免卡住事件循环
                     title, body, tags = await asyncio.to_thread(
                         generate_copy_content,
@@ -735,10 +732,10 @@ class RoundExecutor:
 
                 if accepted is None:
                     # 重试超限：该平台变体不发草稿，通知落地
-                    report["retry_counts"][f"{platform.value}/{topic.id}"] = MAX_GUARD_RETRIES
+                    report["retry_counts"][f"{platform.value}/{topic.id}"] = self.cfg.copy_generation.max_guard_retries
                     msg = (
                         f"{platform.display_name} 平台「{topic.title[:20]}」"
-                        f"重试 {MAX_GUARD_RETRIES} 次仍不合规，已丢弃"
+                        f"重试 {self.cfg.copy_generation.max_guard_retries} 次仍不合规，已丢弃"
                     )
                     report["errors"].append(msg)
                     self._notify_guard_give_up(platform, topic.title, msg)

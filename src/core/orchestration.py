@@ -34,7 +34,7 @@ STEP_DEFS: dict[str, dict] = {
     },
     "quality_gate": {
         "label": "③ 质量门检查", "skill": "ultimate_goal_check", "locked": True, "requires": ["copywriting"],
-        "desc": "R2 终极目标检查：红线 / 禁止方向 / 维度偏离，不通过打回重写，最多 2 次",
+        "desc": "R2 终极目标检查：红线 / 禁止方向 / 维度偏离，不通过打回重写，重试次数按文案生产配置",
         "inputs": ["文案"],
     },
     "image_card": {
@@ -254,7 +254,7 @@ def diagnose(cfg, conn, *, cb=None, live_llm: bool = False) -> dict:
         items.append(_item(4, "LLM API 连通", "warn", "LLM 未启用：文案走模板降级，复盘要点不会进文案",
                            "settings", "model"))
     elif not os.getenv(llm.api_key_env):
-        items.append(_item(4, "LLM API 连通", "block", f"缺少环境变量 {llm.api_key_env}", "settings", "model"))
+        items.append(_item(4, "LLM API 连通", "block", "缺少 LLM 服务密钥，请检查服务端部署环境中的密钥配置", "settings", "model"))
     elif live_llm:
         try:
             import httpx

@@ -38,5 +38,6 @@ def test_generation_requires_server_side_key(monkeypatch) -> None:
     monkeypatch.setenv("ITERWAVE_IMAGE_API_KEY_ENV", "TEST_IMAGE_KEY")
     monkeypatch.delenv("TEST_IMAGE_KEY", raising=False)
     from src.core.media_generation import generate_image_bytes
-    with pytest.raises(ImageGenerationError, match="TEST_IMAGE_KEY"):
+    with pytest.raises(ImageGenerationError, match="服务端部署环境") as exc:
         generate_image_bytes("a useful image prompt", model="test-model", size="1024x1024")
+    assert "TEST_IMAGE_KEY" not in str(exc.value)

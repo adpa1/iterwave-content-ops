@@ -396,26 +396,12 @@ export function PlatformToggles({ view, onSaved, loggedIn }: {
     for (const [k, v] of Object.entries(view.readonly.platforms)) init[k] = !!v.enabled;
     return init;
   });
-  const [baseUrls, setBaseUrls] = useState<Record<string, string>>(() => {
-    const init: Record<string, string> = {};
-    for (const [k, v] of Object.entries(view.readonly.platforms)) init[k] = v.base_url || "";
-    return init;
-  });
-  const [accountKeys, setAccountKeys] = useState<Record<string, string>>(() => {
-    const init: Record<string, string> = {};
-    for (const [k, v] of Object.entries(view.readonly.platforms)) init[k] = v.account_key || "";
-    return init;
-  });
   const busy = isPending("cfg:platforms");
 
   const save = async () => {
     const updates: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(view.readonly.platforms)) {
       if (enabled[k] !== v.enabled) updates[`platforms.${k}.enabled`] = enabled[k];
-      const url = (baseUrls[k] ?? "").trim();
-      if (url && url !== v.base_url) updates[`platforms.${k}.base_url`] = url;
-      const key = (accountKeys[k] ?? "").trim();
-      if (key && key !== v.account_key) updates[`platforms.${k}.account_key`] = key;
     }
     if (Object.keys(updates).length === 0) { showToast("平台配置没有改动", "info"); return; }
     try {
@@ -432,7 +418,7 @@ export function PlatformToggles({ view, onSaved, loggedIn }: {
     <>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>平台</th><th style={{ width: 70 }}>启用</th><th>account_key（登录态文件）</th><th>base_url（可改）</th><th>登录态</th></tr></thead>
+          <thead><tr><th>平台</th><th style={{ width: 70 }}>启用</th><th>登录态</th></tr></thead>
           <tbody>
             {Object.entries(view.readonly.platforms).map(([k, v]) => (
               <tr key={k}>
@@ -440,17 +426,6 @@ export function PlatformToggles({ view, onSaved, loggedIn }: {
                 <td>
                   <input type="checkbox" checked={enabled[k] ?? false}
                     onChange={(e) => setEnabled((prev) => ({ ...prev, [k]: e.target.checked }))} />
-                </td>
-                <td>
-                  <input className="field" style={{ width: "100%", fontFamily: "monospace", fontSize: 11 }}
-                    value={accountKeys[k] ?? ""}
-                    placeholder="xhs_main"
-                    onChange={(e) => setAccountKeys((prev) => ({ ...prev, [k]: e.target.value }))} />
-                </td>
-                <td>
-                  <input className="field" style={{ width: "100%", fontFamily: "monospace", fontSize: 11 }}
-                    value={baseUrls[k] ?? ""}
-                    onChange={(e) => setBaseUrls((prev) => ({ ...prev, [k]: e.target.value }))} />
                 </td>
                 <td>
                   {loggedIn?.includes(k)
@@ -804,8 +779,8 @@ export function NotifyChannelsEditor({ view, onSaved }: {
                     {k === "macos"
                       ? <span className="tag gray">无需配置</span>
                       : ch?.has_webhook_url
-                        ? <span className="tag green">{ch.webhook_url_env} 已设置</span>
-                        : <span className="tag orange">{ch?.webhook_url_env || "未配置"} 缺失（.env）</span>}
+                        ? <span className="tag green">已配置</span>
+                        : <span className="tag orange">未配置（.env）</span>}
                   </td>
                 </tr>
               );

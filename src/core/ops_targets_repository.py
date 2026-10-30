@@ -112,11 +112,6 @@ def load_ops_targets(conn) -> dict[str, OpsTargetsConfig]:
 
 def seed_from_yaml(conn, configured: dict[str, Any]) -> dict[str, int]:
     """One-time import from config.yaml; empty YAML still records completion."""
-    marker = conn.execute(
-        "SELECT 1 FROM tenant_setting_migrations WHERE migration_key=?", (SEED_MARKER,)
-    ).fetchone()
-    if marker:
-        return {"imported": 0}
     payload: dict[str, Any] = {}
     for platform in PLATFORMS:
         item = (configured or {}).get(platform)
@@ -132,16 +127,25 @@ def seed_from_yaml(conn, configured: dict[str, Any]) -> dict[str, int]:
     lock = _lock(conn)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        # Check the marker inside the write transaction to make concurrent
+        # application startup idempotent across workers/processes.
+        marker = conn.execute(
+            "SELECT 1 FROM tenant_setting_migrations WHERE migration_key=?", (SEED_MARKER,)
+        ).fetchone()
+        if marker:
+            conn.commit()
+            return {"imported": 0}
+        now = _now()
         for platform, action, target, content, order in rows:
             conn.execute(
                 "INSERT INTO ops_targets(platform,action_type,target,content,sort_order,created_at,updated_at) "
                 "VALUES(?,?,?,?,?,?,?)",
-                (platform, action, target, content, order, _now(), _now()),
+                (platform, action, target, content, order, now, now),
             )
         conn.execute(
             "INSERT INTO tenant_setting_migrations(migration_key,completed_at,imported_count,rejected_count) "
             "VALUES(?,?,?,0)",
-            (SEED_MARKER, _now(), len(rows)),
+            (SEED_MARKER, now, len(rows)),
         )
         conn.commit()
     except Exception:

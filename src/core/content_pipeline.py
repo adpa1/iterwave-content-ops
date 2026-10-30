@@ -126,10 +126,14 @@ def generate_copy_content(
     return _generate_via_template(topic_title, topic_summary, dimension, platform, style)
 
 
-def build_hint_block(strategy_hints: Optional[list[str]]) -> str:
+def build_hint_block(strategy_hints: Optional[list[str]], policy=None) -> str:
     """上一轮复盘要点 → 提示词片段。要点已在 autogrow 里过了合规方向检查；
     这里只作参考，明确不得为迎合数据脱离方向或触碰红线。"""
-    hints = [h.strip() for h in (strategy_hints or []) if h and h.strip()][:6]
+    if policy is None:
+        from .config import CopyGenerationConfig
+        policy = CopyGenerationConfig()
+    hints = [h.strip()[:policy.strategy_hint_max_chars] for h in (strategy_hints or [])
+             if h and h.strip()][:policy.strategy_hint_max_count]
     if not hints:
         return ""
     lines = "\n".join(f"- {h}" for h in hints)
@@ -168,9 +172,9 @@ def _generate_via_llm(
         f"平台：{platform.display_name}\n"
         f"平台风格：{style['title_style']}；{style['body_style']}；语气 {style['tone']}\n"
         f"选题：{topic_title}\n"
-        f"摘要：{topic_summary[:300]}\n"
+        f"摘要：{topic_summary[:cfg.copy_generation.topic_summary_max_chars]}\n"
         f"内容方向：{dimension}\n"
-        f"要求：标题不超过 20 字；正文 150-400 字；标签 3-5 个；"
+        f"要求：标题不超过 {cfg.copy_generation.title_max_chars} 字；正文 {cfg.copy_generation.body_min_chars}-{cfg.copy_generation.body_max_chars} 字；标签 {cfg.copy_generation.tag_min_count}-{cfg.copy_generation.tag_max_count} 个；"
         f"不得出现违法违规内容；不得脱离「{dimension}」方向；"
         f"不得编造事实、产品、公司、数据、奖项或用户评价。"
     )
@@ -195,12 +199,12 @@ def _generate_via_llm(
             user_prompt += f"\n{role_hint}"
         if kws:
             user_prompt += (
-                f"\n账号定位关键词：{'、'.join(kws[:8])}；"
+                f"\n账号定位关键词：{'、'.join(kws[:cfg.copy_generation.persona_keyword_limit])}；"
                 f"标题或正文必须自然出现其中至少 1 个，不得生硬堆砌。"
             )
         if forb:
-            user_prompt += f"\n禁止方向：{'；'.join(forb[:5])}。"
-    prompt_hints = build_hint_block(strategy_hints)
+            user_prompt += f"\n禁止方向：{'；'.join(forb[:cfg.copy_generation.forbidden_direction_limit])}。"
+    prompt_hints = build_hint_block(strategy_hints, cfg.copy_generation)
     if prompt_hints:
         user_prompt += prompt_hints
     if reject_reason:
@@ -265,7 +269,7 @@ def _generate_via_llm(
     tags = parsed.get("tags") or style["hashtags"] or [f"#{dimension}"]
     if isinstance(tags, str):
         tags = [t for t in re.split(r"[,\s]+", tags) if t]
-    tags = [f"#{str(t).strip().lstrip('#')}" for t in tags if str(t).strip()][:5]
+    tags = [f"#{str(t).strip().lstrip('#')}" for t in tags if str(t).strip()][:cfg.copy_generation.tag_max_count]
     output_valid = bool(title and body)
     _log_ai_call(
         conn, platform, llm.model, topic_id, round_id,
@@ -278,7 +282,7 @@ def _generate_via_llm(
         return None
     if not isinstance(tags, list):
         tags = style["hashtags"] or [f"#{dimension}"]
-    return title[:40], body, [str(t) for t in tags][:6]
+    return title[:cfg.copy_generation.title_max_chars], body, [str(t) for t in tags][:cfg.copy_generation.tag_max_count]
 
 
 def _log_ai_call(

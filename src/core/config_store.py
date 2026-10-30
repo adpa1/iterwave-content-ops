@@ -1,13 +1,9 @@
 """运行时配置白名单修改 + 审计（G-13 / G-24）。
 
-为什么不用 yaml.dump 直接改写 config.yaml：
-`config/config.yaml` 带大量中文注释，PyYAML 回写会全部丢失注释。
-所以采用「白名单补丁 + 覆盖文件」方案：
-
-1. 只允许改白名单里声明的字段（越权 → ConfigNotAllowedError）
-2. 改动实时写进内存中的 Config 对象（同一实例被 scheduler / adapters / ops 持有，立即生效）
-3. 覆盖值持久化到 `data/config_overrides.json`，下次启动 load_config 之后重新套用
-4. 每次改动写 `config_changes`（key / old_value / new_value）留痕
+`config/config.yaml` 提供部署初始值；账号组 SQLite 的 `tenant_settings`
+是运行时覆盖值的唯一持久化事实来源。配置更新在校验后原子写入 SQLite，
+同步更新当前进程内存配置，并写入版本快照与审计记录。
+旧 `config_overrides.json` 只用于一次性迁移/故障恢复兼容，不再作为日常写入目标。
 
 R22 硬锁：维度匹配门 / 可发布性门不在白名单内，且显式拒绝并给出原因，
 不允许通过本接口（或任何 UI 入口）关闭。
@@ -22,12 +18,15 @@ import re
 import sqlite3
 import tempfile
 import threading
+import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from src.core.config import DEFAULT_JOB_SCHEDULES, JOB_DESCRIPTIONS, Config, validate_cron
+from src.core.config import DEFAULT_JOB_SCHEDULES, JOB_DESCRIPTIONS, Config, PlatformPersonaConfig, validate_cron
 from src.core.redact import redact, redact_path
+from src.core.notify import _EVENT_CATALOG
 
 logger = logging.getLogger(__name__)
 _OVERRIDES_WRITE_LOCK = threading.RLock()
@@ -119,6 +118,12 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "media_quality.low_resolution_pixels": (int, 10_000, 20_000_000),
     "media_quality.low_color_count": (int, 1, 16),
     "media_quality.color_count_reference": (int, 1, 256),
+    "media_quality.composition_near_square_multiplier": (float, 0.0, 1.0),
+    "media_quality.composition_wide_multiplier": (float, 0.0, 1.0),
+    "media_quality.composition_extreme_multiplier": (float, 0.0, 1.0),
+    "media_quality.sharpness_fallback_contrast_reference": (float, 1.0, 255.0),
+    "media_quality.sampling_size": (int, 128, 2048),
+    "media_quality.color_quantization_colors": (int, 2, 256),
     "tenant_switch.request_drain_timeout_seconds": (int, 1, 120),
     "tenant_switch.scheduler_drain_timeout_seconds": (int, 1, 120),
     "tenant_switch.round_drain_timeout_seconds": (int, 1, 600),
@@ -127,12 +132,14 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "tenant_backup.max_bytes": (int, 1_048_576, 2 * 1024 * 1024 * 1024),
     "tenant_backup.retention_count": (int, 1, 100),
     "hot_topic_matcher.match_threshold": (float, 0.0, 100.0),
+    "hot_topic_matcher.llm_temperature": (float, 0.0, 2.0),
     "hot_topic_matcher.keyword_score": (float, 0.0, 100.0),
     "hot_topic_matcher.batch_size": (int, 1, 100),
     "hot_topic_matcher.max_per_run": (int, 1, 2000),
     "scoring.cold_start_min_published": (int, 1, 1000),
     "scoring.stable_dimension_min_samples": (int, 1, 100),
     "scoring.history_normalization_scale": (int, 1, 10000),
+    "scoring.normalization_window_days": (int, 1, 3650),
     "scoring.freshness_window_days": (int, 1, 365),
     "scoring.dimension_gap_ratio": (float, 0.0, 1.0),
     "scoring.dimension_gap_score": (float, 0.0, 100.0),
@@ -148,6 +155,16 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "rhythm.windows.ops.end_hour": (int, 0, 23),
     "circuit_breaker.cooldown_minutes": (int, 1, 1440),
     "hot_topics.retention_days": (int, 1, 365),
+    "hot_topics.max_items_per_source": (int, 1, 500),
+    "hot_topics.fetch_timeout_seconds": (int, 1, 120),
+    "hot_topics.max_concurrent_fetches": (int, 1, 32),
+    "hot_topics.trend_burst_multiplier": (float, 1.01, 10.0),
+    "hot_topics.trend_cooled_ratio": (float, 0.05, 0.95),
+    "hot_topics.trend_sustained_ratio": (float, 0.05, 1.0),
+    "hot_topics.trend_previous_drop_ratio": (float, 0.05, 1.0),
+    "hot_topics.trend_min_seen_count": (int, 2, 20),
+    "hot_topics.dedup.cross_platform_similarity": (float, 0.5, 1.0),
+    "hot_topics.dedup.length_prefilter_ratio": (float, 0.0, 1.0),
     "hot_topics.max_rows": (int, 100, 1_000_000),
     "hot_topics.dedup.cross_platform_window_hours": (int, 1, 720),
     "hot_topics.filters.heat_threshold": (int, 0, 10_000_000),
@@ -164,6 +181,45 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "autogrow.max_consecutive_failures": (int, 1, 20),
     "autogrow.feedback_max_bias": (int, 0, 50),
     "autogrow.feedback_lookback_rounds": (int, 1, 20),
+    "autogrow.recency_decay": (float, 0.0, 1.0),
+    "autogrow.full_confidence_samples": (int, 1, 100),
+    "autogrow.coverage_gap_bias_ratio": (float, 0.0, 1.0),
+    "autogrow.validation_gap_bias_ratio": (float, 0.0, 1.0),
+    "autogrow.min_dimension_bias": (float, 0.0, 10.0),
+    "autogrow.max_reference_titles_per_platform": (int, 0, 10),
+    "autogrow.max_copy_hints_per_platform": (int, 1, 20),
+    "autogrow.max_copy_hint_chars": (int, 20, 500),
+    "copy_generation.topic_summary_max_chars": (int, 50, 2000),
+    "copy_generation.title_max_chars": (int, 5, 40),
+    "copy_generation.body_min_chars": (int, 0, 5000),
+    "copy_generation.body_max_chars": (int, 50, 10000),
+    "copy_generation.tag_min_count": (int, 0, 20),
+    "copy_generation.tag_max_count": (int, 1, 30),
+    "copy_generation.persona_keyword_limit": (int, 1, 50),
+    "copy_generation.forbidden_direction_limit": (int, 1, 50),
+    "copy_generation.strategy_hint_max_count": (int, 0, 20),
+    "copy_generation.strategy_hint_max_chars": (int, 20, 500),
+    "copy_generation.max_guard_retries": (int, 0, 10),
+    "insights.window_days": (int, 1, 3650),
+    "insights.cache_max_age_minutes": (int, 1, 10080),
+    "insights.top_dimensions_limit": (int, 1, 20),
+    "insights.top_hours_limit": (int, 1, 24),
+    "plan_suggestion.default_topic_count": (int, 1, 50),
+    "plan_suggestion.default_period_days": (int, 1, 3650),
+    "plan_suggestion.minimum_sample_count": (int, 1, 100),
+    "plan_suggestion.max_topics_per_platform": (int, 1, 200),
+    "plan_suggestion.max_rounds": (int, 1, 500),
+    "plan_suggestion.default_interval_days": (int, 1, 365),
+    "spiral.min_dimension_samples": (int, 1, 100),
+    "spiral.validation_gap_topic_min": (int, 1, 20),
+    "spiral.validation_gap_topic_max": (int, 1, 20),
+    "spiral.coverage_gap_ratio": (float, 0.05, 1.0),
+    "spiral.coverage_performance_multiplier": (float, 1.0, 10.0),
+    "spiral.min_suggested_add": (int, 1, 10000),
+    "spiral.min_platform_samples": (int, 1, 100),
+    "spiral.low_interaction_rate_threshold": (float, 0.0, 1.0),
+    "spiral.min_metrics_for_ops_adjustment": (int, 1, 100),
+    "spiral.min_rounds_for_systematic_adjustment": (int, 1, 100),
     "llm.enabled": (bool, None, None),
     # 通知通道开关（页面只在运营中心提供开关；也可从这里改）
     "notifications.channels.macos.enabled": (bool, None, None),
@@ -178,6 +234,13 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "timeouts.metrics_initial_delay_hours": (int, 0, 720),
     "timeouts.goal_max_rounds": (int, 1, 500),
     "timeouts.round_min_interval_hours": (int, 0, 168),
+    "scheduler.misfire_grace_minutes": (int, 1, 1440),
+    "timeouts.metrics_retry_attempts": (int, 1, 20),
+    "timeouts.metrics_retry_interval_minutes": (int, 1, 1440),
+    "timeouts.login_timeout_seconds": (int, 60, 1800),
+    "timeouts.login_export_timeout_seconds": (int, 10, 600),
+    "timeouts.recovery_retry_delay_minutes": (int, 1, 60),
+    "topic_kb.remote_timeout_seconds": (int, 1, 120),
     # 存草稿时段窗口（本地时区，R5）
     "rhythm.windows.draft_save.start_hour": (int, 0, 23),
     "rhythm.windows.draft_save.end_hour": (int, 0, 23),
@@ -347,6 +410,13 @@ def _validate(key: str, value: Any) -> Any:
         if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", v):
             raise ConfigPatchError(f"{key} 必须是合法环境变量名（大写字母/数字/下划线，1-64）")
         return v
+
+    if len(parts) == 4 and parts[:2] == ["notifications", "events"] and parts[3] == "enabled":
+        if parts[2] not in _EVENT_CATALOG:
+            raise ConfigNotAllowedError(f"未知通知事件：{parts[2]}")
+        if not isinstance(value, bool):
+            raise ConfigPatchError(f"{key} 必须是布尔值")
+        return value
 
     if key == "hot_topics.sources":
         if not isinstance(value, list) or len(value) > 20:
@@ -528,6 +598,10 @@ def _jsonable(v: Any) -> Any:
 
 
 def _get_value(cfg: Config, key: str) -> Any:
+    parts = _split(key)
+    if len(parts) == 4 and parts[:2] == ["notifications", "events"] and parts[3] == "enabled":
+        event = next((item for item in cfg.notifications.events if item.name == parts[2]), None)
+        return event.enabled if event is not None else None
     node: Any = cfg
     for part in _split(key):
         if isinstance(node, dict):
@@ -551,6 +625,12 @@ def _counterpart(key: str) -> str | None:
 
 def _set_value(cfg: Config, key: str, value: Any) -> None:
     parts0 = _split(key)
+    if len(parts0) == 4 and parts0[:2] == ["notifications", "events"] and parts0[3] == "enabled":
+        event = next((item for item in cfg.notifications.events if item.name == parts0[2]), None)
+        if event is None:
+            raise ConfigNotAllowedError(f"未知通知事件：{parts0[2]}")
+        event.enabled = value
+        return
     if len(parts0) == 4 and parts0[:2] == ["ultimate_goal", "platform_personas"]:
         from .config import PlatformPersonaConfig
         from .persona import platform_persona
@@ -611,6 +691,7 @@ def load_overrides(cfg: Config) -> dict[str, Any]:
 
 
 def _save_overrides(cfg: Config, overrides: dict[str, Any]) -> None:
+    """仅供旧版 JSON 导入/恢复工具使用；正常 patch_config 永不调用此写入路径。"""
     path = overrides_path(cfg)
     payload = json.dumps(overrides, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     with _OVERRIDES_WRITE_LOCK:
@@ -701,8 +782,11 @@ def config_metadata_view(cfg: Config) -> list[dict[str, Any]]:
             continue
         add(key, value, kind="boolean" if kind is bool else "integer" if kind is int else "number",
             minimum=minimum, maximum=maximum)
+    # 部署端点与账号内部标识不属于普通运行策略编辑界面，不向前端元数据接口下发。
+    hidden_runtime_fields = {"vision_ranking.base_url", "media_generation.base_url"}
     for key in STRING_RULES:
-        add(key, _get_value(cfg, key), kind="string")
+        if key not in hidden_runtime_fields:
+            add(key, _get_value(cfg, key), kind="string")
     for key in LIST_RULES:
         add(key, _get_value(cfg, key), kind="array", maximum=LIST_RULES[key])
     for platform in PLATFORM_KEYS:
@@ -710,8 +794,7 @@ def config_metadata_view(cfg: Config) -> list[dict[str, Any]]:
             key = f"rhythm.daily_quotas.{platform}.{field}"
             quota = cfg.rhythm.daily_quotas.get(platform)
             add(key, getattr(quota, field, None) if quota else None, kind="integer", minimum=0, maximum=10000)
-        add(f"platforms.{platform}.base_url", _get_value(cfg, f"platforms.{platform}.base_url"), kind="url")
-        add(f"platforms.{platform}.account_key", _get_value(cfg, f"platforms.{platform}.account_key"), kind="string")
+        # 平台服务端点与 account_key 是部署/内部路由信息，不作为 UI 配置元数据返回。
     for job_id, job in cfg.scheduler.jobs.items():
         add(f"scheduler.jobs.{job_id}.enabled", job.enabled, kind="boolean")
         add(f"scheduler.jobs.{job_id}.interval_minutes", job.interval_minutes, kind="integer", minimum=1, maximum=10080)
@@ -720,6 +803,37 @@ def config_metadata_view(cfg: Config) -> list[dict[str, Any]]:
         for field in SCORING_WEIGHT_FIELDS:
             key = f"scoring.{mode}.{field}"
             add(key, _get_value(cfg, key), kind="integer", minimum=0, maximum=100)
+    for category in ("news", "evergreen"):
+        key = f"scoring.timeliness_half_life_days.{category}"
+        add(key, cfg.scoring.timeliness_half_life_days.get(category), kind="integer",
+            minimum=1, maximum=3650)
+    for event in cfg.notifications.events:
+        add(f"notifications.events.{event.name}.enabled", event.enabled, kind="boolean",
+            description=f"{event.name} 通知事件开关")
+    # 独立校验分支中的可编辑字段也必须出现在统一元数据中。
+    for key, minimum, maximum in (
+        ("scoring.active_dimension_min_uses", 1, 10),
+        ("scoring.active_dimension_window_days", 7, 365),
+        ("scoring.shrinkage_m", 1, 50),
+    ):
+        add(key, _get_value(cfg, key), kind="integer", minimum=minimum, maximum=maximum)
+    for field in RHYTHM_INTERVAL_FIELDS:
+        key = f"rhythm.intervals.{field}"
+        add(key, _get_value(cfg, key), kind="integer", minimum=0, maximum=3600)
+    for platform in PLATFORM_KEYS:
+        add(f"platforms.{platform}.enabled",
+            getattr(cfg.platforms, platform).enabled, kind="boolean")
+    add("topic_kb.type", cfg.topic_kb.type, kind="string")
+    add("topic_kb.field_mapping", cfg.topic_kb.field_mapping, kind="object")
+    add("ultimate_goal.goal_mode", cfg.ultimate_goal.goal_mode, kind="string")
+    add("ultimate_goal.positioning", cfg.ultimate_goal.positioning, kind="string")
+    add("ultimate_goal.platform_links",
+        [item.model_dump() for item in cfg.ultimate_goal.platform_links], kind="array")
+    for platform in PLATFORM_KEYS:
+        persona = cfg.ultimate_goal.platform_personas.get(platform) or PlatformPersonaConfig()
+        for field in ("inherit_global", "account_name", "positioning", "audience",
+                      "role", "persona_keywords", "forbidden_directions", "extra_redlines"):
+            add(f"ultimate_goal.platform_personas.{platform}.{field}", getattr(persona, field))
     for key, value in HARD_LOCKED_KEYS.items():
         add(key, True, kind="boolean", editable=False, description=value)
     return [items[key] for key in sorted(items)]
@@ -758,6 +872,22 @@ def _redact_public_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_redact_public_value(v) for v in value]
     return value
+
+
+_INTERNAL_ENDPOINT_KEYS = {
+    "vision_ranking.base_url", "media_generation.base_url",
+    *(f"platforms.{platform}.{field}" for platform in PLATFORM_KEYS
+      for field in ("base_url", "account_key")),
+}
+
+
+def _public_overrides(values: dict[str, Any]) -> dict[str, Any]:
+    """Do not echo deployment-only provider endpoints through the general config API."""
+    return {
+        key: _redact_public_value(value)
+        for key, value in values.items()
+        if key not in _INTERNAL_ENDPOINT_KEYS
+    }
 
 
 def current_config_view(cfg: Config, conn) -> dict[str, Any]:
@@ -832,13 +962,8 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             "llm_has_api_key": bool(__import__("os").environ.get(cfg.llm.api_key_env)),
             # —— 平台连接状态（只读，登录态文件 + enabled 开关）——
             "platforms": {
-                k: {
-                    "enabled": v.get("enabled") if isinstance(v, dict) else getattr(v, "enabled", None),
-                    "account_key": v.get("account_key") if isinstance(v, dict) else getattr(v, "account_key", None),
-                    "base_url": v.get("base_url") if isinstance(v, dict) else getattr(v, "base_url", None),
-                }
-                for k, v in cfg.platforms.model_dump().items()
-                if k in ("xhs", "douyin", "kuaishou", "wechat_channels")
+                k: {"enabled": getattr(cfg.platforms, k).enabled}
+                for k in ("xhs", "douyin", "kuaishou", "wechat_channels")
             },
             # —— 阶段超时（R8 独立计时，可在「系统设置」在线改）——
             "timeouts": cfg.timeouts.model_dump(),
@@ -852,7 +977,6 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             "notification_channels": {
                 name: {
                     "enabled": bool(ch.enabled),
-                    "webhook_url_env": ch.webhook_url_env,
                     "has_webhook_url": bool(
                         ch.webhook_url_env and os.environ.get(ch.webhook_url_env)
                     ),
@@ -864,7 +988,7 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             },
         },
         "overrides_file": redact_path(overrides_path(cfg)),
-        "overrides": _redact_public_value(
+        "overrides": _public_overrides(
             __import__("src.core.config_repository", fromlist=["read_settings"]).read_settings(conn)
             or (
                 load_overrides(cfg)
@@ -875,8 +999,8 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
         "audit": [
             {
                 **dict(r),
-                "old_value": _redact_public_value(r["old_value"]),
-                "new_value": _redact_public_value(r["new_value"]),
+                "old_value": ("已隐藏" if r["key"] in _INTERNAL_ENDPOINT_KEYS and r["old_value"] else _redact_public_value(r["old_value"])),
+                "new_value": ("已隐藏" if r["key"] in _INTERNAL_ENDPOINT_KEYS and r["new_value"] else _redact_public_value(r["new_value"])),
             }
             for r in conn.execute(
                 "SELECT id, key, old_value, new_value, changed_at "
@@ -890,6 +1014,18 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
     """白名单批量修改：校验 → SQLite 原子持久化/审计 → 更新内存配置。"""
     if not updates:
         raise ConfigPatchError("updates 不能为空")
+
+    blocked_runtime_fields = {
+        "vision_ranking.base_url", "media_generation.base_url",
+        *(f"platforms.{platform}.{field}" for platform in PLATFORM_KEYS
+          for field in ("base_url", "account_key")),
+        *(f"notifications.channels.{channel}.webhook_url_env" for channel in ("wecom", "feishu")),
+    }
+    blocked = sorted(set(updates) & blocked_runtime_fields)
+    if blocked:
+        raise ConfigNotAllowedError(
+            "部署端点与账号内部标识不允许通过普通运行时配置接口修改：" + ", ".join(blocked)
+        )
 
     normalized: dict[str, Any] = {}
     for key, value in updates.items():
@@ -936,6 +1072,24 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
         raise ConfigPatchError("media_quality.brightness_min 必须小于 brightness_max")
     if not portrait_min < portrait_max < square_max < landscape_max:
         raise ConfigPatchError("图片构图比例阈值必须依次递增：portrait_min < portrait_max < square_max < landscape_max")
+
+    trend_cooled = normalized.get("hot_topics.trend_cooled_ratio", cfg.hot_topics.trend_cooled_ratio)
+    trend_sustained = normalized.get("hot_topics.trend_sustained_ratio", cfg.hot_topics.trend_sustained_ratio)
+    if trend_cooled >= trend_sustained:
+        raise ConfigPatchError("热点趋势阈值必须满足 trend_cooled_ratio < trend_sustained_ratio")
+
+    body_min = normalized.get("copy_generation.body_min_chars", cfg.copy_generation.body_min_chars)
+    body_max = normalized.get("copy_generation.body_max_chars", cfg.copy_generation.body_max_chars)
+    tag_min = normalized.get("copy_generation.tag_min_count", cfg.copy_generation.tag_min_count)
+    tag_max = normalized.get("copy_generation.tag_max_count", cfg.copy_generation.tag_max_count)
+    if body_min > body_max:
+        raise ConfigPatchError("文案正文长度下限不能大于上限")
+    if tag_min > tag_max:
+        raise ConfigPatchError("文案标签数量下限不能大于上限")
+    spiral_min = normalized.get("spiral.validation_gap_topic_min", cfg.spiral.validation_gap_topic_min)
+    spiral_max = normalized.get("spiral.validation_gap_topic_max", cfg.spiral.validation_gap_topic_max)
+    if spiral_min > spiral_max:
+        raise ConfigPatchError("验证缺口建议选题数量下限不能大于上限")
 
     changes: list[dict[str, Any]] = []
     persisted: dict[str, Any] = {}

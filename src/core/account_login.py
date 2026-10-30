@@ -59,7 +59,6 @@ def configure_data_dir(data_dir: Path | str) -> None:
     STORAGE_STATE_DIR = root / "login_states"
 
 
-LOGIN_TIMEOUT = 240
 PLATFORMS = ("xhs", "douyin", "kuaishou", "wechat_channels")
 
 # 平台 → vendor 脚本里的 profile 目录名（xhs_publish.PROFILE_NAME / douyin_publish.PROFILE_NAME /
@@ -125,13 +124,16 @@ def _login_env() -> dict[str, str]:
     return env
 
 
-def build_cmd(platform: str) -> list[str]:
-    """构造登录命令（参数与 Easel web/app.py _start_login 一致，另加 --profile-base）。"""
+def build_cmd(platform: str, timeout_seconds: int | None = None) -> list[str]:
+    """构造登录命令；等待时限来自当前账号组运行配置。"""
+    if timeout_seconds is None:
+        from .config import get_config
+        timeout_seconds = get_config().timeouts.login_timeout_seconds
     f = _files(platform)
     py = sys.executable
     common = ["--profile-base", str(PROFILE_BASE),
               "--qr-out", str(f["qr"]), "--status-file", str(f["status"]),
-              "--timeout", str(LOGIN_TIMEOUT)]
+              "--timeout", str(timeout_seconds)]
     if platform == "xhs":
         cmd = [py, str(VENDOR_SCRIPTS / "xhs_publish.py"), "login", "--no-proxy", *common]
     elif platform == "douyin":
@@ -405,8 +407,11 @@ def _schedule_export(platform: str) -> None:
     threading.Thread(target=_run, name=f"login-export-{platform}", daemon=True).start()
 
 
-def export_storage_state(platform: str, timeout: int = 90) -> bool:
+def export_storage_state(platform: str, timeout: int | None = None) -> bool:
     """用与登录脚本相同的浏览器 / profile 打开一次，导出 cookies + localStorage。"""
+    if timeout is None:
+        from .config import get_config
+        timeout = get_config().timeouts.login_export_timeout_seconds
     _ensure_dirs()
     out = _files(platform)["storage"]
     cmd = [sys.executable, "-m", "src.core.login_export",

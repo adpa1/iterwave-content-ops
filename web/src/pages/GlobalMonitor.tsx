@@ -56,7 +56,7 @@ export default function GlobalMonitor() {
     ["账号组", total?.tenants ?? "—", `数据库可读取 ${total?.available_tenants ?? "—"} 个`],
     ["内容产出", total?.contents_period ?? "—", `近 ${days} 天`],
     ["内容总量", total?.contents_all ?? "—", "所有可读取账号组"],
-    ["待存草稿", total?.drafts_pending ?? "—", "draft_pending 状态；不等同于人工审核"],
+    ["待存草稿", total?.drafts_pending ?? "—", "待存入平台的草稿；不等同于人工审核"],
     ["已存平台草稿", total?.drafts_saved ?? "—", "不等同于已发布"],
     ["已发布及后续状态", total?.drafts_published ?? "—", "含已发布、采集和已采集"],
     ["失败草稿", total?.drafts_failed ?? "—", "按失败状态记录统计"],
@@ -134,7 +134,7 @@ export default function GlobalMonitor() {
                 <tbody>
                   {visibleTenants.map((tenant) => (
                     <tr key={tenant.tenant_id}>
-                      <td><strong>{tenant.tenant_name}</strong><div className="panel-sub"><code>{tenant.tenant_id}</code></div></td>
+                      <td><strong>{tenant.tenant_name}</strong></td>
                       <td><span className={tenant.db_available ? "tag green" : "tag orange"}>{tenant.db_available ? "可读取" : "不可用"}</span></td>
                       <td>{tenant.db_available ? tenant.contents_period : "—"}</td>
                       <td>{tenant.db_available ? tenant.contents_all : "—"}</td>

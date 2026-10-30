@@ -115,3 +115,13 @@ def test_sms_code_validation(tmp_login):
         al.submit_sms_code("douyin", "12")
     al.submit_sms_code("douyin", " 12-34 56 ")
     assert al._files("douyin")["code"].read_text() == "123456"
+
+
+
+def test_login_command_uses_configured_timeout(tmp_login, monkeypatch):
+    from src.core.config import get_config
+
+    cfg = get_config()
+    monkeypatch.setattr(cfg.timeouts, "login_timeout_seconds", 321)
+    command = al.build_cmd("xhs")
+    assert command[command.index("--timeout") + 1] == "321"
