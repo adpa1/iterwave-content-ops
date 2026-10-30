@@ -76,21 +76,19 @@ def test_correct_login_is_not_blocked_by_other_users_ip_failures(monkeypatch):
 
 
 
-def test_round_run_endpoint_returns_before_background_execution(client, seed, monkeypatch):
+def test_round_run_endpoint_enqueues_global_task(client, seed, monkeypatch, tmp_path):
     import asyncio
 
     import src.api.main as api_main
+    from src.core.task_queue import GlobalTaskQueue
 
     _tc, _conn = client
     round_id = seed.round(status="created")
-
-    class FakeExecutor:
-        async def run(self, *_args, **_kwargs):
-            await asyncio.sleep(0)
-            return {"round_id": round_id, "final_status": "success", "steps": []}
-
-    monkeypatch.setitem(api_main._g_ctx, "executor", FakeExecutor())
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    monkeypatch.setattr(api_main, "_task_queue", queue)
     api_main._round_job_status.pop(round_id, None)
+
     run_route = next(
         route for route in api_main.app.routes
         if getattr(route, "path", None) == "/api/rounds/{round_id}/run"
@@ -100,22 +98,22 @@ def test_round_run_endpoint_returns_before_background_execution(client, seed, mo
         if getattr(route, "path", None) == "/api/rounds/{round_id}/run_status"
     )
 
-    async def exercise():
-        scheduled = []
-        original_create_task = asyncio.create_task
+    started = asyncio.run(run_route.endpoint(round_id, api_main.RunRoundRequest()))
+    assert started["started"] is True
+    assert started["queued"] is True
+    assert started["task_id"]
 
-        def capture_task(coro, **kwargs):
-            task = original_create_task(coro, **kwargs)
-            scheduled.append(task)
-            return task
+    tenant_id = api_main._g().get("runtime_tenant_id", "default")
+    queued = queue.find_latest(
+        tenant_id=tenant_id, task_type="round_run", aggregate_id=str(round_id),
+    )
+    assert queued is not None and queued.status == "queued"
 
-        monkeypatch.setattr(asyncio, "create_task", capture_task)
-        started = await run_route.endpoint(round_id, api_main.RunRoundRequest())
-        assert started["running"] is True
-        assert len(scheduled) == 1
-        await scheduled[0]
-        return status_route.endpoint(round_id)
-
-    status = asyncio.run(exercise())
+    claimed = queue.claim_next("test-worker")
+    assert claimed is not None and claimed.task_id == started["task_id"]
+    report = {"round_id": round_id, "final_status": "success", "steps": []}
+    assert queue.finish(claimed.task_id, "test-worker", result=report)
+    status = status_route.endpoint(round_id)
     assert status["running"] is False
     assert status["report"]["final_status"] == "success"
+    queue.release_worker("test-worker")
