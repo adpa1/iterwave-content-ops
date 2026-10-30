@@ -23,6 +23,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
+from .timezone import business_now
+
 logger = logging.getLogger(__name__)
 
 ACTIVE_ROUND_STATUSES = ("created", "producing", "awaiting_publish", "collecting_metrics", "analyzing")
@@ -247,7 +249,7 @@ class AutogrowController:
     def evaluate(self, force: bool = False) -> dict:
         """只判断不执行：返回 {can_start, action, reason, ...}，供状态接口与 tick 共用。"""
         ag = self.cfg.autogrow
-        now = datetime.now()
+        now = business_now(self.cfg)
 
         if not ag.enabled and not force:
             return {"can_start": False, "action": "skipped", "reason": "自动闭环已关闭"}
@@ -465,7 +467,7 @@ class AutogrowController:
         try:
             self.conn.execute(
                 "INSERT INTO autogrow_runs (ran_at, action, reason, round_id) VALUES (?, ?, ?, ?)",
-                (datetime.now().isoformat(sep=" ", timespec="seconds"), action, reason[:500], round_id),
+                (business_now(self.cfg).isoformat(sep=" ", timespec="seconds"), action, reason[:500], round_id),
             )
             self.conn.commit()
         except Exception:  # noqa: BLE001
