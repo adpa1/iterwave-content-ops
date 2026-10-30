@@ -515,10 +515,7 @@ export default function Production() {
     setPlanPlatforms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
   };
 
-  const runPlatforms = usePlan
-    ? ((plan?.plan.enabled_platforms ?? []) as Platform[])
-    : selPlatforms;
-  const runHasMissingLogin = runPlatforms.some((platform) => noLogin.includes(platform));
+  const runHasMissingLogin = noLogin.length > 0;
   const canRun = !!roundDetail && ["created", "failed"].includes(roundDetail.status)
     && !running && availableTopicCount !== null && availableTopicCount > 0
     && (usePlan || selPlatforms.length > 0)
@@ -850,7 +847,7 @@ export default function Production() {
                   <div style={{ marginBottom: 8 }}>
                     <DemoBadge
                       level="blocked"
-                      text={`${noLogin.map((p) => PLATFORM_NAME[p]).join("、")} 未连接真实账号；选择这些平台并开启存草稿时会阻止启动，关闭存草稿可先干跑`}
+                      text={`${noLogin.map((p) => PLATFORM_NAME[p]).join("、")} 未连接真实账号；启用平台存在未登录账号；开启存草稿时阻止启动，关闭存草稿可先干跑`}
                     />
                   </div>
                 )}
@@ -909,7 +906,7 @@ export default function Production() {
                 })()}
                 {saveDrafts && runHasMissingLogin && (
                   <div className="note" style={{ marginTop: 8, color: "var(--orange)" }}>
-                    运行前检查未通过：本轮选中的平台存在未登录账号。请先到账号管理完成登录，或取消「本轮执行存草稿」进行干跑。
+                    运行前检查未通过：当前启用平台存在未登录账号。请先到账号管理完成登录，或取消「本轮执行存草稿」进行干跑。
                   </div>
                 )}
                 {roundDetail.status === "failed" && (
