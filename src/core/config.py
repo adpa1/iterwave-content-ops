@@ -646,6 +646,7 @@ class ActivationConfig(BaseModel):
 
 
 class Config(BaseModel):
+    business_timezone: str = "Asia/Shanghai"
     paths: PathsConfig = Field(default_factory=PathsConfig)
     topic_kb: TopicKbConfig
     render: RenderConfig = Field(default_factory=RenderConfig)
@@ -678,6 +679,17 @@ class Config(BaseModel):
     insights: InsightsConfig = Field(default_factory=InsightsConfig)
     plan_suggestion: PlanSuggestionConfig = Field(default_factory=PlanSuggestionConfig)
     spiral: SpiralConfig = Field(default_factory=SpiralConfig)
+
+    @field_validator("business_timezone")
+    @classmethod
+    def _valid_business_timezone(cls, value: str) -> str:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        name = str(value or "").strip()
+        try:
+            ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("business_timezone 必须是有效的 IANA 时区名称") from exc
+        return name
 
     def resolve_path(self, relative: str) -> Path:
         """把 config 中的相对路径解析为相对于项目根的绝对路径。"""
