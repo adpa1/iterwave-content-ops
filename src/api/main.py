@@ -2596,8 +2596,10 @@ def _register_routes(app: FastAPI) -> None:
             report = json.loads(row["run_report"] or "null")
         except (TypeError, ValueError):
             report = None
+        # 兼容多 worker：轮次数据库状态为 producing 时，即使轮询落到另一 worker 也继续等待。
         return {
-            "round_id": round_id, "running": round_id in _running_rounds,
+            "round_id": round_id,
+            "running": round_id in _running_rounds or row["status"] == "producing",
             "report": report, "error": None,
         }
 
