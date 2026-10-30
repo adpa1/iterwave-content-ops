@@ -42,6 +42,13 @@ export default function Analytics() {
   const [weeklyReport, setWeeklyReport] = useState<WeeklyReport | null>(null);
   const [activationMetrics, setActivationMetrics] = useState<ActivationMetrics | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
+  const [snapshotHistory, setSnapshotHistory] = useState<Record<string, {
+    id: string; source: string; measured_at: string; recorded_at: string;
+    views: number | null; likes: number | null; collects: number | null;
+    comments: number | null; shares: number | null; new_followers: number | null;
+    correction_of: string | null;
+  }[]>>({});
+  const [historyOpen, setHistoryOpen] = useState<string | null>(null);
 
   const loadGaps = () => {
     setGapsError(null);
@@ -84,6 +91,18 @@ export default function Analytics() {
       }])));
     }).catch((e) => setReportError(e?.message || "发布回填与周报数据加载失败"));
   }, []);
+
+  const toggleSnapshotHistory = async (draftId: string) => {
+    if (historyOpen === draftId) { setHistoryOpen(null); return; }
+    setHistoryOpen(draftId);
+    if (snapshotHistory[draftId]) return;
+    try {
+      const result = await api.metricSnapshots(draftId);
+      setSnapshotHistory((prev) => ({ ...prev, [draftId]: result.items }));
+    } catch (e: any) {
+      setReportError(e?.message || "历史快照加载失败");
+    }
+  };
 
   const saveBackfill = async (draft: Draft) => {
     const value = backfillValues[draft.id];
@@ -193,7 +212,18 @@ export default function Analytics() {
                 <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8, marginTop: 8 }}>
                   {(["views", "likes", "collects", "comments", "shares", "new_followers"] as const).map((key) => <label key={key} className="form-label">{({views:"曝光/播放",likes:"点赞",collects:"收藏",comments:"评论",shares:"分享",new_followers:"新增粉丝"})[key]}<input className="field" inputMode="numeric" value={value[key]} placeholder="留空=未知" onChange={(e) => setBackfillValues((p) => ({ ...p, [draft.id]: { ...p[draft.id], [key]: e.target.value } }))} /></label>)}
                 </div>
-                <button className="btn sm primary" style={{ marginTop: 10 }} disabled={backfillBusy === draft.id} onClick={() => saveBackfill(draft)}>{backfillBusy === draft.id ? "保存中…" : "保存链接与指标"}</button>
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                  <button className="btn sm primary" disabled={backfillBusy === draft.id} onClick={() => saveBackfill(draft)}>{backfillBusy === draft.id ? "保存中…" : "保存链接与指标"}</button>
+                  <button className="btn sm" onClick={() => toggleSnapshotHistory(draft.id)}>{historyOpen === draft.id ? "收起历史" : "查看历史快照"}</button>
+                </div>
+                {historyOpen === draft.id && <div style={{ marginTop: 10, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+                  {(snapshotHistory[draft.id] || []).length === 0 ? <div className="panel-sub">暂无历史指标快照</div> :
+                    (snapshotHistory[draft.id] || []).map((item) => <div className="panel-sub" key={item.id} style={{ padding: "6px 0" }}>
+                      {item.measured_at} · {item.source === "manual" ? "人工填写" : item.source === "platform_readback" ? "平台读回" : item.source}
+                      · 曝光 {item.views ?? "—"} · 赞 {item.likes ?? "—"} · 藏 {item.collects ?? "—"} · 评 {item.comments ?? "—"}
+                      {item.correction_of ? " · 修正记录" : ""}
+                    </div>)}
+                </div>}
               </div>;
             })}
           </div>
