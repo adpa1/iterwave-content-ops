@@ -1329,7 +1329,7 @@ async def _invoke(engine, method_name: str, *args) -> None:
         "_job_publish_polling", "_job_data_fetch", "_job_daily_ops",
         "_job_comment_polling", "_job_cb_recovery", "_job_kb_scan",
         "_job_kb_sync", "_job_data_retention_cleanup",
-        "_job_round_timeout_sweeper", "_job_round_review",
+        "_job_round_timeout_sweeper", "_job_round_review", "_job_autogrow_next_round",
     }
     if queue is not None and tenant_id and method_name in queued_methods:
         aggregate_id = method_name + (":" + ":".join(map(str, args)) if args else "")
