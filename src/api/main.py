@@ -3708,7 +3708,9 @@ def _register_routes(app: FastAPI) -> None:
             except TenantError:
                 tenant_name = task.tenant_id
             items.append({
-                "task_id": task.task_id, "task_type": task.task_type,
+                "queue_order": task.queue_order,
+                "queue_order": task.queue_order,
+            "task_id": task.task_id, "task_type": task.task_type,
                 "tenant_id": task.tenant_id, "tenant_name": tenant_name,
                 "aggregate_id": task.aggregate_id, "status": task.status,
                 "created_at": task.created_at, "started_at": task.started_at,
