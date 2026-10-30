@@ -289,3 +289,17 @@ def test_api_validation_response_is_chinese(test_auth):
     })
     assert response.status_code == 422
     assert "平台标识" in response.json()["detail"][0]
+
+
+
+def test_retired_topic_path_is_purged_from_persisted_tenant_settings(conn):
+    from src.core.config_repository import purge_disallowed_settings, read_settings
+
+    conn.execute(
+        "INSERT INTO tenant_settings(key, value_json, value_type, version, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?)",
+        ("topic_kb.path", '"/tmp/evil_topics.csv"', "str", 1, "2026-10-30T10:00:00", "legacy"),
+    )
+    conn.commit()
+    assert read_settings(conn)["topic_kb.path"] == "/tmp/evil_topics.csv"
+    assert purge_disallowed_settings(conn, {"topic_kb.path"}) == 1
+    assert "topic_kb.path" not in read_settings(conn)
