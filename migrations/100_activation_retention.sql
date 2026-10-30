@@ -79,7 +79,6 @@ CREATE TABLE IF NOT EXISTS metric_snapshots (
     collects INTEGER CHECK (collects IS NULL OR collects >= 0),
     comments INTEGER CHECK (comments IS NULL OR comments >= 0),
     shares INTEGER CHECK (shares IS NULL OR shares >= 0),
-    new_followers INTEGER CHECK (new_followers IS NULL OR new_followers >= 0),
     measured_at DATETIME NOT NULL,
     recorded_at DATETIME NOT NULL,
     correction_of TEXT REFERENCES metric_snapshots(id),
