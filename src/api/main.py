@@ -421,11 +421,25 @@ def _build_app() -> FastAPI:
             except Exception as exc:  # noqa: BLE001 — 恢复失败必须阻止启动，不能悄悄使用旧库
                 logger.exception("账号组快照恢复失败，拒绝启动 tenant=%s", active_tenant_id)
                 raise RuntimeError(f"账号组恢复失败，应用未启动：{exc}") from exc
-        # G-13：先套用 Web 端持久化的覆盖值（租户各自的 data/config_overrides.json），
-        # 再构造各模块 —— 保证 scheduler/adapter/ops 拿到的是同一份生效配置
-        applied_overrides = apply_overrides(cfg, load_overrides(cfg))
+        # 配置中心位于账号组自己的 SQLite 中。先完成待恢复快照，再初始化数据库，
+        # 随后回填旧 JSON 并读取数据库配置，避免使用尚未初始化的连接。
+        db = Database(cfg)
+        db.initialize()
+        from src.core.db import LockedConnection
+        conn = LockedConnection(db.connect())
+        from src.core.config_repository import import_legacy_overrides, read_settings
+        from src.core.config_store import overrides_path
+        legacy_result = import_legacy_overrides(conn, overrides_path(cfg))
+        if legacy_result["imported"] or legacy_result["rejected"]:
+            logger.info("旧配置回填完成 imported=%d rejected=%d",
+                        legacy_result["imported"], legacy_result["rejected"])
+        persisted_settings = read_settings(conn)
+        if not persisted_settings:
+            # 数据库不可读或首次迁移尚未完成时，不丢弃旧配置读取能力。
+            persisted_settings = load_overrides(cfg)
+        applied_overrides = apply_overrides(cfg, persisted_settings)
         if applied_overrides:
-            logger.info("⚙️ 已套用 %d 项运行时配置覆盖：%s",
+            logger.info("⚙️ 已套用 %d 项 SQLite 运行时配置：%s",
                         len(applied_overrides), applied_overrides)
         if active_tenant_id != "default":
             # 在覆盖值应用后再次强制命名空间化，避免旧配置覆盖把登录态指回 default。
@@ -441,11 +455,7 @@ def _build_app() -> FastAPI:
         runtime_data_dir = cfg.resolve_path(cfg.paths.data_dir)
         account_login.configure_data_dir(runtime_data_dir)
         login_manager.configure_data_dir(runtime_data_dir)
-        db = Database(cfg)
-        db.initialize()
-        # 线程安全包装：路由线程池 / 调度器 / 执行器共用这一个连接
-        from src.core.db import LockedConnection
-        conn = LockedConnection(db.connect())
+        # conn/db 已在运行时配置加载前初始化，后续模块共用该连接。
 
         adapters = get_adapters(cfg, conn)
         cb = CircuitBreakerEngine(cfg, conn, adapters)
