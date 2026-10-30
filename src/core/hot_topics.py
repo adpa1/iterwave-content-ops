@@ -213,7 +213,7 @@ class HotTopicCollector:
         }
 
     def _match_summary(self, items: list[dict]) -> dict:
-        from .hot_topic_matcher import MATCH_THRESHOLD
+        threshold = self.cfg.hot_topic_matcher.match_threshold
         return {
             "threshold": threshold,
             "matched": sum(1 for i in items if i["dimension_match"] is True),
