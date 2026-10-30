@@ -373,6 +373,18 @@ plan_suggestion:
   max_rounds: 60
   default_interval_days: 7
 
+spiral:
+  min_dimension_samples: 5
+  validation_gap_topic_min: 2
+  validation_gap_topic_max: 3
+  coverage_gap_ratio: 0.5
+  coverage_performance_multiplier: 1.5
+  min_suggested_add: 50
+  min_platform_samples: 3
+  low_interaction_rate_threshold: 0.02
+  min_metrics_for_ops_adjustment: 3
+  min_rounds_for_systematic_adjustment: 5
+
 
 # ===== 运行时策略参数（硬安全上限仍由代码强制）=====
 vision_ranking:
