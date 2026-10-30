@@ -1858,6 +1858,7 @@ def _register_routes(app: FastAPI) -> None:
             for row in sorted(raw_rows, key=lambda r: (
                 str(r.get("measured_at") or ""),
                 1 if r.get("source") == "platform_readback" else 0,
+                str(r.get("recorded_at") or ""),
             )):
                 latest_by_content[row["content_id"]] = row
             rows = list(latest_by_content.values())
