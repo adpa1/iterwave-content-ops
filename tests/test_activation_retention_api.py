@@ -370,3 +370,120 @@ def test_activation_metrics_marks_unfinished_seven_day_window_as_observing(activ
     payload = response.json()
     assert payload["cohort_size"] == 0
     assert payload["seven_day_activation_rate"] is None
+
+def test_chinese_body_passes_character_level_quality_check(activation_client, conn, monkeypatch):
+    cfg = main._g_ctx["cfg"]
+    cfg.llm.enabled = True
+    monkeypatch.setenv(cfg.llm.api_key_env, "test-only-key")
+    from src.core import content_pipeline
+    body = (
+        "很多人做饭时总觉得准备工作很麻烦，其实可以先把一周的食材分成几类。"
+        "周末先清洗耐放的蔬菜，再把肉类按每餐分量装袋冷冻。"
+        "工作日晚上只需要提前取出一份食材，搭配米饭或面条就能快速完成。"
+        "如果早上时间紧张，可以把调味汁提前装进小盒，避免食物浸泡太久影响口感。"
+        "刚开始不必追求复杂菜单，先固定三种容易执行的组合，再根据实际情况调整。"
+        "这样既能减少临时决定吃什么的压力，也能降低外卖频率。"
+    )
+    monkeypatch.setattr(content_pipeline, "generate_copy_content",
+                        lambda *args, **kwargs: ("工作日带饭的准备方法", body, ["带饭", "效率"]))
+    response = activation_client.post("/api/activation/samples", json={
+        "account_description": "分享普通上班族的健康带饭方法",
+        "platform": "xhs", "idempotency_key": "chinese-body-quality",
+    })
+    run_id = response.json()["sample_run_id"]
+    result = None
+    for _ in range(100):
+        result = activation_client.get(f"/api/activation/samples/{run_id}").json()
+        if result["run"]["status"] in ("ready", "failed"):
+            break
+        time.sleep(0.02)
+    assert result["run"]["status"] == "ready", result["run"]
+    assert len(result["contents"]) == 3
+
+
+def test_sensitive_topic_match_does_not_flag_student_party_phrase():
+    from src.core.hot_topics import _sensitive_topic_hits
+    assert _sensitive_topic_hits("给学生党分享省钱又健康的带饭做法") == []
+    assert _sensitive_topic_hits("上班党一周带饭计划") == []
+    assert _sensitive_topic_hits("二十届三中全会召开") == ["时政"]
+    assert _sensitive_topic_hits("国防部举行新闻发布会") == ["时政"]
+
+
+def test_activation_saved_library_survives_soft_delete_and_quota_is_not_refunded(activation_client, conn):
+    from datetime import datetime
+    now = datetime.now().isoformat(sep=" ")
+    conn.execute(
+        "INSERT INTO sample_runs (id, tenant_id, platform, account_description, status, idempotency_key, created_at) "
+        "VALUES ('saved-run', 'default', 'xhs', '分享产品经理实践方法', 'ready', 'saved-run-key', ?)", (now,)
+    )
+    conn.execute(
+        "INSERT INTO sample_contents "
+        "(id, sample_run_id, tenant_id, platform, angle, title, body, hashtags_json, quality_status, "
+        "adopted_at, created_at, updated_at) "
+        "VALUES ('saved-content', 'saved-run', 'default', 'xhs', '实用方法', '可找回标题', '可找回正文', '[]', 'pass', ?, ?, ?)",
+        (now, now, now),
+    )
+    conn.commit()
+    before = activation_client.get("/api/activation/status").json()["activation_limits"]["daily_runs_used"]
+    saved = activation_client.get("/api/activation/saved")
+    assert saved.status_code == 200
+    assert any(item["id"] == "saved-content" for item in saved.json()["items"])
+    deleted = activation_client.delete("/api/activation/samples/saved-run")
+    assert deleted.status_code == 200
+    after = activation_client.get("/api/activation/status").json()["activation_limits"]["daily_runs_used"]
+    assert after == before
+    assert conn.execute("SELECT deleted_at FROM sample_runs WHERE id='saved-run'").fetchone()[0] is not None
+    assert conn.execute("SELECT COUNT(*) FROM content_events WHERE sample_run_id='saved-run'").fetchone()[0] == 0
+
+
+def test_manual_metrics_rejects_future_and_pre_publish_measurement(activation_client, conn, seed):
+    from datetime import datetime, timedelta
+    round_id = seed.round()
+    draft_id = seed.draft(round_id, platform="xhs", draft_status="published", fetch_status=None)
+    confirmed = datetime.now() - timedelta(hours=1)
+    conn.execute("UPDATE drafts SET user_confirmed_at=? WHERE id=?",
+                 (confirmed.isoformat(sep=" "), draft_id))
+    conn.commit()
+    before_publish = activation_client.post(
+        f"/api/drafts/{draft_id}/metrics/manual",
+        json={"views": 10, "measured_at": (confirmed - timedelta(minutes=1)).isoformat(sep=" ")},
+    )
+    assert before_publish.status_code == 422
+    future = activation_client.post(
+        f"/api/drafts/{draft_id}/metrics/manual",
+        json={"views": 10, "measured_at": (datetime.now() + timedelta(days=30)).isoformat(sep=" ")},
+    )
+    assert future.status_code == 422
+    valid = activation_client.post(
+        f"/api/drafts/{draft_id}/metrics/manual",
+        json={"views": 10, "measured_at": datetime.now().isoformat(sep=" ")},
+    )
+    assert valid.status_code == 200
+
+
+def test_sample_save_and_reject_are_mutually_exclusive(activation_client, conn):
+    from datetime import datetime
+    now = datetime.now().isoformat(sep=" ")
+    conn.execute(
+        "INSERT INTO sample_runs (id, tenant_id, platform, account_description, status, idempotency_key, created_at) "
+        "VALUES ('state-run', 'default', 'xhs', '分享产品经理实践方法', 'ready', 'state-run-key', ?)", (now,)
+    )
+    conn.execute(
+        "INSERT INTO sample_contents "
+        "(id, sample_run_id, tenant_id, platform, angle, title, body, hashtags_json, quality_status, created_at, updated_at) "
+        "VALUES ('state-content', 'state-run', 'default', 'xhs', '实用方法', '状态标题', '状态正文', '[]', 'pass', ?, ?)",
+        (now, now),
+    )
+    conn.commit()
+    base = "/api/activation/samples/state-run/contents/state-content/events"
+    rejected = activation_client.post(base, json={"event_type":"rejected","reason":"内容空泛"})
+    assert rejected.status_code == 200
+    saved = activation_client.post(base, json={"event_type":"saved"})
+    assert saved.status_code == 200
+    row = conn.execute("SELECT adopted_at, rejected_at, rejection_reason FROM sample_contents WHERE id='state-content'").fetchone()
+    assert row["adopted_at"] is not None and row["rejected_at"] is None and row["rejection_reason"] is None
+    rejected_again = activation_client.post(base, json={"event_type":"rejected","reason":"定位不符"})
+    assert rejected_again.status_code == 200
+    row = conn.execute("SELECT adopted_at, rejected_at, rejection_reason FROM sample_contents WHERE id='state-content'").fetchone()
+    assert row["adopted_at"] is None and row["rejected_at"] is not None and row["rejection_reason"] == "定位不符"
+
