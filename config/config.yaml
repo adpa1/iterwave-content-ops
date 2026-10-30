@@ -136,6 +136,9 @@ timeouts:
   metrics_initial_delay_hours: 24                # user_published 后等拉数据
   metrics_retry_attempts: 3                    # 数据采集失败最大尝试次数
   metrics_retry_interval_minutes: 30            # 数据采集失败重试间隔
+  login_timeout_seconds: 240                     # 平台扫码登录等待上限
+  login_export_timeout_seconds: 90               # 登录态导出超时
+  recovery_retry_delay_minutes: 1                # 服务重启后补登记采集任务的延迟
   goal_max_rounds: 30                            # 一个目标最大轮数
   round_min_interval_hours: 4                    # 两轮最短间隔
 
