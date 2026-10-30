@@ -75,6 +75,7 @@ class GlobalTaskQueue:
                     tenant_id TEXT NOT NULL,
                     aggregate_id TEXT,
                     payload_json TEXT NOT NULL,
+                    available_at TEXT,
                     status TEXT NOT NULL CHECK(status IN
                         ('queued','running','succeeded','failed','cancelled','interrupted')),
                     created_at TEXT NOT NULL,
@@ -109,6 +110,11 @@ class GlobalTaskQueue:
                 conn.execute(
                     "UPDATE global_task_queue SET queue_order=rowid WHERE queue_order IS NULL"
                 )
+            if "available_at" not in columns:
+                conn.execute("ALTER TABLE global_task_queue ADD COLUMN available_at TEXT")
+            conn.execute(
+                "UPDATE global_task_queue SET available_at=created_at WHERE available_at IS NULL"
+            )
             conn.execute("DROP INDEX IF EXISTS idx_global_task_queue_fifo")
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_global_task_queue_order "
@@ -149,6 +155,7 @@ class GlobalTaskQueue:
     def enqueue(
         self, *, task_type: str, tenant_id: str, payload: dict[str, Any],
         aggregate_id: str | None = None, max_attempts: int = 1,
+        available_at: datetime | str | None = None,
     ) -> tuple[QueuedTask, bool]:
         if not task_type or len(task_type) > 80:
             raise ValueError("task_type 无效")
@@ -159,6 +166,22 @@ class GlobalTaskQueue:
         if not 1 <= int(max_attempts) <= 5:
             raise ValueError("max_attempts 必须在 1–5 之间")
         payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if available_at is None:
+            available_stamp = _stamp()
+        elif isinstance(available_at, datetime):
+            if available_at.tzinfo is None:
+                raise ValueError("available_at 必须包含时区")
+            available_stamp = _stamp(available_at.astimezone(timezone.utc))
+        elif isinstance(available_at, str):
+            try:
+                parsed_available_at = datetime.fromisoformat(available_at.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ValueError("available_at 必须是带时区的 ISO 8601 时间") from exc
+            if parsed_available_at.tzinfo is None:
+                raise ValueError("available_at 必须包含时区")
+            available_stamp = _stamp(parsed_available_at.astimezone(timezone.utc))
+        else:
+            raise ValueError("available_at 类型无效")
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -181,10 +204,11 @@ class GlobalTaskQueue:
             task_id = uuid.uuid4().hex
             conn.execute(
                 "INSERT INTO global_task_queue(queue_order,task_id,task_type,tenant_id,aggregate_id,"
-                "payload_json,status,created_at,max_attempts) VALUES(?,?,?,?,?,?,'queued',?,?)",
+                "payload_json,available_at,status,created_at,max_attempts) "
+                "VALUES(?,?,?,?,?,?,?,'queued',?,?)",
                 (queue_order, task_id, task_type, tenant_id,
                  str(aggregate_id) if aggregate_id is not None else None,
-                 payload_json, now, int(max_attempts)),
+                 payload_json, available_stamp, now, int(max_attempts)),
             )
             row = conn.execute("SELECT * FROM global_task_queue WHERE task_id=?", (task_id,)).fetchone()
             conn.commit()
@@ -218,7 +242,9 @@ class GlobalTaskQueue:
             )
             row = conn.execute(
                 "SELECT * FROM global_task_queue WHERE status='queued' "
-                "ORDER BY queue_order ASC LIMIT 1"
+                "AND COALESCE(available_at, created_at)<=? "
+                "ORDER BY queue_order ASC LIMIT 1",
+                (_stamp(now),),
             ).fetchone()
             if row is None:
                 conn.commit()
