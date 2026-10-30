@@ -1512,16 +1512,30 @@ def _register_routes(app: FastAPI) -> None:
             return {"sample_run_id": run_id, "status": "failed", "error_code": error_code,
                     "error_message": error_message}
 
+        # 后台生成期间持有租户切换闸门引用，避免运行时切换关闭旧连接后跨账号组写入。
+        conn_bg = conn
+        cfg_bg = _g()["cfg"]
+
+        def record_sample_event(event_type: str, metadata: dict, event_key: str) -> None:
+            conn_bg.execute(
+                "INSERT OR IGNORE INTO content_events "
+                "(id, tenant_id, event_type, event_at, source, metadata_json, idempotency_key) "
+                "VALUES (?, ?, ?, ?, 'web', ?, ?)",
+                (uuid.uuid4().hex, tenant_id, event_type,
+                 datetime.now().isoformat(sep=" ", timespec="seconds"),
+                 json.dumps(metadata, ensure_ascii=False), event_key),
+            )
+            conn_bg.commit()
+
         async def generate_samples():
             from src.core.content_pipeline import ContentGenerationError, generate_copy_content
             from src.adapters.base import Platform as PlatformEnum
-            conn_bg = _g()["conn"]
-            started = datetime.now().isoformat(sep=" ", timespec="seconds")
-            conn_bg.execute("UPDATE sample_runs SET status='generating', started_at=? WHERE id=?",
-                            (started, run_id))
-            conn_bg.commit()
             try:
-                base_cfg = _g()["cfg"]
+                started = datetime.now().isoformat(sep=" ", timespec="seconds")
+                conn_bg.execute("UPDATE sample_runs SET status='generating', started_at=? WHERE id=?",
+                                (started, run_id))
+                conn_bg.commit()
+                base_cfg = cfg_bg
                 sample_goal = base_cfg.ultimate_goal.model_copy(update={
                     "positioning": description,
                     "persona_keywords": [],
@@ -1598,8 +1612,8 @@ def _register_routes(app: FastAPI) -> None:
                 )
                 conn_bg.commit()
                 try:
-                    _record_content_event("sample_generation_succeeded", metadata={"sample_count": 3},
-                                          idempotency_key=f"sample-ready:{run_id}")
+                    record_sample_event("sample_generation_succeeded", {"sample_count": 3},
+                                         f"sample-ready:{run_id}")
                 except Exception:
                     logger.exception("快速体验成功事件记录失败 run=%s", run_id)
             except Exception as exc:
@@ -1615,10 +1629,17 @@ def _register_routes(app: FastAPI) -> None:
                     (code, safe_message[:300], datetime.now().isoformat(sep=" ", timespec="seconds"), run_id),
                 )
                 conn_bg.commit()
-                _record_content_event("sample_generation_failed", metadata={"error_code": code},
-                                      idempotency_key=f"sample-failed:{run_id}")
+                record_sample_event("sample_generation_failed", {"error_code": code},
+                                    f"sample-failed:{run_id}")
+            finally:
+                _tenant_switch_gate.leave_request()
 
-        asyncio.create_task(generate_samples(), name=f"activation-samples-{run_id}")
+        _tenant_switch_gate.enter_request()
+        try:
+            asyncio.create_task(generate_samples(), name=f"activation-samples-{run_id}")
+        except Exception:
+            _tenant_switch_gate.leave_request()
+            raise
         return {"sample_run_id": run_id, "status": "generating", "poll_after_ms": 1200}
 
     @app.get("/api/activation/samples/{sample_run_id}")
