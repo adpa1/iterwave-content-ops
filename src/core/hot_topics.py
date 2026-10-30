@@ -48,6 +48,28 @@ _HEAT_UNIT = {
 _PLATFORM_PATH = {"bilibili": "bili"}
 _MULTIPLIERS = {"万": 10_000, "亿": 100_000_000}
 
+# 时政、军事、涉台等高监管领域不做自动可发布背书；默认进入人工确认。
+_SENSITIVE_TOPIC_PATTERNS = (
+    ("时政", re.compile(
+        r"中共中央|党中央|中央政治局|政治局|全国两会|全国人大|全国政协|"
+        r"国务院|新闻发布会|外交部|国防部|全面从严治党|反腐|党风廉政|"
+        r"政府工作报告|领导人|国家主席|总理|总统|议会|选举|制裁|"
+        r"外交关系|国际局势|政局|政策发布|政策解读"
+    )),
+    ("军事", re.compile(
+        r"解放军|人民军队|军演|军事演习|军舰|航母|战机|导弹|武器装备|"
+        r"国防安全|军事冲突|战争|战场|部队部署|军方|军演"
+    )),
+    ("涉台及主权", re.compile(
+        r"台湾|台海|涉台|以台制华|台独|两岸关系|统一|主权争议|南海|东海"
+    )),
+)
+
+
+def _sensitive_topic_hits(title: str) -> list[str]:
+    value = str(title or "")
+    return [label for label, pattern in _SENSITIVE_TOPIC_PATTERNS if pattern.search(value)]
+
 
 def _fetch_public_text(url: str, *, headers: dict[str, str], timeout: int) -> tuple[str, str]:
     """通过固定到已验证公网 IP 的连接抓取热点源。"""
@@ -602,9 +624,20 @@ class HotTopicCollector:
 
             title = row["title"] or ""
             hit_redline = [k for k in redlines if k in title]
+            sensitive_hits = _sensitive_topic_hits(title)
             kj = keyword_judgement(matcher.persona, title)
             dimension_match = dimension_match_of(row, current_version, threshold=self.cfg.hot_topic_matcher.match_threshold)
             fresh = row["match_version"] == current_version
+            forbidden = bool(fresh and row["forbidden_hit"])
+            if sensitive_hits:
+                publishability_status = "需人工确认"
+            elif hit_redline or forbidden or dimension_match is False:
+                publishability_status = "不可发布"
+            elif not fresh or dimension_match is None:
+                publishability_status = "未研判"
+            else:
+                publishability_status = "可发布"
+            publishable = publishability_status == "可发布"
 
             items.append({
                 "id": row["id"],
@@ -631,8 +664,10 @@ class HotTopicCollector:
                 "match_angle": row["match_angle"] if fresh else None,
                 "match_reason": row["match_reason"] if fresh else None,
                 "match_method": row["match_method"] if fresh else None,
-                # ✅ 可发布性（强制门）：命中红线 / 落入禁止方向 → 不可用
-                "publishable": not hit_redline and not (fresh and row["forbidden_hit"]),
+                # 可发布性采用保守三态：只有完成研判且通过全部安全门才标记可发布。
+                "publishable": publishable,
+                "publishability_status": publishability_status,
+                "sensitive_hits": sensitive_hits,
                 "redline_hits": hit_redline,
             })
 
