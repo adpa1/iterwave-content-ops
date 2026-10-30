@@ -336,7 +336,7 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
                 <strong>需要处理</strong>
                 <span>{noticeCount} 项</span>
               </div>
-              {broken.length === 0 && noLogin.length === 0 ? (
+              {broken.length === 0 ? (
                 <div className="notice-empty">暂无熔断告警。</div>
               ) : (
                 <div className="notice-list">
