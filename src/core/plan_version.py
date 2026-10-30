@@ -23,6 +23,8 @@ import hashlib
 import json
 import logging
 from datetime import datetime
+
+from .timezone import business_now
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -142,7 +144,7 @@ class PlanVersionManager:
                 signature,
                 json.dumps(plan, ensure_ascii=False),
                 round_id,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                business_now(self.cfg).strftime("%Y-%m-%d %H:%M:%S"),
                 author,
             ),
         )
@@ -177,7 +179,7 @@ class PlanVersionManager:
         """保存母计划 → 写 plan_settings + signature_history + 触发下游失效（R18）。"""
         signature = self.compute_signature(plan)
         snapshot = json.dumps(plan, ensure_ascii=False, sort_keys=True)
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = business_now(self.cfg).strftime("%Y-%m-%d %H:%M:%S")
 
         self.conn.execute(
             "INSERT INTO plan_settings (id, plan_snapshot, plan_signature, updated_at, updated_by) "
@@ -257,7 +259,7 @@ class PlanVersionManager:
         log.append({
             "from": None,
             "to": None,
-            "at": datetime.now().isoformat(timespec="seconds"),
+            "at": business_now(self.cfg).isoformat(timespec="seconds"),
             "reason": reason,
         })
         self.conn.execute(
@@ -287,7 +289,7 @@ def suggest_plan_from_goal(cfg, conn, goal_id: str, current_plan: Optional[dict]
     topic_count = int(plan.get("topic_count_per_platform") or policy.default_topic_count)
     notes: list[str] = []
 
-    today = datetime.now().date()
+    today = business_now(cfg).date()
     period_days = policy.default_period_days
     if g.get("metric_period_end"):
         try:
