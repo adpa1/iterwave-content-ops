@@ -202,7 +202,8 @@ class TimeoutsConfig(BaseModel):
     publish_confirm_grace_hours: int = 48
     collecting_metrics_timeout_hours: int = 72
     metrics_initial_delay_hours: int = 24
-    metrics_retry_policy: str = "3次/间隔30min"
+    metrics_retry_attempts: int = Field(3, ge=1, le=20)
+    metrics_retry_interval_minutes: int = Field(30, ge=1, le=1440)
     goal_max_rounds: int = 30
     round_min_interval_hours: int = 4
 
@@ -315,6 +316,20 @@ class HotTopicsConfig(BaseModel):
     retention_days: int = Field(7, ge=1, le=365)
     max_rows: int = Field(5000, ge=100, le=1_000_000)
     dedup: HotTopicDedupConfig = Field(default_factory=HotTopicDedupConfig)
+    max_items_per_source: int = Field(30, ge=1, le=500)
+    fetch_timeout_seconds: int = Field(15, ge=1, le=120)
+    max_concurrent_fetches: int = Field(8, ge=1, le=32)
+    trend_burst_multiplier: float = Field(1.5, ge=1.01, le=10.0)
+    trend_cooled_ratio: float = Field(0.6, ge=0.05, le=0.95)
+    trend_sustained_ratio: float = Field(0.9, ge=0.05, le=1.0)
+    trend_previous_drop_ratio: float = Field(0.9, ge=0.05, le=1.0)
+    trend_min_seen_count: int = Field(3, ge=2, le=20)
+
+    @model_validator(mode="after")
+    def _check_trend_policy(self) -> "HotTopicsConfig":
+        if self.trend_cooled_ratio >= self.trend_sustained_ratio:
+            raise ValueError("trend_cooled_ratio 必须小于 trend_sustained_ratio")
+        return self
 
 
 # =====================================================================
@@ -418,6 +433,14 @@ class AutogrowConfig(BaseModel):
     stop_when_goals_achieved: bool = True    # 所有目标达成 → 停止自动开轮
     feedback_max_bias: float = Field(15.0, ge=0, le=50)  # 单维度评分加/减分上限（总分 0-100 制）
     feedback_lookback_rounds: int = Field(3, ge=1, le=20)  # 取最近 N 轮复盘结论
+    recency_decay: float = Field(0.5, ge=0.0, le=1.0)
+    full_confidence_samples: int = Field(5, ge=1, le=100)
+    coverage_gap_bias_ratio: float = Field(0.6, ge=0.0, le=1.0)
+    validation_gap_bias_ratio: float = Field(0.3, ge=0.0, le=1.0)
+    min_dimension_bias: float = Field(0.5, ge=0.0, le=10.0)
+    max_reference_titles_per_platform: int = Field(2, ge=0, le=10)
+    max_copy_hints_per_platform: int = Field(6, ge=1, le=20)
+    max_copy_hint_chars: int = Field(120, ge=20, le=500)
 
 
 class VisionRankingConfig(BaseModel):
@@ -480,6 +503,12 @@ class MediaQualityConfig(BaseModel):
     low_resolution_pixels: int = Field(500_000, ge=10_000, le=20_000_000)
     low_color_count: int = Field(3, ge=1, le=16)
     color_count_reference: int = Field(16, ge=1, le=256)
+    composition_near_portrait_multiplier: float = Field(0.85, ge=0.0, le=1.0)
+    composition_square_multiplier: float = Field(0.6, ge=0.0, le=1.0)
+    composition_landscape_multiplier: float = Field(0.25, ge=0.0, le=1.0)
+    sharpness_fallback_contrast_reference: float = Field(60.0, ge=1.0, le=255.0)
+    sampling_size: int = Field(512, ge=128, le=2048)
+    color_quantization_colors: int = Field(16, ge=2, le=256)
 
     @model_validator(mode="after")
     def _check_quality_ranges(self) -> "MediaQualityConfig":
@@ -509,9 +538,33 @@ class TenantBackupConfig(BaseModel):
 
 class HotTopicMatcherConfig(BaseModel):
     match_threshold: float = Field(60.0, ge=0.0, le=100.0)
+    llm_temperature: float = Field(0.1, ge=0.0, le=2.0)
     keyword_score: float = Field(60.0, ge=0.0, le=100.0)
     batch_size: int = Field(20, ge=1, le=100)
     max_per_run: int = Field(200, ge=1, le=2000)
+
+
+class CopyGenerationConfig(BaseModel):
+    """文案生成的可调输出约束；提示词结构与安全规则仍由代码版本化。"""
+    topic_summary_max_chars: int = Field(300, ge=50, le=2000)
+    title_max_chars: int = Field(20, ge=5, le=80)
+    body_min_chars: int = Field(150, ge=0, le=5000)
+    body_max_chars: int = Field(400, ge=50, le=10000)
+    tag_min_count: int = Field(3, ge=0, le=20)
+    tag_max_count: int = Field(5, ge=1, le=30)
+    persona_keyword_limit: int = Field(8, ge=1, le=50)
+    forbidden_direction_limit: int = Field(5, ge=1, le=50)
+    strategy_hint_max_count: int = Field(6, ge=0, le=20)
+    strategy_hint_max_chars: int = Field(120, ge=20, le=500)
+    max_guard_retries: int = Field(2, ge=0, le=10)
+
+    @model_validator(mode="after")
+    def _check_copy_constraints(self) -> "CopyGenerationConfig":
+        if self.body_min_chars > self.body_max_chars:
+            raise ValueError("body_min_chars 必须小于等于 body_max_chars")
+        if self.tag_min_count > self.tag_max_count:
+            raise ValueError("tag_min_count 必须小于等于 tag_max_count")
+        return self
 
 
 class DataRetentionConfig(BaseModel):
@@ -565,6 +618,7 @@ class Config(BaseModel):
     llm: LlmConfig = Field(default_factory=LlmConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     autogrow: AutogrowConfig = Field(default_factory=AutogrowConfig)
+    copy_generation: CopyGenerationConfig = Field(default_factory=CopyGenerationConfig)
 
     def resolve_path(self, relative: str) -> Path:
         """把 config 中的相对路径解析为相对于项目根的绝对路径。"""
