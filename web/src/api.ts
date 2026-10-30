@@ -604,6 +604,7 @@ export interface SystemConfigView {
   locked: { dimension_match_required: boolean; publishability_required: boolean };
   /** 账号画像 + KB + LLM + 平台连接：展示值；可编辑项走 PATCH /api/config 白名单 */
   readonly: {
+    persona_configured: boolean;
     persona_keywords: string[];
     forbidden_directions: string[];
     redline_keywords_count: number;
