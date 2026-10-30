@@ -1434,6 +1434,8 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(404, "目标内容不存在")
         title = str(row["title"] or "内容配图")
         body = str(row["body"] or "")
+        if not body.strip():
+            raise HTTPException(422, "目标内容正文为空，无法生成配图")
         role_label = {"cover": "封面主视觉", "illustration": "正文插图", "background": "背景图"}[usage_role]
         prompt = (f"为当前平台内容生成一张{role_label}。主题：{title}。正文摘要：{body[:900]}。" +
                   "画面与主题直接相关，构图清晰，适合移动端阅读；不要生成文字、二维码、水印或虚构品牌标识。" +
