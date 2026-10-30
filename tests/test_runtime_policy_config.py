@@ -6,7 +6,7 @@ import io
 import pytest
 from PIL import Image
 
-from src.core.config_store import ConfigNotAllowedError, ConfigPatchError, _validate, config_metadata_view, current_config_view, patch_config
+from src.core.config_store import ConfigNotAllowedError, ConfigPatchError, SCALAR_RULES, _validate, config_metadata_view, current_config_view, patch_config
 from src.core.media_generation import ImageGenerationError, validate_image_bytes
 from src.core.media_quality import score_image
 from src.core.tenant_backup import MAX_BACKUP_BYTES, _backup_limits
@@ -224,3 +224,9 @@ def test_spiral_ops_suggestions_use_configured_thresholds(cfg, conn):
     cfg.spiral.min_rounds_for_systematic_adjustment = 9
     engine = SpiralEngine(cfg, conn)
     assert "≥9 轮" in engine._suggest_ops([{}, {}])[0]
+
+
+
+def test_every_scalar_whitelist_field_has_config_metadata(cfg):
+    metadata_keys = {item["key"] for item in config_metadata_view(cfg)}
+    assert set(SCALAR_RULES) <= metadata_keys
