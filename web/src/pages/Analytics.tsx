@@ -95,7 +95,10 @@ export default function Analytics() {
         await api.updateDraftNoteUrl(draft.id, value.note_url.trim());
       }
       const numeric = ["views", "likes", "collects", "comments", "shares", "new_followers"] as const;
-      const metrics: Record<string, number | null> = {};
+      const metrics: {
+        views?: number | null; likes?: number | null; collects?: number | null;
+        comments?: number | null; shares?: number | null; new_followers?: number | null;
+      } = {};
       for (const key of numeric) {
         const raw = value[key].trim();
         if (!raw) metrics[key] = null;
