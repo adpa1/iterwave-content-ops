@@ -353,6 +353,20 @@ copy_generation:
   strategy_hint_max_chars: 120
   max_guard_retries: 2
 
+insights:
+  window_days: 90
+  cache_max_age_minutes: 60
+  top_dimensions_limit: 5
+  top_hours_limit: 3
+
+plan_suggestion:
+  default_topic_count: 5
+  default_period_days: 28
+  minimum_sample_count: 3
+  max_topics_per_platform: 50
+  max_rounds: 60
+  default_interval_days: 7
+
 
 # ===== 运行时策略参数（硬安全上限仍由代码强制）=====
 vision_ranking:
