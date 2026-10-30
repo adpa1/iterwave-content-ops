@@ -235,6 +235,7 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
 
   const handleTenantChange = async (tenantId: string) => {
     if (!tenantId || tenantId === tenantData?.selected_tenant_id || tenantLoading) return;
+    let reloadScheduled = false;
     setTenantLoading(true);
     try {
       const result = await api.selectTenant(tenantId);
@@ -250,13 +251,14 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
       );
       if (!result.restart_required && result.switch_status === "completed") {
         // 账号组切换会改变所有页面的数据上下文；完整刷新清除旧账号组的本地查询状态。
+        reloadScheduled = true;
         window.setTimeout(() => window.location.reload(), 800);
       }
     } catch (error) {
       showToast(error instanceof Error ? error.message : "切换账号组失败", "error");
       await loadTenants();
     } finally {
-      setTenantLoading(false);
+      if (!reloadScheduled) setTenantLoading(false);
     }
   };
   const broken = status?.circuit_broken_platforms || [];
