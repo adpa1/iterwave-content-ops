@@ -405,27 +405,18 @@ class GlobalTaskQueue:
         finally:
             conn.close()
 
-    def has_active(
-        self, *, tenant_id: str | None = None, task_type: str | None = None,
-        aggregate_id_prefix: str | None = None,
-    ) -> bool:
-        clauses = ["status IN ('queued','running')"]
-        params: list[str] = []
-        if tenant_id is not None:
-            clauses.append("tenant_id=?")
-            params.append(tenant_id)
-        if task_type is not None:
-            clauses.append("task_type=?")
-            params.append(task_type)
-        if aggregate_id_prefix is not None:
-            clauses.append("substr(COALESCE(aggregate_id,''),1,length(?))=?")
-            params.extend((aggregate_id_prefix, aggregate_id_prefix))
+    def has_active(self, *, tenant_id: str | None = None) -> bool:
         conn = self._connect()
         try:
-            row = conn.execute(
-                "SELECT 1 FROM global_task_queue WHERE " + " AND ".join(clauses) + " LIMIT 1",
-                params,
-            ).fetchone()
+            if tenant_id is None:
+                row = conn.execute(
+                    "SELECT 1 FROM global_task_queue WHERE status IN ('queued','running') LIMIT 1"
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT 1 FROM global_task_queue WHERE tenant_id=? "
+                    "AND status IN ('queued','running') LIMIT 1", (tenant_id,),
+                ).fetchone()
             return row is not None
         finally:
             conn.close()
