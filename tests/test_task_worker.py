@@ -202,3 +202,62 @@ def test_worker_redacts_sensitive_failure_details_before_queue_storage(tmp_path)
     assert saved is not None and saved.status == "failed"
     assert "sk-abcdef123456" not in (saved.error_message or "")
     assert "sk-a***" in (saved.error_message or "")
+
+
+
+def test_worker_uses_task_tenant_notifier_when_foreground_is_another_tenant(tmp_path, monkeypatch):
+    """前台停留在 C 时执行 A 任务，A 的通知不得写入/发送到 C。"""
+    from src.core import notify
+
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    task, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-a", aggregate_id="21",
+        payload={"round_id": 21, "operation": "run"},
+    )
+    claimed = queue.claim_next("worker-notifier")
+    assert claimed is not None
+
+    class RecordingNotifier:
+        def __init__(self, tenant_id):
+            self.tenant_id = tenant_id
+            self.events = []
+
+        def emit(self, event, message, **kwargs):
+            self.events.append((event, message, kwargs))
+            return True
+
+    foreground_c = RecordingNotifier("tenant-c")
+    task_a_notifier = RecordingNotifier("tenant-a")
+    monkeypatch.setattr(notify, "_active", foreground_c)
+    observed = {}
+
+    class FakeExecutor:
+        async def run(self, round_id, **kwargs):
+            # CircuitBreakerEngine / OperationsEngine / GoalProgressUpdater
+            # 的通知路径均通过 get_active() 取通知器；这里验证 worker 绑定边界。
+            active = notify.get_active()
+            observed["notifier_tenant"] = active.tenant_id
+            active.emit("circuit_broken", "小红书触发熔断：login_expired")
+            return {"round_id": round_id, "final_status": "completed"}
+
+    context = {
+        "cfg": SimpleNamespace(
+            paths=SimpleNamespace(data_dir=str(tmp_path / "tenant-a" / "data")),
+            resolve_path=lambda value: value,
+        ),
+        "executor": FakeExecutor(),
+        "scheduler": SimpleNamespace(shutdown=lambda: None),
+        "conn": SimpleNamespace(close=lambda: None),
+        "notifier": task_a_notifier,
+    }
+    worker = GlobalTaskWorker(queue, lambda tenant_id: context)
+    result = asyncio.run(worker._run_task(claimed))
+
+    assert result == {"round_id": 21, "final_status": "completed"}
+    assert observed["notifier_tenant"] == "tenant-a"
+    assert len(task_a_notifier.events) == 1
+    assert task_a_notifier.events[0][0] == "circuit_broken"
+    assert foreground_c.events == []
+    # ContextVar 必须在任务结束后恢复，不能污染后续任务或前台请求。
+    assert notify.get_active() is foreground_c
