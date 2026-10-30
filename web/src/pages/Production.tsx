@@ -252,10 +252,24 @@ export default function Production() {
     setRunError(null);
     setReport(null);
     try {
-      const res = await api.runRound(
+      const started = await api.runRound(
         currentRoundId,
         usePlan ? {} : { topic_count: topicCount, platforms: selPlatforms, save_drafts: saveDrafts },
       );
+      if (!started.started) throw new Error("本轮任务未能启动");
+      // 后端立即返回任务 ID；页面通过轻量状态接口轮询，不再让启动请求等待整轮生成。
+      let res: RunRoundReport | null = null;
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        const status = await api.roundRunStatus(currentRoundId);
+        if (status.error) throw new Error(status.error);
+        if (status.report) {
+          res = status.report;
+          break;
+        }
+        if (!status.running) throw new Error("本轮任务已结束，但服务端没有返回执行报告");
+      }
+      if (!res) throw new Error("本轮执行超过 10 分钟仍未完成，请检查轮次状态与后台日志");
       setReport(res);
       const isDryRun = res.steps.some((s) => s.step === "dry_run");
       if (res.final_status === "failed") {
