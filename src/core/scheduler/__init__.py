@@ -151,6 +151,31 @@ class SchedulerEngine:
             if _ENGINES.get(self.engine_key) is self:
                 _ENGINES.pop(self.engine_key, None)
 
+    async def _run_tracked(self, method_name: str, *args) -> None:
+        """跟踪后台任务生命周期；热切换等待这些任务退出后才释放连接。"""
+        self._active_job_count += 1
+        try:
+            await getattr(self, method_name)(*args)
+        finally:
+            self._active_job_count -= 1
+
+    async def quiesce(self, timeout_seconds: float = 30.0) -> bool:
+        """暂停新调度并等待已启动任务结束；超时则恢复调度并返回 False。"""
+        if self.scheduler.running:
+            self.scheduler.pause()
+        # pause() 在 AsyncIOScheduler 中投递到事件循环，先让暂停动作和已提交 job 生效。
+        await asyncio.sleep(0.05)
+        deadline = time.monotonic() + timeout_seconds
+        while self._active_job_count > 0 and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        if self._active_job_count > 0:
+            if self.scheduler.running:
+                self.scheduler.resume()
+            return False
+        self.shutdown()
+        await asyncio.sleep(0)
+        return True
+
     # ------------------------------------------------------------------
     def _register_all_jobs(self) -> None:
         """按 config.scheduler.jobs 注册定时任务（开关 / 间隔 / cron 全部来自配置）。"""
@@ -1296,76 +1321,85 @@ def _engine_for(engine_key: str | None) -> "SchedulerEngine | None":
     return engine
 
 
+async def _invoke(engine, method_name: str, *args) -> None:
+    """兼容旧测试替身，同时对真实引擎的 job 执行做生命周期跟踪。"""
+    tracked = getattr(engine, "_run_tracked", None)
+    if tracked is not None:
+        await tracked(method_name, *args)
+    else:
+        await getattr(engine, method_name)(*args)
+
+
 async def _run_publish_polling(engine_key: str | None = None) -> None:
     engine = _engine_for(engine_key)
     if engine is not None:
-        await engine._job_publish_polling()
+        await _invoke(engine, "_job_publish_polling")
 
 
 async def _run_data_fetch(engine_key: str | None = None, draft_id: str = "", attempt: int = 1) -> None:
     engine = _engine_for(engine_key)
     if engine is not None and draft_id:
-        await engine._job_data_fetch(draft_id, attempt)
+        await _invoke(engine, "_job_data_fetch", draft_id, attempt)
 
 
 async def _run_hot_topics_refresh(engine_key: str | None = None) -> None:
     engine = _engine_for(engine_key)
     if engine is not None:
-        await engine._job_hot_topics_refresh()
+        await _invoke(engine, "_job_hot_topics_refresh")
 
 
 async def _run_daily_ops(engine_key: str | None = None) -> None:
     engine = _engine_for(engine_key)
     if engine is not None:
-        await engine._job_daily_ops()
+        await _invoke(engine, "_job_daily_ops")
 
 
 async def _run_comment_polling(engine_key: str | None = None) -> None:
     engine = _engine_for(engine_key)
     if engine is not None:
-        await engine._job_comment_polling()
+        await _invoke(engine, "_job_comment_polling")
 
 
 async def _run_cb_recovery(engine_key: str | None = None) -> None:
     engine = _engine_for(engine_key)
     if engine is not None:
-        await engine._job_cb_recovery()
+        await _invoke(engine, "_job_cb_recovery")
 
 
 async def _run_kb_scan(engine_key: str | None = None) -> None:
     engine = _engine_for(engine_key)
     if engine is not None:
-        await engine._job_kb_scan()
+        await _invoke(engine, "_job_kb_scan")
 
 
 async def _run_kb_sync(engine_key: str | None = None) -> None:
     engine = _engine_for(engine_key)
     if engine is not None:
-        await engine._job_kb_sync()
+        await _invoke(engine, "_job_kb_sync")
 
 
 async def _run_data_retention_cleanup(engine_key: str | None = None) -> None:
     engine = _engine_for(engine_key)
     if engine is not None:
-        await engine._job_data_retention_cleanup()
+        await _invoke(engine, "_job_data_retention_cleanup")
 
 
 async def _run_round_timeout_sweeper(engine_key: str | None = None) -> None:
     engine = _engine_for(engine_key)
     if engine is not None:
-        await engine._job_round_timeout_sweeper()
+        await _invoke(engine, "_job_round_timeout_sweeper")
 
 
 async def _run_round_review(engine_key: str | None = None) -> None:
     engine = _engine_for(engine_key)
     if engine is not None:
-        await engine._job_round_review()
+        await _invoke(engine, "_job_round_review")
 
 
 async def _run_autogrow_next_round(engine_key: str | None = None) -> None:
     engine = _engine_for(engine_key)
     if engine is not None:
-        await engine._job_autogrow_next_round()
+        await _invoke(engine, "_job_autogrow_next_round")
 
 
 # 任务 id → 可 pickle 的模块级执行函数（SQLAlchemyJobStore 要求）
