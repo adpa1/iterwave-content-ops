@@ -139,6 +139,7 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "scoring.cold_start_min_published": (int, 1, 1000),
     "scoring.stable_dimension_min_samples": (int, 1, 100),
     "scoring.history_normalization_scale": (int, 1, 10000),
+    "scoring.normalization_window_days": (int, 1, 3650),
     "scoring.freshness_window_days": (int, 1, 365),
     "scoring.dimension_gap_ratio": (float, 0.0, 1.0),
     "scoring.dimension_gap_score": (float, 0.0, 100.0),
