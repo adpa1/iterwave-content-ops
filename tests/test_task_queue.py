@@ -129,3 +129,35 @@ def test_worker_cannot_release_lease_while_task_is_running(tmp_path):
     assert claimed and claimed.task_id == task.task_id
     assert queue.release_worker("worker-1") is False
     assert queue.claim_next("worker-2", lease_seconds=120) is None
+
+
+def test_delayed_task_does_not_block_ready_fifo_tasks(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    queue = make_queue(tmp_path)
+    delayed, _ = queue.enqueue(
+        task_type="scheduler_job", tenant_id="tenant-a",
+        aggregate_id="_job_data_fetch:draft-1:1",
+        payload={"method": "_job_data_fetch", "args": ["draft-1", 1]},
+        available_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    ready, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-b",
+        aggregate_id="2", payload={"round_id": 2},
+    )
+
+    claimed = queue.claim_next("worker-1")
+    assert claimed is not None and claimed.task_id == ready.task_id
+    assert queue.finish(claimed.task_id, "worker-1", result={"ok": True})
+
+    conn = queue._connect()
+    try:
+        conn.execute(
+            "UPDATE global_task_queue SET available_at='2000-01-01T00:00:00+00:00' WHERE task_id=?",
+            (delayed.task_id,),
+        )
+    finally:
+        conn.close()
+
+    due = queue.claim_next("worker-1")
+    assert due is not None and due.task_id == delayed.task_id
