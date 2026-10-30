@@ -735,7 +735,7 @@ class RoundExecutor:
                     report["retry_counts"][f"{platform.value}/{topic.id}"] = self.cfg.copy_generation.max_guard_retries
                     msg = (
                         f"{platform.display_name} 平台「{topic.title[:20]}」"
-                        f"重试 {MAX_GUARD_RETRIES} 次仍不合规，已丢弃"
+                        f"重试 {self.cfg.copy_generation.max_guard_retries} 次仍不合规，已丢弃"
                     )
                     report["errors"].append(msg)
                     self._notify_guard_give_up(platform, topic.title, msg)
