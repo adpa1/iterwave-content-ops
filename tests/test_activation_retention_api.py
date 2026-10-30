@@ -89,6 +89,75 @@ def test_activation_sample_success_stays_outside_formal_production(activation_cl
     assert conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0] == 0
 
 
+def test_daily_quota_is_configured_and_idempotency_precedes_quota(activation_client, conn):
+    main._g_ctx["cfg"].activation.max_runs_per_day = 1
+    payload = {
+        "account_description": "分享产品经理的 AI 工具实践和效率方法",
+        "platform": "xhs",
+        "idempotency_key": "daily-quota-1",
+    }
+    first = activation_client.post("/api/activation/samples", json=payload)
+    assert first.status_code == 202
+    repeated = activation_client.post("/api/activation/samples", json=payload)
+    assert repeated.status_code == 202
+    assert repeated.json()["deduplicated"] is True
+    second = activation_client.post("/api/activation/samples", json={
+        **payload, "idempotency_key": "daily-quota-2",
+    })
+    assert second.status_code == 429
+    assert conn.execute("SELECT COUNT(*) FROM sample_runs").fetchone()[0] == 1
+
+
+def test_platform_metric_fields_are_enforced(activation_client, seed):
+    round_id = seed.round()
+    draft_id = seed.draft(round_id, platform="douyin", draft_status="published", fetch_status=None)
+    unsupported = activation_client.post(
+        f"/api/drafts/{draft_id}/metrics/manual",
+        json={"views": 20, "collects": 3},
+    )
+    assert unsupported.status_code == 422
+    accepted = activation_client.post(
+        f"/api/drafts/{draft_id}/metrics/manual",
+        json={"views": 20, "likes": 2, "comments": 1},
+    )
+    assert accepted.status_code == 200
+
+
+def test_sample_delete_cascades_sample_events_and_contents(activation_client, conn):
+    from datetime import datetime
+    now = datetime.now().isoformat(sep=" ")
+    conn.execute(
+        "INSERT INTO sample_runs (id, tenant_id, platform, account_description, status, idempotency_key, created_at) "
+        "VALUES ('delete-run', 'default', 'xhs', '分享产品经理实践方法', 'ready', 'delete-key', ?)",
+        (now,),
+    )
+    conn.execute(
+        "INSERT INTO sample_contents "
+        "(id, sample_run_id, tenant_id, platform, angle, title, body, hashtags_json, quality_status, "
+        "quality_findings_json, created_at, updated_at) "
+        "VALUES ('delete-sample', 'delete-run', 'default', 'xhs', '实用方法', '标题', '正文', '[]', 'pass', '[]', ?, ?)",
+        (now, now),
+    )
+    conn.execute(
+        "INSERT INTO content_events "
+        "(id, tenant_id, sample_run_id, event_type, event_at, source, metadata_json) "
+        "VALUES ('delete-start', 'default', 'delete-run', 'sample_generation_started', ?, 'web', '{}')",
+        (now,),
+    )
+    conn.execute(
+        "INSERT INTO content_events "
+        "(id, tenant_id, sample_content_id, event_type, event_at, source, metadata_json) "
+        "VALUES ('delete-save', 'default', 'delete-sample', 'content_saved', ?, 'web', '{}')",
+        (now,),
+    )
+    conn.commit()
+    response = activation_client.delete("/api/activation/samples/delete-run")
+    assert response.status_code == 200
+    assert conn.execute("SELECT COUNT(*) FROM sample_runs WHERE id='delete-run'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM sample_contents WHERE id='delete-sample'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM content_events WHERE id IN ('delete-start','delete-save')").fetchone()[0] == 0
+
+
 def test_activation_sample_read_is_tenant_scoped(activation_client, conn):
     from datetime import datetime
     now = datetime.now().isoformat(sep=" ")
