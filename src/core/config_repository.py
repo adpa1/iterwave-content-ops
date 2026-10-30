@@ -75,6 +75,46 @@ def read_settings(conn: sqlite3.Connection) -> dict[str, Any]:
     return result
 
 
+def purge_disallowed_settings(conn: sqlite3.Connection, keys: set[str]) -> int:
+    """Remove retired/unsafe runtime keys and persist a clean settings snapshot."""
+    if not keys:
+        return 0
+    lock = getattr(conn, "_lock", None)
+    if lock:
+        lock.acquire()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = {
+            str(row["key"])
+            for row in conn.execute(
+                "SELECT key FROM tenant_settings WHERE key IN (%s)" % ",".join("?" for _ in keys),
+                tuple(sorted(keys)),
+            ).fetchall()
+        }
+        if not existing:
+            conn.commit()
+            return 0
+        for key in existing:
+            conn.execute("DELETE FROM tenant_settings WHERE key=?", (key,))
+        current = read_settings(conn)
+        row = conn.execute("SELECT COALESCE(MAX(version),0) FROM tenant_setting_versions").fetchone()
+        version = int(row[0]) + 1
+        snapshot = json.dumps(_history_safe(current), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        conn.execute(
+            "INSERT INTO tenant_setting_versions(version,snapshot_json,changed_at,changed_by) VALUES(?,?,?,?)",
+            (version, snapshot, _now(), "security_migration"),
+        )
+        conn.commit()
+        logger.warning("已移除 %d 项不再允许的运行时配置键", len(existing))
+        return len(existing)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        if lock:
+            lock.release()
+
+
 def import_legacy_overrides(conn: sqlite3.Connection, legacy_path: Path) -> dict[str, int]:
     """Import legacy JSON exactly once; keep the source file untouched for rollback."""
     try:

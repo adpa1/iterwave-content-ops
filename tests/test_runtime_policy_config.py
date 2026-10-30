@@ -230,3 +230,76 @@ def test_spiral_ops_suggestions_use_configured_thresholds(cfg, conn):
 def test_every_scalar_whitelist_field_has_config_metadata(cfg):
     metadata_keys = {item["key"] for item in config_metadata_view(cfg)}
     assert set(SCALAR_RULES) <= metadata_keys
+
+
+
+def test_topic_kb_path_is_not_runtime_editable_or_exposed(cfg, conn):
+    from src.core.config_store import apply_overrides
+
+    original_path = cfg.topic_kb.path
+    assert "topic_kb.path" not in {item["key"] for item in config_metadata_view(cfg)}
+    assert current_config_view(cfg, conn)["readonly"]["kb_path"] == "由内容资产中的选题库来源管理"
+    assert "llm_base_url" not in current_config_view(cfg, conn)["readonly"]
+    with pytest.raises(ConfigNotAllowedError):
+        patch_config(cfg, conn, {"topic_kb.path": "/tmp/evil_topics.csv"})
+    assert apply_overrides(cfg, {"topic_kb.path": "/tmp/evil_topics.csv"}) == []
+    assert cfg.topic_kb.path == original_path
+
+
+
+def test_feedback_bias_metadata_is_numeric_float(cfg):
+    item = next(item for item in config_metadata_view(cfg) if item["key"] == "autogrow.feedback_max_bias")
+    assert item["type"] == "number"
+    assert item["value"] == 15.0
+    assert _validate("autogrow.feedback_max_bias", 15.5) == 15.5
+
+
+def test_request_validation_messages_are_localized():
+    from src.api.main import _friendly_validation_messages
+
+    messages = _friendly_validation_messages([
+        {"loc": ("body", "platform"), "type": "string_pattern_mismatch"},
+    ])
+    assert messages == ["平台标识：格式不符合要求"]
+    assert "String should match pattern" not in messages[0]
+
+
+
+def test_config_api_hides_knowledge_base_path_from_history(cfg, conn):
+    from src.core.config_store import _public_overrides
+
+    assert "topic_kb.path" not in _public_overrides({"topic_kb.path": "/workspace/tenants/ta/kb/topics.csv"})
+    conn.execute(
+        "INSERT INTO config_changes (key, old_value, new_value, changed_at) VALUES (?, ?, ?, ?)",
+        ("topic_kb.path", '"/workspace/tenants/ta/kb/topics.csv"', '"/tmp/evil_topics.csv"', "2026-10-30T10:00:00"),
+    )
+    conn.commit()
+    audit = current_config_view(cfg, conn)["audit"][0]
+    assert audit["old_value"] == "已隐藏"
+    assert audit["new_value"] == "已隐藏"
+
+
+def test_api_validation_response_is_chinese(test_auth):
+    from fastapi.testclient import TestClient
+    from src.api import main as api_main
+
+    client = test_auth(TestClient(api_main._build_app(), base_url="http://127.0.0.1"))
+    response = client.post("/api/platform-accounts", json={
+        "platform": "not-a-platform", "account_handle": "test-account",
+    })
+    assert response.status_code == 422
+    assert "平台标识" in response.json()["detail"][0]
+
+
+
+def test_retired_topic_path_is_purged_from_persisted_tenant_settings(conn):
+    from src.core.config_repository import purge_disallowed_settings, read_settings
+
+    conn.execute(
+        "INSERT INTO tenant_settings(key, value_json, value_type, version, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?)",
+        ("topic_kb.path", '"/tmp/evil_topics.csv"', "str", 1, "2026-10-30T10:00:00", "legacy"),
+    )
+    conn.commit()
+    assert read_settings(conn)["topic_kb.path"] == "/tmp/evil_topics.csv"
+    assert purge_disallowed_settings(conn, {"topic_kb.path"}) == 1
+    assert "topic_kb.path" not in read_settings(conn)

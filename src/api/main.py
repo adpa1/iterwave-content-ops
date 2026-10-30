@@ -52,6 +52,7 @@ import httpx
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -408,6 +409,44 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
         raise HTTPException(500, f"切换失败，已恢复账号组「{old_tenant_id}」：{type(exc).__name__}") from exc
 
 
+_VALIDATION_FIELD_LABELS = {
+    "platform": "平台标识", "usage_role": "图片用途", "limit": "数量",
+    "tenant_id": "账号组标识", "name": "名称", "path": "文件位置",
+    "email": "邮箱", "url": "链接", "content_id": "内容标识",
+}
+
+
+def _friendly_validation_messages(errors: list[dict]) -> list[str]:
+    """将 Pydantic 默认英文校验信息转换为稳定的中文提示，不回显校验器原文。"""
+    messages: list[str] = []
+    for error in errors:
+        loc = error.get("loc") or ()
+        field = str(loc[-1]) if loc else ""
+        label = _VALIDATION_FIELD_LABELS.get(field, "请求参数")
+        kind = str(error.get("type") or "")
+        ctx = error.get("ctx") or {}
+        if kind == "missing":
+            reason = "不能为空"
+        elif kind in ("string_pattern_mismatch", "string_type"):
+            reason = "格式不符合要求"
+        elif kind in ("int_parsing", "int_type", "float_parsing", "float_type"):
+            reason = "类型或格式不正确"
+        elif kind in ("greater_than_equal", "greater_than"):
+            bound = ctx.get("ge", ctx.get("gt", "允许范围"))
+            reason = f"不能小于 {bound}" if "ge" in ctx else f"必须大于 {bound}"
+        elif kind in ("less_than_equal", "less_than"):
+            bound = ctx.get("le", ctx.get("lt", "允许范围"))
+            reason = f"不能大于 {bound}" if "le" in ctx else f"必须小于 {bound}"
+        elif kind == "string_too_short":
+            reason = "长度不足"
+        elif kind == "string_too_long":
+            reason = "长度超出限制"
+        else:
+            reason = "内容不符合要求"
+        messages.append(f"{label}：{reason}")
+    return messages or ["请求参数不符合要求"]
+
+
 def _build_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -463,13 +502,15 @@ def _build_app() -> FastAPI:
         db.initialize()
         from src.core.db import LockedConnection
         conn = LockedConnection(db.connect())
-        from src.core.config_repository import import_legacy_overrides, legacy_import_completed, read_settings
+        from src.core.config_repository import import_legacy_overrides, legacy_import_completed, purge_disallowed_settings, read_settings
         from src.core.config_store import overrides_path
         try:
             legacy_result = import_legacy_overrides(conn, overrides_path(cfg))
             if legacy_result["imported"] or legacy_result["rejected"]:
                 logger.info("旧配置回填完成 imported=%d rejected=%d",
                             legacy_result["imported"], legacy_result["rejected"])
+            # topic_kb.path 已从运行时白名单移除；清除旧版本可能写入的任意服务器路径。
+            purge_disallowed_settings(conn, {"topic_kb.path"})
             persisted_settings = read_settings(conn)
         except Exception as exc:
             # 回填失败时保留旧 JSON 读路径；不删除源文件，也不阻止可恢复启动。
@@ -588,6 +629,13 @@ def _build_app() -> FastAPI:
         lifespan=lifespan,
     )
     _register_routes(app)
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error_handler(request: Request, exc: RequestValidationError):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": _friendly_validation_messages(exc.errors())},
+        )
 
     # === 访问保护（P0）：口令设置后 /api/* 必须登录；脚本可带 X-Access-Token ===
     @app.middleware("http")
@@ -1704,12 +1752,12 @@ def _register_routes(app: FastAPI) -> None:
         stopwords = {"我们", "你们", "他们", "这个", "那个", "可以", "如何", "因为", "所以", "以及", "但是", "如果", "门店", "内容", "介绍", "推荐"}
         tokens = {token for token in tokens if token not in stopwords}
         rows = conn.execute(
-            "SELECT id, title, original_filename, alt_text, tags, quality_score, width, height "
+            "SELECT id, title, original_filename, stored_filename, alt_text, tags, quality_score, width, height "
             "FROM media_assets WHERE status = 'active' AND review_status = 'approved' "
             "ORDER BY created_at DESC LIMIT 500"
         ).fetchall()
         purpose_terms = {
-            "cover": {"封面", "主图", "门头", "产品", "招牌"},
+            "cover": {"封面", "主图", "主体", "产品", "作品", "人物", "场景", "重点"},
             "illustration": {"正文", "细节", "环境", "过程", "服务", "产品"},
             "background": {"背景", "底图", "纹理", "氛围"},
         }[usage_role]
@@ -1736,11 +1784,64 @@ def _register_routes(app: FastAPI) -> None:
                     + (("；用途：" + "、".join(purpose_hits)) if purpose_hits else ""),
             })
         ranked.sort(key=lambda item: (-item["score"], -(item["quality_score"] or 0), item["asset_id"]))
+
+        # 视觉排序是显式 opt-in：未开启、未配置密钥或服务异常时，稳定回退关键词排序。
+        method = "keyword_match"
+        message = "当前使用关键词和用途标签匹配；推荐结果需人工确认。"
+        registry = _g().get("tenant_registry")
+        if registry is not None and rows:
+            try:
+                from src.core.media_semantic import rank_media_with_vision
+
+                cfg = _g().get("cfg")
+                candidate_limit = int(cfg.vision_ranking.candidate_limit) if cfg else 8
+                top = ranked[:candidate_limit]
+                by_id = {int(row["id"]): row for row in rows}
+                if len(top) < min(candidate_limit, len(rows)):
+                    already = {item["asset_id"] for item in top}
+                    rest = sorted(
+                        (row for row in rows if int(row["id"]) not in already),
+                        key=lambda row: (-(row["quality_score"] or 0), -int(row["id"])),
+                    )
+                    for row in rest[:candidate_limit - len(top)]:
+                        top.append({
+                            "asset_id": int(row["id"]), "title": row["title"], "score": 0,
+                            "matched_keywords": [], "purpose_matches": [],
+                            "quality_score": row["quality_score"], "width": row["width"],
+                            "height": row["height"], "reason": "候选图片",
+                        })
+                candidates = [
+                    {"asset_id": item["asset_id"], "title": item["title"],
+                     "stored_filename": by_id[item["asset_id"]]["stored_filename"]}
+                    for item in top if item["asset_id"] in by_id
+                ]
+                vision = rank_media_with_vision(
+                    title=str(content["title"] or ""), body=str(content["body"] or ""),
+                    usage_role=usage_role, candidates=candidates,
+                    media_dir=registry.paths(_g().get("runtime_tenant_id", "default")).media_dir,
+                    cfg=cfg,
+                )
+                if vision:
+                    indexed = {item["asset_id"]: item for item in top}
+                    ai_items = []
+                    for item in vision:
+                        if item["asset_id"] in indexed:
+                            ranked_item = dict(indexed[item["asset_id"]])
+                            ranked_item["reason"] = item["reason"]
+                            ranked_item["score"] = 1000 - len(ai_items)
+                            ai_items.append(ranked_item)
+                    if ai_items:
+                        ranked = ai_items
+                        method = "vision_model"
+                        message = "已使用视觉模型结合内容文本进行语义匹配；仅展示已审核素材，仍需人工确认。"
+            except Exception as exc:  # noqa: BLE001 — 视觉服务失败必须降级，不影响关键词推荐
+                logger.warning("vision media ranking failed; using keyword fallback: %s", type(exc).__name__)
+
         return {
             "content_id": content_id, "usage_role": usage_role,
-            "method": "keyword_match", "automatic_assignment": False,
+            "method": method, "automatic_assignment": False,
             "items": ranked[:limit],
-            "message": "这是基于标题、正文、素材名称和标签的关键词推荐；无匹配项不代表素材不可用。推荐结果不会自动配图。",
+            "message": message + " 不会自动替换内容图片。",
         }
 
     @app.post("/api/media/{asset_id}/use")

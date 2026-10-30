@@ -91,6 +91,11 @@ def test_login_status_redacts_signed_urls(tmp_login):
 
 
 def test_qr_only_returned_in_qr_states(tmp_login):
+    class AliveProcess:
+        def poll(self):
+            return None
+
+    al._LOGIN_PROCESSES["xhs"] = AliveProcess()
     al._files("xhs")["qr"].write_bytes(b"\x89PNG fake")
     _write_status("qr_ready")
     st = al.get_login_status("xhs")
@@ -125,3 +130,12 @@ def test_login_command_uses_configured_timeout(tmp_login, monkeypatch):
     monkeypatch.setattr(cfg.timeouts, "login_timeout_seconds", 321)
     command = al.build_cmd("xhs")
     assert command[command.index("--timeout") + 1] == "321"
+
+
+
+def test_orphaned_qr_status_does_not_stay_in_starting_state(tmp_login):
+    _write_status("starting")
+    status = al.get_login_status("xhs")
+    assert status["state"] == "error"
+    assert status["proc_alive"] is False
+    assert "重新发起扫码登录" in status["message"]

@@ -619,7 +619,6 @@ export interface SystemConfigView {
     llm_provider: string;
     llm_model: string;
     llm_fallback_model: string;
-    llm_base_url: string;
     /** 计费通道：plan=Agent Plan 专属通道，metered=按量付费，custom=自定义端点 */
     llm_channel: "plan" | "metered" | "custom";
     llm_temperature: number;
@@ -1125,10 +1124,18 @@ export interface RhythmConfig {
 const API = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
 
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(API + path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+  let res: Response;
+  try {
+    res = await fetch(API + path, {
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error("网络连接失败，请检查服务是否运行及网络状态后重试");
+    }
+    throw error;
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     let detail = text || res.statusText;
@@ -1316,7 +1323,7 @@ export const api = {
     fetchJson<{ id: number; status: string; already_archived: boolean }>(`/api/media/${id}/archive`, { method: "POST" }),
   mediaUsageTargets: () => fetchJson<{ items: MediaUsageTarget[] }>("/api/media/targets"),
   recommendMediaAssets: (content_id: string, usage_role: "cover" | "illustration" | "background" = "cover") =>
-    fetchJson<{ content_id: string; usage_role: string; method: "keyword_match"; automatic_assignment: false; items: MediaRecommendation[]; message: string }>(
+    fetchJson<{ content_id: string; usage_role: string; method: "keyword_match" | "vision_model"; automatic_assignment: false; items: MediaRecommendation[]; message: string }>(
       `/api/media/recommendations?content_id=${encodeURIComponent(content_id)}&usage_role=${usage_role}`,
     ),
   useMediaAsset: (asset_id: number, content_id: string, usage_role: "cover" | "illustration" | "background" = "illustration") =>

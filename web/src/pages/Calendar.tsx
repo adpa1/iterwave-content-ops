@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useApp } from "../AppContext";
 import EmptyHint from "../components/EmptyHint";
 import { api, ScheduleEvent, UnscheduledDraft } from "../api";
+import { platformMeta } from "../platforms";
 
 export default function Calendar() {
   const { showToast, withPending, isPending } = useApp();
@@ -261,7 +262,7 @@ export default function Calendar() {
                     <td>{d.title ?? <span style={{ color: "var(--subtle)" }}>—</span>}</td>
                     <td>
                       <span className="tag" style={{ background: platformColors[d.platform], color: "#fff" }}>
-                        {d.platform}
+                        {platformMeta(d.platform).label}
                       </span>
                     </td>
                     <td>{statusLabel[d.status] ?? d.status}</td>

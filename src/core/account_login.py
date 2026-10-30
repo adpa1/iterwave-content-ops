@@ -312,7 +312,10 @@ def get_login_status(platform: str) -> dict:
 
     proc = _LOGIN_PROCESSES.get(platform)
     proc_alive = proc is not None and proc.poll() is None
-    if proc is not None and not proc_alive and state not in TERMINAL_STATES:
+    if proc is None and state not in TERMINAL_STATES and state != "unknown":
+        # 账号组切换或服务重启后，状态文件可能残留，但进程句柄已不存在；不得继续显示扫码中。
+        state, message = "error", "登录流程已中断，请重新发起扫码登录"
+    elif proc is not None and not proc_alive and state not in TERMINAL_STATES:
         # 与 Easel 一致：runner 没写终态就退出 → 明确的 error，而不是无限转圈的 unknown
         tail = redact(_last_log_line(f["log"]))
         state, message = "error", f"登录程序异常退出（退出码 {proc.returncode}）" + (f"：{tail}" if tail else "")

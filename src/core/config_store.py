@@ -62,7 +62,6 @@ RHYTHM_INTERVAL_FIELDS = (
 
 # 字符串白名单：路径 → (最小长度, 最大长度)
 STRING_RULES: dict[str, tuple[int, int]] = {
-    "topic_kb.path": (1, 512),
     "topic_kb.table_name": (1, 64),
     "topic_kb.default_dimension": (1, 20),
     "render.font_path": (0, 512),
@@ -179,7 +178,7 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "autogrow.cooldown_hours": (int, 0, 720),
     "autogrow.max_rounds_per_day": (int, 0, 24),
     "autogrow.max_consecutive_failures": (int, 1, 20),
-    "autogrow.feedback_max_bias": (int, 0, 50),
+    "autogrow.feedback_max_bias": (float, 0.0, 50.0),
     "autogrow.feedback_lookback_rounds": (int, 1, 20),
     "autogrow.recency_decay": (float, 0.0, 1.0),
     "autogrow.full_confidence_samples": (int, 1, 100),
@@ -783,7 +782,7 @@ def config_metadata_view(cfg: Config) -> list[dict[str, Any]]:
         add(key, value, kind="boolean" if kind is bool else "integer" if kind is int else "number",
             minimum=minimum, maximum=maximum)
     # 部署端点与账号内部标识不属于普通运行策略编辑界面，不向前端元数据接口下发。
-    hidden_runtime_fields = {"vision_ranking.base_url", "media_generation.base_url"}
+    hidden_runtime_fields = {"vision_ranking.base_url", "media_generation.base_url", "topic_kb.path"}
     for key in STRING_RULES:
         if key not in hidden_runtime_fields:
             add(key, _get_value(cfg, key), kind="string")
@@ -875,7 +874,7 @@ def _redact_public_value(value: Any) -> Any:
 
 
 _INTERNAL_ENDPOINT_KEYS = {
-    "vision_ranking.base_url", "media_generation.base_url",
+    "vision_ranking.base_url", "media_generation.base_url", "topic_kb.path",
     *(f"platforms.{platform}.{field}" for platform in PLATFORM_KEYS
       for field in ("base_url", "account_key")),
 }
@@ -942,7 +941,7 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             "positioning": cfg.ultimate_goal.positioning,
             "goal_mode": cfg.ultimate_goal.goal_mode,
             # —— 本地知识库（Settings 页只读展示；路径脱敏，来源在 Assets 页管理）——
-            "kb_path": redact_path(cfg.topic_kb.path),
+            "kb_path": "由内容资产中的选题库来源管理",
             "kb_type": cfg.topic_kb.type,
             "kb_table": cfg.topic_kb.table_name,
             "kb_field_mapping": cfg.topic_kb.field_mapping,
@@ -953,7 +952,6 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             "llm_provider": cfg.llm.provider,
             "llm_model": cfg.llm.model,
             "llm_fallback_model": getattr(cfg.llm, "fallback_model", None),
-            "llm_base_url": cfg.llm.base_url,
             # 计费通道：由 base_url 推导（前端下拉选择按量付费 / 专属 Agent Plan）
             "llm_channel": llm_channel(cfg.llm.base_url),
             "llm_temperature": cfg.llm.temperature,
@@ -1016,7 +1014,7 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
         raise ConfigPatchError("updates 不能为空")
 
     blocked_runtime_fields = {
-        "vision_ranking.base_url", "media_generation.base_url",
+        "vision_ranking.base_url", "media_generation.base_url", "topic_kb.path",
         *(f"platforms.{platform}.{field}" for platform in PLATFORM_KEYS
           for field in ("base_url", "account_key")),
         *(f"notifications.channels.{channel}.webhook_url_env" for channel in ("wecom", "feishu")),
