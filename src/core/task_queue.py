@@ -371,6 +371,22 @@ class GlobalTaskQueue:
         finally:
             conn.close()
 
+    def has_active(self, *, tenant_id: str | None = None) -> bool:
+        conn = self._connect()
+        try:
+            if tenant_id is None:
+                row = conn.execute(
+                    "SELECT 1 FROM global_task_queue WHERE status IN ('queued','running') LIMIT 1"
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT 1 FROM global_task_queue WHERE tenant_id=? "
+                    "AND status IN ('queued','running') LIMIT 1", (tenant_id,),
+                ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
     def get(self, task_id: str) -> QueuedTask | None:
         conn = self._connect()
         try:
