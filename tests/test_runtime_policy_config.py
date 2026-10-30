@@ -6,7 +6,7 @@ import io
 import pytest
 from PIL import Image
 
-from src.core.config_store import ConfigPatchError, _validate, config_metadata_view, patch_config
+from src.core.config_store import ConfigNotAllowedError, ConfigPatchError, _validate, config_metadata_view, current_config_view, patch_config
 from src.core.media_generation import ImageGenerationError, validate_image_bytes
 from src.core.media_quality import score_image
 from src.core.tenant_backup import MAX_BACKUP_BYTES, _backup_limits
@@ -173,3 +173,15 @@ def test_metrics_retry_settings_are_typed_and_bounded():
     assert _validate("timeouts.metrics_retry_interval_minutes", 45) == 45
     with pytest.raises(ConfigPatchError):
         _validate("timeouts.metrics_retry_attempts", 0)
+
+
+
+def test_internal_platform_identity_and_endpoints_are_not_returned_or_patchable(cfg, conn):
+    view = current_config_view(cfg, conn)
+    assert set(view["readonly"]["platforms"]["xhs"]) == {"enabled"}
+    with pytest.raises(ConfigNotAllowedError):
+        patch_config(cfg, conn, {"platforms.xhs.account_key": "xhs_other"})
+    with pytest.raises(ConfigNotAllowedError):
+        patch_config(cfg, conn, {"platforms.xhs.base_url": "https://internal.example"})
+    with pytest.raises(ConfigNotAllowedError):
+        patch_config(cfg, conn, {"media_generation.base_url": "https://internal.example"})
