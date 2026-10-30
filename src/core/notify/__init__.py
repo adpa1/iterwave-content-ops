@@ -17,6 +17,9 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+
 import json
 import logging
 import os
@@ -348,12 +351,29 @@ class Notifier:
 
 # 模块级单例（便于 scheduler/executor 未注入时的兜底）
 _active: Optional[Notifier] = None
+# 后台任务通知器按异步任务上下文绑定，不能跟随前台活动账号组变化。
+_context_notifier: ContextVar[Optional[Notifier]] = ContextVar(
+    "iterwave_context_notifier", default=None,
+)
+
+
+@contextmanager
+def bind_context_notifier(notifier: Optional[Notifier]):
+    """在当前异步任务上下文中绑定账号组通知器，并在退出时恢复原值。"""
+    token = _context_notifier.set(notifier)
+    try:
+        yield
+    finally:
+        _context_notifier.reset(token)
 
 
 def set_active(notifier: Notifier) -> None:
+    """设置前台交互使用的默认通知器。"""
     global _active
     _active = notifier
 
 
 def get_active() -> Optional[Notifier]:
-    return _active
+    """优先返回当前后台任务绑定的通知器，否则返回前台默认通知器。"""
+    contextual = _context_notifier.get()
+    return contextual if contextual is not None else _active
