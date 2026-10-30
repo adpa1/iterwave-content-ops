@@ -1092,6 +1092,13 @@ export interface PlatformStyle {
   updated_by?: string | null;
 }
 
+export interface OpsTargetsView {
+  [platform: string]: {
+    active_comments: { url: string; content: string }[];
+    follows: string[];
+  };
+}
+
 export interface RhythmConfig {
   enabled_platforms: Platform[];
   quotas: Record<Platform, { passive_replies: number; active_comments: number; follows: number }>;
@@ -1368,6 +1375,12 @@ export const api = {
     fetchJson<{ ok: boolean; channel: string; enabled: boolean; has_webhook_url: boolean; env_name: string }>(
       "/api/notify/webhook", { method: "POST", body: JSON.stringify({ channel, url }) },
     ),
+  // === 主动运营目标（账号组 SQLite 业务数据）===
+  opsTargets: () => fetchJson<{ items: OpsTargetsView }>("/api/ops-targets"),
+  saveOpsTargets: (items: OpsTargetsView) =>
+    fetchJson<{ items: OpsTargetsView; message: string }>("/api/ops-targets", {
+      method: "PUT", body: JSON.stringify(items),
+    }),
   // === G-13 / G-24 运行时配置 ===
   config: () => fetchJson<SystemConfigView>("/api/config"),
   patchConfig: (updates: Record<string, unknown>) =>
