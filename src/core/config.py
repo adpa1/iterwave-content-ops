@@ -395,6 +395,7 @@ DEFAULT_JOB_SCHEDULES: dict[str, dict] = {
 
 
 class SchedulerConfig(BaseModel):
+    misfire_grace_minutes: int = Field(360, ge=1, le=1440)
     jobs: dict[str, JobScheduleConfig] = Field(default_factory=dict)
 
     @model_validator(mode="after")
