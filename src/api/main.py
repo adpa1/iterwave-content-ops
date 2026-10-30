@@ -51,7 +51,7 @@ from typing import Callable, Optional
 import httpx
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -408,6 +408,44 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
         raise HTTPException(500, f"切换失败，已恢复账号组「{old_tenant_id}」：{type(exc).__name__}") from exc
 
 
+_VALIDATION_FIELD_LABELS = {
+    "platform": "平台标识", "usage_role": "图片用途", "limit": "数量",
+    "tenant_id": "账号组标识", "name": "名称", "path": "文件位置",
+    "email": "邮箱", "url": "链接", "content_id": "内容标识",
+}
+
+
+def _friendly_validation_messages(errors: list[dict]) -> list[str]:
+    """将 Pydantic 默认英文校验信息转换为稳定的中文提示，不回显校验器原文。"""
+    messages: list[str] = []
+    for error in errors:
+        loc = error.get("loc") or ()
+        field = str(loc[-1]) if loc else ""
+        label = _VALIDATION_FIELD_LABELS.get(field, "请求参数")
+        kind = str(error.get("type") or "")
+        ctx = error.get("ctx") or {}
+        if kind == "missing":
+            reason = "不能为空"
+        elif kind in ("string_pattern_mismatch", "string_type"):
+            reason = "格式不符合要求"
+        elif kind in ("int_parsing", "int_type", "float_parsing", "float_type"):
+            reason = "类型或格式不正确"
+        elif kind in ("greater_than_equal", "greater_than"):
+            bound = ctx.get("ge", ctx.get("gt", "允许范围"))
+            reason = f"不能小于 {bound}" if "ge" in ctx else f"必须大于 {bound}"
+        elif kind in ("less_than_equal", "less_than"):
+            bound = ctx.get("le", ctx.get("lt", "允许范围"))
+            reason = f"不能大于 {bound}" if "le" in ctx else f"必须小于 {bound}"
+        elif kind == "string_too_short":
+            reason = "长度不足"
+        elif kind == "string_too_long":
+            reason = "长度超出限制"
+        else:
+            reason = "内容不符合要求"
+        messages.append(f"{label}：{reason}")
+    return messages or ["请求参数不符合要求"]
+
+
 def _build_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -588,6 +626,13 @@ def _build_app() -> FastAPI:
         lifespan=lifespan,
     )
     _register_routes(app)
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error_handler(request: Request, exc: RequestValidationError):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": _friendly_validation_messages(exc.errors())},
+        )
 
     # === 访问保护（P0）：口令设置后 /api/* 必须登录；脚本可带 X-Access-Token ===
     @app.middleware("http")
