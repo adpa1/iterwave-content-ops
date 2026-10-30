@@ -663,7 +663,9 @@ def _build_app() -> FastAPI:
         )
         scheduler.start()
         # 断点恢复（R16/R17）：接续崩溃前未完成的任务，不重复写操作
-        recovery_report = RecoveryManager(cfg, conn, scheduler).recover()
+        recovery_report = RecoveryManager(
+            cfg, conn, scheduler, task_queue=_task_queue, tenant_id=active_tenant_id,
+        ).recover()
         _g_ctx["recovery"] = recovery_report
 
         # R18 母计划签名失效检查：启动时自动标记与当前计划不一致的活跃轮次
