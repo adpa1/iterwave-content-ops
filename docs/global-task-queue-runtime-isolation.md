@@ -18,7 +18,7 @@ IterWave 是单一运营者使用的运营工作台。客户是业务归属，�
 
 首期采用全局 FIFO、单消费者：
 
-- FIFO 排序键：`created_at ASC, task_id ASC`。
+- FIFO 排序键：事务内递增分配的 `queue_order ASC`，不依赖时间戳精度或随机任务 ID。
 - 当前首批任务类型覆盖生产轮次与恢复存草稿；定时数据采集、平台只读轮询、主动评论/关注等入口尚未全部迁移，需单独审计其资源冲突与队列优先级。
 - 队列状态：`queued → running → succeeded | failed`；用户可取消 queued；进程中断且租约过期转为 `interrupted`。
 - 同一 `tenant_id + task_type + aggregate_id` 不允许同时存在多个 queued/running 任务，避免同一轮次重复提交。
