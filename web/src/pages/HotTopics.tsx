@@ -214,7 +214,7 @@ export default function HotTopics() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">DISCOVER & TREND RIDING</div>
+          <div className="eyebrow">热点发现与趋势</div>
           <h1 className="page-title">热点雷达</h1>
           <div className="page-desc">
             后台定时采集各平台热榜（{hot?.refresh_enabled === false ? "已关闭" : hot?.refresh_schedule ?? "按配置"}），先判断是否服务于账号定位，再决定转选题、观察或放弃。每次采集只保留当前榜单，旧热点自动清理。
@@ -462,7 +462,9 @@ export default function HotTopics() {
                   {h.match_angle && <div><b>建议切入：</b>{h.match_angle}</div>}
                   {h.match_reason && <div style={{ color: "var(--muted)" }}>研判理由：{h.match_reason}</div>}
                   {h.dimension_match === false && !h.match_reason && <div style={{ color: "var(--muted)" }}>与账号定位无关</div>}
-                  {!h.publishable && <div style={{ color: "var(--red)" }}>{h.redline_hits.length ? `含红线词：${h.redline_hits.join("、")}` : "落入禁止方向"}</div>}
+                  {h.publishability_status === "需人工确认" && <div style={{ color: "var(--orange)" }}>涉及高监管内容，加入选题前必须由运营人员核实平台规则与账号资质：{(h.sensitive_hits || []).join("、")}</div>}
+                  {h.publishability_status === "未研判" && <div style={{ color: "var(--muted)" }}>尚未完成安全研判，不代表可以直接发布</div>}
+                  {!h.publishable && h.publishability_status !== "需人工确认" && <div style={{ color: "var(--red)" }}>{h.redline_hits.length ? `含红线词：${h.redline_hits.join("、")}` : "未通过安全检查或尚未完成研判"}</div>}
                 </div>
               )}
               <div className="hot-actions">
@@ -470,7 +472,13 @@ export default function HotTopics() {
                   {h.dimension_match === true ? <span className="tag blue">与定位关联</span>
                     : h.dimension_match === false ? <span className="tag gray">与定位无关</span>
                     : <span className="tag gray">待研判</span>}
-                  {h.publishable ? <span className="tag green">可发布</span> : <span className="tag red">不可发布</span>}
+                  {h.publishability_status === "需人工确认"
+                    ? <span className="tag orange">需人工确认</span>
+                    : h.publishability_status === "未研判"
+                      ? <span className="tag gray">未研判</span>
+                      : h.publishable
+                        ? <span className="tag green">可发布</span>
+                        : <span className="tag red">不可发布</span>}
                 </div>
                 <div className="flex" style={{ gap: 6 }}>
                   {h.url ? (

@@ -45,7 +45,7 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 import httpx
@@ -416,6 +416,19 @@ _VALIDATION_FIELD_LABELS = {
     "tenant_id": "账号组标识", "name": "名称", "path": "文件位置",
     "email": "邮箱", "url": "链接", "content_id": "内容标识",
 }
+
+
+def _api_datetime(value):
+    """API 时间统一携带时区；历史无时区时间按旧部署的 UTC 存储约定解释。"""
+    if not value or not isinstance(value, str):
+        return value
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.isoformat()
 
 
 def _friendly_validation_messages(errors: list[dict]) -> list[str]:
@@ -1006,6 +1019,7 @@ class LlmKeyRequest(BaseModel):
 class CreateRoundRequest(BaseModel):
     goal_id: Optional[str] = None
     topic_count: int = 5
+    platforms: Optional[list[str]] = None
 
 class NotifyRuleRequest(BaseModel):
     scenario: str
@@ -1990,7 +2004,10 @@ def _register_routes(app: FastAPI) -> None:
                 "selected_tenant_id": registry.active_id(),
                 "restart_required": registry.active_id() != _g().get("runtime_tenant_id", "default"),
                 "hot_switch_enabled": _tenant_hot_switch_enabled(),
-                "items": registry.list(),
+                "items": [
+                    {**item, "created_at": _api_datetime(item.get("created_at"))}
+                    for item in registry.list()
+                ],
             }
         except TenantError as exc:
             raise HTTPException(503, str(exc)) from exc
@@ -2201,7 +2218,10 @@ def _register_routes(app: FastAPI) -> None:
         try:
             token = auth.login(password, ip)
         except PermissionError as exc:
-            raise HTTPException(status_code=429, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=429, detail=str(exc),
+                headers={"Retry-After": str(auth.LOGIN_WINDOW_SECONDS)},
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         response.headers["set-cookie"] = auth.session_cookie_header(token, secure=request.url.scheme == "https")
@@ -2224,7 +2244,11 @@ def _register_routes(app: FastAPI) -> None:
             if not local_direct:
                 client_ip = request.client.host if request.client else "unknown"
                 if auth.is_rate_limited(client_ip):
-                    raise HTTPException(status_code=429, detail="引导口令尝试次数过多，请 10 分钟后再试")
+                    raise HTTPException(
+                        status_code=429,
+                        detail="引导口令尝试次数过多，请 10 分钟后再试",
+                        headers={"Retry-After": str(auth.LOGIN_WINDOW_SECONDS)},
+                    )
                 valid_bootstrap = bool(bootstrap and provided) and hmac.compare_digest(provided, bootstrap)
                 if not valid_bootstrap:
                     auth.record_failure(client_ip)
@@ -2477,18 +2501,20 @@ def _register_routes(app: FastAPI) -> None:
                 "VALUES (?, ?, 'created', ?, ?)",
                 (goal_id, round_number, "[]", "[]"),
             )
-            conn.commit()
-
-            # R18 / G-21：创建轮次即固化母计划签名（写 rounds.plan_signature +
-            # signature_history），否则本轮在「改计划 → 下游失效」时无从比对
-            pvm = _g()["plan_version_manager"]
-            plan, _sig, _at, source = pvm.load_plan()
-            if source != "plan_settings":
-                plan = pvm.build_plan(
-                    topic_count_per_platform=req.topic_count,
-                    platforms=req.platforms or _g()["cfg"].platforms.enabled_keys(),
-                )
-            pvm.record(cursor.lastrowid, plan, author="round_create")
+            # R18 / G-21：创建轮次与母计划签名必须处于同一事务。
+            # 签名写入失败时回滚轮次，避免出现 UI 报错但数据库残留的幽灵轮次。
+            try:
+                pvm = _g()["plan_version_manager"]
+                plan, _sig, _at, source = pvm.load_plan()
+                if source != "plan_settings":
+                    plan = pvm.build_plan(
+                        topic_count_per_platform=req.topic_count,
+                        platforms=req.platforms or _g()["cfg"].platforms.enabled_keys(),
+                    )
+                pvm.record(cursor.lastrowid, plan, author="round_create")
+            except Exception:
+                conn.rollback()
+                raise
 
             return {"id": cursor.lastrowid, "round_number": round_number, "status": "created"}
 

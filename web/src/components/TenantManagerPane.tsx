@@ -113,8 +113,8 @@ export default function TenantManagerPane() {
                 {(data?.items ?? []).map((item) => (
                   <tr key={item.id}>
                     <td>{item.name}</td>
-                    <td><code>{item.id}</code></td>
-                    <td>{item.created_at ?? "—"}</td>
+                    <td>{item.id === "default" ? "默认账号组" : <code>{item.id}</code>}</td>
+                    <td>{item.created_at ? new Date(item.created_at).toLocaleString("zh-CN") : "—"}</td>
                     <td>
                       {item.id === data?.runtime_tenant_id
                         ? <span className="tag green">当前运行</span>
@@ -163,7 +163,7 @@ export default function TenantManagerPane() {
             </table>
           </div>
         )}
-        <div className="panel-sub" style={{ marginTop: 8 }}>恢复先进行备份清单、路径、哈希与 SQLite 完整性校验，再在下次后端启动、打开数据库前执行。失败时会保留数据库回滚副本。</div>
+        <div className="panel-sub" style={{ marginTop: 8 }}>恢复前会检查备份清单、文件完整性和数据库可用性；恢复操作将在下次服务启动时执行。失败时会保留原数据副本。</div>
       </section>
       <section className="panel">
         <div className="panel-head">

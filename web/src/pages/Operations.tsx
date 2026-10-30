@@ -78,8 +78,6 @@ export default function Operations() {
   const [loading, setLoading] = useState(false);
   /** KPI 展示窗口（1=今日 / 7 / 30 / 90），与 R12 评分 90 天口径独立 */
   const [kpiDays, setKpiDays] = useState(1);
-  /** R6 之外的全局人工软暂停 */
-  const [paused, setPaused] = useState(false);
   const [notifBusy, setNotifBusy] = useState(false);
 
   const refresh = async () => {
@@ -94,7 +92,6 @@ export default function Operations() {
         show("scheduler") ? api.schedulerJobs() : Promise.resolve(null),
         show("rhythm") ? api.rhythm() : Promise.resolve(null),
         show("breaker") ? api.circuitBreaker() : Promise.resolve(null),
-        show("kpi") ? api.opsPause() : Promise.resolve(null),
       ]);
       const unpack = (r: PromiseSettledResult<any>) => r.status === "fulfilled" ? r.value : null;
       setKpi(unpack(results[0]));
@@ -106,8 +103,6 @@ export default function Operations() {
       setJobs(unpack(results[5]));
       setRhythm(unpack(results[6]));
       setCb(unpack(results[7]));
-      const pauseRes = unpack(results[8]);
-      if (pauseRes) setPaused(Boolean(pauseRes.paused));
       // G-12：失败不能只进 console —— 收拢成可见错误 + 重试按钮
       const rejected = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
       setLoadError(
@@ -123,14 +118,6 @@ export default function Operations() {
   };
 
   useEffect(() => { refresh(); }, [tab, kpiDays]);
-
-  const togglePause = async () => {
-    try {
-      const r = await api.setOpsPause(!paused);
-      setPaused(r.paused);
-      showToast(r.paused ? "‖ 已暂停全部运营动作（存草稿/采集不受影响）" : "▶ 已恢复运营", "success");
-    } catch (e: any) { showToast(e.message, "error"); }
-  };
 
   const testNotify = async () => {
     setNotifBusy(true);
@@ -149,7 +136,7 @@ export default function Operations() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">OPERATIONS CONSOLE</div>
+          <div className="eyebrow">运营控制台</div>
           <h1 className="page-title">运营控制台</h1>
           <div className="page-desc">
             监控运营动作、发布确认、熔断与节奏、定时任务和通知；系统只存草稿，发布永远由你确认。
@@ -158,11 +145,11 @@ export default function Operations() {
         <div style={{ display: "flex", gap: 8 }}>
           {/* 全局软暂停：只停运营动作（评论/关注），存草稿与数据采集不受影响 */}
           <button
-            className={`btn ${paused ? "primary" : ""}`}
-            onClick={togglePause}
-            title="仅暂停评论/关注等运营动作；存草稿与数据采集不受影响"
+            className="btn"
+            disabled
+            title="平台运营动作尚未接入，当前没有可暂停或恢复的评论/关注任务"
           >
-            {paused ? "▶ 恢复运营" : "‖ 暂停运营"}
+            运营动作尚未接入
           </button>
           <button className="btn" onClick={testNotify} disabled={notifBusy}>
             {notifBusy ? "自检中…" : "♧ 测试通知"}
@@ -260,7 +247,7 @@ function KpiPane({
   return (
     <>
       <div style={{ marginBottom: 12 }}>
-        <DemoBadge level="demo" text="平台运营动作（评论/关注）当前为适配器接入中，数字代表系统记录的尝试量，不代表平台侧真实结果" />
+        <DemoBadge level="demo" text="评论与关注等平台运营动作尚未接入；下方仅展示系统历史记录，不会实际执行平台操作" />
       </div>
       {/* KPI 时间窗口切换（与 R12 评分 90 天口径独立） */}
       <div className="compact-tabbar" style={{ marginBottom: 12 }}>

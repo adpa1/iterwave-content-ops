@@ -2,7 +2,7 @@
  * 可编辑配置面板（系统设置 / 首次向导共用）。
  *
  * 所有字段都走后端白名单 PATCH /api/config（SQLite 配置版本 + config_changes 审计 + 立即生效），
- * 配置字段元数据可通过 GET /api/config/metadata 查询；API Key 单独走 POST /api/config/llm_key 写入 config/.env（R23 不回传明文）。
+ * 配置字段元数据可通过 GET /api/config/metadata 查询；服务密钥通过独立接口保存到服务端，前端不会读取或回显明文。
  * 这里的组件只提交「真正改动」的字段，未改动不提交。
  */
 import { useEffect, useState } from "react";
@@ -18,7 +18,18 @@ const PLATFORM_LABELS: Record<string, string> = {
 };
 
 export const KB_TYPES = ["auto", "sqlite", "csv", "json", "jsonl", "xlsx", "rss"] as const;
+const KB_TYPE_LABELS: Record<string, string> = {
+  auto: "自动识别", sqlite: "数据库", csv: "CSV 表格", json: "JSON 文件",
+  jsonl: "JSONL 文件", xlsx: "Excel 表格", rss: "RSS 订阅",
+};
 export const KB_MAPPING_FIELDS: string[] = ["source", "title", "summary", "link", "date", "dimension"];
+const KB_FIELD_LABELS: Record<string, string> = {
+  source: "来源", title: "标题", summary: "摘要", link: "原文链接",
+  date: "日期", dimension: "内容方向",
+};
+const KB_FIELD_KEYS = Object.fromEntries(
+  Object.entries(KB_FIELD_LABELS).map(([key, label]) => [label, key]),
+) as Record<string, string>;
 
 /** "a, b，c" → ["a","b","c"] */
 function splitList(text: string): string[] {
@@ -112,7 +123,7 @@ export function PersonaEditor({ view, onSaved }: {
 // =====================================================================
 // 选题库 KB：类型 / 路径 / 数据表
 // 路径来自后端脱敏（项目外绝对路径显示为 ~/…/x 或 …/x），脱敏值不能回写，
-// 所以脱敏状态下只读，统一到「内容资产 → 字段映射检查」的选题库来源管理里维护。
+// 所以脱敏状态下只读，统一到「内容资产 → 知识库来源」里维护。
 //
 // =====================================================================
 export function KbEditor({ view, onSaved }: {
@@ -123,7 +134,7 @@ export function KbEditor({ view, onSaved }: {
   const [path, setPath] = useState(view.readonly.kb_path || "");
   const [table, setTable] = useState(view.readonly.kb_table || "");
   const [mappingText, setMappingText] = useState(
-    Object.entries(view.readonly.kb_field_mapping).map(([k, v]) => `${k}=${v}`).join(", "),
+    Object.entries(view.readonly.kb_field_mapping).map(([k, v]) => (KB_FIELD_LABELS[k] ?? k) + "=" + v).join(", "),
   );
   const [inspectMsg, setInspectMsg] = useState<string | null>(null);
   const busy = isPending("cfg:kb");
@@ -136,9 +147,10 @@ export function KbEditor({ view, onSaved }: {
     for (const part of text.split(/[,，\n]/).map((s) => s.trim()).filter(Boolean)) {
       const idx = part.indexOf("=");
       if (idx <= 0) return `字段映射格式错误：${part}（应为 通用字段=原始列名）`;
-      const k = part.slice(0, idx).trim();
+      const rawKey = part.slice(0, idx).trim();
+      const k = KB_FIELD_KEYS[rawKey] ?? rawKey;
       const v = part.slice(idx + 1).trim();
-      if (!KB_MAPPING_FIELDS.includes(k)) return `未知通用字段：${k}`;
+      if (!KB_MAPPING_FIELDS.includes(k)) return `未知字段名称：${rawKey}（可用：${Object.values(KB_FIELD_LABELS).join("、")}）`;
       if (!v) return `${k} 的原始列名不能为空`;
       out[k] = v;
     }
@@ -183,7 +195,7 @@ export function KbEditor({ view, onSaved }: {
     <div style={{ display: "grid", gap: 14 }}>
       <Field label="KB 类型">
         <select style={{ ...inputStyle, width: 200 }} value={kbType} onChange={(e) => setKbType(e.target.value)}>
-          {KB_TYPES.map((t) => <option key={t} value={t}>{t === "auto" ? "auto（按扩展名自动识别）" : t}</option>)}
+          {KB_TYPES.map((t) => <option key={t} value={t}>{KB_TYPE_LABELS[t]}</option>)}
         </select>
       </Field>
       <Field label="选题库文件位置（只读）">
@@ -194,20 +206,20 @@ export function KbEditor({ view, onSaved }: {
       <div className="note" style={{ fontSize: 11 }}>
         选题库可以来自多个来源（本地上传 / 远程地址 / 服务器路径），统一在
         <button type="button" className="btn sm" style={{ marginLeft: 6 }}
-          onClick={() => navigate("assets", "mapping")}>内容资产 → 字段映射检查</button>
+          onClick={() => navigate("assets", "mapping")}>内容资产 → 知识库来源</button>
         管理，支持自动识别字段与预览。
       </div>
-      <Field label="数据表名（数据库专用）">
+      {kbType === "sqlite" && <Field label="数据表名称">
         <input style={{ ...inputStyle, width: 240, fontFamily: "monospace" }} value={table}
-          onChange={(e) => setTable(e.target.value)} placeholder="topics" />
-      </Field>
-      <Field label="字段映射（通用字段=原始列名，逗号分隔；留空 = 自动识别）">
+          onChange={(e) => setTable(e.target.value)} placeholder="输入要读取的数据表名称" />
+      </Field>}
+      <Field label="列名对应关系（中文字段=来源列名，逗号分隔；留空 = 自动识别）">
         <input style={{ ...inputStyle, fontFamily: "monospace" }} value={mappingText}
           onChange={(e) => setMappingText(e.target.value)}
-          placeholder="title=标题, dimension=分类" />
+          placeholder="标题=内容标题, 内容方向=分类" />
       </Field>
       <div style={{ fontSize: 11, color: "var(--subtle)" }}>
-        可用通用字段：{KB_MAPPING_FIELDS.join(" / ")}
+        可用字段：{Object.values(KB_FIELD_LABELS).join(" / ")}
       </div>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 4 }}>
         <SaveBar onSave={save} busy={busy} hint="路径改动会在下一次选题读取时生效，无需重启后端" />
@@ -269,7 +281,7 @@ export function LlmEditor({ view, onSaved }: {
     if (baseUrl.trim()) updates["llm.base_url"] = baseUrl.trim();
     const temp = Number(temperature);
     if (temperature !== "" && temp !== Number(view.readonly.llm_temperature)) {
-      if (!Number.isFinite(temp) || temp < 0 || temp > 2) { showToast("temperature 必须在 0-2 之间", "error"); return; }
+      if (!Number.isFinite(temp) || temp < 0 || temp > 2) { showToast("生成随机度必须在 0-2 之间", "error"); return; }
       updates["llm.temperature"] = temp;
     }
     const tsec = Number(timeoutSec);
@@ -293,7 +305,7 @@ export function LlmEditor({ view, onSaved }: {
       const r = await withPending("cfg:llm_key", () => api.saveLlmKey(value));
       if (!r) return;
       setApiKey("");
-      showToast(value ? "✓ API Key 已写入 config/.env（chmod 600）" : "✓ 已清除 API Key", "success");
+      showToast(value ? "✓ 服务密钥已安全保存" : "✓ 已清除 API Key", "success");
       onSaved?.();
     } catch (e: any) {
       showToast(`保存 Key 失败: ${e?.message ?? e}`, "error");
@@ -304,9 +316,9 @@ export function LlmEditor({ view, onSaved }: {
     <div style={{ display: "grid", gap: 14 }}>
       <label style={{ fontSize: 13, display: "flex", gap: 8, alignItems: "center" }}>
         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-        启用 LLM（关闭时选题评分 / 文案生成自动降级为模板）
+        启用大模型（关闭时选题评分 / 文案生成自动降级为模板）
       </label>
-      <Field label="Provider">
+      <Field label="模型服务商">
         <input style={{ ...inputStyle, width: 200 }} value={provider}
           onChange={(e) => setProvider(e.target.value)} placeholder="ark" />
       </Field>
@@ -346,7 +358,7 @@ export function LlmEditor({ view, onSaved }: {
         </div>
       )}
       <div className="grid three" style={{ gap: 10 }}>
-        <Field label="temperature（0-2）">
+        <Field label="生成随机度（0-2）">
           <input className="field" type="number" step="0.1" min={0} max={2} style={{ width: "100%" }}
             value={temperature} onChange={(e) => setTemperature(e.target.value)} />
         </Field>
@@ -357,7 +369,7 @@ export function LlmEditor({ view, onSaved }: {
       </div>
       <SaveBar onSave={saveModel} busy={busy} />
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-        <Field label={`API Key（写 config/.env，前端不回显；当前：${view.readonly.llm_has_api_key ? "已配置" : "未配置"}）`}>
+        <Field label={`服务密钥（仅保存在服务端，不回显；当前：${view.readonly.llm_has_api_key ? "已配置" : "未配置"}）`}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input style={{ ...inputStyle, flex: "1 1 240px", fontFamily: "monospace" }} type="password"
               value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="粘贴 Key 后点「保存 Key」" />
@@ -433,7 +445,7 @@ export function PlatformToggles({ view, onSaved, loggedIn }: {
         </table>
       </div>
       <SaveBar onSave={save} busy={busy}
-        hint="至少保留 1 个平台；启用 ≠ 可发布，还需在「账号连接」扫码登录" />
+        hint="至少保留 1 个平台；启用 ≠ 可发布，还需在「账号与登录」扫码登录" />
     </>
   );
 }
@@ -875,8 +887,8 @@ export function PlatformStyleEditor() {
   return (
     <div style={{ display: "grid", gap: 14 }}>
       <div className="note" style={{ fontSize: 12 }}>
-        这些内容存在 <code>platform_styles</code> 表里，文案生成时实时读取（LLM 提示词 + 模板降级都走它）。
-        话题标签留空 = 只带选题维度标签，不会再出现写死的垂类话题。
+        平台文案风格会在生成内容时实时读取，大模型生成与模板降级使用同一套设置。
+        话题标签留空时，只使用选题所属方向的标签。
       </div>
       {styles.map((s) => {
         const d = drafts[s.platform];

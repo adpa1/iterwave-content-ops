@@ -41,6 +41,33 @@ def client(cfg, conn, seed, test_auth):
 
 
 # ---------------------------------------------------------------- R-2 采纳缺口
+def test_create_round_without_saved_master_plan_succeeds_without_ghost_round(client):
+    tc, conn, _ = client
+    response = tc.post("/api/rounds", json={"topic_count": 5})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "created"
+    row = conn.execute(
+        "SELECT id, plan_signature FROM spiral_rounds WHERE id = ?", (body["id"],)
+    ).fetchone()
+    assert row is not None and row["plan_signature"]
+    assert conn.execute("SELECT COUNT(*) FROM spiral_rounds").fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM signature_history WHERE round_id = ?", (body["id"],)
+    ).fetchone()[0] == 1
+
+
+def test_create_round_rolls_back_when_plan_signature_fails(client, monkeypatch):
+    tc, conn, _ = client
+    monkeypatch.setattr(
+        PlanVersionManager, "record",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("signature write failed")),
+    )
+    with pytest.raises(RuntimeError, match="signature write failed"):
+        tc.post("/api/rounds", json={"topic_count": 6})
+    assert conn.execute("SELECT COUNT(*) FROM spiral_rounds").fetchone()[0] == 0
+
+
 def test_adopt_gaps_rejects_empty(client):
     tc, _, _ = client
     assert tc.post("/api/plan_adjustments/adopt", json={"dimensions": []}).status_code == 400

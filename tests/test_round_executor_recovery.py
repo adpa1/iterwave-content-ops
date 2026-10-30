@@ -43,6 +43,41 @@ def _executor(cfg, conn, adapters=None, guard=None):
     )
 
 
+def test_empty_topic_pool_is_blocked_before_round_enters_producing(cfg, conn, seed, monkeypatch):
+    monkeypatch.setattr("src.core.round_executor.load_pool", lambda *args, **kwargs: ([], {"kb_error": None}))
+    round_id = seed.round(status="created")
+    executor = _executor(cfg, conn)
+    try:
+        asyncio.run(executor.run(round_id))
+    except ValueError as exc:
+        assert "运行前检查未通过" in str(exc)
+        assert "选题" in str(exc)
+    else:
+        raise AssertionError("empty topic pool must be blocked before execution")
+
+    status = conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0]
+    assert status == "created"
+
+
+def test_failed_round_with_existing_content_cannot_be_retried(cfg, conn, seed):
+    round_id = seed.round(status="failed")
+    seed.draft(round_id, platform="xhs", draft_status="draft_pending", fetch_status=None)
+    executor = _executor(cfg, conn)
+    try:
+        asyncio.run(executor.run(round_id))
+    except ValueError as exc:
+        assert "已产生内容或草稿" in str(exc)
+    else:
+        raise AssertionError("failed round with output must not be rerun")
+
+    status = conn.execute(
+        "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
+    ).fetchone()[0]
+    assert status == "failed"
+
+
 def test_dry_run_pending_drafts_can_be_saved_without_regenerating(cfg, conn, seed):
     round_id = seed.round(status="producing")
     draft_id = seed.draft(round_id, platform="xhs", draft_status="draft_pending", fetch_status=None)
@@ -269,6 +304,7 @@ def test_empty_topic_selection_persists_failed_run_report(cfg, conn, seed, monke
     executor = _executor(cfg, conn)
     executor._resolve_platforms = lambda values: [Platform.XHS]
     executor._select_topics = lambda topic_count, report: []
+    monkeypatch.setattr("src.core.round_executor.load_pool", lambda *args, **kwargs: ([{"id": "topic-1"}], {}))
     monkeypatch.setattr(
         "src.core.plan_version.PlanVersionManager.load_plan",
         lambda self: ({"topic_count_per_platform": 1, "enabled_platforms": ["xhs"]}, "sig", None, "test"),
@@ -296,6 +332,7 @@ def test_feedback_resolution_exception_marks_round_and_task_failed(cfg, conn, se
     round_id = seed.round(status="created")
     executor = _executor(cfg, conn)
     executor._resolve_platforms = lambda values: [Platform.XHS]
+    monkeypatch.setattr("src.core.round_executor.load_pool", lambda *args, **kwargs: ([{"id": "topic-1"}], {}))
     monkeypatch.setattr(
         "src.core.plan_version.PlanVersionManager.load_plan",
         lambda self: ({"topic_count_per_platform": 1, "enabled_platforms": ["xhs"]}, "sig", None, "test"),

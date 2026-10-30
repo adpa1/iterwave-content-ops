@@ -117,8 +117,9 @@ function InitialSetupScreen() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password.trim().length < 6 || busy) {
-      if (password.trim().length < 6) setError("访问口令至少 6 个字符");
+    if (busy) return;
+    if (password.trim().length < 8) {
+      setError("访问口令至少 8 个字符，并混合至少三类字符（大小写字母、数字、符号）");
       return;
     }
     setBusy(true);
@@ -145,7 +146,7 @@ function InitialSetupScreen() {
         <input
           id="initialAccessPassword" className="field" type="password" autoFocus
           value={password} onChange={(e) => setPassword(e.target.value)}
-          placeholder="设置访问口令（至少 6 位）" autoComplete="new-password"
+          placeholder="至少 8 位，混合大小写字母、数字和符号" autoComplete="new-password"
         />
         <label className="sr-only" htmlFor="initialBootstrapToken">首次设置引导口令</label>
         <input
@@ -262,10 +263,8 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
     }
   };
   const broken = status?.circuit_broken_platforms || [];
-  const enabled = status?.enabled_platforms || [];
-  const loggedIn = status?.logged_in_platforms || [];
-  const noLogin = enabled.filter((p) => !loggedIn.includes(p));
-  const noticeCount = broken.length + noLogin.filter((p) => !broken.includes(p)).length;
+  // 登录状态只在「账号与登录」页集中提示；通知中心仅保留需要立即处理的熔断告警。
+  const noticeCount = broken.length;
 
   useEffect(() => {
     if (!noticesOpen) return;
@@ -337,8 +336,8 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
                 <strong>需要处理</strong>
                 <span>{noticeCount} 项</span>
               </div>
-              {broken.length === 0 && noLogin.length === 0 ? (
-                <div className="notice-empty">暂无账号告警或登录问题。</div>
+              {broken.length === 0 ? (
+                <div className="notice-empty">暂无熔断告警。</div>
               ) : (
                 <div className="notice-list">
                   {broken.map((p) => (
@@ -348,13 +347,7 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
                       <span aria-hidden="true">→</span>
                     </button>
                   ))}
-                  {noLogin.filter((p) => !broken.includes(p)).map((p) => (
-                    <button type="button" className="notice-item" key={`login-${p}`} onClick={() => go("accounts")}>
-                      <span className="notice-item-mark warning" aria-hidden="true">!</span>
-                      <span><b>{platformMeta(p).label}尚未登录</b><small>扫码登录后才能执行平台操作</small></span>
-                      <span aria-hidden="true">→</span>
-                    </button>
-                  ))}
+
                 </div>
               )}
             </div>

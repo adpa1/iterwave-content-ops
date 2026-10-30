@@ -218,7 +218,7 @@ export default function Goals() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">NORTH STAR & PLATFORM OBJECTIVES</div>
+          <div className="eyebrow">总体目标与平台目标</div>
           <h1 className="page-title">目标与策略</h1>
           <div className="page-desc">
             总体目标定义方向；平台阶段目标定义每个平台当前要取得的结果。跨平台指标独立计算，不能简单相加。

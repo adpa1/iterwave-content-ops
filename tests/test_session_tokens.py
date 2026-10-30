@@ -8,15 +8,15 @@ def _simulate_restart():
 
 
 def test_session_survives_restart():
-    auth.set_password("secret-1")
-    token = auth.login("secret-1", ip="1.1.1.1")
+    auth.set_password("Secret-123!")
+    token = auth.login("Secret-123!", ip="1.1.1.1")
     _simulate_restart()
     assert auth._session_valid(token)
 
 
 def test_logout_is_visible_to_other_processes():
-    auth.set_password("secret-1")
-    token = auth.login("secret-1", ip="1.1.1.1")
+    auth.set_password("Secret-123!")
+    token = auth.login("Secret-123!", ip="1.1.1.1")
     auth.logout_session(token)
     _simulate_restart()
     assert not auth._session_valid(token)
@@ -24,15 +24,15 @@ def test_logout_is_visible_to_other_processes():
 
 
 def test_password_change_invalidates_sessions():
-    auth.set_password("secret-1")
-    token = auth.login("secret-1", ip="1.1.1.1")
-    auth.set_password("secret-2")
+    auth.set_password("Secret-123!")
+    token = auth.login("Secret-123!", ip="1.1.1.1")
+    auth.set_password("Secret-234!")
     assert not auth._session_valid(token)
 
 
 def test_tampered_or_garbage_token_rejected():
-    auth.set_password("secret-1")
-    token = auth.login("secret-1", ip="1.1.1.1")
+    auth.set_password("Secret-123!")
+    token = auth.login("Secret-123!", ip="1.1.1.1")
     exp, nonce, sig = token.split(".")
     assert not auth._session_valid(f"{int(exp) + 999}.{nonce}.{sig}")
     assert not auth._session_valid("abc")

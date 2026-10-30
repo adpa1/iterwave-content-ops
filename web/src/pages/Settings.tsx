@@ -153,7 +153,7 @@ export default function Settings() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">SYSTEM SETTINGS</div>
+          <div className="eyebrow">系统设置</div>
           <h1 className="page-title">系统设置</h1>
           <div className="page-desc">所有设置保存后立即生效，并记录变更历史；按分类在下方页签中修改。</div>
         </div>
@@ -335,7 +335,7 @@ export default function Settings() {
           <div className="panel-head">
             <div>
               <div className="panel-title"><span className="icon">⇄</span>主模型与备用</div>
-              <div className="panel-sub">模型可在线切换；API Key 保存后不再回显</div>
+              <div className="panel-sub">模型可在线切换；服务密钥保存后不再回显</div>
             </div>
           </div>
           {!cfgView ? (
@@ -550,8 +550,8 @@ function AccessNotifyPanel({ view, onSaved }: { view: SystemConfigView; onSaved:
   const macAvailable = channels.macos?.available !== false;
 
   const changePassword = async () => {
-    if (password.trim().length < 6) {
-      showToast("访问口令至少 6 个字符", "error");
+    if (password.trim().length < 8) {
+      showToast("访问口令至少 8 个字符，并混合至少三类字符", "error");
       return;
     }
     setBusy("password");
@@ -611,7 +611,7 @@ function AccessNotifyPanel({ view, onSaved }: { view: SystemConfigView; onSaved:
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input
-              className="field" type="password" placeholder="新口令（至少 6 位）"
+              className="field" type="password" placeholder="新口令（至少 8 位，混合大小写字母、数字和符号）"
               value={password} onChange={(e) => setPassword(e.target.value)}
             />
             {!auth?.configured && (
@@ -634,7 +634,7 @@ function AccessNotifyPanel({ view, onSaved }: { view: SystemConfigView; onSaved:
           <div className="note" style={{ marginBottom: 8 }}>
             {macAvailable
               ? `macOS 通知${macEnabled ? "已开启" : "未开启"}；跨平台部署请用 Webhook`
-              : "当前系统不支持 macOS 通知，请使用企微或飞书 Webhook"}
+              : "当前服务部署环境不提供 macOS 本机通知，请使用企微或飞书 Webhook"}
           </div>
           {(["wecom", "feishu"] as const).map((channel) => {
             const info = channels[channel];

@@ -293,6 +293,8 @@ export interface HotTopicItem {
   /** 跨平台同一事件（去重规则 2 合并到本条） */
   also_on?: { platform: string; title: string; url: string | null; heat: number | null; heat_unit: string | null }[];
   publishable: boolean;
+  publishability_status?: "可发布" | "需人工确认" | "不可发布" | "未研判";
+  sensitive_hits?: string[];
   /** 分平台画像模式下：适合哪些平台的账号 */
   fit_platforms?: string[];
   redline_hits: string[];
@@ -602,6 +604,7 @@ export interface SystemConfigView {
   locked: { dimension_match_required: boolean; publishability_required: boolean };
   /** 账号画像 + KB + LLM + 平台连接：展示值；可编辑项走 PATCH /api/config 白名单 */
   readonly: {
+    persona_configured: boolean;
     persona_keywords: string[];
     forbidden_directions: string[];
     redline_keywords_count: number;

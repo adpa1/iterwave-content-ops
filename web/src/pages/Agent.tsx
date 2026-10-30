@@ -80,7 +80,7 @@ export default function Agent() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">AGENT ORCHESTRATION</div>
+          <div className="eyebrow">智能体与流程</div>
           <h1 className="page-title">Agent 编排与诊断</h1>
           <div className="page-desc">
             选题 → 文案 → 质量门 → 出图 → 存草稿 → 排期 → 等待发布。编排保存后下一轮立即按新编排执行。

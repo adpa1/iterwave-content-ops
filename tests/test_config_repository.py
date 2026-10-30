@@ -161,6 +161,24 @@ def test_config_view_hides_provider_endpoints_from_overrides_and_audit(cfg, conn
 
 
 
+def test_config_view_does_not_present_sample_persona_as_user_configuration(cfg, conn):
+    from src.core.config_store import current_config_view
+
+    initial = current_config_view(cfg, conn)["readonly"]
+    assert initial["persona_configured"] is False
+    assert initial["persona_keywords"] == []
+    assert initial["positioning"] == ""
+
+    save_settings(
+        conn,
+        {"ultimate_goal.persona_keywords": ["个人成长", "实用经验", "生活方式", "效率方法"]},
+        audit_rows=[("ultimate_goal.persona_keywords", "[]", '["个人成长", "实用经验", "生活方式", "效率方法"]')],
+    )
+    configured = current_config_view(cfg, conn)["readonly"]
+    assert configured["persona_configured"] is True
+    assert configured["persona_keywords"] == ["个人成长", "实用经验", "生活方式", "效率方法"]
+
+
 def test_purge_disallowed_settings_removes_retired_key_and_versions_snapshot(conn):
     from src.core.config_repository import purge_disallowed_settings
 

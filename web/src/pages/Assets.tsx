@@ -104,7 +104,7 @@ export default function Assets() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">CONTENT ASSETS</div>
+          <div className="eyebrow">内容资产</div>
           <h1 className="page-title">内容资产</h1>
           <div className="page-desc">
             选题库、已生产内容、外部参考、个人观点与画像、内容模板、字段映射统一归档。
@@ -152,7 +152,7 @@ export default function Assets() {
               emptyText={
                 <EmptyHint
                   className=""
-                  next="到「内容资产 → 字段映射检查」确认选题库可读，再到「内容生产」新建一轮"
+                  next="到「内容资产 → 知识库来源」检查并同步来源，再到「内容生产」新建一轮"
                 >
                   评分引擎暂无输出
                 </EmptyHint>

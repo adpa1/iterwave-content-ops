@@ -108,7 +108,7 @@ export default function Accounts() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">ACCOUNT MANAGEMENT</div>
+          <div className="eyebrow">账号与登录</div>
           <h1 className="page-title">账号与登录</h1>
           <div className="page-desc">
             各平台可以登录不同定位的账号；在本页用手机 App 扫码登录，退出会清除本机保存的登录信息。账号定位在「目标与策略 → 账号定位与画像」设置。

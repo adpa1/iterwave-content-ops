@@ -7,10 +7,10 @@ import { useApp } from "../AppContext";
 const STEPS = [
   { key: "persona",  label: "① 账号画像",     hint: "终极目标 / 红线 / 定位关键词" },
   { key: "platforms", label: "② 启用平台",    hint: "至少启用 1 个；建议先跑通 1 个平台" },
-  { key: "kb",       label: "③ 选题库",       hint: "上传 / 远程 / 服务器路径" },
-  { key: "llm",      label: "④ 模型配置",     hint: "Provider / Model / API Key" },
+  { key: "kb",       label: "③ 选题库",       hint: "上传或连接知识库来源" },
+  { key: "llm",      label: "④ 模型配置",     hint: "模型服务与密钥" },
   { key: "skills",   label: "⑤ 运行环境",     hint: "检查登录与运行环境" },
-  { key: "goals",    label: "⑥ 阶段目标",     hint: "指标 / 目标值 / 基线" },
+  { key: "goals",    label: "⑥ 阶段目标",     hint: "指标、目标值与基线" },
   { key: "check",    label: "⑦ 检查清单",     hint: "预检 + 启动首轮" },
 ] as const;
 
@@ -37,7 +37,7 @@ const GOAL_METRICS = [
 ];
 
 const GOAL_DATA_SOURCES = [
-  { value: "account_stats", label: "account_stats 平台读回" },
+  { value: "account_stats", label: "平台数据读回" },
   { value: "platform_api", label: "平台 API" },
   { value: "manual", label: "人工录入" },
 ];
@@ -58,6 +58,7 @@ export default function Onboarding() {
   const [cfg, setCfg] = useState<SystemConfigView | null>(null);
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [goals, setGoals] = useState<Goal[]>([]);
+  const [availableTopicCount, setAvailableTopicCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   // ⑥ 阶段目标：向导内直接创建（POST /api/goals → goals 表）
@@ -92,6 +93,12 @@ export default function Onboarding() {
       setCfg(c);
       setStatus(s);
       setGoals(g);
+      try {
+        const pool = await api.topicPool({ status: "active", limit: 1 });
+        setAvailableTopicCount(pool.total);
+      } catch {
+        setAvailableTopicCount(0);
+      }
       setErr(null);
     } catch (e: any) {
       setErr(e.message);
@@ -140,9 +147,9 @@ export default function Onboarding() {
 
   // 预检项
   const checks = {
-    persona_ok: cfg.readonly.persona_keywords.length > 0,
+    persona_ok: cfg.readonly.persona_configured && cfg.readonly.persona_keywords.length > 0,
     platforms_ok: status.enabled_platforms.length >= 1,
-    kb_ok: !!(cfg.readonly.kb_path && cfg.readonly.kb_type),
+    kb_ok: availableTopicCount !== null && availableTopicCount > 0,
     llm_ok: cfg.readonly.llm_has_api_key,
     login_ok: status.logged_in_platforms.length >= 1,
     goals_ok: goals.length >= 1,
@@ -151,12 +158,22 @@ export default function Onboarding() {
   const blockingOk = checks.persona_ok && checks.platforms_ok && checks.kb_ok
     && checks.llm_ok && checks.login_ok;
   const blocked = diag ? diag.overall === "block" : !blockingOk;
+  // 进度只表示当前配置确实满足要求，不表示用户曾经点过“下一步”。
+  const stepPassed: Record<StepKey, boolean> = {
+    persona: checks.persona_ok,
+    platforms: checks.platforms_ok,
+    kb: checks.kb_ok,
+    llm: checks.llm_ok,
+    skills: checks.login_ok,
+    goals: checks.goals_ok,
+    check: !!diag && diag.overall !== "block" && blockingOk,
+  };
 
   return (
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">FIRST-TIME SETUP</div>
+          <div className="eyebrow">首次配置</div>
           <h1 className="page-title">首次配置向导</h1>
           <div className="page-desc">
             7 步完成初始化。每一步都能直接编辑并保存，保存后立即生效。
@@ -176,8 +193,8 @@ export default function Onboarding() {
                 padding: "10px 12px",
                 borderRadius: 8,
                 cursor: i <= stepIdx ? "pointer" : "default",
-                background: i === stepIdx ? "var(--blue)" : i < stepIdx ? "rgba(66,99,235,0.1)" : "var(--card)",
-                color: i === stepIdx ? "#fff" : i < stepIdx ? "var(--blue)" : "var(--muted)",
+                background: i === stepIdx ? "var(--blue)" : stepPassed[s.key] ? "rgba(66,99,235,0.1)" : "var(--card)",
+                color: i === stepIdx ? "#fff" : stepPassed[s.key] ? "var(--blue)" : "var(--muted)",
                 border: `1px solid ${i === stepIdx ? "var(--blue)" : "var(--border)"}`,
                 fontSize: 12,
                 transition: "all .15s",
@@ -185,7 +202,7 @@ export default function Onboarding() {
             >
               <div style={{ fontWeight: 700 }}>{s.label}</div>
               <div style={{ fontSize: 10, opacity: 0.8, marginTop: 2 }}>{s.hint}</div>
-              {i < stepIdx && <div style={{ fontSize: 16, marginTop: 4 }}>✓</div>}
+              {stepPassed[s.key] && <div style={{ fontSize: 16, marginTop: 4 }}>✓ 已通过</div>}
             </div>
           ))}
         </div>
@@ -210,6 +227,10 @@ export default function Onboarding() {
               至少启用 1 个平台才能跑通首轮。建议先 1 平台验证，再扩。
             </p>
             <PlatformToggles view={cfg} onSaved={reload} loggedIn={status.logged_in_platforms} />
+            <div className="note" style={{ marginTop: 10 }}>
+              当前启用 {status.enabled_platforms.length} / 4 个平台：{status.enabled_platforms.map((p) => PLATFORM_NAMES[p]).join("、") || "尚未启用"}。
+              未启用的平台不会参与本轮生产；账号页展示的是全部支持平台，不代表全部已启用。
+            </div>
             {status.circuit_broken_platforms.length > 0 && (
               <div className="note" style={{ marginTop: 12, color: "var(--orange)" }}>
                 ! 已熔断：{status.circuit_broken_platforms.map((p) => PLATFORM_NAMES[p]).join("、")}
@@ -217,7 +238,7 @@ export default function Onboarding() {
               </div>
             )}
             <div className="note" style={{ marginTop: 12 }}>
-              ▣ 启用 ≠ 可发布：还需要扫码登录，入口在「账号连接」页。
+              ▣ 启用 ≠ 可发布：还需要扫码登录，入口在「账号与登录」页。
             </div>
           </div>
         )}
@@ -226,8 +247,8 @@ export default function Onboarding() {
           <div>
             <div className="panel-title" style={{ marginBottom: 16 }}>③ 选题库</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              选题来源可以是本地上传（CSV / JSON / JSONL / XLSX）、远程地址（含 RSS）或服务器路径，
-              至少要有「标题」和「维度」两列。完整来源管理在「内容资产 → 字段映射检查」。
+              选题来源可以是本地上传（CSV / JSON / JSONL / XLSX）、远程地址（含 RSS），也可以使用管理员添加的服务器来源。
+              来源至少要有「标题」和「维度」两列。完整来源管理在「内容资产 → 知识库来源」。
             </p>
             <KbEditor view={cfg} onSaved={reload} />
           </div>
@@ -237,12 +258,12 @@ export default function Onboarding() {
           <div>
             <div className="panel-title" style={{ marginBottom: 16 }}>④ 模型配置</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              选择服务商与模型并填写 API Key（Key 只保存在本机，不会回显）。
+              选择模型服务商与模型，并填写服务密钥（密钥只保存在服务端，不会回显）。
             </p>
             <LlmEditor view={cfg} onSaved={reload} />
             {!cfg.readonly.llm_has_api_key && (
               <div className="note" style={{ marginTop: 12, color: "var(--orange)" }}>
-                ! API Key 未配置 → 选题评分 + 文案生成 + 终极目标检查 全部不可用。
+                ! 服务密钥尚未配置，选题评分和文案生成将无法调用模型。
               </div>
             )}
           </div>
@@ -367,7 +388,7 @@ export default function Onboarding() {
           <div>
             <div className="panel-title" style={{ marginBottom: 16 }}>⑦ 检查清单 · 启动首轮</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              以下阻塞项全部通过才能开始真实生产。首轮依次完成：选题评分 → 文案生成 → 终极目标检查 → 图片卡片 → 保存草稿（不会自动发布）。
+              以下必需项全部通过才能开始真实生产。首轮依次完成：选题评分 → 文案生成 → 终极目标检查 → 图片卡片 → 保存草稿（不会自动发布）。
             </p>
             {diag && (
               <div className="table-wrap" style={{ marginBottom: 14 }}>
@@ -392,11 +413,11 @@ export default function Onboarding() {
               {diagBusy ? "诊断中…" : "↻ 重新诊断"}
             </button>
             <div className="list">
-              <CheckRow ok={checks.persona_ok}    label="账号画像"       detail={cfg.readonly.persona_keywords.join(", ")} />
+              <CheckRow ok={checks.persona_ok}    label="账号画像"       detail={checks.persona_ok ? cfg.readonly.persona_keywords.join("、") : "还没设置账号定位，请填写定位关键词并保存"} />
               <CheckRow ok={checks.platforms_ok}   label="启用平台"       detail={`${status.enabled_platforms.length} 个 (${status.enabled_platforms.map((p) => PLATFORM_NAMES[p]).join(", ")})`} />
               <CheckRow ok={checks.login_ok}       label="登录态"         detail={`${status.logged_in_platforms.length} 个已登录`} />
-              <CheckRow ok={checks.kb_ok}          label="选题库 KB"      detail={`${cfg.readonly.kb_type} @ ${cfg.readonly.kb_path}`} />
-              <CheckRow ok={checks.llm_ok}         label="LLM API Key"    detail={cfg.readonly.llm_has_api_key ? "✓ 已配置" : "✕ 缺失"} />
+              <CheckRow ok={checks.kb_ok}          label="选题库"      detail={availableTopicCount === null ? "正在检查选题库" : availableTopicCount > 0 ? `可用选题 ${availableTopicCount} 条` : "没有可用选题，请添加或同步知识库来源"} />
+              <CheckRow ok={checks.llm_ok}         label="模型服务密钥"    detail={cfg.readonly.llm_has_api_key ? "✓ 已配置" : "✕ 缺失"} />
               <CheckRow ok={checks.goals_ok}        label="阶段目标"       detail={`${goals.length} 条`} />
             </div>
 
@@ -431,7 +452,7 @@ export default function Onboarding() {
         <button
           className="btn sm"
           disabled={stepIdx === STEPS.length - 1}
-          onClick={() => setStepIdx(stepIdx + 1)}
+          onClick={() => { setStepIdx(stepIdx + 1); }}
         >下一步 →</button>
       </div>
     </>

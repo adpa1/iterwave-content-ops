@@ -899,6 +899,15 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             f: (getattr(quota, f, None) if quota is not None else None)
             for f in QUOTA_FIELDS
         }
+    persona_saved = conn.execute(
+        "SELECT 1 FROM config_changes WHERE key = 'ultimate_goal.persona_keywords' LIMIT 1"
+    ).fetchone() is not None
+    # 兼容管理员直接维护 config.yaml 的部署；仅把历史示例值视为未配置。
+    sample_persona = ["个人成长", "实用经验", "生活方式", "效率方法"]
+    persona_saved = persona_saved or bool(
+        cfg.ultimate_goal.persona_keywords
+        and list(cfg.ultimate_goal.persona_keywords) != sample_persona
+    )
     return {
         "editable": {
             "daily_quotas": quotas,
@@ -935,10 +944,12 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
         },
         # 账号画像（Assets「个人观点与画像」tab 展示用，只读）
         "readonly": {
-            "persona_keywords": list(cfg.ultimate_goal.persona_keywords),
-            "forbidden_directions": list(cfg.ultimate_goal.forbidden_directions),
+            # 示例画像只用于提示，不当作用户已配置的账号定位。
+            "persona_configured": persona_saved and bool(cfg.ultimate_goal.persona_keywords),
+            "persona_keywords": list(cfg.ultimate_goal.persona_keywords) if persona_saved else [],
+            "forbidden_directions": list(cfg.ultimate_goal.forbidden_directions) if persona_saved else [],
             "redline_keywords_count": len(cfg.ultimate_goal.redline_keywords),
-            "positioning": cfg.ultimate_goal.positioning,
+            "positioning": cfg.ultimate_goal.positioning if persona_saved else "",
             "goal_mode": cfg.ultimate_goal.goal_mode,
             # —— 本地知识库（Settings 页只读展示；路径脱敏，来源在 Assets 页管理）——
             "kb_path": "由内容资产中的选题库来源管理",

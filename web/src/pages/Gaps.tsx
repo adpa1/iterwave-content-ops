@@ -45,7 +45,7 @@ export default function Gaps() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">GAP ANALYSIS</div>
+          <div className="eyebrow">缺口与实验</div>
           <h1 className="page-title">缺口分析</h1>
           <div className="page-desc">
             两类缺口分开展示：<strong>覆盖缺口</strong>（绿色，需要你决定是否补内容）和 <strong>验证缺口</strong>（紫色，Agent 内部安排的小样本试验）。

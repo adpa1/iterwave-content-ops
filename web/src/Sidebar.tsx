@@ -65,7 +65,7 @@ export default function Sidebar({ current, onChange, brokenPlatforms, loggedIn, 
         <div className="brand-mark" aria-hidden="true">I</div>
         <div>
           <div className="brand-name">IterWave</div>
-          <div className="brand-sub">MULTI-PLATFORM AGENT</div>
+          <div className="brand-sub">多平台内容运营工作台</div>
         </div>
       </div>
 

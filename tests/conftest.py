@@ -32,7 +32,11 @@ def cfg(tmp_path: Path) -> Config:
             "log_dir": str(tmp_path / "data" / "logs"),
         }
     )
-    return base.model_copy(update={"paths": paths})
+    # 测试数据显式设置一个画像；生产新装配置保持空白，要求用户自行保存定位。
+    test_persona = base.ultimate_goal.model_copy(update={
+        "persona_keywords": ["个人成长", "实用经验", "生活方式", "效率方法"],
+    })
+    return base.model_copy(update={"paths": paths, "ultimate_goal": test_persona})
 
 
 @pytest.fixture()
@@ -127,10 +131,10 @@ def test_auth(monkeypatch, tmp_path):
     monkeypatch.delenv(auth.PASSWORD_ENV, raising=False)
     auth._reset_revocations()
     auth._failures.clear()
-    auth.set_password("test-access")
+    auth.set_password("Test-access9!")
 
     def authorize(client):
-        response = client.post("/api/auth/login", json={"password": "test-access"})
+        response = client.post("/api/auth/login", json={"password": "Test-access9!"})
         assert response.status_code == 200
         return client
 

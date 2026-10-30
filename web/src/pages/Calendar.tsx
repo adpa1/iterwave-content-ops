@@ -102,7 +102,7 @@ export default function Calendar() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">PUBLISH CALENDAR</div>
+          <div className="eyebrow">发布日历</div>
           <h1 className="page-title">内容日历与排期</h1>
           <div className="page-desc">
             以「内容 × 平台 × 发布时间」为最小排期单元。系统永不自动触发发布动作。

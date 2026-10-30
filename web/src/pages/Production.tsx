@@ -50,6 +50,13 @@ const ROUND_STATUS_LABEL: Record<string, string> = {
   created: "已创建", producing: "生产中", awaiting_publish: "待发布", collecting_metrics: "采集中", analyzing: "复盘中", completed: "已完成", partial_completed: "部分完成", failed: "失败", cancelled: "已取消", paused: "已暂停",
 };
 
+const PIPELINE_STEP_LABEL: Record<string, string> = {
+  kb_read: "读取选题库", apply_feedback: "应用复盘建议", score: "选题评分",
+  dimension_quota: "维度配额", produce: "生成内容", guard_reject: "质量检查拦截",
+  plan_signature: "记录计划版本", draft_save: "保存草稿", save_drafts: "批量保存草稿",
+  dry_run: "仅生成预览", auto_schedule: "自动排期",
+};
+
 const AUTHOR_LABEL: Record<string, string> = {
   "web-ui": "手动保存", round_create: "新建轮次", round_executor: "轮次执行", autogrow: "自动闭环", agent: "Agent",
 };
@@ -113,12 +120,19 @@ export default function Production() {
   const [runError, setRunError] = useState<string | null>(null);
   const [noLogin, setNoLogin] = useState<Platform[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [availableTopicCount, setAvailableTopicCount] = useState<number | null>(null);
 
   // ---------------------------------------------------------------- 数据加载
   const refresh = async () => {
     try {
       const r = await api.rounds();
       setRounds(r);
+      try {
+        const pool = await api.topicPool({ status: "active", limit: 1 });
+        setAvailableTopicCount(pool.total);
+      } catch {
+        setAvailableTopicCount(0);
+      }
       setLoadError(null);
       const targetId = currentRoundId ?? (r.length > 0 ? r[0].id : null);
       if (targetId) {
@@ -481,7 +495,9 @@ export default function Production() {
     setPlanPlatforms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
   };
 
-  const canRun = !!roundDetail && roundDetail.status === "created" && !running && (usePlan || selPlatforms.length > 0);
+  const canRun = !!roundDetail && ["created", "failed"].includes(roundDetail.status)
+    && !running && availableTopicCount !== null && availableTopicCount > 0
+    && (usePlan || selPlatforms.length > 0);
   const selectedContent = contents.find((c) => c.id === selectedContentId) ?? null;
   const filteredReviewContents = contents.filter((item) => {
     const query = reviewSearch.trim().toLowerCase();
@@ -501,7 +517,7 @@ export default function Production() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">CONTENT OPERATIONS ROOM</div>
+          <div className="eyebrow">内容生产</div>
           <h1 className="page-title">内容生产</h1>
           <div className="page-desc">
             按轮次生产内容：选题 → 文案 → 质检 → 存草稿 → 你确认发布 → 复盘。所有草稿只能存草稿，系统永不自动点发布按钮。
@@ -851,22 +867,33 @@ export default function Production() {
                 </div>
                 <div style={{ marginTop: 10 }}>
                   <button className="btn primary" onClick={handleRun} disabled={!canRun}>
-                    {running ? "◷ 运行中…" : "▶ 运行本轮"}
+                    {running ? "◷ 运行中…" : roundDetail?.status === "failed" ? "↻ 重试本轮" : "▶ 运行本轮"}
                   </button>
                 </div>
 
-                {roundDetail.status !== "created" && (
+                {roundDetail.status === "failed" && (
                   <div className="note" style={{ marginTop: 8 }}>
-                    只有 created 状态的轮次可运行（当前 {roundDetail.status}）。如需重跑，请新建一轮。
+                    失败轮次可重新预检；仅当本轮尚未产生内容或草稿时允许重试。已有产出时请修复原因后新建一轮，避免重复交付。
                   </div>
                 )}
+                {!["created", "failed"].includes(roundDetail.status) && (
+                  <div className="note" style={{ marginTop: 8 }}>
+                    当前轮次处于「{ROUND_STATUS_LABEL[roundDetail.status] ?? roundDetail.status}」，不能再次启动。
+                  </div>
+                )}
+                {availableTopicCount === 0 && (
+                  <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>
+                    运行前检查未通过：当前选题库没有可用选题。请先到「内容资产 → 选题池」添加或同步选题。
+                  </div>
+                )}
+                {availableTopicCount === null && <div className="note" style={{ marginTop: 8 }}>正在检查选题库…</div>}
                 {!usePlan && selPlatforms.length === 0 && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>至少选择一个平台</div>}
                 {runError && <div className="note" style={{ marginTop: 8, color: "var(--red)" }}>! {runError}</div>}
 
                 {report && (
                   <div style={{ marginTop: 16 }}>
                     <div className="panel-title" style={{ fontSize: 13, marginBottom: 10 }}>
-                      执行报告 · 状态 {report.final_status ?? "—"}
+                      执行报告 · 状态 {ROUND_STATUS_LABEL[report.final_status ?? ""] ?? report.final_status ?? "—"}
                     </div>
                     <div className="grid four" style={{ marginBottom: 10 }}>
                       <MiniStat label="内容产出" value={report.contents_created} />
@@ -886,7 +913,7 @@ export default function Production() {
                         <tbody>
                           {report.steps.map((s, i) => (
                             <tr key={i}>
-                              <td style={{ fontFamily: "monospace", fontSize: 11 }}>{s.step}</td>
+                              <td style={{ fontSize: 11 }}>{PIPELINE_STEP_LABEL[s.step] ?? s.step}</td>
                               <td style={{ fontSize: 11 }}>
                                 {s.step === "score" && `${(s.selected as unknown[])?.length ?? 0} 条选题入选`}
                                 {s.step === "kb_read" && `${s.count} 条选题库记录`}
@@ -1290,7 +1317,7 @@ export default function Production() {
               <div>
                 <div className="panel-title">
                   <span className="icon">⎇</span>当前轮次
-                  {roundDetail && <span className={`tag ${STATUS_CLS[roundDetail.status]}`} style={{ marginLeft: 10 }}>{roundDetail.status}</span>}
+                  {roundDetail && <span className={`tag ${STATUS_CLS[roundDetail.status]}`} style={{ marginLeft: 10 }}>{ROUND_STATUS_LABEL[roundDetail.status] ?? roundDetail.status}</span>}
                 </div>
                 <div className="panel-sub">合法迁移按钮由后端状态机校验生成</div>
               </div>
@@ -1312,7 +1339,7 @@ export default function Production() {
                         {i > 0 && <div className={`track-connector ${isPast ? "completed" : ""}`} />}
                         <div className={`track-node ${isCurrent ? "active" : ""} ${isPast ? "completed" : ""}`}>
                           <div className="dot" />
-                          <div className="label">{s}</div>
+                          <div className="label">{ROUND_STATUS_LABEL[s] ?? s}</div>
                         </div>
                       </Fragment>
                     );

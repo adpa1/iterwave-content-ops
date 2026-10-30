@@ -26,7 +26,7 @@ import statistics
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 
@@ -47,6 +47,63 @@ _HEAT_UNIT = {
 # 配置里的平台名 → 60s API 路径名（bilibili 的接口路径是 bili）
 _PLATFORM_PATH = {"bilibili": "bili"}
 _MULTIPLIERS = {"万": 10_000, "亿": 100_000_000}
+
+# 时政、军事、涉台等高监管领域不做自动可发布背书；默认进入人工确认。
+_SENSITIVE_TOPIC_PATTERNS = (
+    ("时政", re.compile(
+        r"中共中央|党中央|中央政治局|政治局|全国两会|全国人大|全国政协|"
+        r"国务院|新闻发布会|外交部|国防部|全面从严治党|反腐|党风廉政|"
+        r"政府工作报告|领导人|国家主席|总理|总统|议会|选举|制裁|"
+        r"外交关系|国际局势|政局|政策发布|政策解读"
+    )),
+    ("军事", re.compile(
+        r"解放军|人民军队|军演|军事演习|军舰|航母|战机|导弹|武器装备|"
+        r"国防安全|军事冲突|战争|战场|部队部署|军方|军演"
+    )),
+    ("涉台及主权", re.compile(
+        r"台湾|台海|涉台|以台制华|台独|两岸关系|统一|主权争议|南海|东海"
+    )),
+)
+
+
+def _sensitive_topic_hits(title: str) -> list[str]:
+    value = str(title or "")
+    return [label for label, pattern in _SENSITIVE_TOPIC_PATTERNS if pattern.search(value)]
+
+
+def _publishability_status(
+    title: str,
+    redline_hits: list[str],
+    forbidden: bool,
+    dimension_match: Optional[bool],
+    match_fresh: bool,
+) -> str:
+    """只有通过新鲜研判与全部安全门才给出可发布结论。"""
+    sensitive_hits = _sensitive_topic_hits(title)
+    if sensitive_hits:
+        return "需人工确认"
+    if redline_hits or forbidden or dimension_match is False:
+        return "不可发布"
+    if not match_fresh or dimension_match is None:
+        return "未研判"
+    return "可发布"
+
+
+def _utc_now_naive() -> datetime:
+    """数据库沿用无时区字段，但统一存 UTC；API 输出时再补 UTC offset。"""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _api_utc(value):
+    if not value:
+        return value
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.isoformat()
 
 
 def _fetch_public_text(url: str, *, headers: dict[str, str], timeout: int) -> tuple[str, str]:
@@ -72,13 +129,16 @@ def _parse_feed_ts(value) -> Optional[datetime]:
         return _parse_event_ts({"event_time_at": value})
     text = str(value).strip()
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
     except ValueError:
         pass
     try:
         from email.utils import parsedate_to_datetime
         dt = parsedate_to_datetime(text)
-        return dt.replace(tzinfo=None) if dt else None
+        if dt and dt.tzinfo:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
     except (TypeError, ValueError):
         return None
 
@@ -116,7 +176,7 @@ def _parse_event_ts(raw: dict) -> Optional[datetime]:
             continue
         try:
             seconds = ts / 1000 if ts > 10_000_000_000 else ts
-            return datetime.fromtimestamp(seconds)
+            return datetime.fromtimestamp(seconds, tz=timezone.utc).replace(tzinfo=None)
         except (OverflowError, OSError, ValueError):
             continue
     return None
@@ -332,7 +392,7 @@ class HotTopicCollector:
             raise RuntimeError(f"接口返回 code={payload.get('code')} {payload.get('message', '')}")
 
         window_h = self.hcfg.filters.get("time_window_hours")
-        now = datetime.now()
+        now = _utc_now_naive()
         out: list[dict] = []
         for raw in (payload.get("data") or [])[:self.hcfg.max_items_per_source]:
             title = (raw.get("title") or "").strip()
@@ -387,7 +447,7 @@ class HotTopicCollector:
                     "heat": raw.get("heat") or raw.get("hot") or raw.get("hot_value"),
                 })
         window_h = self.hcfg.filters.get("time_window_hours")
-        now = datetime.now()
+        now = _utc_now_naive()
         out: list[dict] = []
         for raw in rows[:self.hcfg.max_items_per_source]:
             title = (raw.get("title") or "").strip()
@@ -425,7 +485,7 @@ class HotTopicCollector:
         else:
             source_label = str(source_label_or_rows)
         backfill(self.conn)   # 旧数据先补归一化字段并合并，保证新 id 不与旧行重复
-        now = datetime.now().isoformat(timespec="seconds")
+        now = _utc_now_naive().isoformat(timespec="seconds")
         platform = source_key.rsplit("/", 1)[-1]
         source = source_key
         seen_in_batch: set[str] = set()
@@ -486,8 +546,8 @@ class HotTopicCollector:
                 "heat_score=NULL, raw_url=NULL",
                 (
                     f"hot-failed-{platform}", source,
-                    datetime.now().isoformat(timespec="seconds"),
-                    datetime.now().isoformat(timespec="seconds"),
+                    _utc_now_naive().isoformat(timespec="seconds"),
+                    _utc_now_naive().isoformat(timespec="seconds"),
                     f"{platform} 热点采集失败：{reason[:100]}",
                 ),
             )
@@ -507,7 +567,7 @@ class HotTopicCollector:
             dt = datetime.fromisoformat(last)
         except ValueError:
             return False
-        return (datetime.now() - dt) < timedelta(minutes=self.refresh_interval_minutes())
+        return (_utc_now_naive() - dt) < timedelta(minutes=self.refresh_interval_minutes())
 
     def refresh_interval_minutes(self) -> Optional[int]:
         """采集频率来自 scheduler.jobs.hot_topics_refresh；cron 触发时按 24h 判断是否过期。"""
@@ -562,7 +622,7 @@ class HotTopicCollector:
                     "source": redact(source),
                     "status": "failed",
                     "message": redact(row["title"] or ""),
-                    "discovered_at": row["discovered_at"],
+                    "discovered_at": _api_utc(row["discovered_at"]),
                 }
 
         # 第二遍：只保留采集成功的平台条目，并过 4 道门
@@ -589,7 +649,7 @@ class HotTopicCollector:
                 "source": redact(source),
                 "status": row["evidence_status"],
                 "message": None,
-                "discovered_at": row["discovered_at"],
+                "discovered_at": _api_utc(row["discovered_at"]),
             })
 
             heat = row["heat_score"]
@@ -602,19 +662,25 @@ class HotTopicCollector:
 
             title = row["title"] or ""
             hit_redline = [k for k in redlines if k in title]
+            sensitive_hits = _sensitive_topic_hits(title)
             kj = keyword_judgement(matcher.persona, title)
             dimension_match = dimension_match_of(row, current_version, threshold=self.cfg.hot_topic_matcher.match_threshold)
             fresh = row["match_version"] == current_version
+            forbidden = bool(fresh and row["forbidden_hit"])
+            publishability_status = _publishability_status(
+                title, hit_redline, forbidden, dimension_match, fresh,
+            )
+            publishable = publishability_status == "可发布"
 
             items.append({
                 "id": row["id"],
                 "title": title,
                 "source": redact(source),
                 "platform": redact(platform),
-                "discovered_at": row["discovered_at"],
-                "last_seen_at": row["last_seen_at"],
+                "discovered_at": _api_utc(row["discovered_at"]),
+                "last_seen_at": _api_utc(row["last_seen_at"]),
                 # 采集时间（本轮在榜时间）：前端展示「这条热点是哪次采到的」
-                "collected_at": row["last_seen_at"] or row["discovered_at"],
+                "collected_at": _api_utc(row["last_seen_at"] or row["discovered_at"]),
                 "seen_count": row["seen_count"],
                 "heat_prev": row["heat_prev"],
                 "heat_peak": row["heat_peak"],
@@ -631,8 +697,10 @@ class HotTopicCollector:
                 "match_angle": row["match_angle"] if fresh else None,
                 "match_reason": row["match_reason"] if fresh else None,
                 "match_method": row["match_method"] if fresh else None,
-                # ✅ 可发布性（强制门）：命中红线 / 落入禁止方向 → 不可用
-                "publishable": not hit_redline and not (fresh and row["forbidden_hit"]),
+                # 可发布性采用保守三态：只有完成研判且通过全部安全门才标记可发布。
+                "publishable": publishable,
+                "publishability_status": publishability_status,
+                "sensitive_hits": sensitive_hits,
                 "redline_hits": hit_redline,
             })
 

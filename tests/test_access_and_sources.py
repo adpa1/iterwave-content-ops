@@ -59,8 +59,8 @@ def api_client(cfg, conn):
     api_main._g_ctx.update({"cfg": cfg, "conn": conn})
     try:
         client = TestClient(api_main._build_app(), base_url="http://127.0.0.1")
-        auth.set_password("test-access")
-        response = client.post("/api/auth/login", json={"password": "test-access"})
+        auth.set_password("Test-access9!")
+        response = client.post("/api/auth/login", json={"password": "Test-access9!"})
         assert response.status_code == 200
         yield client
     finally:
@@ -98,22 +98,36 @@ def test_public_first_password_setup_requires_bootstrap_token(unconfigured_api_c
     spoofed_host = public_client.post(
         "/api/auth/password",
         headers={"Host": "localhost"},
-        json={"password": "secret123"},
+        json={"password": "Secret123!"},
     )
     assert spoofed_host.status_code == 403
     assert public_client.post(
-        "/api/auth/password", json={"password": "secret123"}
+        "/api/auth/password", json={"password": "Secret123!"}
     ).status_code == 403
     assert public_client.post(
         "/api/auth/password",
-        json={"password": "secret123", "bootstrap_token": "wrong"},
+        json={"password": "Secret123!", "bootstrap_token": "wrong"},
     ).status_code == 403
     ok = public_client.post(
         "/api/auth/password",
-        json={"password": "secret123", "bootstrap_token": "bootstrap-secret"},
+        json={"password": "Secret123!", "bootstrap_token": "bootstrap-secret"},
     )
     assert ok.status_code == 200
     assert ok.json()["configured"] is True
+
+
+def test_login_rate_limit_returns_retry_after_header(api_client):
+    auth._failures.clear()
+    try:
+        api_client.cookies.clear()
+        for _ in range(auth.LOGIN_MAX_FAILURES):
+            response = api_client.post("/api/auth/login", json={"password": "wrong"})
+            assert response.status_code == 401
+        blocked = api_client.post("/api/auth/login", json={"password": "wrong"})
+        assert blocked.status_code == 429
+        assert blocked.headers.get("Retry-After") == str(auth.LOGIN_WINDOW_SECONDS)
+    finally:
+        auth._failures.clear()
 
 
 def test_bootstrap_token_guesses_are_rate_limited(monkeypatch):
@@ -122,12 +136,12 @@ def test_bootstrap_token_guesses_are_rate_limited(monkeypatch):
     for _ in range(auth.LOGIN_MAX_FAILURES):
         response = client.post(
             "/api/auth/password",
-            json={"password": "secret123", "bootstrap_token": "wrong"},
+            json={"password": "Secret123!", "bootstrap_token": "wrong"},
         )
         assert response.status_code == 403
     blocked = client.post(
         "/api/auth/password",
-        json={"password": "secret123", "bootstrap_token": "wrong"},
+        json={"password": "Secret123!", "bootstrap_token": "wrong"},
     )
     assert blocked.status_code == 429
 
@@ -142,9 +156,9 @@ def test_password_lifecycle(tmp_path):
     with pytest.raises(ValueError):
         auth.set_password("short")
 
-    auth.set_password("secret123")
+    auth.set_password("Secret123!")
     assert auth.password_configured() is True
-    assert auth.verify_password("secret123") is True
+    assert auth.verify_password("Secret123!") is True
     assert auth.verify_password("wrong") is False
     # 落盘位置就是我们指定的临时 .env，且权限 600（R23）
     env_path = env_store.env_file()
@@ -153,6 +167,15 @@ def test_password_lifecycle(tmp_path):
 
     auth.clear_password()
     assert auth.password_configured() is False
+
+
+def test_password_strength_rejects_common_and_low_complexity_values():
+    for weak in ("12345678", "password", "abcdefgh", "abcdefgh1", "123456789"):
+        with pytest.raises(ValueError):
+            auth.set_password(weak)
+
+    auth.set_password("Strong-pass9!")
+    assert auth.verify_password("Strong-pass9!") is True
 
 
 def test_session_cookie_marks_https_as_secure():
@@ -164,14 +187,14 @@ def test_session_cookie_marks_https_as_secure():
 
 
 def test_login_rate_limit():
-    auth.set_password("secret123")
+    auth.set_password("Secret123!")
     for _ in range(auth.LOGIN_MAX_FAILURES):
         with pytest.raises(ValueError):
             auth.login("wrong", "1.2.3.4")
     with pytest.raises(PermissionError):
-        auth.login("secret123", "1.2.3.4")
+        auth.login("Secret123!", "1.2.3.4")
     # 其它 IP 不受影响
-    assert auth.login("secret123", "5.6.7.8")
+    assert auth.login("Secret123!", "5.6.7.8")
 
 
 def test_api_rejects_oversized_declared_body(api_client):
@@ -212,21 +235,21 @@ def test_middleware_requires_login_only_after_password_set(unconfigured_api_clie
     # 本机直连在首次设置前允许使用开发实例；设置口令后才强制登录。
     assert unconfigured_api_client.get("/api/topics").status_code == 200
 
-    assert unconfigured_api_client.post("/api/auth/password", json={"password": "secret123"}).status_code == 200
+    assert unconfigured_api_client.post("/api/auth/password", json={"password": "Secret123!"}).status_code == 200
     assert unconfigured_api_client.get("/api/auth/status").json()["needs_login"] is True
     assert unconfigured_api_client.get("/api/topics").status_code == 401
     assert unconfigured_api_client.get("/api/topics").json()["code"] == "auth_required"
 
     assert unconfigured_api_client.post("/api/auth/login", json={"password": "nope"}).status_code == 401
-    r = unconfigured_api_client.post("/api/auth/login", json={"password": "secret123"})
+    r = unconfigured_api_client.post("/api/auth/login", json={"password": "Secret123!"})
     assert r.status_code == 200 and r.json()["authenticated"] is True
     # TestClient 自动保存 Set-Cookie，会话生效
     assert unconfigured_api_client.get("/api/topics").status_code == 200
 
     # 脚本口令（X-Access-Token）也能过
     unconfigured_api_client.cookies.clear()
-    assert unconfigured_api_client.get("/api/topics", headers={"X-Access-Token": "secret123"}).status_code == 200
-    assert unconfigured_api_client.get("/api/topics", headers={"Authorization": "Bearer secret123"}).status_code == 200
+    assert unconfigured_api_client.get("/api/topics", headers={"X-Access-Token": "Secret123!"}).status_code == 200
+    assert unconfigured_api_client.get("/api/topics", headers={"Authorization": "Bearer Secret123!"}).status_code == 200
 
     # 登出后会话失效
     unconfigured_api_client.post("/api/auth/logout")
@@ -235,7 +258,7 @@ def test_middleware_requires_login_only_after_password_set(unconfigured_api_clie
 
 def test_script_token_auth_cannot_bypass_login_rate_limit(api_client):
     api_client.cookies.clear()
-    auth.set_password("secret123")
+    auth.set_password("Secret123!")
     for _ in range(auth.LOGIN_MAX_FAILURES):
         response = api_client.get("/api/topics", headers={"X-Access-Token": "wrong"})
         assert response.status_code == 401
@@ -244,11 +267,11 @@ def test_script_token_auth_cannot_bypass_login_rate_limit(api_client):
     assert blocked.json()["code"] == "auth_rate_limited"
 
     # 同一 IP 被限速时不能再靠脚本头猜口令；另一 IP 的正确口令仍然可校验。
-    assert auth.is_authenticated(None, {"x-access-token": "secret123"}, ip="192.0.2.20") is True
+    assert auth.is_authenticated(None, {"x-access-token": "Secret123!"}, ip="192.0.2.20") is True
 
 
 def test_login_rate_limit_over_http(api_client):
-    api_client.post("/api/auth/password", json={"password": "secret123"})
+    api_client.post("/api/auth/password", json={"password": "Secret123!"})
     for _ in range(auth.LOGIN_MAX_FAILURES):
         assert api_client.post("/api/auth/login", json={"password": "wrong"}).status_code == 401
     assert api_client.post("/api/auth/login", json={"password": "wrong"}).status_code == 429
