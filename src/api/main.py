@@ -1544,12 +1544,19 @@ def _register_routes(app: FastAPI) -> None:
                     (now_done, run_id),
                 )
                 conn_bg.commit()
-                _record_content_event("sample_generation_succeeded", metadata={"sample_count": 3},
-                                      idempotency_key=f"sample-ready:{run_id}")
+                try:
+                    _record_content_event("sample_generation_succeeded", metadata={"sample_count": 3},
+                                          idempotency_key=f"sample-ready:{run_id}")
+                except Exception:
+                    logger.exception("快速体验成功事件记录失败 run=%s", run_id)
             except Exception as exc:
                 logger.exception("快速体验生成失败 run=%s", run_id)
                 code = getattr(exc, "code", "sample_generation_failed")
                 safe_message = str(exc) if getattr(exc, "code", None) else "样稿生成失败，请检查模型配置后重试"
+                try:
+                    conn_bg.rollback()
+                except Exception:
+                    logger.exception("快速体验失败事务回滚异常 run=%s", run_id)
                 conn_bg.execute(
                     "UPDATE sample_runs SET status='failed', error_code=?, error_message_safe=?, completed_at=? WHERE id=?",
                     (code, safe_message[:300], datetime.now().isoformat(sep=" ", timespec="seconds"), run_id),
@@ -1660,8 +1667,9 @@ def _register_routes(app: FastAPI) -> None:
             raw = (req or {}).get(field)
             if raw in (None, ""):
                 values[field] = None
-            elif isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
-                raise HTTPException(422, f"{field} 必须是非负整数或留空")
+            elif (isinstance(raw, bool) or not isinstance(raw, int) or raw < 0
+                  or raw > 9_007_199_254_740_991):
+                raise HTTPException(422, f"{field} 必须是安全范围内的非负整数或留空")
             else:
                 values[field] = raw
         if all(v is None for v in values.values()):
@@ -1729,7 +1737,7 @@ def _register_routes(app: FastAPI) -> None:
         if platform and platform not in {p.value for p in Platform}:
             raise HTTPException(422, "未知平台")
         try:
-            start = datetime.fromisoformat(week_start).replace(hour=0, minute=0, second=0, microsecond=0) if week_start else (
+            start = datetime.strptime(week_start, "%Y-%m-%d") if week_start else (
                 datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=6)
             )
         except ValueError:
