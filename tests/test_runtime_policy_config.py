@@ -121,6 +121,11 @@ def test_new_runtime_policy_fields_are_whitelisted_and_visible(cfg):
         "rhythm.intervals.passive_reply_base_seconds",
         "insights.window_days",
         "plan_suggestion.default_topic_count",
+        "spiral.min_dimension_samples",
+        "spiral.validation_gap_topic_min",
+        "spiral.validation_gap_topic_max",
+        "spiral.coverage_gap_ratio",
+        "spiral.low_interaction_rate_threshold",
         "platforms.xhs.enabled",
         "topic_kb.field_mapping",
         "ultimate_goal.goal_mode",
@@ -201,3 +206,13 @@ def test_notification_event_switch_is_a_tenant_runtime_setting(cfg, conn):
     assert _validate("notifications.events.round_timeout.enabled", True) is True
     with pytest.raises(ConfigNotAllowedError):
         _validate("notifications.events.unknown_event.enabled", False)
+
+
+
+def test_spiral_ops_suggestions_use_configured_thresholds(cfg, conn):
+    from src.core.spiral import SpiralEngine
+
+    cfg.spiral.min_metrics_for_ops_adjustment = 2
+    cfg.spiral.min_rounds_for_systematic_adjustment = 9
+    engine = SpiralEngine(cfg, conn)
+    assert "≥9 轮" in engine._suggest_ops([{}, {}])[0]
