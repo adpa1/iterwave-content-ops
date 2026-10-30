@@ -83,8 +83,11 @@ def backfill(conn) -> int:
     return merged
 
 
-def mark_cross_platform(conn, *, threshold: float, window_hours: int, length_prefilter_ratio: float = 0.5) -> int:
+def mark_cross_platform(conn, *, threshold: float, window_hours: int, length_prefilter_ratio: float | None = None) -> int:
     """规则 2：时间窗内跨平台同一事件 → duplicate_of 主条目。返回被标记为重复的行数。"""
+    if length_prefilter_ratio is None:
+        from .config import get_config
+        length_prefilter_ratio = get_config().hot_topics.dedup.length_prefilter_ratio
     since = (datetime.now() - timedelta(hours=window_hours)).isoformat(timespec="seconds")
     rows = conn.execute(
         "SELECT id, platform, title_norm, discovered_at FROM hot_topics "
