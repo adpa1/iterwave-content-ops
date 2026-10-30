@@ -611,7 +611,7 @@ class DataRetentionConfig(BaseModel):
 # =====================================================================
 
 class LlmConfig(BaseModel):
-    """文案生成用 LLM（Agent Plan / 方舟）。无 key 时自动降级模板。"""
+    """文案生成用 LLM（Agent Plan / 方舟）；模型失败时 fail closed。"""
     enabled: bool = False
     provider: str = "ark"
     # ⚠️ 通道选择（重要，关乎计费与可用性，R23 安全）：
@@ -623,7 +623,9 @@ class LlmConfig(BaseModel):
     fallback_model: str = "doubao-seed-2.0-mini"   # 主模型失败时的兜底模型；空串 = 不启用
     api_key_env: str = "ARK_API_KEY"          # R23：只从 .env 读，不落库不落日志
     temperature: float = 0.7
-    timeout_seconds: int = 60
+    timeout_seconds: int = Field(60, ge=1, le=600)
+    retry_attempts: int = Field(2, ge=0, le=5)
+    retry_backoff_seconds: float = Field(1.0, ge=0.1, le=30.0)
 
 
 class Config(BaseModel):
