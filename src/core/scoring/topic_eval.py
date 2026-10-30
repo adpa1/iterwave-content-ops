@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
+from ..timezone import business_now
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +50,7 @@ class TopicItem:
         if not self.date:
             return None
         try:
-            now = now or datetime.now()
+            now = now or business_now()
             # 支持多种日期格式
             for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
                 try:
