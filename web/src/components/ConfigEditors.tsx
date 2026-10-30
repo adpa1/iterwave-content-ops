@@ -18,7 +18,18 @@ const PLATFORM_LABELS: Record<string, string> = {
 };
 
 export const KB_TYPES = ["auto", "sqlite", "csv", "json", "jsonl", "xlsx", "rss"] as const;
+const KB_TYPE_LABELS: Record<string, string> = {
+  auto: "自动识别", sqlite: "数据库", csv: "CSV 表格", json: "JSON 文件",
+  jsonl: "JSONL 文件", xlsx: "Excel 表格", rss: "RSS 订阅",
+};
 export const KB_MAPPING_FIELDS: string[] = ["source", "title", "summary", "link", "date", "dimension"];
+const KB_FIELD_LABELS: Record<string, string> = {
+  source: "来源", title: "标题", summary: "摘要", link: "原文链接",
+  date: "日期", dimension: "内容方向",
+};
+const KB_FIELD_KEYS = Object.fromEntries(
+  Object.entries(KB_FIELD_LABELS).map(([key, label]) => [label, key]),
+) as Record<string, string>;
 
 /** "a, b，c" → ["a","b","c"] */
 function splitList(text: string): string[] {
@@ -123,7 +134,7 @@ export function KbEditor({ view, onSaved }: {
   const [path, setPath] = useState(view.readonly.kb_path || "");
   const [table, setTable] = useState(view.readonly.kb_table || "");
   const [mappingText, setMappingText] = useState(
-    Object.entries(view.readonly.kb_field_mapping).map(([k, v]) => `${k}=${v}`).join(", "),
+    Object.entries(view.readonly.kb_field_mapping).map(([k, v]) => (KB_FIELD_LABELS[k] ?? k) + "=" + v).join(", "),
   );
   const [inspectMsg, setInspectMsg] = useState<string | null>(null);
   const busy = isPending("cfg:kb");
@@ -136,9 +147,10 @@ export function KbEditor({ view, onSaved }: {
     for (const part of text.split(/[,，\n]/).map((s) => s.trim()).filter(Boolean)) {
       const idx = part.indexOf("=");
       if (idx <= 0) return `字段映射格式错误：${part}（应为 通用字段=原始列名）`;
-      const k = part.slice(0, idx).trim();
+      const rawKey = part.slice(0, idx).trim();
+      const k = KB_FIELD_KEYS[rawKey] ?? rawKey;
       const v = part.slice(idx + 1).trim();
-      if (!KB_MAPPING_FIELDS.includes(k)) return `未知通用字段：${k}`;
+      if (!KB_MAPPING_FIELDS.includes(k)) return `未知字段名称：${rawKey}（可用：${Object.values(KB_FIELD_LABELS).join("、")}）`;
       if (!v) return `${k} 的原始列名不能为空`;
       out[k] = v;
     }
@@ -183,7 +195,7 @@ export function KbEditor({ view, onSaved }: {
     <div style={{ display: "grid", gap: 14 }}>
       <Field label="KB 类型">
         <select style={{ ...inputStyle, width: 200 }} value={kbType} onChange={(e) => setKbType(e.target.value)}>
-          {KB_TYPES.map((t) => <option key={t} value={t}>{t === "auto" ? "auto（按扩展名自动识别）" : t}</option>)}
+          {KB_TYPES.map((t) => <option key={t} value={t}>{KB_TYPE_LABELS[t]}</option>)}
         </select>
       </Field>
       <Field label="选题库文件位置（只读）">
@@ -197,17 +209,17 @@ export function KbEditor({ view, onSaved }: {
           onClick={() => navigate("assets", "mapping")}>内容资产 → 知识库来源</button>
         管理，支持自动识别字段与预览。
       </div>
-      <Field label="数据表名（数据库专用）">
+      {kbType === "sqlite" && <Field label="数据表名称">
         <input style={{ ...inputStyle, width: 240, fontFamily: "monospace" }} value={table}
-          onChange={(e) => setTable(e.target.value)} placeholder="topics" />
-      </Field>
-      <Field label="字段映射（通用字段=原始列名，逗号分隔；留空 = 自动识别）">
+          onChange={(e) => setTable(e.target.value)} placeholder="输入要读取的数据表名称" />
+      </Field>}
+      <Field label="列名对应关系（中文字段=来源列名，逗号分隔；留空 = 自动识别）">
         <input style={{ ...inputStyle, fontFamily: "monospace" }} value={mappingText}
           onChange={(e) => setMappingText(e.target.value)}
-          placeholder="title=标题, dimension=分类" />
+          placeholder="标题=内容标题, 内容方向=分类" />
       </Field>
       <div style={{ fontSize: 11, color: "var(--subtle)" }}>
-        可用通用字段：{KB_MAPPING_FIELDS.join(" / ")}
+        可用字段：{Object.values(KB_FIELD_LABELS).join(" / ")}
       </div>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 4 }}>
         <SaveBar onSave={save} busy={busy} hint="路径改动会在下一次选题读取时生效，无需重启后端" />
