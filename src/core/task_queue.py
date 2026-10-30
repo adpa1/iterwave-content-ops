@@ -32,6 +32,7 @@ class QueuedTask:
     payload: dict[str, Any]
     status: str
     created_at: str
+    available_at: str
     started_at: str | None
     finished_at: str | None
     attempts: int
@@ -147,6 +148,7 @@ class GlobalTaskQueue:
             task_id=row["task_id"], task_type=row["task_type"],
             tenant_id=row["tenant_id"], aggregate_id=row["aggregate_id"],
             payload=payload, status=row["status"], created_at=row["created_at"],
+            available_at=row["available_at"] or row["created_at"],
             started_at=row["started_at"], finished_at=row["finished_at"],
             attempts=int(row["attempts"]), result=result,
             error_code=row["error_code"], error_message=row["error_message"],
