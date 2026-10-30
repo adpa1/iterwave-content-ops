@@ -151,6 +151,8 @@ class ScoringConfig(BaseModel):
                 raise ValueError(
                     f"评分模式 {mode_name} 权重和 = {total}，必须 = 100"
                 )
+        if self.stable_dimension_min_samples < self.active_dimension_min_uses:
+            raise ValueError("stable_dimension_min_samples 必须大于等于 active_dimension_min_uses")
         return self
 
 
