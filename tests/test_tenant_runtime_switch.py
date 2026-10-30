@@ -192,7 +192,5 @@ def test_target_initialization_failure_does_not_stop_old_runtime(monkeypatch):
     try:
         asyncio.run(run())
     finally:
-        api_main._tenant_runtime_contexts.clear()
-        api_main._tenant_runtime_contexts.update(previous_runtimes)
         monkeypatch.setattr(api_main, "_g_ctx", {})
         monkeypatch.setattr(api_main, "_running_rounds", set())
