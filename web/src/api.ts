@@ -12,6 +12,25 @@ export interface RecoveryInfo {
   pending_verify: number;
 }
 
+export interface GlobalTaskQueueItem {
+  task_id: string;
+  task_type: string;
+  tenant_id: string;
+  tenant_name: string;
+  aggregate_id: string | null;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  attempts: number;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+export interface GlobalTaskQueueResponse {
+  items: GlobalTaskQueueItem[];
+}
+
 export interface SystemStatus {
   enabled_platforms: Platform[];
   /** 有登录态的平台（R20 ● 判定依据） */
@@ -1249,6 +1268,11 @@ export const api = {
     fetchJson<{ updated: Record<string, number | null>; goals: Goal[]; summary: GoalSummary }>(
       "/api/goals/progress/refresh", { method: "POST" },
     ),
+  taskQueue: () => fetchJson<GlobalTaskQueueResponse>("/api/task-queue"),
+  cancelTask: (taskId: string) =>
+    fetchJson<{ task_id: string; status: string }>(`/api/task-queue/${encodeURIComponent(taskId)}/cancel`, {
+      method: "POST",
+    }),
   rounds: (status?: string) =>
     fetchJson<SpiralRound[]>(status ? `/api/rounds?status=${status}` : "/api/rounds"),
   round: (id: number) => fetchJson<SpiralRound & { drafts: Draft[] }>(`/api/rounds/${id}`),
