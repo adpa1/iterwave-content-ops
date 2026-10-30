@@ -460,10 +460,11 @@ def test_activation_metrics_reports_ttv_percentiles_for_available_database_cohor
     response = activation_client.get("/api/activation/metrics")
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["ttv_sample_count"] == 2
+    assert payload["cohort_size"] == 1
+    assert payload["ttv_sample_count"] == 1
     assert payload["ttv_p50_seconds"] == 120.0
-    assert payload["ttv_p90_seconds"] == 300.0
-    assert "当前数据库内" in payload["ttv_percentile_scope"]
+    assert payload["ttv_p90_seconds"] == 120.0
+    assert "当前账号组" in payload["ttv_percentile_scope"]
 
 
 def test_activation_metrics_calculates_completed_cohort_rates_and_ttv(activation_client, conn, seed):
