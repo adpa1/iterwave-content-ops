@@ -751,10 +751,7 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
 
 
 def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
-    """白名单批量修改：校验 → 改内存 → 持久化覆盖 → 写审计。
-
-    任一条不合法 → 整体拒绝（不做部分成功），避免半套配置生效。
-    """
+    """白名单批量修改：校验 → SQLite 原子持久化/审计 → 更新内存配置。"""
     if not updates:
         raise ConfigPatchError("updates 不能为空")
 
@@ -762,25 +759,14 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
     for key, value in updates.items():
         normalized[key] = _validate(key, value)
 
-    # 时段窗口 start < end（R5 本地时区语义，不能跨越成空窗口）
     for win in ("ops", "draft_save"):
-        if (
-            f"rhythm.windows.{win}.start_hour" in normalized
-            or f"rhythm.windows.{win}.end_hour" in normalized
-        ):
-            start = normalized.get(
-                f"rhythm.windows.{win}.start_hour",
-                _get_value(cfg, f"rhythm.windows.{win}.start_hour"),
-            )
-            end = normalized.get(
-                f"rhythm.windows.{win}.end_hour",
-                _get_value(cfg, f"rhythm.windows.{win}.end_hour"),
-            )
+        if f"rhythm.windows.{win}.start_hour" in normalized or f"rhythm.windows.{win}.end_hour" in normalized:
+            start = normalized.get(f"rhythm.windows.{win}.start_hour", _get_value(cfg, f"rhythm.windows.{win}.start_hour"))
+            end = normalized.get(f"rhythm.windows.{win}.end_hour", _get_value(cfg, f"rhythm.windows.{win}.end_hour"))
             if start is not None and end is not None and start >= end:
                 label = "运营时段" if win == "ops" else "存草稿时段"
                 raise ConfigPatchError(f"{label} start_hour 必须小于 end_hour")
 
-    # 平台启用开关：至少保留 1 个，否则整条生产链无法工作
     prospective = {
         p: bool(normalized.get(f"platforms.{p}.enabled", _get_value(cfg, f"platforms.{p}.enabled")))
         for p in PLATFORM_KEYS
@@ -788,54 +774,40 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
     if not any(prospective.values()):
         raise ConfigPatchError("至少必须启用 1 个平台")
 
-    # R8：producing 超时必须小于 awaiting_publish 超时，两者独立计时但不能倒挂
-    round_h = normalized.get(
-        "timeouts.round_timeout_hours", _get_value(cfg, "timeouts.round_timeout_hours")
-    )
-    await_h = normalized.get(
-        "timeouts.awaiting_publish_timeout_hours",
-        _get_value(cfg, "timeouts.awaiting_publish_timeout_hours"),
-    )
+    round_h = normalized.get("timeouts.round_timeout_hours", _get_value(cfg, "timeouts.round_timeout_hours"))
+    await_h = normalized.get("timeouts.awaiting_publish_timeout_hours", _get_value(cfg, "timeouts.awaiting_publish_timeout_hours"))
     if round_h is not None and await_h is not None and round_h >= await_h:
         raise ConfigPatchError("round_timeout_hours（producing）必须小于 awaiting_publish_timeout_hours")
 
-    # R11：改权重不能破坏「每个模式合计 100%」
     for mode in SCORING_MODES:
-        total = sum(
-            int(normalized.get(f"scoring.{mode}.{field}", _get_value(cfg, f"scoring.{mode}.{field}")) or 0)
-            for field in SCORING_WEIGHT_FIELDS
-        )
+        total = sum(int(normalized.get(f"scoring.{mode}.{field}", _get_value(cfg, f"scoring.{mode}.{field}")) or 0)
+                    for field in SCORING_WEIGHT_FIELDS)
         if total != 100:
-            raise ConfigPatchError(
-                f"{mode} 权重合计必须 = 100%，按本次修改后为 {total}%（请同时调整其它维度）"
-            )
+            raise ConfigPatchError(f"{mode} 权重合计必须 = 100%，按本次修改后为 {total}%（请同时调整其它维度）")
 
     changes: list[dict[str, Any]] = []
-    overrides = load_overrides(cfg)
+    persisted: dict[str, Any] = {}
+    audit_rows: list[tuple[str, str | None, str]] = []
     for key, value in normalized.items():
-        old = _jsonable(_get_value(cfg, key))
-        if old == value:
+        old_value = _jsonable(_get_value(cfg, key))
+        if old_value == value:
             continue
-        _set_value(cfg, key, value)
-        overrides[key] = value
-        other = _counterpart(key)
-        if other:
-            overrides.pop(other, None)
-        conn.execute(
-            "INSERT INTO config_changes (key, old_value, new_value, changed_at) "
-            "VALUES (?, ?, ?, ?)",
-            (
-                key,
-                None if old is None else str(old),
-                str(value),
-                # R5：本地时区（表默认 CURRENT_TIMESTAMP 是 UTC，必须显式覆盖）
-                datetime.now().isoformat(timespec="seconds"),
-            ),
-        )
-        changes.append({"key": key, "old": old, "new": value})
+        persisted[key] = value
+        audit_rows.append((
+            key,
+            None if old_value is None else json.dumps(old_value, ensure_ascii=False, sort_keys=True),
+            json.dumps(value, ensure_ascii=False, sort_keys=True),
+        ))
+        changes.append({"key": key, "old": old_value, "new": value})
 
-    if changes:
-        _save_overrides(cfg, overrides)
-        conn.commit()
+    if persisted:
+        # Repository writes settings, version snapshot and audit rows in one transaction.
+        from src.core.config_repository import save_settings
+        try:
+            save_settings(conn, persisted, audit_rows=audit_rows)
+        except (ValueError, sqlite3.Error) as exc:
+            raise ConfigPatchError(str(exc)) from exc
+        for key, value in persisted.items():
+            _set_value(cfg, key, value)
         logger.info("⚙️ 配置已修改 %d 项：%s", len(changes), [c["key"] for c in changes])
     return {"changed": changes, "applied": normalized, "noop": len(changes) == 0}
