@@ -149,20 +149,25 @@ class ScoringEngine:
         if total_published < self.scoring_cfg.cold_start_min_published:
             return "cold_start"
 
-        # 检查活跃维度（90 天内至少 2 次使用）
+        # 检查活跃维度（窗口与最低使用次数均由配置决定）
         window = self.scoring_cfg.active_dimension_window_days
         min_uses = self.scoring_cfg.active_dimension_min_uses
-        row = self.db.execute(
-            "SELECT COUNT(DISTINCT t.dimension) FROM drafts d "
-            "JOIN contents c ON d.content_id = c.id "
-            "JOIN topic_index t ON c.topic_id = t.id "
-            "WHERE d.status='published' "
-            "AND d.user_confirmed_at >= datetime('now', ?)",
-            (f"-{window} days",),
+        active_dims_row = self.db.execute(
+            "SELECT COUNT(*) FROM ( "
+            "  SELECT t.dimension, COUNT(*) AS cnt "
+            "  FROM drafts d JOIN contents c ON d.content_id = c.id "
+            "  JOIN topic_index t ON c.topic_id = t.id "
+            "  WHERE d.status='published' "
+            "  AND d.user_confirmed_at >= datetime('now', ?) "
+            "  GROUP BY t.dimension HAVING cnt >= ? "
+            ") active",
+            (f"-{window} days", min_uses),
         ).fetchone()
-        active_dims_count = row[0] if row else 0
+        active_dims_count = active_dims_row[0] if active_dims_row else 0
+        if active_dims_count == 0:
+            return "sample_accumulating"
 
-        # 活跃维度中，有多少维度样本低于配置阈值
+        # 活跃维度中，有多少维度样本尚未达到稳定运行的最低样本数。
         weak_dim_row = self.db.execute(
             "SELECT COUNT(*) FROM ( "
             "  SELECT t.dimension, COUNT(*) as cnt "
@@ -170,9 +175,9 @@ class ScoringEngine:
             "  JOIN topic_index t ON c.topic_id = t.id "
             "  WHERE d.status='published' "
             "  AND d.user_confirmed_at >= datetime('now', ?) "
-            "  GROUP BY t.dimension HAVING cnt < ? "
+            "  GROUP BY t.dimension HAVING cnt >= ? AND cnt < ? "
             ") w",
-            (f"-{window} days", self.scoring_cfg.stable_dimension_min_samples),
+            (f"-{window} days", min_uses, self.scoring_cfg.stable_dimension_min_samples),
         ).fetchone()
         weak_dim_count = weak_dim_row[0] if weak_dim_row else 0
 
@@ -221,7 +226,7 @@ class ScoringEngine:
         gap_raw = self._score_gap_weight(topic)
         breakdown["gap_weight"] = (gap_raw, weights["gap_weight"], gap_raw * weights["gap_weight"] / 100)
 
-        # 5. 新鲜度（近 30 天是否用过）
+        # 5. 新鲜度（配置窗口内是否用过）
         fresh_raw = self._score_freshness(topic)
         breakdown["freshness"] = (fresh_raw, weights["freshness"], fresh_raw * weights["freshness"] / 100)
 
@@ -295,7 +300,7 @@ class ScoringEngine:
         else:  # stable_operation
             score = dim_mean if dim_count >= self.scoring_cfg.stable_dimension_min_samples else global_mean
 
-        # 归一化到 0-100（假设全局平均约 0.05=5%，放大 2000 倍）
+        # 归一化到 0-100；比例系数由评分策略配置控制
         return min(100.0, score * self.scoring_cfg.history_normalization_scale)
 
     def _score_timeliness(self, topic: TopicItem, mode: str) -> float:
