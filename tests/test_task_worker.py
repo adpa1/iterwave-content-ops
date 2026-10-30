@@ -131,3 +131,39 @@ def test_worker_executes_queued_scheduler_job_in_its_tenant_context(tmp_path):
     assert observed["login_path"] == tmp_path / "tenant-b" / "data" / "login_states" / "xhs.json"
     saved = queue.get(task.task_id)
     assert saved is not None and saved.status == "running"
+
+
+def test_worker_survives_failure_status_write_error(tmp_path, monkeypatch):
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    queue.enqueue(
+        task_type="round_run", tenant_id="tenant-a", aggregate_id="19",
+        payload={"round_id": 19, "operation": "run"},
+    )
+    claimed = queue.claim_next("worker-c")
+    assert claimed is not None
+
+    class FakeExecutor:
+        async def run(self, round_id, **kwargs):
+            raise RuntimeError("simulated task failure")
+
+    def build_context(tenant_id):
+        return {
+            "cfg": SimpleNamespace(
+                paths=SimpleNamespace(data_dir=str(tmp_path / tenant_id / "data")),
+                resolve_path=lambda value: value,
+            ),
+            "executor": FakeExecutor(),
+            "scheduler": SimpleNamespace(shutdown=lambda: None),
+            "conn": SimpleNamespace(close=lambda: None),
+        }
+
+    def fail_write(*args, **kwargs):
+        raise OSError("simulated database outage")
+
+    monkeypatch.setattr(queue, "fail", fail_write)
+    worker = GlobalTaskWorker(
+        queue, build_context, lease_seconds=30, heartbeat_seconds=1,
+    )
+    # 持久化失败状态的异常不能逸出 _execute 并终止全局消费者。
+    asyncio.run(worker._execute(claimed))
