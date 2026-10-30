@@ -2029,6 +2029,19 @@ def _register_routes(app: FastAPI) -> None:
             rest_title_len = _avg([len(str(row.get("title") or "")) for row in comparison_rows])
             top_body_len = _avg([len(str(row.get("body") or "")) for row in top_rows])
             rest_body_len = _avg([len(str(row.get("body") or "")) for row in comparison_rows])
+            def _tag_count(row):
+                raw_tags = row.get("tags")
+                if isinstance(raw_tags, list):
+                    return len(raw_tags)
+                if not raw_tags:
+                    return 0
+                try:
+                    parsed_tags = json.loads(raw_tags) if isinstance(raw_tags, str) else raw_tags
+                    return len(parsed_tags) if isinstance(parsed_tags, list) else 0
+                except (TypeError, ValueError):
+                    return len([tag for tag in str(raw_tags).split() if tag])
+            top_tag_count = _avg([_tag_count(row) for row in top_rows])
+            rest_tag_count = _avg([_tag_count(row) for row in comparison_rows])
             feature_evidence = {
                 "metric": metric, "top_group_size": len(top_rows),
                 "comparison_group_size": len(comparison_rows),
@@ -2036,12 +2049,16 @@ def _register_routes(app: FastAPI) -> None:
                 "avg_title_chars_comparison": rest_title_len,
                 "avg_body_chars_top": top_body_len,
                 "avg_body_chars_comparison": rest_body_len,
+                "avg_tag_count_top": top_tag_count,
+                "avg_tag_count_comparison": rest_tag_count,
             }
             observed = []
             if top_title_len is not None and rest_title_len is not None:
                 observed.append(f"领先组标题平均 {top_title_len} 字，对照组 {rest_title_len} 字")
             if top_body_len is not None and rest_body_len is not None:
                 observed.append(f"领先组正文平均 {top_body_len} 字，对照组 {rest_body_len} 字")
+            if top_tag_count is not None and rest_tag_count is not None:
+                observed.append(f"领先组标签平均 {top_tag_count} 个，对照组 {rest_tag_count} 个")
             time_window = {"start": start.date().isoformat(), "end": (end - timedelta(seconds=1)).date().isoformat()}
             why.append({
                 "statement": f"{p} 平台内按 {metric} 排序后，领先组与其余样本的可观测差异：" +
