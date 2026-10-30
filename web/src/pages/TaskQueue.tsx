@@ -80,7 +80,11 @@ function TaskRow({
       </div>
       <div className="muted" style={{ fontSize: 12 }}>{timeLabel(task.created_at)}</div>
       <div className="muted" style={{ fontSize: 12 }}>
-        {task.error_message || (task.started_at ? `开始：${timeLabel(task.started_at)}` : "尚未开始")}
+        {task.error_message || (
+          task.status === "queued" && new Date(task.available_at).getTime() > Date.now()
+            ? `计划执行：${timeLabel(task.available_at)}`
+            : task.started_at ? `开始：${timeLabel(task.started_at)}` : "尚未开始"
+        )}
       </div>
       <div>
         {task.status === "queued" && (
