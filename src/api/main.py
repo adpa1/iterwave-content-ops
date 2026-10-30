@@ -87,7 +87,7 @@ from src.core.insights import PlatformInsightsEngine
 from src.core.plan_version import PlanVersionManager
 from src.core.ops.pause import pause_state, set_ops_paused
 from src.core.config_store import (
-    ConfigNotAllowedError, ConfigPatchError, apply_overrides, current_config_view,
+    ConfigNotAllowedError, ConfigPatchError, apply_overrides, config_metadata_view, current_config_view,
     changed_job_ids, load_overrides, patch_config, scheduler_jobs_view,
 )
 from src.adapters.base import Platform
@@ -4141,6 +4141,11 @@ def _register_routes(app: FastAPI) -> None:
         }
 
     # --- 系统配置（G-13：白名单可写 + config_changes 审计）---
+    @app.get("/api/config/metadata")
+    def get_config_metadata():
+        """配置编辑元数据；可编辑性与取值仍由后端白名单校验决定。"""
+        return {"items": config_metadata_view(_g()["cfg"])}
+
     @app.get("/api/config")
     def get_config():
         g2 = _g()
