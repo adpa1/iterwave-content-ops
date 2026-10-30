@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS content_events (
     sample_content_id TEXT REFERENCES sample_contents(id) ON DELETE CASCADE,
     event_type TEXT NOT NULL CHECK (event_type IN (
         'activation_started','sample_generation_started','sample_generation_succeeded',
-        'sample_generation_failed','content_copied','content_saved','content_rejected',
+        'sample_generation_failed','content_copied','content_saved','content_adopted','content_rejected',
         'publish_confirmed','note_url_added','metrics_submitted','weekly_report_viewed'
     )),
     event_at DATETIME NOT NULL,
