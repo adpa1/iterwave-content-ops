@@ -461,6 +461,18 @@ class MediaQualityConfig(BaseModel):
     low_color_count: int = Field(3, ge=1, le=16)
     color_count_reference: int = Field(16, ge=1, le=256)
 
+    @model_validator(mode="after")
+    def _check_quality_ranges(self) -> "MediaQualityConfig":
+        if self.portrait_ratio_min >= self.portrait_ratio_max:
+            raise ValueError("portrait_ratio_min 必须小于 portrait_ratio_max")
+        if self.portrait_ratio_max >= self.square_ratio_max:
+            raise ValueError("portrait_ratio_max 必须小于 square_ratio_max")
+        if self.square_ratio_max >= self.landscape_ratio_max:
+            raise ValueError("square_ratio_max 必须小于 landscape_ratio_max")
+        if self.brightness_min >= self.brightness_max:
+            raise ValueError("brightness_min 必须小于 brightness_max")
+        return self
+
 
 class TenantSwitchConfig(BaseModel):
     request_drain_timeout_seconds: int = Field(30, ge=1, le=120)
