@@ -155,6 +155,15 @@ def test_password_lifecycle(tmp_path):
     assert auth.password_configured() is False
 
 
+def test_password_strength_rejects_common_and_low_complexity_values():
+    for weak in ("12345678", "password", "abcdefgh", "abcdefgh1", "123456789"):
+        with pytest.raises(ValueError):
+            auth.set_password(weak)
+
+    auth.set_password("Strong-pass9!")
+    assert auth.verify_password("Strong-pass9!") is True
+
+
 def test_session_cookie_marks_https_as_secure():
     http_cookie = auth.session_cookie_header("session-token")
     https_cookie = auth.session_cookie_header("session-token", secure=True)
