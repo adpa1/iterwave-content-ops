@@ -1452,6 +1452,10 @@ def _register_routes(app: FastAPI) -> None:
                 "account_description_max_chars": cfg.activation.account_description_max_chars,
                 "max_runs_per_day": cfg.activation.max_runs_per_day,
                 "sample_max_output_tokens": cfg.activation.sample_max_output_tokens,
+                "max_model_calls_per_run": cfg.activation.max_model_calls_per_run,
+                "max_total_output_tokens_per_run": (
+                    cfg.activation.sample_max_output_tokens * cfg.activation.max_model_calls_per_run
+                ),
                 "daily_runs_used": int(daily_runs_used),
                 "daily_runs_remaining": max(0, cfg.activation.max_runs_per_day - int(daily_runs_used)),
             },
@@ -1587,6 +1591,11 @@ def _register_routes(app: FastAPI) -> None:
                     for quality_attempt in range(sample_cfg.copy_generation.max_guard_retries + 1):
                         for model_attempt in range(sample_cfg.llm.retry_attempts + 1):
                             try:
+                                if model_call_count >= cfg_bg.activation.max_model_calls_per_run:
+                                    raise ContentGenerationError(
+                                        "sample_budget_exceeded",
+                                        "本次体验已达到模型调用安全上限，请调整定位后重新体验",
+                                    )
                                 model_call_count += 1
                                 conn_bg.execute(
                                     "UPDATE sample_runs SET attempt_count=? WHERE id=?",
