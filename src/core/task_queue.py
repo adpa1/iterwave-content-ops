@@ -24,6 +24,7 @@ def _stamp(value: datetime | None = None) -> str:
 
 @dataclass(frozen=True)
 class QueuedTask:
+    queue_order: int
     task_id: str
     task_type: str
     tenant_id: str
@@ -136,6 +137,7 @@ class GlobalTaskQueue:
         if not isinstance(payload, dict) or (result is not None and not isinstance(result, dict)):
             raise TaskQueueError("队列任务数据结构无效，已拒绝执行")
         return QueuedTask(
+            queue_order=int(row["queue_order"]),
             task_id=row["task_id"], task_type=row["task_type"],
             tenant_id=row["tenant_id"], aggregate_id=row["aggregate_id"],
             payload=payload, status=row["status"], created_at=row["created_at"],
@@ -384,13 +386,13 @@ class GlobalTaskQueue:
         try:
             if tenant_id is None:
                 rows = conn.execute(
-                    "SELECT * FROM global_task_queue ORDER BY created_at DESC,task_id DESC LIMIT ?",
+                    "SELECT * FROM global_task_queue ORDER BY queue_order DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     "SELECT * FROM global_task_queue WHERE tenant_id=? "
-                    "ORDER BY created_at DESC,task_id DESC LIMIT ?", (tenant_id, limit),
+                    "ORDER BY queue_order DESC LIMIT ?", (tenant_id, limit),
                 ).fetchall()
             return [task for row in rows if (task := self._decode(row)) is not None]
         finally:
