@@ -375,11 +375,14 @@ media_quality:
   landscape_ratio_max: 1.7
   brightness_min: 45
   brightness_max: 210
+  brightness_penalty_scale: 8.5
+  contrast_reference: 45
   sharpness_reference: 500
   sharpness_warning_threshold: 35
   low_contrast_threshold: 18
   low_resolution_pixels: 500000
   low_color_count: 3
+  color_count_reference: 16
 
 tenant_switch:
   request_drain_timeout_seconds: 30
