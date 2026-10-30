@@ -1353,6 +1353,478 @@ def _register_routes(app: FastAPI) -> None:
     def _g():
         return _g_ctx
 
+    def _tenant_id() -> str:
+        return str(_g().get("runtime_tenant_id") or "default")
+
+    def _record_content_event(event_type: str, *, content_id: str | None = None,
+                              sample_content_id: str | None = None, metadata: dict | None = None,
+                              idempotency_key: str | None = None) -> None:
+        conn = _g()["conn"]
+        conn.execute(
+            "INSERT OR IGNORE INTO content_events "
+            "(id, tenant_id, content_id, sample_content_id, event_type, event_at, source, metadata_json, idempotency_key) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'web', ?, ?)",
+            (uuid.uuid4().hex, _tenant_id(), content_id, sample_content_id, event_type,
+             datetime.now().isoformat(sep=" ", timespec="seconds"),
+             json.dumps(metadata or {}, ensure_ascii=False), idempotency_key),
+        )
+        conn.commit()
+
+    def _validate_platform_note_url(platform: str, value: str) -> str:
+        from urllib.parse import urlsplit
+        from src.adapters.base import Platform
+        if platform not in {p.value for p in Platform}:
+            raise HTTPException(422, "未知平台")
+        if len(value) > 500:
+            raise HTTPException(422, "发布链接不能超过 500 个字符")
+        try:
+            parsed = urlsplit(value)
+            host = (parsed.hostname or "").lower().rstrip(".")
+            if parsed.scheme not in ("http", "https") or not host or parsed.username or parsed.password:
+                raise ValueError("invalid URL")
+        except ValueError:
+            raise HTTPException(422, "请填写有效的 http(s) 发布链接")
+        domains = {
+            "xhs": ("xiaohongshu.com", "xhslink.com"),
+            "douyin": ("douyin.com", "iesdouyin.com"),
+            "kuaishou": ("kuaishou.com", "gifshow.com"),
+            "wechat_channels": ("channels.weixin.qq.com", "weixin.qq.com", "wx.qq.com"),
+        }
+        if not any(host == d or host.endswith("." + d) for d in domains[platform]):
+            raise HTTPException(422, "链接域名与当前平台不匹配，请检查链接或稍后补填")
+        return value
+
+    @app.get("/api/activation/status")
+    def activation_status():
+        conn = _g()["conn"]
+        tenant_id = _tenant_id()
+        now = datetime.now().isoformat(sep=" ", timespec="seconds")
+        inserted = conn.execute(
+            "INSERT OR IGNORE INTO activation_cohort (id, tenant_id, first_seen_at) VALUES (1, ?, ?)",
+            (tenant_id, now),
+        ).rowcount
+        conn.commit()
+        if inserted:
+            _record_content_event("activation_started", idempotency_key="activation-started")
+        from src.core.content_pipeline import _llm_available
+        cfg = _g()["cfg"]
+        status = _g().get("status") or {}
+        return {
+            "tenant_id": tenant_id,
+            "model_mode": "byok",
+            "model_ready": _llm_available(cfg),
+            "model_message": "自带模型已就绪" if _llm_available(cfg) else "需要先配置自己的模型服务和 API Key",
+            "formal_setup": {
+                "persona_configured": bool(getattr(cfg.ultimate_goal, "positioning", "").strip()
+                    or cfg.ultimate_goal.persona_keywords),
+                "topic_pool_required": True,
+                "platform_login_required_for_formal_publish": True,
+            },
+            "quick_experience_available": _llm_available(cfg),
+            "cohort_started_at": now if inserted else (
+                conn.execute("SELECT first_seen_at FROM activation_cohort WHERE id=1").fetchone()[0]
+            ),
+        }
+
+    @app.post("/api/activation/samples", status_code=202)
+    async def create_activation_samples(req: dict):
+        tenant_id = _tenant_id()
+        description = str((req or {}).get("account_description") or "").strip()
+        platform = str((req or {}).get("platform") or "").strip()
+        idempotency_key = str((req or {}).get("idempotency_key") or "").strip()
+        valid_platforms = {"xhs", "douyin", "kuaishou", "wechat_channels"}
+        if not 10 <= len(description) <= 300:
+            raise HTTPException(422, "账号定位请填写 10-300 个字符")
+        if platform not in valid_platforms:
+            raise HTTPException(422, "请选择有效的主战场平台")
+        if not idempotency_key or len(idempotency_key) > 100:
+            raise HTTPException(422, "请求标识无效，请刷新后重试")
+        conn = _g()["conn"]
+        existing = conn.execute(
+            "SELECT id, status FROM sample_runs WHERE tenant_id=? AND idempotency_key=?",
+            (tenant_id, idempotency_key),
+        ).fetchone()
+        if existing:
+            return {"sample_run_id": existing["id"], "status": existing["status"], "deduplicated": True}
+        active = conn.execute(
+            "SELECT COUNT(*) FROM sample_runs WHERE tenant_id=? AND status IN ('created','generating','quality_check')",
+            (tenant_id,),
+        ).fetchone()[0]
+        if active:
+            raise HTTPException(409, "已有快速体验任务正在执行，请等待完成后再试")
+        run_id = uuid.uuid4().hex
+        now = datetime.now().isoformat(sep=" ", timespec="seconds")
+        from src.core.content_pipeline import _llm_available
+        model_ready = _llm_available(_g()["cfg"])
+        initial_status = "created" if model_ready else "failed"
+        error_code = None if model_ready else "model_not_configured"
+        error_message = None if model_ready else "尚未配置可用模型，请先到系统设置接入自己的模型"
+        conn.execute(
+            "INSERT INTO sample_runs "
+            "(id, tenant_id, platform, account_description, status, model_mode, error_code, error_message_safe, "
+            "idempotency_key, created_at, completed_at) VALUES (?, ?, ?, ?, ?, 'byok', ?, ?, ?, ?, ?)",
+            (run_id, tenant_id, platform, description, initial_status, error_code, error_message,
+             idempotency_key, now, None if model_ready else now),
+        )
+        conn.commit()
+        _record_content_event("sample_generation_started", idempotency_key=f"sample-start:{run_id}")
+        if not model_ready:
+            _record_content_event("sample_generation_failed", metadata={"error_code": error_code},
+                                  idempotency_key=f"sample-failed:{run_id}")
+            return {"sample_run_id": run_id, "status": "failed", "error_code": error_code,
+                    "error_message": error_message}
+
+        async def generate_samples():
+            from src.core.content_pipeline import ContentGenerationError, generate_copy_content
+            from src.adapters.base import Platform as PlatformEnum
+            conn_bg = _g()["conn"]
+            started = datetime.now().isoformat(sep=" ", timespec="seconds")
+            conn_bg.execute("UPDATE sample_runs SET status='generating', started_at=? WHERE id=?",
+                            (started, run_id))
+            conn_bg.commit()
+            try:
+                base_cfg = _g()["cfg"]
+                sample_goal = base_cfg.ultimate_goal.model_copy(update={
+                    "positioning": description,
+                    "persona_keywords": [x for x in description.replace("，", ",").split(",") if x.strip()][:8]
+                        or [description[:80]],
+                })
+                sample_cfg = base_cfg.model_copy(deep=True, update={"ultimate_goal": sample_goal})
+                angles = [
+                    ("实用方法", "提供可执行步骤、工具或操作方法"),
+                    ("经验洞察", "从真实工作/生活场景提炼经验、误区和判断"),
+                    ("问题拆解", "围绕目标受众的具体痛点，解释问题并给出解决路径"),
+                ]
+                results = []
+                for angle, angle_hint in angles:
+                    title, body, tags = await asyncio.to_thread(
+                        generate_copy_content,
+                        f"{description}：{angle}",
+                        f"账号定位：{description}。本篇创作角度：{angle_hint}。请给出具体、有信息增量且适合平台发布的内容。",
+                        "账号定位", PlatformEnum(platform), sample_cfg, conn_bg, None, None, None, None,
+                    )
+                    findings = []
+                    if len(title.strip()) < 4:
+                        findings.append("标题信息不足")
+                    if len(body.strip()) < 100:
+                        findings.append("正文信息量不足")
+                    if len(set(body.split())) < 12:
+                        findings.append("正文重复度过高")
+                    if any(phrase in body for phrase in ("仅供参考", "总而言之", "希望对你有帮助")):
+                        findings.append("包含泛化套话")
+                    if findings:
+                        raise ContentGenerationError("quality_rejected", "样稿未通过基础质量检查：" + "、".join(findings))
+                    results.append((angle, title, body, tags, findings))
+                conn_bg.execute("UPDATE sample_runs SET status='quality_check' WHERE id=?", (run_id,))
+                conn_bg.commit()
+                now_done = datetime.now().isoformat(sep=" ", timespec="seconds")
+                for angle, title, body, tags, findings in results:
+                    conn_bg.execute(
+                        "INSERT INTO sample_contents "
+                        "(id, sample_run_id, tenant_id, platform, angle, title, body, hashtags_json, "
+                        "quality_status, quality_findings_json, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pass', ?, ?, ?)",
+                        (uuid.uuid4().hex, run_id, tenant_id, platform, angle, title, body,
+                         json.dumps(tags, ensure_ascii=False), json.dumps(findings, ensure_ascii=False),
+                         now_done, now_done),
+                    )
+                conn_bg.execute(
+                    "UPDATE sample_runs SET status='ready', completed_at=? WHERE id=?",
+                    (now_done, run_id),
+                )
+                conn_bg.commit()
+                _record_content_event("sample_generation_succeeded", metadata={"sample_count": 3},
+                                      idempotency_key=f"sample-ready:{run_id}")
+            except Exception as exc:
+                logger.exception("快速体验生成失败 run=%s", run_id)
+                code = getattr(exc, "code", "sample_generation_failed")
+                safe_message = str(exc) if getattr(exc, "code", None) else "样稿生成失败，请检查模型配置后重试"
+                conn_bg.execute(
+                    "UPDATE sample_runs SET status='failed', error_code=?, error_message_safe=?, completed_at=? WHERE id=?",
+                    (code, safe_message[:300], datetime.now().isoformat(sep=" ", timespec="seconds"), run_id),
+                )
+                conn_bg.commit()
+                _record_content_event("sample_generation_failed", metadata={"error_code": code},
+                                      idempotency_key=f"sample-failed:{run_id}")
+
+        asyncio.create_task(generate_samples(), name=f"activation-samples-{run_id}")
+        return {"sample_run_id": run_id, "status": "generating", "poll_after_ms": 1200}
+
+    @app.get("/api/activation/samples/{sample_run_id}")
+    def get_activation_samples(sample_run_id: str):
+        tenant_id = _tenant_id()
+        conn = _g()["conn"]
+        run = conn.execute(
+            "SELECT * FROM sample_runs WHERE id=? AND tenant_id=?", (sample_run_id, tenant_id)
+        ).fetchone()
+        if run is None:
+            raise HTTPException(404, "体验样稿不存在")
+        contents = conn.execute(
+            "SELECT id, platform, angle, title, body, hashtags_json, quality_status, "
+            "quality_findings_json, adopted_at, rejected_at, rejection_reason, created_at "
+            "FROM sample_contents WHERE sample_run_id=? AND tenant_id=? ORDER BY created_at, id",
+            (sample_run_id, tenant_id),
+        ).fetchall()
+        return {
+            "run": {k: run[k] for k in ("id", "platform", "account_description", "status",
+                "model_mode", "error_code", "error_message_safe", "created_at", "started_at", "completed_at")},
+            "contents": [{
+                **{k: row[k] for k in ("id", "platform", "angle", "title", "body",
+                    "quality_status", "adopted_at", "rejected_at", "rejection_reason", "created_at")},
+                "hashtags": json.loads(row["hashtags_json"] or "[]"),
+                "quality_findings": json.loads(row["quality_findings_json"] or "[]"),
+            } for row in contents],
+        }
+
+    @app.post("/api/activation/samples/{sample_run_id}/contents/{sample_content_id}/events")
+    def activation_sample_event(sample_run_id: str, sample_content_id: str, req: dict):
+        tenant_id = _tenant_id()
+        event_type = str((req or {}).get("event_type") or "")
+        if event_type not in ("copied", "saved", "rejected"):
+            raise HTTPException(422, "不支持的样稿操作")
+        conn = _g()["conn"]
+        row = conn.execute(
+            "SELECT id FROM sample_contents WHERE id=? AND sample_run_id=? AND tenant_id=?",
+            (sample_content_id, sample_run_id, tenant_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "体验样稿不存在")
+        now = datetime.now().isoformat(sep=" ", timespec="seconds")
+        metadata = {}
+        if event_type == "saved":
+            conn.execute("UPDATE sample_contents SET adopted_at=COALESCE(adopted_at,?), updated_at=? WHERE id=?",
+                         (now, now, sample_content_id))
+            event_name = "content_saved"
+        elif event_type == "rejected":
+            reason = str((req or {}).get("reason") or "其他").strip()[:80]
+            allowed_reasons = {"定位不符", "内容空泛", "平台不适配", "事实不准确", "表达风格不符", "其他"}
+            if reason not in allowed_reasons:
+                raise HTTPException(422, "请选择有效的不采用原因")
+            conn.execute("UPDATE sample_contents SET rejected_at=?, rejection_reason=?, updated_at=? WHERE id=?",
+                         (now, reason, now, sample_content_id))
+            metadata = {"reason": reason}
+            event_name = "content_rejected"
+        else:
+            event_name = "content_copied"
+        conn.commit()
+        _record_content_event(
+            event_name, sample_content_id=sample_content_id, metadata=metadata,
+            idempotency_key=f"{event_name}:{sample_content_id}" if event_name == "content_saved" else None,
+        )
+        return {"sample_content_id": sample_content_id, "event": event_name, "recorded": True}
+
+    @app.post("/api/drafts/{draft_id}/note_url")
+    def update_draft_note_url(draft_id: str, req: dict):
+        conn = _g()["conn"]
+        row = conn.execute("SELECT d.platform, d.status, d.content_id FROM drafts d WHERE d.id=?",
+                           (draft_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "草稿不存在")
+        if row["status"] not in ("user_published", "data_fetching", "published"):
+            raise HTTPException(409, "只有已确认发布的内容才能补填链接")
+        note_url = str((req or {}).get("note_url") or "").strip()
+        if note_url:
+            note_url = _validate_platform_note_url(row["platform"], note_url)
+        conn.execute("UPDATE drafts SET platform_note_url=? WHERE id=?", (note_url or None, draft_id))
+        conn.commit()
+        if note_url:
+            _record_content_event("note_url_added", content_id=row["content_id"],
+                                  metadata={"platform": row["platform"]})
+        return {"draft_id": draft_id, "note_url": note_url, "updated": True}
+
+    @app.post("/api/drafts/{draft_id}/metrics/manual")
+    def submit_manual_metrics(draft_id: str, req: dict):
+        conn = _g()["conn"]
+        tenant_id = _tenant_id()
+        row = conn.execute(
+            "SELECT d.platform, d.status, d.content_id FROM drafts d WHERE d.id=?", (draft_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "草稿不存在")
+        if row["status"] not in ("user_published", "data_fetching", "published"):
+            raise HTTPException(409, "请先确认内容已在平台发布，再录入数据")
+        fields = ("views", "likes", "collects", "comments", "shares", "new_followers")
+        values = {}
+        for field in fields:
+            raw = (req or {}).get(field)
+            if raw in (None, ""):
+                values[field] = None
+            elif isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+                raise HTTPException(422, f"{field} 必须是非负整数或留空")
+            else:
+                values[field] = raw
+        if all(v is None for v in values.values()):
+            raise HTTPException(422, "至少填写一项指标")
+        measured_at = str((req or {}).get("measured_at") or datetime.now().isoformat(sep=" ", timespec="seconds"))
+        if len(measured_at) > 40:
+            raise HTTPException(422, "统计时间格式无效")
+        now = datetime.now().isoformat(sep=" ", timespec="seconds")
+        snapshot_id = uuid.uuid4().hex
+        conn.execute(
+            "INSERT INTO metric_snapshots "
+            "(id, tenant_id, draft_id, content_id, platform, source, views, likes, collects, comments, shares, "
+            "new_followers, measured_at, recorded_at, correction_of, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (snapshot_id, tenant_id, draft_id, row["content_id"], row["platform"],
+             values["views"], values["likes"], values["collects"], values["comments"],
+             values["shares"], values["new_followers"], measured_at, now,
+             (req or {}).get("correction_of"), now),
+        )
+        conn.commit()
+        _record_content_event("metrics_submitted", content_id=row["content_id"],
+                              metadata={"source": "manual", "snapshot_id": snapshot_id})
+        return {"snapshot_id": snapshot_id, "source": "manual", "recorded_at": now, **values}
+
+    @app.get("/api/reports/weekly")
+    def weekly_report(week_start: Optional[str] = Query(None), platform: Optional[str] = Query(None)):
+        from datetime import timedelta
+        from src.adapters.base import Platform
+        if platform and platform not in {p.value for p in Platform}:
+            raise HTTPException(422, "未知平台")
+        try:
+            start = datetime.fromisoformat(week_start).replace(hour=0, minute=0, second=0, microsecond=0) if week_start else (
+                datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=6)
+            )
+        except ValueError:
+            raise HTTPException(422, "week_start 必须为 YYYY-MM-DD")
+        end = start + timedelta(days=7)
+        conn = _g()["conn"]
+        tenant_id = _tenant_id()
+        snapshots = conn.execute(
+            "SELECT ms.*, c.title, c.body, c.tags, d.user_confirmed_at "
+            "FROM metric_snapshots ms JOIN contents c ON c.id=ms.content_id "
+            "JOIN drafts d ON d.id=ms.draft_id "
+            "WHERE ms.tenant_id=? AND ms.measured_at>=? AND ms.measured_at<? "
+            + ("AND ms.platform=? " if platform else "")
+            + "ORDER BY ms.measured_at DESC",
+            (tenant_id, start.isoformat(sep=" "), end.isoformat(sep=" "),
+             *((platform,) if platform else ())),
+        ).fetchall()
+        # 自动读回沿用原 metrics 表；来源固定标记为 platform_readback，不改写原记录。
+        auto_rows = conn.execute(
+            "SELECT m.id, m.content_id, m.platform, m.views, m.likes, m.collects, m.comments, m.shares, "
+            "m.fetched_at AS measured_at, c.title, c.body, c.tags "
+            "FROM metrics m JOIN contents c ON c.id=m.content_id "
+            "WHERE m.fetch_status IN ('success','partial') AND m.fetched_at>=? AND m.fetched_at<? "
+            + ("AND m.platform=? " if platform else ""),
+            (start.isoformat(sep=" "), end.isoformat(sep=" "), *((platform,) if platform else ())),
+        ).fetchall()
+        merged = []
+        seen = set()
+        for row in list(snapshots) + list(auto_rows):
+            key = (row["content_id"], row["platform"], row["measured_at"])
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(dict(row))
+        if platform is None:
+            platforms = sorted({r["platform"] for r in merged})
+        else:
+            platforms = [platform]
+        best = []
+        for p in platforms:
+            rows = [r for r in merged if r["platform"] == p]
+            metric = "views" if any(r.get("views") is not None for r in rows) else "likes"
+            comparable = [r for r in rows if r.get(metric) is not None]
+            if comparable:
+                winner = max(comparable, key=lambda r: r[metric])
+                best.append({
+                    "platform": p, "metric": metric, "value": winner[metric],
+                    "content_id": winner["content_id"], "title": winner["title"],
+                    "measured_at": winner["measured_at"],
+                    "source": "manual" if winner.get("source") == "manual" else "platform_readback",
+                })
+        total_samples = len({(r["content_id"], r["platform"]) for r in merged})
+        why = []
+        next_actions = []
+        if total_samples >= 3:
+            # 只给可观察到的描述，不推断因果。共同特征以样本事实为依据。
+            winner_ids = {x["content_id"] for x in best}
+            winners = [r for r in merged if r["content_id"] in winner_ids]
+            dimensions = [str(r.get("title") or "")[:12] for r in winners if r.get("title")]
+            why.append({
+                "statement": "当前样本中表现靠前的内容标题主题可供人工对照；这不是因果结论。",
+                "sample_size": total_samples,
+                "evidence_content_ids": list(winner_ids),
+                "examples": dimensions[:3],
+            })
+            next_actions = [{
+                "action": "选取表现靠前内容的主题和表达结构，下一周做一组对照内容。",
+                "basis": "同平台样本的实际指标排序",
+                "verification": "使用相同统计窗口比较下一组内容",
+                "evidence_content_ids": list(winner_ids),
+                "sample_size": total_samples,
+            }]
+        else:
+            why.append({"statement": "样本不足，暂不推断表现原因。", "sample_size": total_samples,
+                        "evidence_content_ids": []})
+        _record_content_event("weekly_report_viewed", idempotency_key=f"weekly-view:{start.date()}:{platform or 'all'}")
+        return {
+            "period": {"start": start.date().isoformat(), "end": (end - timedelta(seconds=1)).date().isoformat()},
+            "best_content": best, "why_it_may_work": why, "next_actions": next_actions,
+            "sample_size": total_samples,
+            "data_sources": sorted({str(r.get("source") or "platform_readback") for r in merged}),
+            "limitations": ["只比较同平台数据", "单篇表现不代表因果", "人工与平台读回数据保留各自来源"],
+            "generated_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+        }
+
+    @app.get("/api/activation/metrics")
+    def activation_metrics():
+        conn = _g()["conn"]
+        tenant_id = _tenant_id()
+        cohort = conn.execute("SELECT first_seen_at FROM activation_cohort WHERE id=1 AND tenant_id=?",
+                              (tenant_id,)).fetchone()
+        now = datetime.now()
+        if cohort is None:
+            return {"cohort_size": 0, "ttv_seconds": None, "seven_day_activation_rate": None,
+                    "first_publish_rate": None, "data_return_rate": None, "weekly_adopted_published": 0,
+                    "observation_window_complete": False}
+        started = datetime.fromisoformat(cohort["first_seen_at"])
+        ttv = conn.execute(
+            "SELECT MIN((julianday(completed_at)-julianday(?))*86400) "
+            "FROM sample_runs WHERE tenant_id=? AND status='ready' AND completed_at IS NOT NULL",
+            (cohort["first_seen_at"], tenant_id),
+        ).fetchone()[0]
+        adopted = conn.execute(
+            "SELECT COUNT(DISTINCT e.sample_content_id) FROM content_events e "
+            "JOIN sample_contents sc ON sc.id=e.sample_content_id "
+            "WHERE e.tenant_id=? AND e.event_type IN ('content_copied','content_saved') "
+            "AND e.event_at<=? AND e.event_at>=?",
+            (tenant_id, (started + timedelta(days=7)).isoformat(sep=" "), started.isoformat(sep=" ")),
+        ).fetchone()[0]
+        publish_count = conn.execute(
+            "SELECT COUNT(DISTINCT content_id) FROM content_events WHERE tenant_id=? "
+            "AND event_type='publish_confirmed' AND event_at>=? AND event_at<=?",
+            (tenant_id, started.isoformat(sep=" "), (started + timedelta(days=7)).isoformat(sep=" ")),
+        ).fetchone()[0]
+        published = conn.execute(
+            "SELECT COUNT(DISTINCT d.id) FROM drafts d WHERE d.user_confirmed_at IS NOT NULL"
+        ).fetchone()[0]
+        data_returned = conn.execute(
+            "SELECT COUNT(DISTINCT ms.draft_id) FROM metric_snapshots ms WHERE ms.tenant_id=? "
+            "UNION SELECT COUNT(DISTINCT m.draft_id) FROM metrics m WHERE m.fetch_status IN ('success','partial')"
+            " AND m.draft_id IS NOT NULL"
+        , (tenant_id,)).fetchall()
+        returned_count = sum(int(r[0] or 0) for r in data_returned)
+        weekly = conn.execute(
+            "SELECT COUNT(DISTINCT e.content_id) FROM content_events e "
+            "WHERE e.tenant_id=? AND e.event_type='publish_confirmed' AND e.event_at>=?",
+            (tenant_id, (now - timedelta(days=7)).isoformat(sep=" ")),
+        ).fetchone()[0]
+        complete = now >= started + timedelta(days=7)
+        return {
+            "cohort_size": 1,
+            "ttv_seconds": round(float(ttv), 1) if ttv is not None else None,
+            "seven_day_activation_rate": (1.0 if adopted else 0.0) if complete else None,
+            "first_publish_rate": (1.0 if publish_count else 0.0) if complete else None,
+            "weekly_adopted_published": int(weekly or 0),
+            "data_return_rate": (min(1.0, returned_count / published) if published else None),
+            "published_content_count": int(published),
+            "data_returned_count": int(returned_count),
+            "observation_window_complete": complete,
+            "limitations": ["首期按当前账号组/安装实例统计", "7 日指标仅纳入已完成观察窗的 cohort"],
+        }
+
     # --- 健康检查 ---
     @app.get("/health")
     def health():
