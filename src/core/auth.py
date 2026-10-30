@@ -102,12 +102,36 @@ def get_password_hash() -> Optional[str]:
     return read_env(PASSWORD_ENV)
 
 
+_COMMON_WEAK_PASSWORDS = {
+    "12345678", "123456789", "1234567890", "87654321", "password",
+    "password1", "password123", "qwerty123", "qwertyui", "admin123",
+    "letmein123", "abc12345", "11111111", "00000000",
+}
+
+
+def validate_password_strength(password: str) -> None:
+    """公网访问口令：至少 8 位，至少覆盖三类字符，并拒绝常见弱口令。"""
+    value = (password or "").strip()
+    if len(value) < 8:
+        raise ValueError("访问口令至少 8 个字符")
+    if len(value) > 64:
+        raise ValueError("访问口令最长 64 个字符")
+    lowered = value.casefold()
+    if lowered in _COMMON_WEAK_PASSWORDS or lowered.isdigit() or lowered.isalpha():
+        raise ValueError("访问口令过于简单，请勿使用常见口令或纯数字、纯字母")
+    classes = sum((
+        any(c.islower() for c in value),
+        any(c.isupper() for c in value),
+        any(c.isdigit() for c in value),
+        any(not c.isalnum() for c in value),
+    ))
+    if classes < 3:
+        raise ValueError("访问口令需混合至少三类字符：大小写字母、数字、符号")
+
+
 def set_password(password: str) -> None:
     password = (password or "").strip()
-    if len(password) < 6:
-        raise ValueError("访问口令至少 6 个字符")
-    if len(password) > 64:
-        raise ValueError("访问口令最长 64 个字符")
+    validate_password_strength(password)
     write_env(PASSWORD_ENV, _hash_password(password))
     _reset_revocations()
     logger.info("访问口令已更新，已有会话全部失效")
