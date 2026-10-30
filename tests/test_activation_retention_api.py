@@ -455,6 +455,9 @@ def test_sensitive_topic_match_does_not_flag_student_party_phrase():
     assert _sensitive_topic_hits("上班党一周带饭计划") == []
     assert _sensitive_topic_hits("二十届三中全会召开") == ["时政"]
     assert _sensitive_topic_hits("国防部举行新闻发布会") == ["时政"]
+    assert _sensitive_topic_hits("台湾旅行攻略") == []
+    assert _sensitive_topic_hits("南海海岛旅游计划") == []
+    assert _sensitive_topic_hits("台海局势出现变化") == ["涉台及主权"]
 
 
 def test_activation_saved_library_survives_soft_delete_and_quota_is_not_refunded(activation_client, conn):
