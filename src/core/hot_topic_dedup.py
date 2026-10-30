@@ -83,7 +83,7 @@ def backfill(conn) -> int:
     return merged
 
 
-def mark_cross_platform(conn, *, threshold: float, window_hours: int) -> int:
+def mark_cross_platform(conn, *, threshold: float, window_hours: int, length_prefilter_ratio: float = 0.5) -> int:
     """规则 2：时间窗内跨平台同一事件 → duplicate_of 主条目。返回被标记为重复的行数。"""
     since = (datetime.now() - timedelta(hours=window_hours)).isoformat(timespec="seconds")
     rows = conn.execute(
@@ -100,7 +100,7 @@ def mark_cross_platform(conn, *, threshold: float, window_hours: int) -> int:
         for c in canon:
             if c["platform"] == r["platform"]:
                 continue        # 同平台已由规则 1 去重，不同标题视为不同话题
-            if abs(len(c["title_norm"]) - len(norm)) > max(len(norm), len(c["title_norm"])) * 0.5:
+            if abs(len(c["title_norm"]) - len(norm)) > max(len(norm), len(c["title_norm"])) * length_prefilter_ratio:
                 continue
             if similarity(c["title_norm"], norm) >= threshold:
                 target = c["id"]
