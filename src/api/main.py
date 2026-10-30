@@ -1287,6 +1287,7 @@ def _register_routes(app: FastAPI) -> None:
         registry = _g().get("tenant_registry")
         tenant_id = _g().get("runtime_tenant_id", "default")
         conn = _g()["conn"]
+        cfg = _g()["cfg"]
         if registry is None:
             raise HTTPException(503, "账号组注册表尚未初始化")
         settings_row = conn.execute(
@@ -1348,7 +1349,7 @@ def _register_routes(app: FastAPI) -> None:
                 from src.core.media_quality import score_image
                 raw, mime_type, suffix, width, height = generate_image_bytes(
                     final_prompt, model=model, size=size, source_path=source_path,
-                    source_mime_type=source_mime, source_filename=source_filename,
+                    source_mime_type=source_mime, source_filename=source_filename, cfg=cfg,
                 )
                 stored_filename = f"{uuid.uuid4().hex}{suffix}"
                 target = (paths.media_dir / stored_filename).resolve()
@@ -1362,7 +1363,7 @@ def _register_routes(app: FastAPI) -> None:
                 title = req.title.strip() or prompt[:80]
                 tags = list(dict.fromkeys(tag.strip()[:60] for tag in req.tags if tag.strip()))[:30]
                 source_ref = f"job:{job_id}" if source_asset_id is None else f"job:{job_id};edit_of:{source_asset_id}"
-                quality = score_image(raw)
+                quality = score_image(raw, cfg=cfg)
                 asset_cur = conn.execute(
                     "INSERT INTO media_assets "
                     "(title, original_filename, stored_filename, mime_type, byte_size, sha256, "
@@ -1603,7 +1604,7 @@ def _register_routes(app: FastAPI) -> None:
         title = req.title.strip() or safe_filename[:200]
         tags = list(dict.fromkeys(tag.strip()[:60] for tag in req.tags if tag.strip()))[:30]
         from src.core.media_quality import score_image
-        quality = score_image(raw)
+        quality = score_image(raw, cfg=_g()["cfg"])
         target.write_bytes(raw)
         try:
             target.chmod(0o600)
