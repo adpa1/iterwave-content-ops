@@ -151,6 +151,12 @@ def test_sample_delete_cascades_sample_events_and_contents(activation_client, co
         (now,),
     )
     conn.execute(
+        "INSERT INTO sample_runs "
+        "(id, tenant_id, platform, account_description, status, idempotency_key, created_at, started_at, completed_at) "
+        "VALUES ('cohort-run-failed', 'default', 'xhs', '分享产品经理实践方法', 'failed', 'cohort-failed-key', ?, ?, ?)",
+        (started.isoformat(sep=" "), started.isoformat(sep=" "), (started + timedelta(seconds=40)).isoformat(sep=" ")),
+    )
+    conn.execute(
         "INSERT INTO sample_contents "
         "(id, sample_run_id, tenant_id, platform, angle, title, body, hashtags_json, quality_status, "
         "quality_findings_json, created_at, updated_at) "
@@ -306,6 +312,17 @@ def test_activation_metrics_calculates_completed_cohort_rates_and_ttv(activation
         "VALUES ('cohort-save', 'default', 'cohort-sample', 'content_saved', ?, 'web', '{}')",
         ((started + timedelta(hours=1)).isoformat(sep=" "),),
     )
+    # A second published draft with a note URL but no metrics still counts as data returned.
+    _linked_draft = seed.draft(_round, platform="xhs", draft_status="published", fetch_status=None, topic_id="linked-only")
+    _linked_content = conn.execute("SELECT content_id FROM drafts WHERE id=?", (_linked_draft,)).fetchone()[0]
+    _linked_at = (started + timedelta(hours=5)).isoformat(sep=" ")
+    conn.execute("UPDATE drafts SET user_confirmed_at=?, platform_note_url=? WHERE id=?",
+                 (_linked_at, "https://www.xiaohongshu.com/explore/linked", _linked_draft))
+    conn.execute(
+        "INSERT INTO content_events (id, tenant_id, content_id, event_type, event_at, source, metadata_json) "
+        "VALUES ('cohort-note-url', 'default', ?, 'note_url_added', ?, 'web', '{}')",
+        (_linked_content, (started + timedelta(hours=6)).isoformat(sep=" ")),
+    )
     conn.execute(
         "INSERT INTO content_events (id, tenant_id, content_id, event_type, event_at, source, metadata_json) "
         "VALUES ('cohort-publish', 'default', ?, 'publish_confirmed', ?, 'web', '{}')",
@@ -333,6 +350,7 @@ def test_activation_metrics_calculates_completed_cohort_rates_and_ttv(activation
     assert payload["cohort_size"] == 1
     assert payload["observation_window_complete"] is True
     assert payload["ttv_seconds"] == pytest.approx(120, abs=1)
+    assert payload["quick_experience_completion_rate"] == 0.5
     assert payload["seven_day_activation_rate"] == 1.0
     assert payload["first_publish_rate"] == 1.0
     assert payload["data_return_rate"] == 1.0
