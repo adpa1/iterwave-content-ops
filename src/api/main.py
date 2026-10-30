@@ -1866,8 +1866,8 @@ def _register_routes(app: FastAPI) -> None:
                     winner = max(comparable, key=lambda r: r[metric])
                     best.append({
                         "platform": p, "metric": metric, "value": winner[metric],
-                        "content_id": winner["content_id"], "title": winner["title"],
-                        "measured_at": winner["measured_at"],
+                        "content_id": winner["content_id"], "metric_snapshot_id": winner["id"],
+                        "title": winner["title"], "measured_at": winner["measured_at"],
                         "source": "manual" if winner.get("source") == "manual" else "platform_readback",
                     })
         total_samples = len({(r["content_id"], r["platform"]) for r in merged})
@@ -1931,6 +1931,9 @@ def _register_routes(app: FastAPI) -> None:
                     "。该差异仅用于提出假设，不代表因果关系。",
                 "sample_size": platform_sample_count,
                 "evidence_content_ids": top_ids,
+                "metric_snapshot_ids": [row["id"] for row in top_rows],
+                "platform": p,
+                "time_window": {"start": start.date().isoformat(), "end": (end - timedelta(seconds=1)).date().isoformat()},
                 "features": feature_evidence,
             })
             next_actions.append({
@@ -1938,8 +1941,12 @@ def _register_routes(app: FastAPI) -> None:
                 "basis": f"同平台 {metric} 指标领先组与对照组的内容长度差异",
                 "verification": f"保持统计窗口一致，比较下一组内容的 {metric} 指标",
                 "evidence_content_ids": top_ids,
+                "metric_snapshot_ids": [row["id"] for row in top_rows],
+                "platform": p,
+                "time_window": {"start": start.date().isoformat(), "end": (end - timedelta(seconds=1)).date().isoformat()},
                 "sample_size": platform_sample_count,
             })
+        next_actions = next_actions[:3]
         if not why:
             why.append({
                 "statement": "样本不足：同一平台至少 3 篇具有可比指标的样本尚未形成，暂不推断表现原因。",
