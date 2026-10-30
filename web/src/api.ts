@@ -575,6 +575,19 @@ export interface AssetItem {
 }
 
 /** G-13 / G-24 运行时配置（白名单可写字段 + R22 硬锁 + 审计） */
+export interface ConfigMetadataItem {
+  key: string;
+  type: string;
+  value: unknown;
+  min: number | null;
+  max: number | null;
+  editable: boolean;
+  tenant_scoped: boolean;
+  restart_required: boolean;
+  sensitive: boolean;
+  description: string;
+}
+
 export interface SystemConfigView {
   editable: {
     daily_quotas: Record<string, { passive_replies: number | null; active_comments: number | null; follows: number | null }>;
@@ -1383,6 +1396,7 @@ export const api = {
     }),
   // === G-13 / G-24 运行时配置 ===
   config: () => fetchJson<SystemConfigView>("/api/config"),
+  configMetadata: () => fetchJson<{ items: ConfigMetadataItem[] }>("/api/config/metadata"),
   patchConfig: (updates: Record<string, unknown>) =>
     fetchJson<{ changed: { key: string; old: unknown; new: unknown }[]; noop: boolean; config: SystemConfigView["editable"] }>(
       "/api/config", { method: "PATCH", body: JSON.stringify({ updates }) },
