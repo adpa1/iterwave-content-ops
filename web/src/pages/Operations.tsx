@@ -158,11 +158,11 @@ export default function Operations() {
         <div style={{ display: "flex", gap: 8 }}>
           {/* 全局软暂停：只停运营动作（评论/关注），存草稿与数据采集不受影响 */}
           <button
-            className={`btn ${paused ? "primary" : ""}`}
-            onClick={togglePause}
-            title="仅暂停评论/关注等运营动作；存草稿与数据采集不受影响"
+            className="btn"
+            disabled
+            title="平台运营动作尚未接入，当前没有可暂停或恢复的评论/关注任务"
           >
-            {paused ? "▶ 恢复运营" : "‖ 暂停运营"}
+            运营动作尚未接入
           </button>
           <button className="btn" onClick={testNotify} disabled={notifBusy}>
             {notifBusy ? "自检中…" : "♧ 测试通知"}
@@ -260,7 +260,7 @@ function KpiPane({
   return (
     <>
       <div style={{ marginBottom: 12 }}>
-        <DemoBadge level="demo" text="平台运营动作（评论/关注）当前为适配器接入中，数字代表系统记录的尝试量，不代表平台侧真实结果" />
+        <DemoBadge level="demo" text="评论与关注等平台运营动作尚未接入；下方仅展示系统历史记录，不会实际执行平台操作" />
       </div>
       {/* KPI 时间窗口切换（与 R12 评分 90 天口径独立） */}
       <div className="compact-tabbar" style={{ marginBottom: 12 }}>
