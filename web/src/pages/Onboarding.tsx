@@ -227,6 +227,10 @@ export default function Onboarding() {
               至少启用 1 个平台才能跑通首轮。建议先 1 平台验证，再扩。
             </p>
             <PlatformToggles view={cfg} onSaved={reload} loggedIn={status.logged_in_platforms} />
+            <div className="note" style={{ marginTop: 10 }}>
+              当前启用 {status.enabled_platforms.length} / 4 个平台：{status.enabled_platforms.map((p) => PLATFORM_NAMES[p]).join("、") || "尚未启用"}。
+              未启用的平台不会参与本轮生产；账号页展示的是全部支持平台，不代表全部已启用。
+            </div>
             {status.circuit_broken_platforms.length > 0 && (
               <div className="note" style={{ marginTop: 12, color: "var(--orange)" }}>
                 ! 已熔断：{status.circuit_broken_platforms.map((p) => PLATFORM_NAMES[p]).join("、")}
