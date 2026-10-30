@@ -101,6 +101,7 @@ const LABELS: Record<string, string> = {
   trend_previous_drop_ratio: "较上轮降温比例",
   trend_min_seen_count: "趋势判定最少上榜次数",
   cross_platform_similarity: "跨平台去重相似度",
+  length_prefilter_ratio: "标题长度预筛比例",
   recency_decay: "复盘轮次衰减系数",
   full_confidence_samples: "满置信样本数",
   coverage_gap_bias_ratio: "覆盖缺口加分比例",
