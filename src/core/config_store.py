@@ -874,13 +874,8 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
             "llm_has_api_key": bool(__import__("os").environ.get(cfg.llm.api_key_env)),
             # —— 平台连接状态（只读，登录态文件 + enabled 开关）——
             "platforms": {
-                k: {
-                    "enabled": v.get("enabled") if isinstance(v, dict) else getattr(v, "enabled", None),
-                    "account_key": v.get("account_key") if isinstance(v, dict) else getattr(v, "account_key", None),
-                    "base_url": v.get("base_url") if isinstance(v, dict) else getattr(v, "base_url", None),
-                }
-                for k, v in cfg.platforms.model_dump().items()
-                if k in ("xhs", "douyin", "kuaishou", "wechat_channels")
+                k: {"enabled": getattr(cfg.platforms, k).enabled}
+                for k in ("xhs", "douyin", "kuaishou", "wechat_channels")
             },
             # —— 阶段超时（R8 独立计时，可在「系统设置」在线改）——
             "timeouts": cfg.timeouts.model_dump(),
@@ -932,6 +927,17 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
     """白名单批量修改：校验 → SQLite 原子持久化/审计 → 更新内存配置。"""
     if not updates:
         raise ConfigPatchError("updates 不能为空")
+
+    blocked_runtime_fields = {
+        "vision_ranking.base_url", "media_generation.base_url",
+        *(f"platforms.{platform}.{field}" for platform in PLATFORM_KEYS
+          for field in ("base_url", "account_key")),
+    }
+    blocked = sorted(set(updates) & blocked_runtime_fields)
+    if blocked:
+        raise ConfigNotAllowedError(
+            "部署端点与账号内部标识不允许通过普通运行时配置接口修改：" + ", ".join(blocked)
+        )
 
     normalized: dict[str, Any] = {}
     for key, value in updates.items():
