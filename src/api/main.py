@@ -3898,12 +3898,18 @@ def _register_routes(app: FastAPI) -> None:
         """查询当前账号组轮次在全局队列中的状态与最终报告。"""
         tenant_id = _g().get("runtime_tenant_id", "default")
         if _task_queue is not None:
-            task = _task_queue.find_latest(
-                tenant_id=tenant_id, task_type="round_run", aggregate_id=str(round_id),
-            )
+            related = {
+                str(round_id),
+                f"{round_id}:save_pending_drafts",
+            }
+            task = next((
+                item for item in _task_queue.list(limit=500, tenant_id=tenant_id)
+                if item.task_type == "round_run" and item.aggregate_id in related
+            ), None)
             if task is not None:
                 return {
                     "round_id": round_id, "task_id": task.task_id,
+                    "task_type": task.payload.get("operation", "run"),
                     "status": task.status,
                     "running": task.status in ("queued", "running"),
                     "queued": task.status == "queued",
