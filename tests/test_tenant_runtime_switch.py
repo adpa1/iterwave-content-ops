@@ -91,8 +91,6 @@ def test_runtime_switch_supports_a_to_b_to_a(monkeypatch):
         "A": lambda: make_context(registry, "A"),
         "B": lambda: make_context(registry, "B"),
     }
-    previous_runtimes = dict(api_main._tenant_runtime_contexts)
-    api_main._tenant_runtime_contexts.clear()
     original_a = contexts["A"]()
     monkeypatch.setattr(api_main, "_g_ctx", original_a)
     monkeypatch.setattr(api_main, "_tenant_runtime_contexts", {})
@@ -122,8 +120,6 @@ def test_runtime_switch_supports_a_to_b_to_a(monkeypatch):
     try:
         asyncio.run(run())
     finally:
-        api_main._tenant_runtime_contexts.clear()
-        api_main._tenant_runtime_contexts.update(previous_runtimes)
         monkeypatch.setattr(api_main, "_g_ctx", {})
         monkeypatch.setattr(api_main, "_running_rounds", set())
 
@@ -179,9 +175,8 @@ def test_runtime_switch_rolls_back_if_target_scheduler_fails(monkeypatch):
 def test_target_initialization_failure_does_not_stop_old_runtime(monkeypatch):
     registry = FakeRegistry()
     old = make_context(registry, "A")
-    previous_runtimes = dict(api_main._tenant_runtime_contexts)
-    api_main._tenant_runtime_contexts.clear()
     monkeypatch.setattr(api_main, "_g_ctx", old)
+    monkeypatch.setattr(api_main, "_tenant_runtime_contexts", {})
     monkeypatch.setattr(api_main, "_running_rounds", set())
     monkeypatch.setattr(
         api_main, "_build_tenant_runtime_context",
