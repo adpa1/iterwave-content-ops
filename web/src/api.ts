@@ -1649,7 +1649,7 @@ export const api = {
     }[]; total: number }>(`/api/metrics/snapshots?draft_id=${encodeURIComponent(draftId)}`),
   submitManualMetrics: (draftId: string, data: {
     views?: number | null; likes?: number | null; collects?: number | null;
-    comments?: number | null; shares?: number | null; new_followers?: number | null;
+    comments?: number | null; shares?: number | null;
     measured_at?: string; correction_of?: string | null;
   }) => fetchJson<{ snapshot_id: string; source: string; recorded_at: string }>(
     `/api/drafts/${draftId}/metrics/manual`, { method: "POST", body: JSON.stringify(data) },
