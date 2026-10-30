@@ -68,6 +68,7 @@ class TopicKbConfig(BaseModel):
     field_mapping: dict[str, str] = Field(default_factory=dict)
     # 没有维度列时归到这个默认维度（不猜测垂类）
     default_dimension: str = "综合"
+    remote_timeout_seconds: int = Field(20, ge=1, le=120)
 
 
 class RenderConfig(BaseModel):
@@ -204,6 +205,9 @@ class TimeoutsConfig(BaseModel):
     metrics_initial_delay_hours: int = 24
     metrics_retry_attempts: int = Field(3, ge=1, le=20)
     metrics_retry_interval_minutes: int = Field(30, ge=1, le=1440)
+    login_timeout_seconds: int = Field(240, ge=60, le=1800)
+    login_export_timeout_seconds: int = Field(90, ge=10, le=600)
+    recovery_retry_delay_minutes: int = Field(1, ge=1, le=60)
     goal_max_rounds: int = 30
     round_min_interval_hours: int = 4
 
