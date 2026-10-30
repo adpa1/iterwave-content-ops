@@ -68,6 +68,7 @@ class GlobalTaskQueue:
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS global_task_queue (
+                    queue_order INTEGER NOT NULL UNIQUE,
                     task_id TEXT PRIMARY KEY,
                     task_type TEXT NOT NULL,
                     tenant_id TEXT NOT NULL,
@@ -86,8 +87,6 @@ class GlobalTaskQueue:
                     error_code TEXT,
                     error_message TEXT
                 );
-                CREATE INDEX IF NOT EXISTS idx_global_task_queue_fifo
-                    ON global_task_queue(status, created_at, task_id);
                 CREATE INDEX IF NOT EXISTS idx_global_task_queue_tenant
                     ON global_task_queue(tenant_id, created_at DESC);
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_global_task_active_aggregate
@@ -99,6 +98,24 @@ class GlobalTaskQueue:
                     expires_at TEXT NOT NULL
                 );
                 """
+            )
+            # 兼容早期队列表：补齐显式 FIFO 序号，避免时间戳精度/并发提交造成顺序不确定。
+            columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(global_task_queue)").fetchall()
+            }
+            if "queue_order" not in columns:
+                conn.execute("ALTER TABLE global_task_queue ADD COLUMN queue_order INTEGER")
+                conn.execute(
+                    "UPDATE global_task_queue SET queue_order=rowid WHERE queue_order IS NULL"
+                )
+            conn.execute("DROP INDEX IF EXISTS idx_global_task_queue_fifo")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_global_task_queue_order "
+                "ON global_task_queue(queue_order)"
+            )
+            conn.execute(
+                "CREATE INDEX idx_global_task_queue_fifo "
+                "ON global_task_queue(status, queue_order)"
             )
         finally:
             conn.close()
@@ -140,10 +157,13 @@ class GlobalTaskQueue:
         if not 1 <= int(max_attempts) <= 5:
             raise ValueError("max_attempts 必须在 1–5 之间")
         payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        now = _stamp()
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            now = _stamp()
+            queue_order = int(conn.execute(
+                "SELECT COALESCE(MAX(queue_order), 0) + 1 FROM global_task_queue"
+            ).fetchone()[0])
             if aggregate_id is not None:
                 existing = conn.execute(
                     "SELECT * FROM global_task_queue WHERE tenant_id=? AND task_type=? "
@@ -158,9 +178,10 @@ class GlobalTaskQueue:
                     return task, False
             task_id = uuid.uuid4().hex
             conn.execute(
-                "INSERT INTO global_task_queue(task_id,task_type,tenant_id,aggregate_id,"
-                "payload_json,status,created_at,max_attempts) VALUES(?,?,?,?,?,'queued',?,?)",
-                (task_id, task_type, tenant_id, str(aggregate_id) if aggregate_id is not None else None,
+                "INSERT INTO global_task_queue(queue_order,task_id,task_type,tenant_id,aggregate_id,"
+                "payload_json,status,created_at,max_attempts) VALUES(?,?,?,?,?,?,'queued',?,?)",
+                (queue_order, task_id, task_type, tenant_id,
+                 str(aggregate_id) if aggregate_id is not None else None,
                  payload_json, now, int(max_attempts)),
             )
             row = conn.execute("SELECT * FROM global_task_queue WHERE task_id=?", (task_id,)).fetchone()
@@ -195,7 +216,7 @@ class GlobalTaskQueue:
             )
             row = conn.execute(
                 "SELECT * FROM global_task_queue WHERE status='queued' "
-                "ORDER BY created_at ASC, rowid ASC LIMIT 1"
+                "ORDER BY queue_order ASC LIMIT 1"
             ).fetchone()
             if row is None:
                 conn.commit()
