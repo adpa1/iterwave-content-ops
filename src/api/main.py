@@ -1986,20 +1986,23 @@ def _register_routes(app: FastAPI) -> None:
             "AND event_type='publish_confirmed' AND event_at>=? AND event_at<=?",
             (tenant_id, started.isoformat(sep=" "), (started + timedelta(days=7)).isoformat(sep=" ")),
         ).fetchone()[0]
-        cohort_window_end = min(now, started + timedelta(days=7))
+        mature_publish_cutoff = (now - timedelta(days=7)).isoformat(sep=" ")
         published = conn.execute(
-            "SELECT COUNT(DISTINCT id) FROM drafts WHERE user_confirmed_at>=? AND user_confirmed_at<=?",
-            (started.isoformat(sep=" "), cohort_window_end.isoformat(sep=" ")),
+            "SELECT COUNT(DISTINCT id) FROM drafts "
+            "WHERE user_confirmed_at>=? AND user_confirmed_at<=?",
+            (started.isoformat(sep=" "), mature_publish_cutoff),
         ).fetchone()[0]
         returned_count = conn.execute(
             "SELECT COUNT(DISTINCT draft_id) FROM ("
             "SELECT ms.draft_id FROM metric_snapshots ms JOIN drafts d ON d.id=ms.draft_id "
             "WHERE ms.tenant_id=? AND d.user_confirmed_at>=? AND d.user_confirmed_at<=? "
+            "AND ms.measured_at>=d.user_confirmed_at AND ms.measured_at<=datetime(d.user_confirmed_at, '+7 days') "
             "UNION SELECT m.draft_id FROM metrics m JOIN drafts d ON d.id=m.draft_id "
             "WHERE m.fetch_status IN ('success','partial') AND m.draft_id IS NOT NULL "
-            "AND d.user_confirmed_at>=? AND d.user_confirmed_at<=?)",
-            (tenant_id, started.isoformat(sep=" "), cohort_window_end.isoformat(sep=" "),
-             started.isoformat(sep=" "), cohort_window_end.isoformat(sep=" ")),
+            "AND d.user_confirmed_at>=? AND d.user_confirmed_at<=? "
+            "AND m.fetched_at>=d.user_confirmed_at AND m.fetched_at<=datetime(d.user_confirmed_at, '+7 days'))",
+            (tenant_id, started.isoformat(sep=" "), mature_publish_cutoff,
+             started.isoformat(sep=" "), mature_publish_cutoff),
         ).fetchone()[0]
         sample_counts = conn.execute(
             "SELECT COUNT(*) AS attempted, "
