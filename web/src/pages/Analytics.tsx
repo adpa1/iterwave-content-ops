@@ -231,7 +231,7 @@ export default function Analytics() {
                       {item.measured_at} · {item.source === "manual" ? "人工填写" : item.source === "platform_readback" ? "平台读回" : item.source}
                       · 曝光 {item.views ?? "—"} · 赞 {item.likes ?? "—"} · 藏 {item.collects ?? "—"} · 评 {item.comments ?? "—"}
                       {item.correction_of ? " · 修正记录" : ""}
-                      <button type="button" className="btn sm" style={{ marginLeft: 8 }} onClick={() => setBackfillValues((prev) => ({
+                      {item.source === "manual" && <button type="button" className="btn sm" style={{ marginLeft: 8 }} onClick={() => setBackfillValues((prev) => ({
                         ...prev, [draft.id]: {
                           ...prev[draft.id], views: item.views == null ? "" : String(item.views),
                           likes: item.likes == null ? "" : String(item.likes),
@@ -242,7 +242,7 @@ export default function Analytics() {
                           measured_at: item.measured_at ? item.measured_at.replace(" ", "T").slice(0, 16) : "",
                           correction_of: item.id,
                         },
-                      }))}>基于此记录修正</button>
+                      }))}>基于此记录修正</button>}
                     </div>)}
                 </div>}
               </div>;
