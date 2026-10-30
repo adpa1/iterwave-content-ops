@@ -35,7 +35,9 @@ from .topic_pool import load_pool
 from .persona import effective_persona
 from .hot_topics import _sensitive_topic_hits
 from .orchestration import Orchestration, step_status_from_report
-from .content_pipeline import (\n    ContentGenerationError, generate_copy_content, make_card_set, _llm_available,\n)
+from .content_pipeline import (
+    ContentGenerationError, generate_copy_content, make_card_set, _llm_available,
+)
 from .plan_version import PlanVersionManager
 from .guard.ultimate_goal_checker import CheckOutcome, CheckResult
 from ..adapters.base import Platform, ContentToPublish
