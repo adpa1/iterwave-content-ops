@@ -125,6 +125,8 @@ class TenantRegistry:
                     );
                     """
                 )
+                # Serialize migration decision and writes under one SQLite reservation.
+                conn.execute("BEGIN IMMEDIATE")
                 marker = conn.execute(
                     "SELECT 1 FROM system_migrations WHERE migration_key=?",
                     (REGISTRY_MIGRATION,),
@@ -132,7 +134,6 @@ class TenantRegistry:
                 if not marker:
                     legacy_tenants = self._legacy_tenants()
                     legacy_active = self._legacy_active_id(legacy_tenants)
-                    conn.execute("BEGIN IMMEDIATE")
                     for item in legacy_tenants:
                         conn.execute(
                             "INSERT OR IGNORE INTO tenants(id,name,created_at) VALUES(?,?,?)",
@@ -149,9 +150,7 @@ class TenantRegistry:
                         "INSERT INTO system_migrations(migration_key,completed_at,imported_count) VALUES(?,?,?)",
                         (REGISTRY_MIGRATION, now, len(legacy_tenants)),
                     )
-                    conn.commit()
                 else:
-                    conn.execute("BEGIN IMMEDIATE")
                     conn.execute(
                         "INSERT OR IGNORE INTO tenants(id,name,created_at) VALUES(?,?,?)",
                         (DEFAULT_TENANT_ID, "默认账号组", datetime.now().isoformat(timespec="seconds")),
@@ -165,7 +164,7 @@ class TenantRegistry:
                             ("active_tenant_id", json.dumps(DEFAULT_TENANT_ID),
                              datetime.now().isoformat(timespec="seconds")),
                         )
-                    conn.commit()
+                conn.commit()
                 rows = conn.execute("SELECT id,name FROM tenants ORDER BY created_at,id").fetchall()
                 if not rows:
                     raise TenantError("系统数据库中没有账号组记录")
