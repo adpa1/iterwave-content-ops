@@ -104,7 +104,7 @@ export default function Assets() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">CONTENT ASSETS</div>
+          <div className="eyebrow">内容资产</div>
           <h1 className="page-title">内容资产</h1>
           <div className="page-desc">
             选题库、已生产内容、外部参考、个人观点与画像、内容模板、字段映射统一归档。
