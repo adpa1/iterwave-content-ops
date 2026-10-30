@@ -251,10 +251,10 @@ def diagnose(cfg, conn, *, cb=None, live_llm: bool = False) -> dict:
     # 4 LLM
     llm = cfg.llm
     if not llm.enabled:
-        items.append(_item(4, "LLM API 连通", "warn", "LLM 未启用：文案走模板降级，复盘要点不会进文案",
+        items.append(_item(4, "大模型服务检查", "warn", "LLM 未启用：文案走模板降级，复盘要点不会进文案",
                            "settings", "model"))
     elif not os.getenv(llm.api_key_env):
-        items.append(_item(4, "LLM API 连通", "block", "缺少 LLM 服务密钥，请检查服务端部署环境中的密钥配置", "settings", "model"))
+        items.append(_item(4, "大模型服务检查", "block", "缺少 LLM 服务密钥，请检查服务端部署环境中的密钥配置", "settings", "model"))
     elif live_llm:
         try:
             import httpx
@@ -265,11 +265,11 @@ def diagnose(cfg, conn, *, cb=None, live_llm: bool = False) -> dict:
                 timeout=min(15, llm.timeout_seconds),
             )
             r.raise_for_status()
-            items.append(_item(4, "LLM API 连通", "pass", f"{llm.model} 调用成功"))
+            items.append(_item(4, "大模型服务检查", "pass", f"{llm.model} 调用成功"))
         except Exception as exc:  # noqa: BLE001
-            items.append(_item(4, "LLM API 连通", "block", f"调用失败：{str(exc)[:120]}", "settings", "model"))
+            items.append(_item(4, "大模型服务检查", "block", f"调用失败：{str(exc)[:120]}", "settings", "model"))
     else:
-        items.append(_item(4, "LLM API 连通", "pass", f"已配置 {llm.model}（勾选「实测 LLM」可真调一次）"))
+        items.append(_item(4, "大模型服务检查", "pass", f"已配置 {llm.model}（勾选「实测 LLM」可真调一次）"))
 
     # 5 熔断
     broken = []
@@ -316,7 +316,7 @@ def diagnose(cfg, conn, *, cb=None, live_llm: bool = False) -> dict:
     vendor = Path(__file__).resolve().parent.parent / "vendor" / "easel"
     need = ["web_publisher.py", "login_qr.py", "login_state.py", "platform_readback.py", "account_stats.py"]
     lack = [n for n in need if not (vendor / n).exists()]
-    items.append(_item(8, "Easel Skills 可用", "block" if lack else "pass",
+    items.append(_item(8, "本地自动化组件完整", "block" if lack else "pass",
                        f"缺失：{', '.join(lack)}" if lack else f"{len(need)} 个脚本就绪"))
 
     # 9 访问口令（P0 安全）
@@ -354,7 +354,7 @@ def diagnose(cfg, conn, *, cb=None, live_llm: bool = False) -> dict:
                            "macOS 通知未开启；草稿保存后不会提醒你发布", "settings", "notify"))
     else:
         items.append(_item(11, "通知通道可用", "warn",
-                           "当前系统不支持 macOS 通知；可在设置里填写企微 / 飞书 Webhook",
+                           "服务器未配置可用通知通道，无法弹出桌面通知；建议在设置里配置企微 / 飞书 Webhook",
                            "settings", "notify"))
 
     worst = "block" if any(i["status"] == "block" for i in items) else (
