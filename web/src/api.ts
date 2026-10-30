@@ -1209,7 +1209,9 @@ export interface WeeklyReport {
     features?: Record<string, number | string | null>; examples?: string[] }[];
   next_actions: { action: string; basis: string; verification: string; evidence_content_ids: string[];
     metric_snapshot_ids?: (string | number)[]; platform?: Platform; time_window?: { start: string; end: string };
-    sample_size: number }[];
+    sample_size: number; suggestion_key: string; decision: "pending" | "adopted" | "ignored";
+    outcome: "pending" | "success" | "no_effect" | "unclear"; outcome_note?: string | null;
+    decided_at?: string | null; outcome_recorded_at?: string | null }[];
   sample_size: number; effective_review_count?: number; data_sources: string[]; limitations: string[]; generated_at: string;
   data_conflicts?: { platform: Platform; content_id: string; metrics: string[]; selected_sources: Record<string, string> }[];
 }
@@ -1678,5 +1680,10 @@ export const api = {
     if (platform) p.set("platform", platform);
     return fetchJson<WeeklyReport>(`/api/reports/weekly?${p}`);
   },
+  weeklyActionFeedback: (data: { suggestion_key: string; decision: "adopted" | "ignored";
+    outcome?: "success" | "no_effect" | "unclear"; outcome_note?: string }) =>
+    fetchJson<{ suggestion_key: string; decision: string; outcome: string; outcome_note?: string | null }>(
+      "/api/reports/weekly/actions", { method: "POST", body: JSON.stringify(data) },
+    ),
   activationMetrics: () => fetchJson<ActivationMetrics>("/api/activation/metrics"),
 };
