@@ -68,7 +68,7 @@ def test_failed_round_with_existing_content_cannot_be_retried(cfg, conn, seed):
     try:
         asyncio.run(executor.run(round_id))
     except ValueError as exc:
-        assert "已有内容或草稿" in str(exc)
+        assert "已产生内容或草稿" in str(exc)
     else:
         raise AssertionError("failed round with output must not be rerun")
 
@@ -304,6 +304,7 @@ def test_empty_topic_selection_persists_failed_run_report(cfg, conn, seed, monke
     executor = _executor(cfg, conn)
     executor._resolve_platforms = lambda values: [Platform.XHS]
     executor._select_topics = lambda topic_count, report: []
+    monkeypatch.setattr("src.core.round_executor.load_pool", lambda *args, **kwargs: ([{"id": "topic-1"}], {}))
     monkeypatch.setattr(
         "src.core.plan_version.PlanVersionManager.load_plan",
         lambda self: ({"topic_count_per_platform": 1, "enabled_platforms": ["xhs"]}, "sig", None, "test"),
@@ -331,6 +332,7 @@ def test_feedback_resolution_exception_marks_round_and_task_failed(cfg, conn, se
     round_id = seed.round(status="created")
     executor = _executor(cfg, conn)
     executor._resolve_platforms = lambda values: [Platform.XHS]
+    monkeypatch.setattr("src.core.round_executor.load_pool", lambda *args, **kwargs: ([{"id": "topic-1"}], {}))
     monkeypatch.setattr(
         "src.core.plan_version.PlanVersionManager.load_plan",
         lambda self: ({"topic_count_per_platform": 1, "enabled_platforms": ["xhs"]}, "sig", None, "test"),
