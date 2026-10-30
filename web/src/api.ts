@@ -1182,7 +1182,9 @@ export interface ActivationSampleRun {
 export interface ActivationMetrics {
   cohort_size: number; ttv_seconds: number | null; seven_day_activation_rate: number | null;
   first_publish_rate: number | null; data_return_rate: number | null;
+  quick_experience_completion_rate?: number | null; sample_attempted_count?: number; sample_ready_count?: number;
   weekly_adopted_published: number; published_content_count?: number;
+  platform_model_breakdown?: { platform: Platform; model_mode: string; run_count: number; ready_count: number }[];
   data_returned_count?: number; observation_window_complete: boolean; limitations?: string[];
 }
 export interface WeeklyReport {
