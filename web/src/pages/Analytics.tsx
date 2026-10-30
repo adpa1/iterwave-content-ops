@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import EmptyHint from "../components/EmptyHint";
-import { api, MetricsResponse, MetricRow, Platform, SpiralAnalysis, Draft, WeeklyReport, ActivationMetrics } from "../api";
+import { api, MetricsResponse, MetricRow, Platform, SpiralAnalysis, Draft, WeeklyReport, ActivationMetrics, ActivationStatus } from "../api";
 
 const PLATFORM_NAME: Record<Platform, string> = {
   xhs: "小红书", douyin: "抖音",
@@ -38,10 +38,11 @@ export default function Analytics() {
   const [backfillValues, setBackfillValues] = useState<Record<string, {
     note_url: string; measured_at: string; correction_of: string;
     views: string; likes: string; collects: string;
-    comments: string; shares: string; new_followers: string;
+    comments: string; shares: string;
   }>>({});
   const [weeklyReport, setWeeklyReport] = useState<WeeklyReport | null>(null);
   const [activationMetrics, setActivationMetrics] = useState<ActivationMetrics | null>(null);
+  const [activationStatus, setActivationStatus] = useState<ActivationStatus | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
   const [snapshotHistory, setSnapshotHistory] = useState<Record<string, {
     id: string; source: string; measured_at: string; recorded_at: string;
@@ -81,11 +82,13 @@ export default function Analytics() {
       api.drafts(),
       api.weeklyReport(),
       api.activationMetrics(),
-    ]).then(([allDrafts, report, metrics]) => {
+      api.activationStatus(),
+    ]).then(([allDrafts, report, metrics, status]) => {
       const published = allDrafts.filter((d) => ["user_published", "data_fetching", "published"].includes(d.status));
       setPublishedDrafts(published);
       setWeeklyReport(report);
       setActivationMetrics(metrics);
+      setActivationStatus(status);
       setBackfillValues(Object.fromEntries(published.map((d) => [d.id, {
         note_url: d.platform_note_url || "", measured_at: "", correction_of: "",
         views: "", likes: "", collects: "", comments: "", shares: "", new_followers: "",
@@ -111,7 +114,7 @@ export default function Analytics() {
     setBackfillBusy(draft.id);
     setReportError(null);
     try {
-      const numeric = ["views", "likes", "collects", "comments", "shares", "new_followers"] as const;
+      const numeric = ["views", "likes", "collects", "comments", "shares"] as const;
       const metrics: {
         views?: number | null; likes?: number | null; collects?: number | null;
         comments?: number | null; shares?: number | null; new_followers?: number | null;
@@ -138,7 +141,7 @@ export default function Analytics() {
       const refreshed = await api.drafts();
       setPublishedDrafts(refreshed.filter((d) => ["user_published", "data_fetching", "published"].includes(d.status)));
       setBackfillValues((prev) => ({ ...prev, [draft.id]: {
-        ...prev[draft.id], views: "", likes: "", collects: "", comments: "", shares: "", new_followers: "",
+        ...prev[draft.id], views: "", likes: "", collects: "", comments: "", shares: "",
         correction_of: "",
       }}));
       setWeeklyReport(await api.weeklyReport());
@@ -224,7 +227,7 @@ export default function Analytics() {
                 <input className="field" type="datetime-local" value={value.measured_at} onChange={(e) => setBackfillValues((p) => ({ ...p, [draft.id]: { ...p[draft.id], measured_at: e.target.value } }))} />
                 {value.correction_of && <div className="panel-sub">当前录入将作为历史快照的修正记录保存，不覆盖原始数据。</div>}
                 <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8, marginTop: 8 }}>
-                  {(["views", "likes", "collects", "comments", "shares", "new_followers"] as const).map((key) => <label key={key} className="form-label">{({views:"曝光/播放",likes:"点赞",collects:"收藏",comments:"评论",shares:"分享",new_followers:"新增粉丝"})[key]}<input className="field" inputMode="numeric" value={value[key]} placeholder="留空=未知" onChange={(e) => setBackfillValues((p) => ({ ...p, [draft.id]: { ...p[draft.id], [key]: e.target.value } }))} /></label>)}
+                  {(activationStatus?.platform_metric_fields?.[draft.platform] || ["views", "likes", "collects", "comments", "shares"]).map((key) => <label key={key} className="form-label">{({views:"曝光/播放",likes:"点赞",collects:"收藏",comments:"评论",shares:"分享"} as Record<string,string>)[key] || key}<input className="field" inputMode="numeric" value={value[key as keyof typeof value] as string} placeholder="留空=未知" onChange={(e) => setBackfillValues((p) => ({ ...p, [draft.id]: { ...p[draft.id], [key]: e.target.value } }))} /></label>)}
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                   <button className="btn sm primary" disabled={backfillBusy === draft.id} onClick={() => saveBackfill(draft)}>{backfillBusy === draft.id ? "保存中…" : "保存链接与指标"}</button>
@@ -243,7 +246,6 @@ export default function Analytics() {
                           collects: item.collects == null ? "" : String(item.collects),
                           comments: item.comments == null ? "" : String(item.comments),
                           shares: item.shares == null ? "" : String(item.shares),
-                          new_followers: item.new_followers == null ? "" : String(item.new_followers),
                           measured_at: item.measured_at ? item.measured_at.replace(" ", "T").slice(0, 16) : "",
                           correction_of: item.id,
                         },
