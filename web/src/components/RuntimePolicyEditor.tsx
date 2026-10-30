@@ -9,7 +9,20 @@ const GROUPS: { prefix: string; title: string; exact?: string[] }[] = [
   { prefix: "tenant_switch.", title: "账号组切换" },
   { prefix: "tenant_backup.", title: "备份策略" },
   { prefix: "hot_topic_matcher.", title: "热点匹配" },
-  { prefix: "circuit_breaker.recovery_failure_extension_minutes", title: "熔断恢复" },
+  { prefix: "circuit_breaker.", title: "熔断策略", exact: [
+    "circuit_breaker.cooldown_minutes",
+    "circuit_breaker.recovery_failure_extension_minutes",
+  ] },
+  { prefix: "hot_topics.", title: "热点采集与趋势策略" },
+  { prefix: "autogrow.", title: "自动闭环反馈策略" },
+  { prefix: "copy_generation.", title: "文案生产策略" },
+  { prefix: "data_retention.", title: "数据保留策略" },
+  { prefix: "timeouts.", title: "采集重试与轮次上限", exact: [
+    "timeouts.metrics_retry_attempts",
+    "timeouts.metrics_retry_interval_minutes",
+    "timeouts.goal_max_rounds",
+    "timeouts.round_min_interval_hours",
+  ] },
   { prefix: "scoring.", title: "选题策略", exact: [
     "scoring.cold_start_min_published",
     "scoring.stable_dimension_min_samples",
@@ -62,6 +75,49 @@ const LABELS: Record<string, string> = {
   low_resolution_pixels: "低分辨率阈值",
   low_color_count: "低色彩数量阈值",
   color_count_reference: "色彩数量参考值",
+  composition_near_portrait_multiplier: "近竖图构图系数",
+  composition_square_multiplier: "方图构图系数",
+  composition_landscape_multiplier: "横图构图系数",
+  sharpness_fallback_contrast_reference: "备用清晰度参考值",
+  sampling_size: "图像采样边长",
+  color_quantization_colors: "色彩量化数量",
+  cooldown_minutes: "首次熔断冷却（分钟）",
+  max_items_per_source: "每个来源采集上限",
+  fetch_timeout_seconds: "热点源请求超时（秒）",
+  max_concurrent_fetches: "热点采集最大并发数",
+  trend_burst_multiplier: "爆发热度倍数",
+  trend_cooled_ratio: "降温峰值比例",
+  trend_sustained_ratio: "持续爆发峰值比例",
+  trend_previous_drop_ratio: "较上轮降温比例",
+  trend_min_seen_count: "趋势判定最少上榜次数",
+  cross_platform_similarity: "跨平台去重相似度",
+  recency_decay: "复盘轮次衰减系数",
+  full_confidence_samples: "满置信样本数",
+  coverage_gap_bias_ratio: "覆盖缺口加分比例",
+  validation_gap_bias_ratio: "验证缺口加分比例",
+  min_dimension_bias: "最小维度偏差分",
+  max_reference_titles_per_platform: "每平台参考标题数",
+  max_copy_hints_per_platform: "每平台提示条数上限",
+  max_copy_hint_chars: "单条复盘提示长度",
+  topic_summary_max_chars: "选题摘要截取长度",
+  title_max_chars: "标题最大字数",
+  body_min_chars: "正文最少字数",
+  body_max_chars: "正文最多字数",
+  tag_min_count: "标签最少数量",
+  tag_max_count: "标签最多数量",
+  persona_keyword_limit: "画像关键词提示数量",
+  forbidden_direction_limit: "禁区方向提示数量",
+  strategy_hint_max_count: "复盘提示最多条数",
+  strategy_hint_max_chars: "单条提示最大字数",
+  max_guard_retries: "合规检查最大重试次数",
+  raw_response_days: "平台原始响应保留天数",
+  screenshot_days: "截图保留天数",
+  ops_logs_days: "运营日志保留天数",
+  ai_calls_detail_days: "AI 调用明细保留天数",
+  metrics_retry_attempts: "数据采集最大尝试次数",
+  metrics_retry_interval_minutes: "数据采集重试间隔（分钟）",
+  goal_max_rounds: "单个目标最大轮数",
+  round_min_interval_hours: "两轮最小间隔（小时）",
   request_drain_timeout_seconds: "请求排空等待（秒）",
   scheduler_drain_timeout_seconds: "调度器排空等待（秒）",
   round_drain_timeout_seconds: "运行轮次排空等待（秒）",
@@ -140,7 +196,9 @@ export default function RuntimePolicyEditor() {
       const raw = drafts[item.key] ?? "";
       const original = String(item.value ?? "");
       if (raw === original) continue;
-      if (item.type === "integer" || item.type === "number") {
+      if (item.type === "boolean") {
+        updates[item.key] = raw === "true";
+      } else if (item.type === "integer" || item.type === "number") {
         if (!raw.trim() || !Number.isFinite(Number(raw))) {
           showToast(`${item.key} 必须是有效数字`, "error");
           return;
@@ -185,19 +243,29 @@ export default function RuntimePolicyEditor() {
             <div className="grid two">
               {group.items.map((item) => {
                 const numeric = item.type === "integer" || item.type === "number";
+                const boolean = item.type === "boolean";
                 return (
                   <div key={item.key}>
                     <label className="form-label" htmlFor={item.key}>{labelFor(item)}</label>
-                    <input
-                      id={item.key}
-                      className="field"
-                      type={numeric ? "number" : "text"}
-                      step={item.type === "integer" ? 1 : "any"}
-                      min={item.min ?? undefined}
-                      max={item.max ?? undefined}
-                      value={drafts[item.key] ?? ""}
-                      onChange={(event) => setDrafts((prev) => ({ ...prev, [item.key]: event.target.value }))}
-                    />
+                    {boolean ? (
+                      <input
+                        id={item.key}
+                        type="checkbox"
+                        checked={drafts[item.key] === "true"}
+                        onChange={(event) => setDrafts((prev) => ({ ...prev, [item.key]: String(event.target.checked) }))}
+                      />
+                    ) : (
+                      <input
+                        id={item.key}
+                        className="field"
+                        type={numeric ? "number" : "text"}
+                        step={item.type === "integer" ? 1 : "any"}
+                        min={item.min ?? undefined}
+                        max={item.max ?? undefined}
+                        value={drafts[item.key] ?? ""}
+                        onChange={(event) => setDrafts((prev) => ({ ...prev, [item.key]: event.target.value }))}
+                      />
+                    )}
                     <div className="metric-foot">{item.key}{item.min != null || item.max != null ? ` · 范围 ${item.min ?? "不限"}–${item.max ?? "不限"}` : ""}</div>
                   </div>
                 );
