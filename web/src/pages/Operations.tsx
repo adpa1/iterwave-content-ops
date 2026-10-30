@@ -78,8 +78,6 @@ export default function Operations() {
   const [loading, setLoading] = useState(false);
   /** KPI 展示窗口（1=今日 / 7 / 30 / 90），与 R12 评分 90 天口径独立 */
   const [kpiDays, setKpiDays] = useState(1);
-  /** R6 之外的全局人工软暂停 */
-  const [paused, setPaused] = useState(false);
   const [notifBusy, setNotifBusy] = useState(false);
 
   const refresh = async () => {
@@ -94,7 +92,6 @@ export default function Operations() {
         show("scheduler") ? api.schedulerJobs() : Promise.resolve(null),
         show("rhythm") ? api.rhythm() : Promise.resolve(null),
         show("breaker") ? api.circuitBreaker() : Promise.resolve(null),
-        show("kpi") ? api.opsPause() : Promise.resolve(null),
       ]);
       const unpack = (r: PromiseSettledResult<any>) => r.status === "fulfilled" ? r.value : null;
       setKpi(unpack(results[0]));
@@ -106,8 +103,6 @@ export default function Operations() {
       setJobs(unpack(results[5]));
       setRhythm(unpack(results[6]));
       setCb(unpack(results[7]));
-      const pauseRes = unpack(results[8]);
-      if (pauseRes) setPaused(Boolean(pauseRes.paused));
       // G-12：失败不能只进 console —— 收拢成可见错误 + 重试按钮
       const rejected = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
       setLoadError(
@@ -123,14 +118,6 @@ export default function Operations() {
   };
 
   useEffect(() => { refresh(); }, [tab, kpiDays]);
-
-  const togglePause = async () => {
-    try {
-      const r = await api.setOpsPause(!paused);
-      setPaused(r.paused);
-      showToast(r.paused ? "‖ 已暂停全部运营动作（存草稿/采集不受影响）" : "▶ 已恢复运营", "success");
-    } catch (e: any) { showToast(e.message, "error"); }
-  };
 
   const testNotify = async () => {
     setNotifBusy(true);
