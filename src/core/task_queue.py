@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+
+_WAL_MODE_LOCK = threading.Lock()
 
 
 def _now() -> datetime:
@@ -66,6 +70,14 @@ class GlobalTaskQueue:
     def initialize(self) -> None:
         conn = self._connect()
         try:
+            # 同一进程内只设置一次；WAL 模式会持久化到数据库文件。
+            with _WAL_MODE_LOCK:
+                try:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                except sqlite3.OperationalError as exc:
+                    # 多进程启动时，另一个进程可能正在完成首次 WAL 切换。
+                    if "locked" not in str(exc).lower():
+                        raise
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS global_task_queue (
