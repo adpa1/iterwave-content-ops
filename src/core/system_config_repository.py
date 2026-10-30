@@ -31,6 +31,17 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _history_value(value: Any) -> Any:
+    from src.core.redact import redact
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {str(key): _history_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_history_value(item) for item in value]
+    return value
+
+
 def connect_system(system_db_file: Path | str) -> sqlite3.Connection:
     conn = sqlite3.connect(str(Path(system_db_file).resolve()), timeout=30)
     conn.row_factory = sqlite3.Row
@@ -157,7 +168,7 @@ def save_system_llm_settings(
                 (key, json.dumps(value, ensure_ascii=False, separators=(",", ":")),
                  now, changed_by),
             )
-        snapshot = json.dumps(current, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        snapshot = json.dumps(_history_value(current), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         conn.execute(
             "INSERT INTO system_setting_versions(version,snapshot_json,changed_at,changed_by) "
             "VALUES(?,?,?,?)",
@@ -167,7 +178,7 @@ def save_system_llm_settings(
             conn.execute(
                 "INSERT INTO system_config_changes(key,old_value,new_value,changed_at,changed_by) "
                 "VALUES(?,?,?,?,?)",
-                (key, old_value, new_value, now, changed_by),
+                (key, _history_value(old_value), _history_value(new_value), now, changed_by),
             )
         conn.commit()
         return version
@@ -245,8 +256,8 @@ def migrate_tenant_llm_settings(
                     "VALUES(?,?,?,?,?)",
                     (
                         tenant_id, key,
-                        json.dumps(legacy_value, ensure_ascii=False, sort_keys=True),
-                        json.dumps(selected, ensure_ascii=False, sort_keys=True),
+                        json.dumps(_history_value(legacy_value), ensure_ascii=False, sort_keys=True),
+                        json.dumps(_history_value(selected), ensure_ascii=False, sort_keys=True),
                         now,
                     ),
                 )
