@@ -268,8 +268,8 @@ export default function GlobalSearch({ onNavigate }: Props) {
         aria-autocomplete="list"
         aria-expanded={open && norm(query).length >= 2}
         aria-controls="global-search-results"
-        aria-label="搜索页面、目标、任务、草稿和内容"
-        placeholder="搜索页面、目标、任务、草稿或内容…"
+        aria-label="搜索页面、目标、热点、任务、草稿和内容"
+        placeholder="搜索页面、目标、热点、任务或内容…"
         value={query}
         onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
@@ -277,7 +277,7 @@ export default function GlobalSearch({ onNavigate }: Props) {
       />
       {open && norm(query).length < 2 && (
         <div className="search-popover search-hint" role="status">
-          输入至少 2 个字，可搜索页面、目标、任务、草稿和最近三轮内容。
+          输入至少 2 个字，可搜索页面、目标、热点、任务、草稿和最近三轮内容。
         </div>
       )}
       {open && norm(query).length >= 2 && (
