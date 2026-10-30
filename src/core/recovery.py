@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -114,7 +115,7 @@ class RecoveryManager:
         - 一篇都没有 → failed
         """
         rows = self.conn.execute(
-            "SELECT id FROM spiral_rounds WHERE status = 'producing' "
+            "SELECT id, run_report FROM spiral_rounds WHERE status = 'producing' "
             "AND NOT EXISTS (SELECT 1 FROM task_runs t WHERE t.task_type = 'round_pipeline' "
             "                AND t.biz_id = CAST(spiral_rounds.id AS TEXT) "
             "                AND t.status = 'running')"
@@ -128,6 +129,29 @@ class RecoveryManager:
         migrated: list[int] = []
         for row in rows:
             round_id = row["id"]
+            pending = self.conn.execute(
+                "SELECT COUNT(*) FROM drafts d JOIN contents c ON d.content_id = c.id "
+                "WHERE c.round_id = ? AND d.status = 'draft_pending'",
+                (round_id,),
+            ).fetchone()[0]
+            # 干跑或因未登录而跳过存草稿：这是明确可恢复的待存状态，不是崩溃失败。
+            # 保持 producing，让用户登录后调用 save_pending；绝不把内容转成 failed。
+            try:
+                previous = json.loads(row["run_report"] or "{}")
+            except (TypeError, ValueError):
+                previous = {}
+            steps = previous.get("steps") if isinstance(previous, dict) else []
+            recoverable_dry_run = any(
+                isinstance(step, dict) and step.get("step") in
+                ("dry_run", "save_drafts_skipped_login")
+                for step in (steps or [])
+            )
+            if pending and recoverable_dry_run:
+                logger.warning(
+                    "♻️ 轮次 %s 是可恢复的待存草稿状态：%s 篇，保留 producing",
+                    round_id, pending,
+                )
+                continue
             saved = self.conn.execute(
                 "SELECT COUNT(*) FROM drafts d JOIN contents c ON d.content_id = c.id "
                 "WHERE c.round_id = ? AND d.status IN ('draft_saved','user_published','published')",
