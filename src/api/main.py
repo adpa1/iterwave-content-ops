@@ -2001,17 +2001,30 @@ def _register_routes(app: FastAPI) -> None:
             (tenant_id, started.isoformat(sep=" "), cohort_window_end.isoformat(sep=" "),
              started.isoformat(sep=" "), cohort_window_end.isoformat(sep=" ")),
         ).fetchone()[0]
+        sample_counts = conn.execute(
+            "SELECT COUNT(*) AS attempted, "
+            "SUM(CASE WHEN status='ready' THEN 1 ELSE 0 END) AS completed "
+            "FROM sample_runs WHERE tenant_id=? AND created_at>=? AND created_at<=?",
+            (tenant_id, started.isoformat(sep=" "), (started + timedelta(days=7)).isoformat(sep=" ")),
+        ).fetchone()
         platform_breakdown = [
             dict(row) for row in conn.execute(
                 "SELECT platform, model_mode, COUNT(*) AS run_count, "
                 "SUM(CASE WHEN status='ready' THEN 1 ELSE 0 END) AS ready_count "
-                "FROM sample_runs WHERE tenant_id=? GROUP BY platform, model_mode ORDER BY platform, model_mode",
-                (tenant_id,),
+                "FROM sample_runs WHERE tenant_id=? AND created_at>=? "
+                "GROUP BY platform, model_mode ORDER BY platform, model_mode",
+                (tenant_id, started.isoformat(sep=" ")),
             ).fetchall()
         ]
         complete = now >= started + timedelta(days=7)
         return {
             "cohort_size": 1,
+            "sample_attempted_count": int(sample_counts["attempted"] or 0),
+            "sample_ready_count": int(sample_counts["completed"] or 0),
+            "quick_experience_completion_rate": (
+                1.0 if int(sample_counts["completed"] or 0) > 0 else
+                0.0 if int(sample_counts["attempted"] or 0) > 0 else None
+            ),
             "ttv_seconds": round(float(ttv), 1) if ttv is not None else None,
             "seven_day_activation_rate": (1.0 if adopted else 0.0) if complete else None,
             "first_publish_rate": (1.0 if publish_count else 0.0) if complete else None,
