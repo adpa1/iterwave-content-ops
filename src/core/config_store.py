@@ -234,6 +234,7 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "timeouts.metrics_initial_delay_hours": (int, 0, 720),
     "timeouts.goal_max_rounds": (int, 1, 500),
     "timeouts.round_min_interval_hours": (int, 0, 168),
+    "scheduler.misfire_grace_minutes": (int, 1, 1440),
     "timeouts.metrics_retry_attempts": (int, 1, 20),
     "timeouts.metrics_retry_interval_minutes": (int, 1, 1440),
     "timeouts.login_timeout_seconds": (int, 60, 1800),
