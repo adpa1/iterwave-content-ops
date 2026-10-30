@@ -1,7 +1,7 @@
 """
 熔断器 — 5 信号检测 + 3 步恢复验证（R6/R6.5）。
 
-5 种触发信号（config.yaml circuit_breaker.signals）：
+5 种触发信号由 CircuitBreakerReason 枚举和适配器事件定义，属于代码协议：
 - captcha       出现验证码
 - rate_limit    限流
 - login_expired 登录态过期
