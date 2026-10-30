@@ -337,7 +337,7 @@ export default function Analytics() {
                   {item.outcome !== "pending" && <span className="panel-sub">已记录：{item.outcome === "success" ? "有效" : item.outcome === "no_effect" ? "无明显效果" : "暂无法判断"}</span>}
                 </>}
               </div>
-            </div>) : <div className="panel-sub">样本不足，先补充发布数据，再生成策略建议。</div>
+            </div>) : <div className="panel-sub">样本不足，先补充发布数据，再生成策略建议。</div>}
             <div className="panel-sub" style={{ marginTop: 10 }}>限制：{weeklyReport.limitations.join("；")}</div>
           </div>
         </>}
