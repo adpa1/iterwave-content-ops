@@ -1193,9 +1193,13 @@ export const api = {
       method: "POST", body: JSON.stringify(data),
     }),
   runRound: (id: number, data: { topic_count?: number; platforms?: Platform[]; save_drafts?: boolean } = {}) =>
-    fetchJson<RunRoundReport>(`/api/rounds/${id}/run`, {
+    fetchJson<{ round_id: number; started: boolean; running: boolean }>(`/api/rounds/${id}/run`, {
       method: "POST", body: JSON.stringify(data),
     }),
+  roundRunStatus: (id: number) =>
+    fetchJson<{ round_id: number; running: boolean; report: RunRoundReport | null; error: string | null }>(
+      `/api/rounds/${id}/run_status`,
+    ),
   /** 恢复已生成、尚未存平台草稿的内容；不会重新生成或发布。 */
   savePendingDrafts: (id: number) =>
     fetchJson<PendingDraftSaveResult>(`/api/rounds/${id}/save_pending`, {
