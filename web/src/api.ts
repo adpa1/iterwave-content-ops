@@ -1193,9 +1193,13 @@ export const api = {
       method: "POST", body: JSON.stringify(data),
     }),
   runRound: (id: number, data: { topic_count?: number; platforms?: Platform[]; save_drafts?: boolean } = {}) =>
-    fetchJson<RunRoundReport>(`/api/rounds/${id}/run`, {
+    fetchJson<{ round_id: number; started: boolean; running: boolean }>(`/api/rounds/${id}/run`, {
       method: "POST", body: JSON.stringify(data),
     }),
+  roundRunStatus: (id: number) =>
+    fetchJson<{ round_id: number; running: boolean; report: RunRoundReport | null; error: string | null }>(
+      `/api/rounds/${id}/run_status`,
+    ),
   /** 恢复已生成、尚未存平台草稿的内容；不会重新生成或发布。 */
   savePendingDrafts: (id: number) =>
     fetchJson<PendingDraftSaveResult>(`/api/rounds/${id}/save_pending`, {
@@ -1267,8 +1271,8 @@ export const api = {
       { method: "POST", body: JSON.stringify({ dimensions }) },
     ),
   /** 热点 → 选题库（R22：必须有 source + 原文链接） */
-  importHotTopic: (payload: { title: string; source: string; url: string; dimension?: string }) =>
-    fetchJson<{ id: string; imported: boolean; message?: string }>("/api/hot_topics/import", {
+  importHotTopic: (payload: { title: string; source: string; url: string; dimension?: string; confirmed_by?: string }) =>
+    fetchJson<{ id: string; imported: boolean; message?: string; manual_confirmation_recorded?: boolean }>("/api/hot_topics/import", {
       method: "POST",
       body: JSON.stringify(payload),
     }),

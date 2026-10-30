@@ -292,13 +292,14 @@ def clear_failures(ip: str) -> None:
 
 def login(password: str, ip: str) -> str:
     """校验口令并签发会话 token；失败抛 ValueError / 限速抛 PermissionError。"""
+    # 先验证正确口令：共享出口 IP 下其他人的错误尝试，不应锁住合法用户。
+    if verify_password(password):
+        clear_failures(ip)
+        return _new_session()
     if is_rate_limited(ip):
         raise PermissionError("尝试次数过多，请 10 分钟后再试")
-    if not verify_password(password):
-        record_failure(ip)
-        raise ValueError("访问口令不正确")
-    clear_failures(ip)
-    return _new_session()
+    record_failure(ip)
+    raise ValueError("访问口令不正确")
 
 
 # ----------------------------------------------------------------------
@@ -328,11 +329,12 @@ def is_authenticated(cookie_token: Optional[str], headers, ip: Optional[str] = N
     if not candidate:
         return False
     client_ip = ip or "unknown"
-    if is_rate_limited(client_ip):
-        return False
+    # 正确的脚本口令不应被同一出口 IP 的其他错误登录锁住。
     if verify_password(candidate):
         clear_failures(client_ip)
         return True
+    if is_rate_limited(client_ip):
+        return False
     record_failure(client_ip)
     return False
 

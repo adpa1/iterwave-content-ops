@@ -110,6 +110,16 @@ class UltimateGoalChecker:
         persona_keywords = persona["persona_keywords"]
         forbidden_directions = persona["forbidden_directions"]
 
+        # 0. 敏感议题硬拦截：文案改写不能绕过原始选题的敏感判断。
+        from ..hot_topics import _sensitive_topic_hits
+        sensitive_hits = _sensitive_topic_hits(text)
+        if sensitive_hits:
+            return CheckOutcome(
+                result=CheckResult.FAIL,
+                reason=f"内容涉及需人工确认的敏感类别：{'、'.join(sensitive_hits)}",
+                redline_hits=[f"敏感类别:{hit}" for hit in sensitive_hits],
+            )
+
         # 1. 红线命中（最优先级；全局红线 ∪ 平台额外红线）
         redline_hits = self._find_keywords(text, persona["redline_keywords"])
         if redline_hits:

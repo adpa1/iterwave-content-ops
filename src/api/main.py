@@ -123,6 +123,7 @@ class TenantRuntimeRollbackError(RuntimeError):
 
 # G-22：正在执行的轮次集合。同一轮次并发触发会被拒绝（409），避免重复产出草稿
 _running_rounds: set[int] = set()
+_round_job_status: dict[int, dict] = {}
 _media_generation_lock = threading.Lock()
 
 # G-11：写接口幂等去重窗口（秒）。重复提交/连点在窗口内只落一条记录
@@ -2543,29 +2544,64 @@ def _register_routes(app: FastAPI) -> None:
         result["drafts"] = round_drafts
         return result
 
-    @app.post("/api/rounds/{round_id}/run")
+    @app.post("/api/rounds/{round_id}/run", status_code=202)
     async def run_round(round_id: int, req: RunRoundRequest):
-        """执行一轮：选题 → 文案 → G2 检查 → 卡片 → 存草稿（P0-1 主流程）。
-
-        G-22：同一轮次运行中重复调用返回 409，不重复产出草稿。
-        """
+        """异步启动一轮生产，立即返回任务 ID；客户端通过 run_status 轮询结果。"""
         if round_id in _running_rounds:
             raise HTTPException(
                 409, f"轮次 {round_id} 正在执行中，请等待本次执行结束（禁止并发重复触发）"
             )
         _running_rounds.add(round_id)
+        _round_job_status[round_id] = {
+            "round_id": round_id, "running": True, "started": True,
+            "report": None, "error": None,
+        }
+
+        async def execute_round_job():
+            try:
+                report = await _g()["executor"].run(
+                    round_id,
+                    topic_count=req.topic_count,
+                    platform_values=req.platforms,
+                    save_drafts=req.save_drafts,
+                )
+                _round_job_status[round_id] = {
+                    "round_id": round_id, "running": False,
+                    "report": report, "error": None,
+                }
+            except Exception as exc:  # noqa: BLE001 — 后台任务错误必须可查询
+                logger.exception("后台轮次执行失败 round=%s", round_id)
+                _round_job_status[round_id] = {
+                    "round_id": round_id, "running": False,
+                    "report": None, "error": str(exc),
+                }
+            finally:
+                _running_rounds.discard(round_id)
+
+        asyncio.create_task(execute_round_job(), name=f"round-{round_id}")
+        return {"round_id": round_id, "started": True, "running": True}
+
+    @app.get("/api/rounds/{round_id}/run_status")
+    def round_run_status(round_id: int):
+        """查询后台轮次任务状态与最终报告。"""
+        status = _round_job_status.get(round_id)
+        if status is not None:
+            return dict(status)
+        row = _g()["conn"].execute(
+            "SELECT status, run_report FROM spiral_rounds WHERE id = ?", (round_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "轮次不存在")
         try:
-            report = await _g()["executor"].run(
-                round_id,
-                topic_count=req.topic_count,
-                platform_values=req.platforms,
-                save_drafts=req.save_drafts,
-            )
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        finally:
-            _running_rounds.discard(round_id)
-        return report
+            report = json.loads(row["run_report"] or "null")
+        except (TypeError, ValueError):
+            report = None
+        # 兼容多 worker：轮次数据库状态为 producing 时，即使轮询落到另一 worker 也继续等待。
+        return {
+            "round_id": round_id,
+            "running": round_id in _running_rounds or row["status"] == "producing",
+            "report": report, "error": None,
+        }
 
     @app.post("/api/rounds/{round_id}/save_pending")
     async def save_pending_drafts(round_id: int):
@@ -3968,10 +4004,23 @@ def _register_routes(app: FastAPI) -> None:
         source = str((req or {}).get("source") or "").strip()
         raw_url = str((req or {}).get("url") or "").strip()
         dimension = str((req or {}).get("dimension") or "").strip()
+        confirmed_by = str((req or {}).get("confirmed_by") or "").strip()[:80]
+        from ..core.hot_topics import _sensitive_topic_hits
+        sensitive_hits = _sensitive_topic_hits(title)
         if len(title) < 4:
             raise HTTPException(400, "标题过短，不能入库")
         if not source or not raw_url:
             raise HTTPException(400, "缺少来源或原文链接：热点入库必须有证据（R22）")
+        if sensitive_hits and not confirmed_by:
+            raise HTTPException(
+                409,
+                {
+                    "code": "manual_confirmation_required",
+                    "message": "该热点命中敏感类别，必须由操作人明确确认后才能入库",
+                    "categories": sensitive_hits,
+                    "title": title,
+                },
+            )
 
         topic_id = "hot-" + hashlib.sha1(
             f"{source}|{title}".encode("utf-8")
@@ -3984,7 +4033,17 @@ def _register_routes(app: FastAPI) -> None:
                 conn.execute("UPDATE topic_index SET excluded_at = NULL, excluded_reason = NULL WHERE id = ?",
                              (topic_id,))
                 conn.commit()
-                return {"id": topic_id, "imported": True, "message": "该热点之前被删除，已恢复到选题池"}
+                if sensitive_hits:
+                    conn.execute(
+                        "INSERT INTO hot_topic_import_audit "
+                        "(topic_id, title, categories, confirmed_by, confirmed_at) VALUES (?, ?, ?, ?, ?)",
+                        (topic_id, title, json.dumps(sensitive_hits, ensure_ascii=False),
+                         confirmed_by, datetime.now().isoformat(timespec="seconds")),
+                    )
+                    conn.commit()
+                return {"id": topic_id, "imported": True,
+                        "message": "该热点之前被删除，已恢复到选题池",
+                        "manual_confirmation_recorded": bool(sensitive_hits)}
             return {"id": topic_id, "imported": False, "message": "选题库已存在该热点"}
 
         conn.execute(
@@ -3998,7 +4057,17 @@ def _register_routes(app: FastAPI) -> None:
             ),
         )
         conn.commit()
-        return {"id": topic_id, "imported": True, "title": title}
+        if sensitive_hits:
+            # 留存人工确认审计，不把确认人混入选题正文或摘要。
+            conn.execute(
+                "INSERT INTO hot_topic_import_audit "
+                "(topic_id, title, categories, confirmed_by, confirmed_at) VALUES (?, ?, ?, ?, ?)",
+                (topic_id, title, json.dumps(sensitive_hits, ensure_ascii=False),
+                 confirmed_by, datetime.now().isoformat(timespec="seconds")),
+            )
+            conn.commit()
+        return {"id": topic_id, "imported": True, "title": title,
+                "manual_confirmation_recorded": bool(sensitive_hits)}
 
     # === 运营控制台补充路由 ===
 
