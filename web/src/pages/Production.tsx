@@ -254,7 +254,9 @@ export default function Production() {
     try {
       const started = await api.runRound(
         currentRoundId,
-        usePlan ? {} : { topic_count: topicCount, platforms: selPlatforms, save_drafts: saveDrafts },
+        usePlan
+          ? { save_drafts: saveDrafts }
+          : { topic_count: topicCount, platforms: selPlatforms, save_drafts: saveDrafts },
       );
       if (!started.started) throw new Error("本轮任务未能启动");
       // 后端立即返回任务 ID；页面通过轻量状态接口轮询，不再让启动请求等待整轮生成。
@@ -839,7 +841,7 @@ export default function Production() {
                   <div style={{ marginBottom: 8 }}>
                     <DemoBadge
                       level="blocked"
-                      text={`${noLogin.map((p) => PLATFORM_NAME[p]).join("、")} 未连接真实账号，存草稿会失败（勾选存草稿前请先登录）`}
+                      text={`${noLogin.map((p) => PLATFORM_NAME[p]).join("、")} 未连接真实账号；本轮将跳过这些平台的存草稿操作，内容保留为待存状态`}
                     />
                   </div>
                 )}
@@ -874,12 +876,13 @@ export default function Production() {
                       </button>
                     ))}
                   </div>
-                  <label style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 4 }}>
-                    <input type="checkbox" checked={saveDrafts} onChange={(e) => setSaveDrafts(e.target.checked)} disabled={running || usePlan} />
-                    执行存草稿
-                  </label>
+
                 </div>
-                <div style={{ marginTop: 10 }}>
+                <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <label style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 5 }}>
+                    <input type="checkbox" checked={saveDrafts} onChange={(e) => setSaveDrafts(e.target.checked)} disabled={running} />
+                    本轮执行存草稿（取消后仅生成内容，可稍后恢复）
+                  </label>
                   <button className="btn primary" onClick={handleRun} disabled={!canRun}>
                     {running ? "◷ 运行中…" : roundDetail?.status === "failed" ? "↻ 重试本轮" : "▶ 运行本轮"}
                   </button>
