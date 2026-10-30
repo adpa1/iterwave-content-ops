@@ -1908,47 +1908,87 @@ def _register_routes(app: FastAPI) -> None:
             platforms = sorted({r["platform"] for r in merged})
         else:
             platforms = [platform]
-        best = []
         metrics_to_compare = ("views", "likes", "collects", "comments", "shares")
+
+        def _latest_content_rows(source_rows):
+            grouped = {}
+            for source_row in source_rows:
+                grouped.setdefault(source_row["content_id"], []).append(dict(source_row))
+            selected_rows = []
+            for content_id, candidates in grouped.items():
+                latest_time = max(str(row.get("measured_at") or "") for row in candidates)
+                same_time = [row for row in candidates if str(row.get("measured_at") or "") == latest_time]
+                base = dict(max(same_time, key=lambda row: (
+                    1 if row.get("source") == "platform_readback" else 0,
+                    str(row.get("recorded_at") or ""),
+                )))
+                metric_ids = {}
+                metric_sources = {}
+                conflicts = []
+                for metric_name in metrics_to_compare:
+                    available = [row for row in same_time if row.get(metric_name) is not None]
+                    if not available:
+                        base[metric_name] = None
+                        continue
+                    metric_values = {row[metric_name] for row in available}
+                    winner_row = max(available, key=lambda row: (
+                        1 if row.get("source") == "platform_readback" else 0,
+                        str(row.get("recorded_at") or ""),
+                    ))
+                    base[metric_name] = winner_row[metric_name]
+                    metric_ids[metric_name] = winner_row["id"]
+                    metric_sources[metric_name] = winner_row.get("source") or "platform_readback"
+                    if len(metric_values) > 1:
+                        conflicts.append(metric_name)
+                base["_metric_snapshot_ids"] = metric_ids
+                base["_metric_sources"] = metric_sources
+                base["_conflict_metrics"] = conflicts
+                selected_rows.append(base)
+            return selected_rows
+
+        latest_rows_by_platform = {
+            p: _latest_content_rows([row for row in merged if row["platform"] == p])
+            for p in platforms
+        }
+        data_conflicts = []
+        for p, rows in latest_rows_by_platform.items():
+            for row in rows:
+                if row["_conflict_metrics"]:
+                    data_conflicts.append({
+                        "platform": p, "content_id": row["content_id"],
+                        "metrics": row["_conflict_metrics"],
+                        "selected_sources": {
+                            metric: row["_metric_sources"].get(metric)
+                            for metric in row["_conflict_metrics"]
+                        },
+                    })
+
+        best = []
         for p in platforms:
-            raw_rows = [r for r in merged if r["platform"] == p]
-            latest_by_content = {}
-            for row in sorted(raw_rows, key=lambda r: (
-                str(r.get("measured_at") or ""),
-                1 if r.get("source") == "platform_readback" else 0,
-                str(r.get("recorded_at") or ""),
-            )):
-                latest_by_content[row["content_id"]] = row
-            rows = list(latest_by_content.values())
+            rows = latest_rows_by_platform[p]
             # 不擅自选定点赞或播放作为唯一主指标；同平台分别给出可用指标的领先内容。
             for metric in metrics_to_compare:
-                comparable = [r for r in rows if r.get(metric) is not None]
+                comparable = [row for row in rows if row.get(metric) is not None]
                 if comparable:
-                    winner = max(comparable, key=lambda r: r[metric])
+                    winner = max(comparable, key=lambda row: row[metric])
                     best.append({
                         "platform": p, "metric": metric, "value": winner[metric],
-                        "content_id": winner["content_id"], "metric_snapshot_id": winner["id"],
+                        "content_id": winner["content_id"],
+                        "metric_snapshot_id": winner["_metric_snapshot_ids"].get(metric),
                         "title": winner["title"], "measured_at": winner["measured_at"],
-                        "source": "manual" if winner.get("source") == "manual" else "platform_readback",
+                        "source": winner["_metric_sources"].get(metric, "platform_readback"),
+                        "conflict": metric in winner["_conflict_metrics"],
                     })
         total_samples = len({(r["content_id"], r["platform"]) for r in merged})
         why = []
         next_actions = []
         for p in platforms:
-            platform_rows = [r for r in merged if r["platform"] == p]
-            # 同一内容仅保留统计时间最新的一份快照用于特征对照；原始来源记录仍全部保留。
-            latest_by_content = {}
-            for row in sorted(platform_rows, key=lambda r: (
-                str(r.get("measured_at") or ""),
-                1 if r.get("source") == "platform_readback" else 0,
-            )):
-                latest_by_content[row["content_id"]] = row
-            comparable_rows = list(latest_by_content.values())
+            comparable_rows = latest_rows_by_platform[p]
             platform_sample_count = len(comparable_rows)
             if platform_sample_count < 3:
                 continue
             metric = next((
-                name for name in ("views", "likes", "collects", "comments", "shares")
+                name for name in metrics_to_compare
                 if sum(1 for row in comparable_rows if row.get(name) is not None) >= 3
             ), None)
             if metric is None:
@@ -1965,16 +2005,21 @@ def _register_routes(app: FastAPI) -> None:
             if not comparison_rows:
                 continue
             top_ids = sorted({row["content_id"] for row in top_rows})
+            top_metric_ids = [
+                row["_metric_snapshot_ids"].get(metric) for row in top_rows
+                if row["_metric_snapshot_ids"].get(metric) is not None
+            ]
+
             def _avg(values):
                 valid = [float(value) for value in values if value is not None]
                 return round(sum(valid) / len(valid), 1) if valid else None
+
             top_title_len = _avg([len(str(row.get("title") or "")) for row in top_rows])
             rest_title_len = _avg([len(str(row.get("title") or "")) for row in comparison_rows])
             top_body_len = _avg([len(str(row.get("body") or "")) for row in top_rows])
             rest_body_len = _avg([len(str(row.get("body") or "")) for row in comparison_rows])
             feature_evidence = {
-                "metric": metric,
-                "top_group_size": len(top_rows),
+                "metric": metric, "top_group_size": len(top_rows),
                 "comparison_group_size": len(comparison_rows),
                 "avg_title_chars_top": top_title_len,
                 "avg_title_chars_comparison": rest_title_len,
@@ -1986,15 +2031,15 @@ def _register_routes(app: FastAPI) -> None:
                 observed.append(f"领先组标题平均 {top_title_len} 字，对照组 {rest_title_len} 字")
             if top_body_len is not None and rest_body_len is not None:
                 observed.append(f"领先组正文平均 {top_body_len} 字，对照组 {rest_body_len} 字")
+            time_window = {"start": start.date().isoformat(), "end": (end - timedelta(seconds=1)).date().isoformat()}
             why.append({
                 "statement": f"{p} 平台内按 {metric} 排序后，领先组与其余样本的可观测差异：" +
                     ("；".join(observed) if observed else "目前可计算的内容特征有限") +
                     "。该差异仅用于提出假设，不代表因果关系。",
                 "sample_size": platform_sample_count,
                 "evidence_content_ids": top_ids,
-                "metric_snapshot_ids": [row["id"] for row in top_rows],
-                "platform": p,
-                "time_window": {"start": start.date().isoformat(), "end": (end - timedelta(seconds=1)).date().isoformat()},
+                "metric_snapshot_ids": top_metric_ids,
+                "platform": p, "time_window": time_window,
                 "features": feature_evidence,
             })
             next_actions.append({
@@ -2002,9 +2047,8 @@ def _register_routes(app: FastAPI) -> None:
                 "basis": f"同平台 {metric} 指标领先组与对照组的内容长度差异",
                 "verification": f"保持统计窗口一致，比较下一组内容的 {metric} 指标",
                 "evidence_content_ids": top_ids,
-                "metric_snapshot_ids": [row["id"] for row in top_rows],
-                "platform": p,
-                "time_window": {"start": start.date().isoformat(), "end": (end - timedelta(seconds=1)).date().isoformat()},
+                "metric_snapshot_ids": top_metric_ids,
+                "platform": p, "time_window": time_window,
                 "sample_size": platform_sample_count,
             })
         next_actions = next_actions[:3]
@@ -2018,6 +2062,7 @@ def _register_routes(app: FastAPI) -> None:
             "period": {"start": start.date().isoformat(), "end": (end - timedelta(seconds=1)).date().isoformat()},
             "best_content": best, "why_it_may_work": why, "next_actions": next_actions,
             "sample_size": total_samples,
+            "data_conflicts": data_conflicts,
             "data_sources": sorted({str(r.get("source") or "platform_readback") for r in merged}),
             "limitations": ["只比较同平台数据", "单篇表现不代表因果", "人工与平台读回数据保留各自来源", "周内样本的发布后统计时长可能不同，特征差异仅作假设"],
             "generated_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
