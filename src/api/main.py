@@ -217,10 +217,8 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
                 if not item.account_key.startswith(prefix):
                     item.account_key = f"{prefix}{item.account_key}"
             cfg.topic_kb.path = str(tenant_paths.kb_dir / "topics.csv")
-        from src.core import account_login, login_manager
-        runtime_data_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
-        account_login.configure_data_dir(runtime_data_dir)
-        login_manager.configure_data_dir(runtime_data_dir)
+        # 运行时构造不得修改模块级登录目录；后台任务将通过 login_manager.tenant_login_dir()
+        # 显式绑定所属账号组，只有前台交互式登录才使用活动账号组默认目录。
         adapters = get_adapters(cfg, conn)
         cb = CircuitBreakerEngine(cfg, conn, adapters)
         rhythm = RhythmController(cfg)
