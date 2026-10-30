@@ -186,7 +186,7 @@ def test_platform_metric_fields_are_enforced(activation_client, seed):
         f"/api/drafts/{draft_id}/metrics/manual",
         json={"views": 20, "likes": 2, "comments": 1},
     )
-    assert accepted.status_code == 200
+    assert accepted.status_code == 200, accepted.text
 
 
 def test_sample_delete_hides_history_but_preserves_quota_audit_and_saved_content(activation_client, conn):
@@ -263,7 +263,7 @@ def test_manual_metrics_preserve_null_and_note_url_is_platform_validated(activat
         f"/api/drafts/{draft_id}/metrics/manual",
         json={"views": 128, "likes": 12, "collects": None},
     )
-    assert metrics.status_code == 200
+    assert metrics.status_code == 200, metrics.text
     row = conn.execute(
         "SELECT source, views, likes, collects, measured_at, recorded_at "
         "FROM metric_snapshots WHERE draft_id=?",
