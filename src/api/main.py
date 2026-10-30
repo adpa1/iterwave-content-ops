@@ -1877,7 +1877,7 @@ def _register_routes(app: FastAPI) -> None:
             values[field] = raw
         if all(values[field] is None for field in supported_fields):
             raise HTTPException(422, "至少填写一项当前平台支持的指标")
-        measured_at = str((req or {}).get("measured_at") or datetime.now().isoformat(sep=" ", timespec="seconds"))
+        measured_at = str((req or {}).get("measured_at") or datetime.now().isoformat(sep=" ", timespec="microseconds"))
         if len(measured_at) > 40:
             raise HTTPException(422, "统计时间格式无效")
         now = datetime.now().isoformat(sep=" ", timespec="seconds")
