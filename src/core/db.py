@@ -23,6 +23,8 @@ import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+
+from .timezone import business_now
 from typing import Optional
 
 from .config import Config
@@ -215,7 +217,7 @@ class Database:
             self.backup_dir.chmod(0o700)
         except OSError:
             logger.warning("无法收紧数据库备份目录权限：%s", self.backup_dir.name)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = business_now(self.cfg).strftime("%Y%m%d_%H%M%S")
         dest = self.backup_dir / f"easel_{ts}.db"
         # WAL 模式下要连 journal 和 shm 一起备份
         for suffix in ("", "-wal", "-shm"):
