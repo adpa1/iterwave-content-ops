@@ -1436,6 +1436,11 @@ def _register_routes(app: FastAPI) -> None:
             "SELECT id, status FROM sample_runs WHERE tenant_id=? ORDER BY created_at DESC LIMIT 1",
             (tenant_id,),
         ).fetchone()
+        day_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(sep=" ")
+        daily_runs_used = conn.execute(
+            "SELECT COUNT(*) FROM sample_runs WHERE tenant_id=? AND created_at>=?",
+            (tenant_id, day_start),
+        ).fetchone()[0]
         return {
             "tenant_id": tenant_id,
             "latest_sample_run": dict(latest_run) if latest_run else None,
@@ -1447,6 +1452,8 @@ def _register_routes(app: FastAPI) -> None:
                 "account_description_max_chars": cfg.activation.account_description_max_chars,
                 "max_runs_per_day": cfg.activation.max_runs_per_day,
                 "sample_max_output_tokens": cfg.activation.sample_max_output_tokens,
+                "daily_runs_used": int(daily_runs_used),
+                "daily_runs_remaining": max(0, cfg.activation.max_runs_per_day - int(daily_runs_used)),
             },
             "model_message": "自带模型已就绪" if _llm_available(cfg) else "需要先配置自己的模型服务和 API Key",
             "formal_setup": {
