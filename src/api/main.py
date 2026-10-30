@@ -5311,8 +5311,6 @@ def _register_routes(app: FastAPI) -> None:
         """
         from ..core import hot_topic_service
 
-        from ..core import hot_topic_service
-
         conn = _g()["conn"]
         cfg = _g()["cfg"]
         tenant_id = _g().get("runtime_tenant_id", "default")
