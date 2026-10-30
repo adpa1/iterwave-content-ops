@@ -165,16 +165,17 @@ class GlobalTaskWorker:
             execution.cancel()
             raise
         except Exception as exc:  # noqa: BLE001 — 单任务失败不得终止消费者
-            logger.exception(
-                "全局队列任务执行失败 task_id=%s tenant_id=%s",
-                task.task_id, task.tenant_id,
-            )
-            error_code = getattr(exc, "code", "round_execution_failed")
+            from src.core.redact import redact
+            error_code = redact(str(getattr(exc, "code", "round_execution_failed")))[:80]
             if getattr(exc, "code", None):
-                from src.core.redact import redact
                 safe_message = redact(str(exc))[:500]
             else:
                 safe_message = "本轮执行失败，请检查运行记录"
+            # 不记录原始异常栈，避免第三方错误文本中的密钥进入服务日志。
+            logger.error(
+                "全局队列任务执行失败 task_id=%s tenant_id=%s error=%s",
+                task.task_id, task.tenant_id, safe_message,
+            )
             try:
                 self.queue.fail(
                     task.task_id, self.owner,
