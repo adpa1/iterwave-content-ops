@@ -77,6 +77,38 @@ def test_activation_samples_without_model_fail_without_content(activation_client
     assert conn.execute("SELECT COUNT(*) FROM sample_contents").fetchone()[0] == 0
 
 
+def test_activation_rejects_identical_outputs_across_angles(activation_client, conn, monkeypatch):
+    cfg = main._g_ctx["cfg"]
+    cfg.llm.enabled = True
+    monkeypatch.setenv(cfg.llm.api_key_env, "test-only-key")
+    from src.core import content_pipeline
+    calls = {"count": 0}
+    body = (
+        "这是一段用于验证重复内容检测的中文正文，内容包含完整的背景、具体步骤和实际建议。"
+        "用户可以先明确自己的目标，再把任务拆分成容易执行的小步骤，并记录每一步的结果。"
+        "完成之后应当检查效果，根据反馈调整方法，而不是机械地重复相同操作。"
+        "整个过程需要结合真实场景，补充个人判断和有用细节，避免生成看起来不同但实际相同的内容。"
+    )
+    def identical(*args, **kwargs):
+        calls["count"] += 1
+        return ("完全相同的体验样稿标题", body, ["实践", "方法"])
+    monkeypatch.setattr(content_pipeline, "generate_copy_content", identical)
+    response = activation_client.post("/api/activation/samples", json={
+        "account_description": "分享普通上班族的实用效率方法",
+        "platform": "xhs", "idempotency_key": "duplicate-across-angles",
+    })
+    run_id = response.json()["sample_run_id"]
+    result = None
+    for _ in range(100):
+        result = activation_client.get(f"/api/activation/samples/{run_id}").json()
+        if result["run"]["status"] in ("ready", "failed"):
+            break
+        time.sleep(0.02)
+    assert result["run"]["status"] == "failed"
+    assert result["run"]["error_code"] == "quality_rejected"
+    assert calls["count"] > 3
+
+
 def test_activation_sample_success_stays_outside_formal_production(activation_client, conn, monkeypatch):
     cfg = main._g_ctx["cfg"]
     cfg.llm.enabled = True
@@ -87,10 +119,11 @@ def test_activation_sample_success_stays_outside_formal_production(activation_cl
         "个人成长 实用经验 产品经理 AI工具 需求分析 用户研究 项目管理 工作效率 数据分析 "
         "业务流程 产品设计 用户反馈 方案验证 目标拆解 方法总结 实践案例 场景分析 效率提升 团队协作 持续迭代 经验复盘"
     )
-    monkeypatch.setattr(
-        content_pipeline, "generate_copy_content",
-        lambda *args, **kwargs: ("产品经理的实用方法", body, ["产品经理", "实用经验"]),
-    )
+    calls = {"count": 0}
+    def varied(*args, **kwargs):
+        calls["count"] += 1
+        return (f"产品经理的实用方法 {calls['count']}", body + f" 第{calls['count']}种独立补充说明。", ["产品经理", "实用经验"])
+    monkeypatch.setattr(content_pipeline, "generate_copy_content", varied)
     response = activation_client.post("/api/activation/samples", json={
         "account_description": "分享产品经理的 AI 工具实践和效率方法",
         "platform": "xhs",
@@ -384,8 +417,11 @@ def test_chinese_body_passes_character_level_quality_check(activation_client, co
         "刚开始不必追求复杂菜单，先固定三种容易执行的组合，再根据实际情况调整。"
         "这样既能减少临时决定吃什么的压力，也能降低外卖频率。"
     )
-    monkeypatch.setattr(content_pipeline, "generate_copy_content",
-                        lambda *args, **kwargs: ("工作日带饭的准备方法", body, ["带饭", "效率"]))
+    calls = {"count": 0}
+    def varied_chinese(*args, **kwargs):
+        calls["count"] += 1
+        return (f"工作日带饭的准备方法{calls['count']}", body + f" 第{calls['count']}个角度补充了不同的执行细节。", ["带饭", "效率"])
+    monkeypatch.setattr(content_pipeline, "generate_copy_content", varied_chinese)
     response = activation_client.post("/api/activation/samples", json={
         "account_description": "分享普通上班族的健康带饭方法",
         "platform": "xhs", "idempotency_key": "chinese-body-quality",
