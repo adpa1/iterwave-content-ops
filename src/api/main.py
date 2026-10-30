@@ -3752,7 +3752,8 @@ def _register_routes(app: FastAPI) -> None:
                 "task_id": task.task_id, "task_type": task.task_type,
                 "tenant_id": task.tenant_id, "tenant_name": tenant_name,
                 "aggregate_id": task.aggregate_id, "status": task.status,
-                "created_at": task.created_at, "started_at": task.started_at,
+                "created_at": task.created_at, "available_at": task.available_at,
+                "started_at": task.started_at,
                 "finished_at": task.finished_at, "attempts": task.attempts,
                 "error_code": task.error_code, "error_message": task.error_message,
             })
@@ -3770,7 +3771,8 @@ def _register_routes(app: FastAPI) -> None:
             "task_id": task.task_id, "task_type": task.task_type,
             "tenant_id": task.tenant_id, "aggregate_id": task.aggregate_id,
             "status": task.status, "payload": task.payload, "result": task.result,
-            "created_at": task.created_at, "started_at": task.started_at,
+            "created_at": task.created_at, "available_at": task.available_at,
+            "started_at": task.started_at,
             "finished_at": task.finished_at, "attempts": task.attempts,
             "error_code": task.error_code, "error_message": task.error_message,
         }
