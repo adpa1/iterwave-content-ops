@@ -1175,7 +1175,7 @@ export interface ActivationSampleRun {
   run: {
     id: string; platform: Platform; account_description: string; status: string;
     model_mode: string; error_code: string | null; error_message_safe: string | null;
-    created_at: string; started_at: string | null; completed_at: string | null;
+    created_at: string; started_at: string | null; completed_at: string | null; attempt_count?: number;
   };
   contents: ActivationSample[];
 }
@@ -1631,6 +1631,8 @@ export const api = {
         method: "POST", body: JSON.stringify(data),
       }),
   activationSamples: (id: string) => fetchJson<ActivationSampleRun>(`/api/activation/samples/${id}`),
+  deleteActivationSamples: (id: string) =>
+    fetchJson<{ sample_run_id: string; deleted: boolean }>(`/api/activation/samples/${id}`, { method: "DELETE" }),
   activationSampleEvent: (runId: string, contentId: string, event_type: "copied" | "saved" | "rejected", reason?: string) =>
     fetchJson<{ sample_content_id: string; event: string; recorded: boolean }>(
       `/api/activation/samples/${runId}/contents/${contentId}/events`,
