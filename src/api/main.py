@@ -285,6 +285,7 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
             conn=conn, adapters=adapters, sm_draft=sm_draft, sm_round=sm_round,
             circuit_breaker=cb, notifier=notifier, ops=ops, kb_reader=None,
             spiral=spiral, scoring=scoring, goal_progress=goal_progress, guard=guard,
+            task_queue=_task_queue, tenant_id=tenant_id,
         )
         recovery_report = RecoveryManager(cfg, conn, scheduler).recover()
         pvm = PlanVersionManager(cfg, conn)
@@ -657,6 +658,7 @@ def _build_app() -> FastAPI:
             circuit_breaker=cb, notifier=notifier,
             ops=ops, kb_reader=None, spiral=spiral, scoring=scoring,
             goal_progress=_g_ctx["goal_progress"], guard=guard,
+            task_queue=_task_queue, tenant_id=active_tenant_id,
         )
         scheduler.start()
         # 断点恢复（R16/R17）：接续崩溃前未完成的任务，不重复写操作
