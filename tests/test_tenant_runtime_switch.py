@@ -106,6 +106,7 @@ def test_runtime_switch_supports_a_to_b_to_a(monkeypatch):
         result_b = await api_main._switch_tenant_runtime("B")
         assert result_b["switch_status"] == "completed"
         assert api_main._g_ctx["runtime_tenant_id"] == "B"
+        assert api_main._tenant_runtime_contexts["B"] is api_main._g_ctx
         assert registry.active == "B"
         conn_b = api_main._g_ctx["conn"]
         assert conn_b.tenant_id == "B"
@@ -113,6 +114,7 @@ def test_runtime_switch_supports_a_to_b_to_a(monkeypatch):
         result_a = await api_main._switch_tenant_runtime("A")
         assert result_a["switch_status"] == "completed"
         assert api_main._g_ctx["runtime_tenant_id"] == "A"
+        assert api_main._tenant_runtime_contexts["A"] is api_main._g_ctx
         assert registry.active == "A"
         assert api_main._g_ctx["conn"].tenant_id == "A"
         assert api_main._g_ctx["conn"] is not conn_b
