@@ -67,3 +67,13 @@ def test_custom_industry_preset_can_be_versioned(conn):
     assert first["version"] == 1
     assert second["version"] == 2
     assert second["name"] == "AI工具与效率"
+
+
+def test_builtin_industry_preset_cannot_be_overwritten(conn):
+    import pytest
+    seed_builtins(conn)
+    with pytest.raises(ValueError, match="内置模板不可覆盖"):
+        upsert_custom_preset(conn, {
+            "key": "general", "name": "替换通用", "positioning": "不应覆盖",
+        })
+    assert get_preset(conn, "general")["name"] == "通用"
