@@ -244,10 +244,14 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
       const selectedName = latest.items.find((item) => item.id === result.selected.id)?.name ?? result.selected.name;
       showToast(
         result.restart_required
-          ? `已选择「${selectedName}」，但当前运行空间仍是「${runtimeName}」。请安排后端重启后生效。`
-          : result.message,
+          ? `已选择「${selectedName}」，当前运行空间仍是「${runtimeName}」，需要重启服务后生效。`
+          : `已切换到「${selectedName}」`,
         result.restart_required ? "info" : "success",
       );
+      if (!result.restart_required && result.switch_status === "completed") {
+        // 账号组切换会改变所有页面的数据上下文；完整刷新清除旧账号组的本地查询状态。
+        window.setTimeout(() => window.location.reload(), 800);
+      }
     } catch (error) {
       showToast(error instanceof Error ? error.message : "切换账号组失败", "error");
       await loadTenants();
@@ -297,7 +301,12 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
                 <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
               ))}
             </select>
-            {tenantData.restart_required && (
+            {tenantLoading && (
+              <span className="tenant-switcher-pending" role="status" aria-live="polite">
+                切换中…
+              </span>
+            )}
+            {!tenantLoading && tenantData.restart_required && (
               <span className="tenant-switcher-pending" title={`当前运行空间：${tenantData.items.find((tenant) => tenant.id === tenantData.runtime_tenant_id)?.name ?? "当前账号组"}`}>
                 待重启
               </span>
