@@ -1197,7 +1197,7 @@ export interface ActivationMetrics {
 export interface WeeklyReport {
   period: { start: string; end: string };
   best_content: { platform: Platform; metric: string; value: number; content_id: string;
-    metric_snapshot_id: string | number; title: string; measured_at: string; source: string }[];
+    metric_snapshot_id: string | number; title: string; measured_at: string; source: string; conflict?: boolean }[];
   why_it_may_work: { statement: string; sample_size: number; evidence_content_ids: string[];
     metric_snapshot_ids?: (string | number)[]; platform?: Platform; time_window?: { start: string; end: string };
     features?: Record<string, number | string | null>; examples?: string[] }[];
@@ -1205,6 +1205,7 @@ export interface WeeklyReport {
     metric_snapshot_ids?: (string | number)[]; platform?: Platform; time_window?: { start: string; end: string };
     sample_size: number }[];
   sample_size: number; data_sources: string[]; limitations: string[]; generated_at: string;
+  data_conflicts?: { platform: Platform; content_id: string; metrics: string[]; selected_sources: Record<string, string> }[];
 }
 
 export const api = {
