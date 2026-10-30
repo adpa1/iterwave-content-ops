@@ -1163,6 +1163,11 @@ export interface ActivationStatus {
   model_ready: boolean;
   model_message: string;
   quick_experience_available: boolean;
+  activation_limits: {
+    account_description_min_chars: number; account_description_max_chars: number;
+    max_runs_per_day: number; sample_max_output_tokens: number;
+    daily_runs_used: number; daily_runs_remaining: number;
+  };
   cohort_started_at: string;
 }
 export interface ActivationSample {
