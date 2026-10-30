@@ -92,9 +92,9 @@ def test_refresh_endpoint_runs_in_background(client, monkeypatch):
     tc, _ = client
     started = []
     monkeypatch.setattr(hot_topic_service, "trigger_background",
-                        lambda cfg, trigger="manual": started.append(trigger) or {"started": True})
+                        lambda cfg, trigger="manual", tenant_id=None: started.append((trigger, tenant_id)) or {"started": True, "tenant_id": tenant_id})
     r = tc.post("/api/hot_topics/refresh")
-    assert r.status_code == 202 and started == ["manual"]
+    assert r.status_code == 202 and started == [("manual", "default")]
 
 
 def test_research_endpoint_rejects_without_llm(client, monkeypatch):
@@ -110,9 +110,9 @@ def test_research_endpoint_starts_background(client, monkeypatch):
     monkeypatch.setattr("src.core.hot_topic_matcher.default_llm_fn", lambda cfg: lambda s, u: ("", {}))
     started = []
     monkeypatch.setattr(hot_topic_service, "trigger_research",
-                        lambda cfg: started.append(1) or {"started": True, "running": True})
+                        lambda cfg, tenant_id=None: started.append(tenant_id) or {"started": True, "running": True, "tenant_id": tenant_id})
     r = tc.post("/api/hot_topics/research")
-    assert r.status_code == 202 and started == [1]
+    assert r.status_code == 202 and started == ["default"]
     body = tc.get("/api/hot_topics").json()
     assert "research_job" in body and "research_ready" in body
 
