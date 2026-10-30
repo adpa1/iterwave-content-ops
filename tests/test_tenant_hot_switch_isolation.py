@@ -76,7 +76,7 @@ class FakeRecovery:
         self.conn = conn
 
     def recover(self):
-        return {"interrupted_tasks": 0}
+        raise AssertionError("startup recovery must not run in an ephemeral tenant runtime")
 
 
 class FakePlanVersionManager:
@@ -84,7 +84,7 @@ class FakePlanVersionManager:
         self.conn = conn
 
     def invalidate_changed_plans(self):
-        return {"stale_rounds": [], "current_signature": "test"}
+        raise AssertionError("startup plan invalidation must not run in an ephemeral tenant runtime")
 
 
 class FakeAutogrow:
