@@ -1397,7 +1397,9 @@ def _register_routes(app: FastAPI) -> None:
         tenant_id = _tenant_id()
         now_dt = datetime.now()
         now = now_dt.isoformat(sep=" ", timespec="seconds")
-        stale_cutoff = (now_dt - timedelta(minutes=30)).isoformat(sep=" ", timespec="seconds")
+        stale_cutoff = (
+            now_dt - timedelta(minutes=_g()["cfg"].activation.stale_task_timeout_minutes)
+        ).isoformat(sep=" ", timespec="seconds")
         stale_runs = conn.execute(
             "SELECT id FROM sample_runs WHERE tenant_id=? "
             "AND status IN ('created','generating','quality_check') AND created_at<?",
@@ -1439,6 +1441,12 @@ def _register_routes(app: FastAPI) -> None:
             "model_mode": "byok",
             "platform_metric_fields": cfg.platform_metric_fields,
             "model_ready": _llm_available(cfg),
+            "activation_limits": {
+                "account_description_min_chars": cfg.activation.account_description_min_chars,
+                "account_description_max_chars": cfg.activation.account_description_max_chars,
+                "max_runs_per_day": cfg.activation.max_runs_per_day,
+                "sample_max_output_tokens": cfg.activation.sample_max_output_tokens,
+            },
             "model_message": "自带模型已就绪" if _llm_available(cfg) else "需要先配置自己的模型服务和 API Key",
             "formal_setup": {
                 "persona_configured": bool(str(getattr(cfg.ultimate_goal, "positioning", "") or "").strip()
@@ -1459,8 +1467,12 @@ def _register_routes(app: FastAPI) -> None:
         platform = str((req or {}).get("platform") or "").strip()
         idempotency_key = str((req or {}).get("idempotency_key") or "").strip()
         valid_platforms = {"xhs", "douyin", "kuaishou", "wechat_channels"}
-        if not 10 <= len(description) <= 300:
-            raise HTTPException(422, "账号定位请填写 10-300 个字符")
+        activation_cfg = _g()["cfg"].activation
+        if not activation_cfg.account_description_min_chars <= len(description) <= activation_cfg.account_description_max_chars:
+            raise HTTPException(
+                422,
+                f"账号定位请填写 {activation_cfg.account_description_min_chars}-{activation_cfg.account_description_max_chars} 个字符",
+            )
         if platform not in valid_platforms:
             raise HTTPException(422, "请选择有效的主战场平台")
         if not idempotency_key or len(idempotency_key) > 100:
@@ -1472,6 +1484,13 @@ def _register_routes(app: FastAPI) -> None:
         ).fetchone()
         if existing:
             return {"sample_run_id": existing["id"], "status": existing["status"], "deduplicated": True}
+        day_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat(sep=" ")
+        daily_runs = conn.execute(
+            "SELECT COUNT(*) FROM sample_runs WHERE tenant_id=? AND created_at>=?",
+            (tenant_id, day_start),
+        ).fetchone()[0]
+        if daily_runs >= activation_cfg.max_runs_per_day:
+            raise HTTPException(429, "今日快速体验次数已用完；可明日重试，或继续使用正式运营工作台")
         active = conn.execute(
             "SELECT COUNT(*) FROM sample_runs WHERE tenant_id=? AND status IN ('created','generating','quality_check')",
             (tenant_id,),
@@ -1539,7 +1558,14 @@ def _register_routes(app: FastAPI) -> None:
                     "persona_keywords": [],
                     "platform_personas": {},
                 })
-                sample_cfg = base_cfg.model_copy(deep=True, update={"ultimate_goal": sample_goal})
+                sample_copy_config = base_cfg.copy_generation.model_copy(update={
+                    "max_output_tokens": cfg_bg.activation.sample_max_output_tokens,
+                })
+                sample_cfg = base_cfg.model_copy(deep=True, update={
+                    "ultimate_goal": sample_goal,
+                    "copy_generation": sample_copy_config,
+                })
+                model_call_count = 0
                 angles = [
                     ("实用方法", "提供可执行步骤、工具或操作方法"),
                     ("经验洞察", "从真实工作/生活场景提炼经验、误区和判断"),
@@ -1551,6 +1577,12 @@ def _register_routes(app: FastAPI) -> None:
                     for quality_attempt in range(sample_cfg.copy_generation.max_guard_retries + 1):
                         for model_attempt in range(sample_cfg.llm.retry_attempts + 1):
                             try:
+                                model_call_count += 1
+                                conn_bg.execute(
+                                    "UPDATE sample_runs SET attempt_count=? WHERE id=?",
+                                    (model_call_count, run_id),
+                                )
+                                conn_bg.commit()
                                 title, body, tags = await asyncio.to_thread(
                                     generate_copy_content,
                                     f"{description}：{angle}",
@@ -1657,7 +1689,8 @@ def _register_routes(app: FastAPI) -> None:
         ).fetchall()
         return {
             "run": {k: run[k] for k in ("id", "platform", "account_description", "status",
-                "model_mode", "error_code", "error_message_safe", "created_at", "started_at", "completed_at")},
+                "model_mode", "error_code", "error_message_safe", "attempt_count",
+                "created_at", "started_at", "completed_at")},
             "contents": [{
                 **{k: row[k] for k in ("id", "platform", "angle", "title", "body",
                     "quality_status", "adopted_at", "rejected_at", "rejection_reason", "created_at")},
