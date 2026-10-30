@@ -265,6 +265,10 @@ export default function Production() {
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
         const status = await api.roundRunStatus(currentRoundId);
         if (status.error) throw new Error(status.error);
+        // 运行期间定期从数据库回读轮次状态、阶段计数和草稿状态，展示真实进度。
+        if (attempt % 3 === 2) {
+          await Promise.all([refresh(), loadRoundData(currentRoundId)]);
+        }
         if (status.report) {
           res = status.report;
           break;
@@ -511,9 +515,14 @@ export default function Production() {
     setPlanPlatforms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
   };
 
+  const runPlatforms = usePlan
+    ? ((plan?.plan.enabled_platforms ?? []) as Platform[])
+    : selPlatforms;
+  const runHasMissingLogin = runPlatforms.some((platform) => noLogin.includes(platform));
   const canRun = !!roundDetail && ["created", "failed"].includes(roundDetail.status)
     && !running && availableTopicCount !== null && availableTopicCount > 0
-    && (usePlan || selPlatforms.length > 0);
+    && (usePlan || selPlatforms.length > 0)
+    && (!saveDrafts || !runHasMissingLogin);
   const selectedContent = contents.find((c) => c.id === selectedContentId) ?? null;
   const filteredReviewContents = contents.filter((item) => {
     const query = reviewSearch.trim().toLowerCase();
