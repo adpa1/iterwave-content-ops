@@ -1,8 +1,7 @@
 -- Activation and retention domain tables.
 -- All records are stored in the active tenant database; tenant_id is retained for audit.
 CREATE TABLE IF NOT EXISTS activation_cohort (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    tenant_id TEXT NOT NULL,
+    tenant_id TEXT PRIMARY KEY,
     first_seen_at DATETIME NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
