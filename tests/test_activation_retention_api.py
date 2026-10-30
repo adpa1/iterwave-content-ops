@@ -379,6 +379,57 @@ def test_weekly_action_feedback_persists_decisions_and_outcomes(activation_clien
     assert final_action["outcome"] == "success"
 
 
+def test_saved_sample_promotes_into_created_formal_round_idempotently(activation_client, conn, seed):
+    from datetime import datetime
+    from src.core.guard.ultimate_goal_checker import UltimateGoalChecker
+
+    main._g_ctx["guard"] = UltimateGoalChecker(main._g_ctx["cfg"])
+    now = datetime.now().isoformat(sep=" ")
+    round_id = seed.round(status="created")
+    conn.execute(
+        "INSERT INTO sample_runs (id, tenant_id, platform, account_description, status, model_mode, "
+        "idempotency_key, created_at, completed_at) VALUES ('sample-run-promote','default','xhs',"
+        "'分享产品经理的实用方法','ready','byok','promote-key',?,?)",
+        (now, now),
+    )
+    conn.execute(
+        "INSERT INTO sample_contents (id, sample_run_id, tenant_id, platform, angle, title, body, "
+        "hashtags_json, quality_status, adopted_at, created_at, updated_at) "
+        "VALUES ('sample-content-promote','sample-run-promote','default','xhs','实用方法',"
+        "'产品经理的实用方法','产品经理可以通过需求拆解、用户访谈和数据复盘提升工作效率。',"
+        "'[]','pass',?,?,?)",
+        (now, now, now),
+    )
+    conn.commit()
+
+    response = activation_client.post(
+        "/api/activation/saved/sample-content-promote/promote",
+        json={"round_id": round_id},
+    )
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["round_id"] == round_id
+    assert payload["already_promoted"] is False
+    assert conn.execute(
+        "SELECT COUNT(*) FROM contents WHERE id=? AND round_id=?",
+        (payload["content_id"], round_id),
+    ).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id=?", (payload["draft_id"],)
+    ).fetchone()[0] == "draft_pending"
+
+    repeated = activation_client.post(
+        "/api/activation/saved/sample-content-promote/promote",
+        json={"round_id": round_id},
+    )
+    assert repeated.status_code == 201, repeated.text
+    assert repeated.json()["already_promoted"] is True
+    assert repeated.json()["content_id"] == payload["content_id"]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM contents WHERE round_id=?", (round_id,)
+    ).fetchone()[0] == 1
+
+
 def test_activation_metrics_calculates_completed_cohort_rates_and_ttv(activation_client, conn, seed):
     from datetime import datetime, timedelta
     started = datetime.now() - timedelta(days=8)
