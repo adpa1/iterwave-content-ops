@@ -2141,11 +2141,11 @@ def _register_routes(app: FastAPI) -> None:
             "SELECT COUNT(DISTINCT draft_id) FROM ("
             "SELECT ms.draft_id FROM metric_snapshots ms JOIN drafts d ON d.id=ms.draft_id "
             "WHERE ms.tenant_id=? AND d.user_confirmed_at>=? AND d.user_confirmed_at<=? "
-            "AND ms.measured_at>=d.user_confirmed_at AND ms.measured_at<=datetime(d.user_confirmed_at, '+7 days') "
+            "AND ms.measured_at>=d.user_confirmed_at AND ms.measured_at<=datetime(d.user_confirmed_at, '+7 days') AND ms.recorded_at>=d.user_confirmed_at AND ms.recorded_at<=datetime(d.user_confirmed_at, '+7 days') "
             "UNION SELECT m.draft_id FROM metrics m JOIN drafts d ON d.id=m.draft_id "
             "WHERE m.fetch_status IN ('success','partial') AND m.draft_id IS NOT NULL "
             "AND d.user_confirmed_at>=? AND d.user_confirmed_at<=? "
-            "AND m.fetched_at>=d.user_confirmed_at AND m.fetched_at<=datetime(d.user_confirmed_at, '+7 days'))",
+            "AND m.fetched_at>=d.user_confirmed_at AND m.fetched_at<=datetime(d.user_confirmed_at, '+7 days') AND m.fetched_at>=d.user_confirmed_at AND m.fetched_at<=datetime(d.user_confirmed_at, '+7 days'))",
             (tenant_id, started.isoformat(sep=" "), mature_publish_cutoff,
              started.isoformat(sep=" "), mature_publish_cutoff),
         ).fetchone()[0]
