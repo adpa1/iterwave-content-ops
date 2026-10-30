@@ -390,7 +390,7 @@ class HotTopicCollector:
         window_h = self.hcfg.filters.get("time_window_hours")
         now = datetime.now()
         out: list[dict] = []
-        for raw in rows[:_MAX_ITEMS_PER_PLATFORM]:
+        for raw in rows[:self.hcfg.max_items_per_source]:
             title = (raw.get("title") or "").strip()
             if not title:
                 continue
