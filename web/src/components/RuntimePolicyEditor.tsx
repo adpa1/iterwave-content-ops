@@ -21,6 +21,7 @@ const GROUPS: { prefix: string; title: string; exact?: string[] }[] = [
   { prefix: "plan_suggestion.", title: "目标拆分建议策略" },
   { prefix: "spiral.", title: "复盘缺口与运营建议策略" },
   { prefix: "notifications.events.", title: "通知事件开关" },
+  { prefix: "scheduler.misfire_grace_minutes", title: "调度器策略", exact: ["scheduler.misfire_grace_minutes"] },
   { prefix: "topic_kb.remote_timeout_seconds", title: "远程选题库来源", exact: ["topic_kb.remote_timeout_seconds"] },
   { prefix: "timeouts.", title: "采集重试与轮次上限", exact: [
     "timeouts.metrics_retry_attempts",
@@ -124,6 +125,7 @@ const LABELS: Record<string, string> = {
   screenshot_days: "截图保留天数",
   ops_logs_days: "运营日志保留天数",
   ai_calls_detail_days: "AI 调用明细保留天数",
+  misfire_grace_minutes: "错过计划任务宽限期（分钟）",
   metrics_retry_attempts: "数据采集最大尝试次数",
   metrics_retry_interval_minutes: "数据采集重试间隔（分钟）",
   goal_max_rounds: "单个目标最大轮数",
