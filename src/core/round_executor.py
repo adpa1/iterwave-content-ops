@@ -624,7 +624,7 @@ class RoundExecutor:
                 "SELECT scheduled_publish_at FROM drafts WHERE platform = ? AND scheduled_publish_at IS NOT NULL",
                 (platform_key,),
             )}
-            day = business_now(self.cfg).date() + timedelta(days=1)
+            day = business_now(getattr(self, "cfg", None)).date() + timedelta(days=1)
             queue = [r[0] for r in drafts]
             guard = 0
             while queue and guard < 366:
