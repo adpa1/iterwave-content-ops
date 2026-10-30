@@ -368,7 +368,7 @@ def test_cancel_round_cancels_local_pending_drafts_together(client):
     ).fetchone()[0] == "cancelled"
 
 
-def test_round_cancel_rejected_while_run_is_active(client):
+def test_round_cancel_rejected_while_run_is_active(client, tmp_path, monkeypatch):
     tc, conn, seed = client
     round_id = seed.round(status="producing")
     _seed_active_queue_round(tmp_path, monkeypatch, round_id)
