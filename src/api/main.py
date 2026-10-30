@@ -1649,6 +1649,19 @@ def _register_routes(app: FastAPI) -> None:
                         if guard_result.result != CheckResult.PASS:
                             findings.append(guard_result.reason or "未通过内容方向与合规检查")
                         if not findings:
+                            from difflib import SequenceMatcher
+                            compact_title = "".join(ch.lower() for ch in title if not ch.isspace())
+                            compact_body = "".join(ch.lower() for ch in body if not ch.isspace())
+                            for previous_angle, previous_title, previous_body, _previous_tags, _previous_findings in results:
+                                previous_compact_title = "".join(ch.lower() for ch in previous_title if not ch.isspace())
+                                previous_compact_body = "".join(ch.lower() for ch in previous_body if not ch.isspace())
+                                if (
+                                    SequenceMatcher(None, compact_title, previous_compact_title).ratio() >= 0.95
+                                    or SequenceMatcher(None, compact_body, previous_compact_body).ratio() >= 0.92
+                                ):
+                                    findings.append(f"与「{previous_angle}」样稿高度重复")
+                                    break
+                        if not findings:
                             break
                         reject_reason = "上一版样稿未通过质量检查：" + "、".join(findings) + "。请针对问题重写，避免重复原稿。"
                     else:
@@ -1759,7 +1772,8 @@ def _register_routes(app: FastAPI) -> None:
         contents = conn.execute(
             "SELECT id, platform, angle, title, body, hashtags_json, quality_status, "
             "quality_findings_json, adopted_at, rejected_at, rejection_reason, created_at "
-            "FROM sample_contents WHERE sample_run_id=? AND tenant_id=? ORDER BY created_at, id",
+            "FROM sample_contents WHERE sample_run_id=? AND tenant_id=? "
+            "ORDER BY CASE angle WHEN '实用方法' THEN 1 WHEN '经验洞察' THEN 2 WHEN '问题拆解' THEN 3 ELSE 9 END, id",
             (sample_run_id, tenant_id),
         ).fetchall()
         return {
