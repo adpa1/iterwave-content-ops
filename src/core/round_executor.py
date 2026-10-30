@@ -102,7 +102,7 @@ class RoundExecutor:
         self._pvm = PlanVersionManager(self.cfg, self.conn)
         self._plan, self._plan_sig, _at, self._plan_source = self._pvm.load_plan()
         if topic_count is None:
-            topic_count = int(self._plan.get("topic_count_per_platform") or 5)
+            topic_count = int(self._plan.get("topic_count_per_platform") or self.cfg.plan_suggestion.default_topic_count)
         if platform_values is None and self._plan_source == "plan_settings":
             platform_values = list(self._plan.get("enabled_platforms") or []) or None
         # Agent 编排：存草稿 / 出图 / 自动排期按编排开关运行
