@@ -208,6 +208,16 @@ SCALAR_RULES: dict[str, tuple[type, float | None, float | None]] = {
     "plan_suggestion.max_topics_per_platform": (int, 1, 200),
     "plan_suggestion.max_rounds": (int, 1, 500),
     "plan_suggestion.default_interval_days": (int, 1, 365),
+    "spiral.min_dimension_samples": (int, 1, 100),
+    "spiral.validation_gap_topic_min": (int, 1, 20),
+    "spiral.validation_gap_topic_max": (int, 1, 20),
+    "spiral.coverage_gap_ratio": (float, 0.05, 1.0),
+    "spiral.coverage_performance_multiplier": (float, 1.0, 10.0),
+    "spiral.min_suggested_add": (int, 1, 10000),
+    "spiral.min_platform_samples": (int, 1, 100),
+    "spiral.low_interaction_rate_threshold": (float, 0.0, 1.0),
+    "spiral.min_metrics_for_ops_adjustment": (int, 1, 100),
+    "spiral.min_rounds_for_systematic_adjustment": (int, 1, 100),
     "llm.enabled": (bool, None, None),
     # 通知通道开关（页面只在运营中心提供开关；也可从这里改）
     "notifications.channels.macos.enabled": (bool, None, None),
@@ -1069,6 +1079,10 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
         raise ConfigPatchError("文案正文长度下限不能大于上限")
     if tag_min > tag_max:
         raise ConfigPatchError("文案标签数量下限不能大于上限")
+    spiral_min = normalized.get("spiral.validation_gap_topic_min", cfg.spiral.validation_gap_topic_min)
+    spiral_max = normalized.get("spiral.validation_gap_topic_max", cfg.spiral.validation_gap_topic_max)
+    if spiral_min > spiral_max:
+        raise ConfigPatchError("验证缺口建议选题数量下限不能大于上限")
 
     changes: list[dict[str, Any]] = []
     persisted: dict[str, Any] = {}
