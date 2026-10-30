@@ -31,8 +31,15 @@ const SCHEDULER_JOB_LABEL: Record<string, string> = {
 };
 
 function aggregateLabel(task: GlobalTaskQueueItem) {
-  if (task.task_type !== "scheduler_job" || !task.aggregate_id) {
-    return task.aggregate_id || "—";
+  if (!task.aggregate_id) return "—";
+  if (task.task_type === "round_run") {
+    const [roundId, operation] = task.aggregate_id.split(":");
+    return operation === "save_pending_drafts"
+      ? `第 ${roundId} 轮 · 恢复存草稿`
+      : `第 ${roundId} 轮`;
+  }
+  if (task.task_type !== "scheduler_job") {
+    return task.aggregate_id;
   }
   const [method, objectId, attempt] = task.aggregate_id.split(":");
   const label = SCHEDULER_JOB_LABEL[method] || "账号组后台任务";
