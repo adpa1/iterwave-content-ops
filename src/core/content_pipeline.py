@@ -7,7 +7,7 @@ RoundExecutor 串行编排，本模块不自行放行）。
 
 LLM 策略：
 - config.llm.enabled=true 且环境变量有 key → 调用 Agent Plan（ARK）生成
-- 否则 → 模板降级（明确标注 degraded=True，不伪装成 AI 生成）
+- 否则 → 正式生成明确失败；模板只保留为显式演示素材，不进入生产链路
 """
 
 from __future__ import annotations
