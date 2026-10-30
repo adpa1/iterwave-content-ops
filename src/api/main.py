@@ -469,6 +469,9 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
             except Exception:
                 logger.exception("清理切换失败的新账号组运行时失败 tenant=%s", tenant_id)
             _tenant_runtime_contexts.pop(tenant_id, None)
+        elif new_context is not None:
+            # 已缓存的目标账号组没有销毁；恢复它原来的独立上下文快照。
+            _tenant_runtime_contexts[tenant_id] = new_context
         if isinstance(exc, HTTPException):
             raise exc
         raise HTTPException(
