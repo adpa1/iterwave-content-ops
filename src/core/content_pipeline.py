@@ -172,7 +172,7 @@ def _generate_via_llm(
         f"平台：{platform.display_name}\n"
         f"平台风格：{style['title_style']}；{style['body_style']}；语气 {style['tone']}\n"
         f"选题：{topic_title}\n"
-        f"摘要：{topic_summary[:300]}\n"
+        f"摘要：{topic_summary[:cfg.copy_generation.topic_summary_max_chars]}\n"
         f"内容方向：{dimension}\n"
         f"要求：标题不超过 {cfg.copy_generation.title_max_chars} 字；正文 {cfg.copy_generation.body_min_chars}-{cfg.copy_generation.body_max_chars} 字；标签 {cfg.copy_generation.tag_min_count}-{cfg.copy_generation.tag_max_count} 个；"
         f"不得出现违法违规内容；不得脱离「{dimension}」方向；"
@@ -269,7 +269,7 @@ def _generate_via_llm(
     tags = parsed.get("tags") or style["hashtags"] or [f"#{dimension}"]
     if isinstance(tags, str):
         tags = [t for t in re.split(r"[,\s]+", tags) if t]
-    tags = [f"#{str(t).strip().lstrip('#')}" for t in tags if str(t).strip()][:5]
+    tags = [f"#{str(t).strip().lstrip('#')}" for t in tags if str(t).strip()][:cfg.copy_generation.tag_max_count]
     output_valid = bool(title and body)
     _log_ai_call(
         conn, platform, llm.model, topic_id, round_id,
