@@ -187,7 +187,17 @@ class Database:
         logger.info("执行迁移 %d — %s（%s）", mig.version, mig.name, mig.path)
         # 历史迁移曾发生版本号冲突。已重编号的迁移必须兼容旧库中已执行过部分 ALTER 的情况。
         if mig.name in ("hot_topic_trend", "content_review_rejection"):
-            sql = self._skip_existing_columns(conn, sql)
+            table_name = "hot_topics" if mig.name == "hot_topic_trend" else "contents"
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+            filtered = []
+            for line in sql.splitlines():
+                prefix = f"ALTER TABLE {table_name} ADD COLUMN "
+                if line.startswith(prefix):
+                    column = line[len(prefix):].strip().split()[0]
+                    if column in existing:
+                        continue
+                filtered.append(line)
+            sql = "\n".join(filtered)
 
         # SQLite 不支持单次多条语句的多结果集执行，用 executescript
         conn.executescript(sql)

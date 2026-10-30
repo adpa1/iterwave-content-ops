@@ -60,6 +60,11 @@ export default function MediaLibraryPane() {
   const [panel, setPanel] = useState<Panel>("none");
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
+  const [title, setTitle] = useState("");
+  const [altText, setAltText] = useState("");
+  const [tagsText, setTagsText] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [purpose, setPurpose] = useState("场景环境");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [targetWarning, setTargetWarning] = useState("");
@@ -329,30 +334,179 @@ export default function MediaLibraryPane() {
             <button className="btn primary sm" onClick={() => togglePanel("upload")}>{panel === "upload" ? "收起上传" : "上传图片"}</button>
           </div>
         </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+          <label className="field">
+            <span className="field-label">选择图片</span>
+            <input id="media-upload-input" type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif" onChange={(event) => chooseFiles(Array.from(event.target.files ?? []))} />
+          </label>
+          <label className="field">
+            <span className="field-label">用途分类（批量应用）</span>
+            <select value={purpose} onChange={(event) => setPurpose(event.target.value)}>
+              <option>封面主视觉</option><option>产品/作品</option><option>场景环境</option><option>人物/团队</option>
+              <option>过程/细节</option><option>活动宣传</option><option>品牌元素</option><option>信息图示</option><option>背景氛围</option><option>其他</option>
+            </select>
+          </label>
+          <label className="field">
+            <span className="field-label">素材名称（单张上传时使用）</span>
+            <input value={title} maxLength={200} onChange={(event) => setTitle(event.target.value)} placeholder="批量导入时自动取文件名" />
+          </label>
+          <label className="field">
+            <span className="field-label">替代文本</span>
+            <input value={altText} maxLength={500} onChange={(event) => setAltText(event.target.value)} placeholder="描述图片内容，便于检索和无障碍访问" />
+          </label>
+          <label className="field">
+            <span className="field-label">标签（逗号分隔）</span>
+            <input value={tagsText} onChange={(event) => setTagsText(event.target.value)} placeholder="封面, 品牌, 教程" />
+          </label>
+        </div>
+        {files.length > 0 && <div className="panel-sub" style={{ marginTop: 8 }}>已选 {files.length} 张：{files.slice(0, 4).map((item) => `${item.name}（${formatBytes(item.size)}）`).join("、")}{files.length > 4 ? ` 等共 ${files.length} 张` : ""} · 单张不超过 12MB</div>}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+          <button className="btn sm" onClick={() => { setFiles([]); setTitle(""); setAltText(""); setTagsText(""); const input = document.getElementById("media-upload-input") as HTMLInputElement | null; if (input) input.value = ""; }}>清空</button>
+          <button className="btn primary sm" onClick={() => void upload()} disabled={!files.length || isPending("media:upload")}>
+            {isPending("media:upload") ? `导入中 ${files.length} 张…` : `导入 ${files.length || ""} 张图片到素材库`}
+          </button>
+        </div>
+      </section>
 
-        {panel === "upload" && (
-          <div className="ml-drawer">
-            <div
-              className={`ml-drop ${dragging ? "over" : ""} ${files.length ? "has-files" : ""}`}
-              onClick={() => fileInput.current?.click()}
-              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-              onDragLeave={() => setDragging(false)}
-              onDrop={(e) => { e.preventDefault(); setDragging(false); chooseFiles(Array.from(e.dataTransfer.files)); }}
-              role="button" tabIndex={0}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") fileInput.current?.click(); }}
-            >
-              <input ref={fileInput} type="file" multiple hidden accept="image/jpeg,image/png,image/webp,image/gif"
-                onChange={(e) => chooseFiles(Array.from(e.target.files ?? []))} />
-              {files.length === 0 ? (
-                <>
-                  <div className="ml-drop-title">拖入图片，或点击选择</div>
-                  <div className="ml-hint">支持 JPG、PNG、WebP、GIF，可多选，单张不超过 12MB；重复图片会自动复用</div>
-                </>
-              ) : (
-                <>
-                  <div className="ml-drop-title">已选 {files.length} 张</div>
-                  <div className="ml-hint">
-                    {files.slice(0, 3).map((f) => `${f.name}（${formatBytes(f.size)}）`).join("、")}{files.length > 3 ? ` 等` : ""} · 点击重新选择
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <div className="panel-title">AI 配图与改图</div>
+            <div className="panel-sub">生成结果先进入待审核状态；只有人工审核通过的图片才能分配给内容。API 密钥只从服务端环境读取。</div>
+          </div>
+          <span className={generationSettings?.provider_configured ? "tag green" : "tag orange"}>
+            {generationSettings?.provider_configured ? "已配置图片服务" : "未配置图片服务密钥"}
+          </span>
+        </div>
+        {!generationSettings ? <div className="empty-state">正在加载 AI 配图设置…</div> : (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+              <label className="field">
+                <span className="field-label">启用 AI 配图</span>
+                <select value={generationSettings.enabled ? "on" : "off"} onChange={(event) => setGenerationSettings({ ...generationSettings, enabled: event.target.value === "on" })}>
+                  <option value="off">关闭</option><option value="on">启用</option>
+                </select>
+              </label>
+              <label className="field">
+                <span className="field-label">模型</span>
+                <input value={generationSettings.model} maxLength={120} onChange={(event) => setGenerationSettings({ ...generationSettings, model: event.target.value })} />
+              </label>
+              <label className="field">
+                <span className="field-label">图片尺寸</span>
+                <select value={generationSettings.size} onChange={(event) => setGenerationSettings({ ...generationSettings, size: event.target.value as MediaGenerationSettings["size"] })}>
+                  <option value="1024x1024">1024 × 1024</option>
+                  <option value="1024x1536">1024 × 1536（竖图）</option>
+                  <option value="1536x1024">1536 × 1024（横图）</option>
+                </select>
+              </label>
+              <label className="field">
+                <span className="field-label">本月生成额度</span>
+                <input type="number" min={0} max={1000} value={generationSettings.monthly_quota} onChange={(event) => setGenerationSettings({ ...generationSettings, monthly_quota: Math.max(0, Math.min(1000, Number(event.target.value) || 0)) })} />
+              </label>
+            </div>
+            <label className="field" style={{ display: "block", marginTop: 12 }}>
+              <span className="field-label">统一视觉策略 / 提示词前缀</span>
+              <textarea rows={3} maxLength={2000} value={generationSettings.prompt_prefix} onChange={(event) => setGenerationSettings({ ...generationSettings, prompt_prefix: event.target.value })} placeholder="例如：真实摄影风格、构图简洁、避免文字水印；根据账号品牌风格统一视觉表现" />
+            </label>
+            <div className="panel-sub" style={{ marginTop: 8 }}>
+              本月成功生成 {generationSettings.used_this_month} 次 / 配额 {generationSettings.monthly_quota} 次。失败的生成不计入已用额度。
+            </div>
+            <div className="panel-sub" style={{ marginTop: 4 }}>
+              视觉初筛依据分辨率、构图、亮度、对比度、清晰度和颜色多样性给出可解释分数；它不判断图片是否符合文案语义，也不替代人工审核。
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+              <button className="btn sm" onClick={() => void saveGenerationSettings()} disabled={isPending("media:generation-settings")}>
+                {isPending("media:generation-settings") ? "保存中…" : "保存 AI 配图设置"}
+              </button>
+            </div>
+            <label className="field" style={{ display: "block", marginTop: 16 }}>
+              <span className="field-label">本次生成 / 改图要求</span>
+              <textarea rows={3} maxLength={2000} value={generationPrompt} onChange={(event) => setGenerationPrompt(event.target.value)} placeholder="描述画面主体、场景、构图、光线和需要避免的元素。改图时描述希望保留和修改的部分。" />
+            </label>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+              <button className="btn primary sm" onClick={() => void generate()} disabled={!generationSettings.enabled || !generationSettings.provider_configured || !generationPrompt.trim() || isPending("media:generate")}>
+                {isPending("media:generate") ? "生成中…" : "生成新图片"}
+              </button>
+            </div>
+          </>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-head" style={{ gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div className="panel-title">已入库素材</div>
+            <div className="panel-sub">素材在本账号组内可复用，不会自动跨账号组共享。</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、标签或说明" />
+            <button className="btn sm" onClick={() => void load()} disabled={loading}>刷新</button>
+          </div>
+        </div>
+        {targetWarning && <div className="note" role="alert" style={{ color: "var(--orange)", marginBottom: 10 }}>{targetWarning}</div>}
+        {targets.length > 0 && <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+          <button className="btn sm" onClick={() => void recommendForContent()} disabled={!selectedContentId || recommendationLoading}>
+            {recommendationLoading ? "匹配中…" : "为当前内容推荐素材"}
+          </button>
+          <button className="btn sm primary" onClick={() => void generateForContent()} disabled={!selectedContentId || isPending("media:generate-for-content") || !generationSettings?.enabled || !generationSettings.provider_configured}>
+            {isPending("media:generate-for-content") ? "生成中…" : "按当前内容生成配图"}
+          </button>
+        </div>}
+        {recommendations.length > 0 && recommendationContentId === selectedContentId && recommendationRole === usageRole && <div className="panel" style={{ marginBottom: 14, padding: 12 }}>
+          <div className="panel-title">匹配推荐（前 {recommendations.length} 项）</div>
+          <div className="panel-sub">{recommendationMessage || "推荐结果仅供确认，不会自动替换内容图片。"}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 8, marginTop: 10 }}>
+            {recommendations.map((rec) => {
+              const asset = items.find((item) => item.id === rec.asset_id);
+              if (!asset) return null;
+              return <div key={rec.asset_id} style={{ display: "flex", gap: 10, border: "1px solid var(--border)", borderRadius: 8, padding: 8, minWidth: 0 }}>
+                <img src={asset.file_url} alt={asset.alt_text || asset.title} loading="lazy" style={{ width: 68, height: 68, objectFit: "contain", background: "var(--surface-2)", borderRadius: 6, flexShrink: 0 }} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{asset.title}</div>
+                  <div className="panel-sub">{rec.reason || "关键词匹配"} · 匹配分 {rec.score}</div>
+                  <button className="btn sm primary" style={{ marginTop: 6 }} onClick={() => void assignToContent(asset)} disabled={!selectedContentId || isPending("media:use:" + asset.id)}>使用此素材</button>
+                </div>
+              </div>;
+            })}
+          </div>
+          {recommendationMessage && <div className="panel-sub" style={{ marginTop: 8 }}>{recommendationMessage}</div>}
+        </div>}
+        {targets.length > 0 && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+            <span className="field-label">手动配图目标</span>
+            <select value={selectedContentId} onChange={(event) => { setSelectedContentId(event.target.value); setTargetWarning(""); setRecommendations([]); setRecommendationMessage(""); }} style={{ minWidth: 260, maxWidth: "100%" }}>
+              {targets.map((target) => (
+                <option value={target.id} key={target.id}>
+                  {target.title} · {({ xhs: "小红书", douyin: "抖音", kuaishou: "快手", wechat_channels: "视频号" } as Record<string, string>)[target.platform] ?? "平台内容"} · {target.draft_status === "draft_saved" ? "已存平台草稿" : "待存草稿"} · {target.visual_status === "media_asset" ? "已有素材图" : target.visual_status === "generated" ? "AI 配图" : "默认配图"}
+                </option>
+              ))}
+            </select>
+            <label className="field" style={{ minWidth: 140 }}>
+              <span className="field-label">在内容中的用途</span>
+              <select value={usageRole} onChange={(event) => { setUsageRole(event.target.value as "cover" | "illustration" | "background"); setRecommendations([]); setRecommendationMessage(""); }}>
+                <option value="cover">封面</option><option value="illustration">正文配图</option><option value="background">背景</option>
+              </select>
+            </label>
+            <span className="panel-sub">选择一篇尚未发布的内容，再点击素材卡片中的「配给此内容」。模板渐变图会明确标记为降级，正式配图需人工选择或后续 AI 配图。</span>
+          </div>
+        )}
+        {error && <div className="panel-sub" style={{ color: "var(--red)" }}>{error}</div>}
+        {loading ? <div className="empty-state">正在加载素材…</div> : items.length === 0 ? (
+          <div className="empty-state">暂无图片素材。上传一张图片后，可在此查看和管理。</div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 14 }}>
+            {items.map((item) => (
+              <article key={item.id} style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", minWidth: 0 }}>
+                <div style={{ aspectRatio: "4 / 3", background: "var(--surface-2)", display: "grid", placeItems: "center" }}>
+                  <img src={item.file_url} alt={item.alt_text || item.title} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+                </div>
+                <div style={{ padding: 10 }}>
+                  <div style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{item.title}</div>
+                  <div className="panel-sub">{item.width} × {item.height} · {formatBytes(item.byte_size)}</div>
+                  <div className="panel-sub" style={{ overflowWrap: "anywhere" }}>{item.original_filename}</div>
+                  <div className="panel-sub">
+                    视觉初筛：{item.quality_score == null ? "未评分" : `${item.quality_score}/100`}
+                    {item.quality_details?.reasons?.length ? ` · ${item.quality_details.reasons.slice(0, 2).join("；")}` : ""}
                   </div>
                 </>
               )}
