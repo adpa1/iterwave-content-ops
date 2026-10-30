@@ -201,4 +201,4 @@ def test_worker_redacts_sensitive_failure_details_before_queue_storage(tmp_path)
     saved = queue.get(task.task_id)
     assert saved is not None and saved.status == "failed"
     assert "sk-abcdef123456" not in (saved.error_message or "")
-    assert "sk-***" in (saved.error_message or "")
+    assert "sk-a***" in (saved.error_message or "")
