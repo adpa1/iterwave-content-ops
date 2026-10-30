@@ -121,7 +121,6 @@ class ScoringConfig(BaseModel):
     active_dimension_min_uses: int = 2
     active_dimension_window_days: int = 90
     shrinkage_m: int = 5
-    exploration_percent: int = Field(15, ge=0, le=50)
     normalization_window_days: int = Field(90, ge=1, le=3650)
     cold_start_min_published: int = Field(10, ge=1, le=1000)
     stable_dimension_min_samples: int = Field(5, ge=1, le=100)
