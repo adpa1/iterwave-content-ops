@@ -920,6 +920,11 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
         if total != 100:
             raise ConfigPatchError(f"{mode} 权重合计必须 = 100%，按本次修改后为 {total}%（请同时调整其它维度）")
 
+    active_min_uses = normalized.get("scoring.active_dimension_min_uses", cfg.scoring.active_dimension_min_uses)
+    stable_min_samples = normalized.get("scoring.stable_dimension_min_samples", cfg.scoring.stable_dimension_min_samples)
+    if stable_min_samples < active_min_uses:
+        raise ConfigPatchError("stable_dimension_min_samples 必须大于等于 active_dimension_min_uses")
+
     changes: list[dict[str, Any]] = []
     persisted: dict[str, Any] = {}
     audit_rows: list[tuple[str, str | None, str]] = []
