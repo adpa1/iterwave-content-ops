@@ -60,8 +60,9 @@ def run_once(cfg, conn=None, *, trigger: str = "manual", tenant_id: str | None =
     前端切换页签 / 离开页面都不会影响采集本身。
     """
     with _LOCK:
-        if _STATE["running"]:
-            return {"skipped": True, **_STATE}
+        if _STATE["running"] or _RESEARCH_STATE["running"]:
+            busy = _STATE if _STATE["running"] else _RESEARCH_STATE
+            return {"skipped": True, "reason": "热点后台任务正在执行", **busy}
         _STATE.update(running=True, tenant_id=tenant_id, trigger=trigger, error=None, progress=None,
                       started_at=datetime.now().isoformat(timespec="seconds"))
     own_conn = conn is None
@@ -128,8 +129,9 @@ def run_once(cfg, conn=None, *, trigger: str = "manual", tenant_id: str | None =
 def trigger_background(cfg, *, trigger: str = "manual", tenant_id: str | None = None) -> dict:
     """在后台线程启动一次刷新，立即返回当前状态。"""
     with _LOCK:
-        if _STATE["running"]:
-            return {"started": False, **_STATE}
+        if _STATE["running"] or _RESEARCH_STATE["running"]:
+            busy = _STATE if _STATE["running"] else _RESEARCH_STATE
+            return {"started": False, "reason": "热点后台任务正在执行", **busy}
     t = threading.Thread(
         target=run_once, args=(cfg,), kwargs={"trigger": trigger, "tenant_id": tenant_id},
         name=f"hot-topics-refresh-{tenant_id or 'unknown'}", daemon=True,
@@ -141,10 +143,9 @@ def trigger_background(cfg, *, trigger: str = "manual", tenant_id: str | None = 
 def run_research(cfg, conn=None, *, tenant_id: str | None = None) -> dict:
     """同步执行一次大模型研判（只处理当前榜单里尚未研判的条目）。"""
     with _LOCK:
-        if _RESEARCH_STATE["running"]:
-            return {"skipped": True, **research_status()}
-        if _STATE["running"]:
-            return {"skipped": True, "reason": "热点正在采集中，稍后再研判", **research_status()}
+        if _RESEARCH_STATE["running"] or _STATE["running"]:
+            busy = _RESEARCH_STATE if _RESEARCH_STATE["running"] else _STATE
+            return {"skipped": True, "reason": "热点后台任务正在执行，稍后再试", **busy}
         _RESEARCH_STATE.update(running=True, tenant_id=tenant_id, error=None, report=None,
                                started_at=datetime.now().isoformat(timespec="seconds"))
     own_conn = conn is None
@@ -173,10 +174,9 @@ def run_research(cfg, conn=None, *, tenant_id: str | None = None) -> dict:
 def trigger_research(cfg, *, tenant_id: str | None = None) -> dict:
     """在后台线程启动一次大模型研判，立即返回当前状态。"""
     with _LOCK:
-        if _RESEARCH_STATE["running"]:
-            return {"started": False, **research_status()}
-        if _STATE["running"]:
-            return {"started": False, "reason": "热点正在采集中，稍后再研判", **research_status()}
+        if _RESEARCH_STATE["running"] or _STATE["running"]:
+            busy = _RESEARCH_STATE if _RESEARCH_STATE["running"] else _STATE
+            return {"started": False, "reason": "热点后台任务正在执行，稍后再试", **busy}
     t = threading.Thread(
         target=run_research, args=(cfg,), kwargs={"tenant_id": tenant_id},
         name=f"hot-topics-research-{tenant_id or 'unknown'}", daemon=True,
@@ -206,9 +206,9 @@ def reset_runtime_state() -> None:
 
 def reset_for_tests() -> None:
     with _LOCK:
-        _STATE.update(running=False, started_at=None, finished_at=None, trigger=None,
-                      report=None, match=None, error=None, progress=None)
-        _RESEARCH_STATE.update(running=False, started_at=None, finished_at=None,
+        _STATE.update(running=False, tenant_id=None, started_at=None, finished_at=None,
+                      trigger=None, report=None, match=None, error=None, progress=None)
+        _RESEARCH_STATE.update(running=False, tenant_id=None, started_at=None, finished_at=None,
                                report=None, error=None)
 
 
