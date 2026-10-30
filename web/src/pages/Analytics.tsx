@@ -72,7 +72,7 @@ export default function Analytics() {
     <>
       <div className="page-head">
         <div>
-          <div className="eyebrow">PERFORMANCE REVIEW</div>
+          <div className="eyebrow">数据复盘</div>
           <h1 className="page-title">数据分析</h1>
           <div className="page-desc">
             每个平台只和自己的历史比较；互动率、点赞率、收藏率可以跨平台对比，曝光、点赞等原始数字不能。
