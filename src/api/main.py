@@ -1398,7 +1398,30 @@ def _register_routes(app: FastAPI) -> None:
     def activation_status():
         conn = _g()["conn"]
         tenant_id = _tenant_id()
-        now = datetime.now().isoformat(sep=" ", timespec="seconds")
+        now_dt = datetime.now()
+        now = now_dt.isoformat(sep=" ", timespec="seconds")
+        stale_cutoff = (now_dt - timedelta(minutes=30)).isoformat(sep=" ", timespec="seconds")
+        stale_runs = conn.execute(
+            "SELECT id FROM sample_runs WHERE tenant_id=? "
+            "AND status IN ('created','generating','quality_check') AND created_at<?",
+            (tenant_id, stale_cutoff),
+        ).fetchall()
+        if stale_runs:
+            conn.execute(
+                "UPDATE sample_runs SET status='failed', error_code='task_interrupted', "
+                "error_message_safe='体验任务中断，请重新生成', completed_at=? "
+                "WHERE tenant_id=? AND status IN ('created','generating','quality_check') AND created_at<?",
+                (now, tenant_id, stale_cutoff),
+            )
+            conn.commit()
+            for stale in stale_runs:
+                try:
+                    _record_content_event(
+                        "sample_generation_failed", metadata={"error_code": "task_interrupted"},
+                        idempotency_key=f"sample-failed:{stale['id']}",
+                    )
+                except Exception:
+                    logger.exception("中断体验任务事件写入失败 run=%s", stale["id"])
         inserted = conn.execute(
             "INSERT OR IGNORE INTO activation_cohort (id, tenant_id, first_seen_at) VALUES (1, ?, ?)",
             (tenant_id, now),
@@ -1464,14 +1487,24 @@ def _register_routes(app: FastAPI) -> None:
         initial_status = "created" if model_ready else "failed"
         error_code = None if model_ready else "model_not_configured"
         error_message = None if model_ready else "尚未配置可用模型，请先到系统设置接入自己的模型"
-        conn.execute(
-            "INSERT INTO sample_runs "
-            "(id, tenant_id, platform, account_description, status, model_mode, error_code, error_message_safe, "
-            "idempotency_key, created_at, completed_at) VALUES (?, ?, ?, ?, ?, 'byok', ?, ?, ?, ?, ?)",
-            (run_id, tenant_id, platform, description, initial_status, error_code, error_message,
-             idempotency_key, now, None if model_ready else now),
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                "INSERT INTO sample_runs "
+                "(id, tenant_id, platform, account_description, status, model_mode, error_code, error_message_safe, "
+                "idempotency_key, created_at, completed_at) VALUES (?, ?, ?, ?, ?, 'byok', ?, ?, ?, ?, ?)",
+                (run_id, tenant_id, platform, description, initial_status, error_code, error_message,
+                 idempotency_key, now, None if model_ready else now),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            duplicate = conn.execute(
+                "SELECT id, status FROM sample_runs WHERE tenant_id=? AND idempotency_key=?",
+                (tenant_id, idempotency_key),
+            ).fetchone()
+            if duplicate:
+                return {"sample_run_id": duplicate["id"], "status": duplicate["status"], "deduplicated": True}
+            raise HTTPException(409, "已有快速体验任务正在执行，请等待完成后再试") from exc
         _record_content_event("sample_generation_started", idempotency_key=f"sample-start:{run_id}")
         if not model_ready:
             _record_content_event("sample_generation_failed", metadata={"error_code": error_code},
@@ -1502,12 +1535,20 @@ def _register_routes(app: FastAPI) -> None:
                 ]
                 results = []
                 for angle, angle_hint in angles:
-                    title, body, tags = await asyncio.to_thread(
-                        generate_copy_content,
-                        f"{description}：{angle}",
-                        f"账号定位：{description}。本篇创作角度：{angle_hint}。请给出具体、有信息增量且适合平台发布的内容。",
-                        "账号定位", PlatformEnum(platform), sample_cfg, conn_bg, None, None, None, None,
-                    )
+                    for model_attempt in range(sample_cfg.llm.retry_attempts + 1):
+                        try:
+                            title, body, tags = await asyncio.to_thread(
+                                generate_copy_content,
+                                f"{description}：{angle}",
+                                f"账号定位：{description}。本篇创作角度：{angle_hint}。请给出具体、有信息增量且适合平台发布的内容。",
+                                "账号定位", PlatformEnum(platform), sample_cfg, conn_bg, None, None, None, None,
+                            )
+                            break
+                        except ContentGenerationError as model_error:
+                            if not model_error.retryable or model_attempt >= sample_cfg.llm.retry_attempts:
+                                raise
+                            delay = sample_cfg.llm.retry_backoff_seconds * (2 ** model_attempt)
+                            await asyncio.sleep(delay)
                     findings = []
                     if len(title.strip()) < 4:
                         findings.append("标题信息不足")
@@ -3301,8 +3342,6 @@ def _register_routes(app: FastAPI) -> None:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY d.created_at DESC LIMIT 100"
         rows = conn.execute(sql, params).fetchall()
-        from src.core.content_pipeline import _llm_available
-        llm_available = _llm_available(_g()["cfg"])
         items = []
         from src.core.content_version import content_version_hash, parse_json_list
         for item in rows:
@@ -3569,8 +3608,6 @@ def _register_routes(app: FastAPI) -> None:
                 f"该内容已被人工驳回：{row['review_rejection_reason'] or '未提供原因'}。"
                 "请先修改文案、重新过目标检查并提交审核",
             )
-        from src.core.content_pipeline import _llm_available
-        llm_available = _llm_available(_g()["cfg"])
         guard_outcome = row["guard_outcome"]
         guard_accepted = guard_outcome == "pass" or (
             guard_outcome == "warn" and not llm_available
