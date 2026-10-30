@@ -1445,8 +1445,9 @@ def _register_routes(app: FastAPI) -> None:
         from src.core.content_pipeline import _llm_available
         cfg = _g()["cfg"]
         latest_run = conn.execute(
-            "SELECT id, status FROM sample_runs WHERE tenant_id=? AND deleted_at IS NULL "
-            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            "SELECT sr.id, sr.status FROM sample_runs sr WHERE sr.tenant_id=? "
+            "AND NOT EXISTS (SELECT 1 FROM activation_run_deletions d WHERE d.sample_run_id=sr.id) "
+            "ORDER BY sr.created_at DESC, sr.id DESC LIMIT 1",
             (tenant_id,),
         ).fetchone()
         day_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(sep=" ")
@@ -1723,20 +1724,18 @@ def _register_routes(app: FastAPI) -> None:
         conn = _g()["conn"]
         now = datetime.now().isoformat(sep=" ", timespec="seconds")
         row = conn.execute(
-            "SELECT status, deleted_at FROM sample_runs WHERE id=? AND tenant_id=?",
+            "SELECT status FROM sample_runs WHERE id=? AND tenant_id=?",
             (sample_run_id, _tenant_id()),
         ).fetchone()
         if row is None:
             raise HTTPException(404, "体验样稿不存在")
         if row["status"] in ("created", "generating", "quality_check"):
             raise HTTPException(409, "体验任务仍在执行，完成或失败后才能删除")
-        if row["deleted_at"] is None:
-            # 软删除：保留额度计数和审计事件，不允许通过删除历史恢复体验次数。
-            conn.execute(
-                "UPDATE sample_runs SET deleted_at=? WHERE id=? AND tenant_id=? AND deleted_at IS NULL",
-                (now, sample_run_id, _tenant_id()),
-            )
-            conn.commit()
+        conn.execute(
+            "INSERT OR IGNORE INTO activation_run_deletions (sample_run_id, tenant_id, deleted_at) VALUES (?, ?, ?)",
+            (sample_run_id, _tenant_id(), now),
+        )
+        conn.commit()
         return {"sample_run_id": sample_run_id, "deleted": True}
 
     @app.get("/api/activation/saved")
@@ -1764,7 +1763,8 @@ def _register_routes(app: FastAPI) -> None:
         tenant_id = _tenant_id()
         conn = _g()["conn"]
         run = conn.execute(
-            "SELECT * FROM sample_runs WHERE id=? AND tenant_id=? AND deleted_at IS NULL",
+            "SELECT * FROM sample_runs sr WHERE id=? AND tenant_id=? "
+            "AND NOT EXISTS (SELECT 1 FROM activation_run_deletions d WHERE d.sample_run_id=sr.id)",
             (sample_run_id, tenant_id)
         ).fetchone()
         if run is None:
