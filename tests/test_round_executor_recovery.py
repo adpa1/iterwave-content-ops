@@ -278,6 +278,32 @@ def test_resume_never_saves_manually_rejected_content(cfg, conn, seed, monkeypat
     ).fetchone()[0] == "draft_saved"
 
 
+def test_unlogged_platform_skips_save_and_keeps_draft_pending(cfg, conn, seed, monkeypatch):
+    round_id = seed.round(status="producing")
+    draft_id = seed.draft(round_id, platform="xhs", draft_status="draft_pending", fetch_status=None)
+    adapter = _SuccessfulDraftAdapter()
+    monkeypatch.setattr("src.core.login_manager.has_login_state", lambda _platform: False)
+    executor = _executor(cfg, conn, {Platform.XHS: adapter})
+    report = {"steps": [], "drafts_saved": 0, "drafts_failed": 0}
+
+    asyncio.run(executor._save_all_drafts([{
+        "draft_id": draft_id,
+        "content_id": conn.execute("SELECT content_id FROM drafts WHERE id = ?", (draft_id,)).fetchone()[0],
+        "platform": Platform.XHS,
+        "title": "待存内容",
+        "body": "正文",
+        "tags": [],
+        "image_paths": [],
+    }], round_id, report))
+
+    assert adapter.payloads == []
+    assert report["drafts_skipped_login"] == 1
+    assert report["steps"][0]["step"] == "save_drafts_skipped_login"
+    assert conn.execute(
+        "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+    ).fetchone()[0] == "draft_pending"
+
+
 def test_restart_keeps_dry_run_pending_drafts_recoverable(cfg, conn, seed):
     round_id = seed.round(status="producing")
     seed.draft(round_id, platform="xhs", draft_status="draft_pending", fetch_status=None)
