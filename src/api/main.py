@@ -502,13 +502,15 @@ def _build_app() -> FastAPI:
         db.initialize()
         from src.core.db import LockedConnection
         conn = LockedConnection(db.connect())
-        from src.core.config_repository import import_legacy_overrides, legacy_import_completed, read_settings
+        from src.core.config_repository import import_legacy_overrides, legacy_import_completed, purge_disallowed_settings, read_settings
         from src.core.config_store import overrides_path
         try:
             legacy_result = import_legacy_overrides(conn, overrides_path(cfg))
             if legacy_result["imported"] or legacy_result["rejected"]:
                 logger.info("旧配置回填完成 imported=%d rejected=%d",
                             legacy_result["imported"], legacy_result["rejected"])
+            # topic_kb.path 已从运行时白名单移除；清除旧版本可能写入的任意服务器路径。
+            purge_disallowed_settings(conn, {"topic_kb.path"})
             persisted_settings = read_settings(conn)
         except Exception as exc:
             # 回填失败时保留旧 JSON 读路径；不删除源文件，也不阻止可恢复启动。
