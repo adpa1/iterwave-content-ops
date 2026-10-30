@@ -3981,7 +3981,7 @@ def _register_routes(app: FastAPI) -> None:
             except (ConfigNotAllowedError, ConfigPatchError) as e:
                 raise HTTPException(422, str(e)) from e
         return {"ok": True, "channel": channel, "enabled": bool(getattr(ccfg, "enabled", False)),
-                "has_webhook_url": bool(read_env(env_name)), "env_name": env_name}
+                "has_webhook_url": bool(read_env(env_name))}
 
     # --- 运营日志（ops_logs）---
     @app.get("/api/ops_logs")
