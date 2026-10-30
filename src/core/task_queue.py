@@ -6,6 +6,7 @@ tenant_id；消费者只根据任务快照构造对应账号组运行时，绝�
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
@@ -16,6 +17,7 @@ from typing import Any
 
 
 _WAL_MODE_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
@@ -183,8 +185,9 @@ class GlobalTaskQueue:
             raise ValueError("tenant_id 无效")
         if not isinstance(payload, dict):
             raise ValueError("payload 必须是对象")
-        if not 1 <= int(max_attempts) <= 5:
-            raise ValueError("max_attempts 必须在 1–5 之间")
+        # 外部平台动作不具备通用安全重试语义；失败/中断后由操作者核实后手动重入队。
+        if int(max_attempts) != 1:
+            raise ValueError("当前队列不自动重试，max_attempts 必须为 1")
         payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         if available_at is None:
             available_stamp = _stamp()
@@ -363,6 +366,50 @@ class GlobalTaskQueue:
         finally:
             conn.close()
 
+    def interrupt(
+        self, task_id: str, owner: str, *,
+        error_message: str = "服务正在停止，任务已中断；请核实平台侧执行结果后再恢复",
+    ) -> bool:
+        """由当前租约持有者主动中断任务，避免停机时留下长时间 running。"""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                "UPDATE global_task_queue SET status='interrupted',finished_at=?,"
+                "error_code='worker_shutdown',error_message=?,"
+                "lease_owner=NULL,lease_expires_at=NULL "
+                "WHERE task_id=? AND status='running' AND lease_owner=?",
+                (_stamp(), error_message[:500], task_id, owner),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def recover_orphaned_running(self) -> dict[str, int]:
+        """单 Uvicorn worker 启动时，立即回收上一进程遗留的 running 任务。"""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                "UPDATE global_task_queue SET status='interrupted',finished_at=?,"
+                "error_code='worker_restarted',"
+                "error_message='服务实例已重启，原任务未自动重放；请核实平台侧执行结果后再恢复',"
+                "lease_owner=NULL,lease_expires_at=NULL WHERE status='running'",
+                (_stamp(),),
+            )
+            conn.execute("DELETE FROM global_task_worker_lease WHERE singleton_id=1")
+            conn.commit()
+            return {"interrupted": cursor.rowcount}
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def release_worker(self, owner: str) -> bool:
         conn = self._connect()
         try:
@@ -478,6 +525,18 @@ class GlobalTaskQueue:
                     "ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END, "
                     "queue_order DESC LIMIT ?", (tenant_id, limit),
                 ).fetchall()
-            return [task for row in rows if (task := self._decode(row)) is not None]
+            tasks: list[QueuedTask] = []
+            for row in rows:
+                try:
+                    task = self._decode(row)
+                except TaskQueueError as exc:
+                    logger.error(
+                        "跳过无法解码的队列记录 task_id=%s error=%s",
+                        row["task_id"], str(exc),
+                    )
+                    continue
+                if task is not None:
+                    tasks.append(task)
+            return tasks
         finally:
             conn.close()

@@ -248,3 +248,53 @@ def test_queue_listing_keeps_active_tasks_ahead_of_recent_history(tmp_path):
     listed = queue.list(limit=2)
     assert listed[0].task_id == active.task_id
     assert listed[0].status == "queued"
+
+
+def test_startup_recovery_interrupts_previous_process_tasks_immediately(tmp_path):
+    queue = make_queue(tmp_path)
+    running, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-a", aggregate_id="running",
+        payload={"round_id": 1},
+    )
+    queued, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-b", aggregate_id="queued",
+        payload={"round_id": 2},
+    )
+    claimed = queue.claim_next("previous-process", lease_seconds=120)
+    assert claimed is not None and claimed.task_id == running.task_id
+    result = queue.recover_orphaned_running()
+    assert result == {"interrupted": 1}
+    assert queue.get(running.task_id).status == "interrupted"
+    assert queue.get(queued.task_id).status == "queued"
+    next_task = queue.claim_next("new-process")
+    assert next_task is not None and next_task.task_id == queued.task_id
+
+
+def test_queue_list_skips_corrupt_payload_and_logs_it(tmp_path, caplog):
+    queue = make_queue(tmp_path)
+    good, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-a", aggregate_id="good",
+        payload={"round_id": 1},
+    )
+    conn = queue._connect()
+    try:
+        conn.execute(
+            "INSERT INTO global_task_queue(queue_order,task_id,task_type,tenant_id,aggregate_id,"
+            "payload_json,available_at,status,created_at) "
+            "VALUES(999,'corrupt','round_run','tenant-a','bad','not-json',"
+            "'2026-01-01T00:00:00+00:00','failed','2026-01-01T00:00:00+00:00')"
+        )
+    finally:
+        conn.close()
+    listed = queue.list(limit=10)
+    assert [task.task_id for task in listed] == [good.task_id]
+    assert "跳过无法解码的队列记录 task_id=corrupt" in caplog.text
+
+
+def test_queue_rejects_unsupported_retry_count(tmp_path):
+    import pytest
+    queue = make_queue(tmp_path)
+    with pytest.raises(ValueError, match="不自动重试"):
+        queue.enqueue(
+            task_type="round_run", tenant_id="tenant-a", payload={}, max_attempts=2,
+        )
