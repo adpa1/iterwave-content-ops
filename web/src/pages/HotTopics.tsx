@@ -50,9 +50,21 @@ export default function HotTopics() {
   const [gates, setGates] = useState({ heat: "", heatOn: true, hours: "", timeOn: true });
   const [importingKey, setImportingKey] = useState<string | null>(null);
 
-  /** R22：热点转选题必须带来源与原文链接，缺证据直接拒绝 */
+  /** 热点转选题必须带来源与原文链接；敏感热点必须由操作人二次确认。 */
   async function importTopic(h: HotTopicItem) {
     const key = `${h.source}|${h.title}`;
+    let confirmedBy: string | undefined;
+    if (h.publishability_status === "需人工确认") {
+      const accepted = window.confirm(
+        `该热点命中敏感类别：${(h.sensitive_hits ?? []).join("、") || "需人工确认"}。\n\n入库后仍会被内容生产安全门拦截，不会自动生成内容。是否继续？`
+      );
+      if (!accepted) return;
+      confirmedBy = window.prompt("请输入本次人工确认操作人（将写入审计记录）：")?.trim() || "";
+      if (!confirmedBy) {
+        showToast("未填写确认人，已取消入库", "info");
+        return;
+      }
+    }
     setImportingKey(key);
     try {
       const r = await api.importHotTopic({
@@ -60,6 +72,7 @@ export default function HotTopics() {
         source: h.source,
         url: h.url ?? "",
         dimension: h.dimension ?? h.dimension_hits?.[0],
+        ...(confirmedBy ? { confirmed_by: confirmedBy } : {}),
       });
       showToast(r.imported ? "✓ 已转入选题库" : r.message ?? "选题库已存在", r.imported ? "success" : "info");
     } catch (e: any) {
