@@ -5,7 +5,7 @@
     created → producing
       ① 读选题库（KbReader）
       ② G  选题评分（ScoringEngine 三模式）
-      ③ 四平台文案生成（generate_copy_stub → P1 换 LLM）
+      ③ 四平台文案生成（BYOK LLM；模型失败 fail closed）
       ④ G2 终极目标检查（UltimateGoalChecker，FAIL 丢弃 / ERROR 不放行）
       ⑤ H  图片卡片制作
       ⑥ 写 contents + drafts（draft_pending）
