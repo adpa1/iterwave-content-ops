@@ -296,8 +296,6 @@ class HotTopicDedupConfig(BaseModel):
 
 class HotTopicsConfig(BaseModel):
     enabled: bool = True
-    # 已废弃：采集频率改由 scheduler.jobs.hot_topics_refresh 配置（写了也不再生效，启动时告警）
-    refresh_interval_minutes: Optional[int] = None
     sources: list[dict] = Field(default_factory=list)
     filters: dict[str, object] = Field(default_factory=dict)
     # 滚动：每次采集只保留当前榜单（本轮没再上榜的旧热点立即删除，不展示也不参与研判）
