@@ -133,7 +133,7 @@ export default function Activation() {
   };
 
   const deleteRun = async () => {
-    if (!runId || !window.confirm("删除本次体验记录及其样稿、反馈和相关事件？此操作不可撤销。")) return;
+    if (!runId || !window.confirm("将本次体验记录从历史中隐藏？今日体验额度和审计记录不会返还或删除；已保存样稿仍可在下方找回。")) return;
     setDeleting(true);
     try {
       await api.deleteActivationSamples(runId);
@@ -181,7 +181,7 @@ export default function Activation() {
             <div className="panel-sub">用一句话说明你做什么、面向谁。系统会围绕三个不同创作角度生成样稿。</div>
           </div>
           <span className={status?.model_ready ? "tag green" : "tag orange"}>
-            {status?.model_ready ? "自带模型已就绪" : "需要配置模型"}
+            {status?.model_ready ? "模型配置已就绪" : "需要配置模型"}
           </span>
         </div>
         <div style={{ padding: "0 16px 16px" }}>
@@ -215,7 +215,7 @@ export default function Activation() {
             账号定位会发送给你配置的模型供应商用于生成；IterWave 不会把 API Key 返回浏览器。体验样稿不会发布到任何平台。
           </div>
           <div className="panel-sub" style={{ marginTop: 6 }}>
-            样稿由 AI 辅助生成，不会自动发布。发布前请人工核实事实、补充个人经验，并按平台要求声明 AI 生成内容。
+            样稿由 AI 辅助生成，不会自动发布。发布前请人工核实事实、补充个人经验，并按平台要求声明 AI 生成内容；模型连通性会在首次生成时验证。
           </div>
         </div>
       </div>
