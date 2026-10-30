@@ -115,14 +115,20 @@ def test_activation_sample_success_stays_outside_formal_production(activation_cl
     monkeypatch.setenv(cfg.llm.api_key_env, "test-only-key")
     from src.core import content_pipeline
 
-    body = (
+    base_body = (
         "个人成长 实用经验 产品经理 AI工具 需求分析 用户研究 项目管理 工作效率 数据分析 "
         "业务流程 产品设计 用户反馈 方案验证 目标拆解 方法总结 实践案例 场景分析 效率提升 团队协作 持续迭代 经验复盘"
     )
+    variations = [
+        "第一篇重点讲如何把复杂需求拆成可验证的小任务，并通过访谈和数据确认优先级。",
+        "第二篇重点讲如何建立团队协作节奏，明确责任边界，并减少重复沟通和返工。",
+        "第三篇重点讲如何复盘项目结果，把有效经验沉淀成模板并持续优化执行流程。",
+    ]
     calls = {"count": 0}
     def varied(*args, **kwargs):
+        index = calls["count"] % 3
         calls["count"] += 1
-        return (f"产品经理的实用方法 {calls['count']}", body + f" 第{calls['count']}种独立补充说明。", ["产品经理", "实用经验"])
+        return (f"产品经理的实用方法 {index}", base_body + " " + variations[index], ["产品经理", "实用经验"])
     monkeypatch.setattr(content_pipeline, "generate_copy_content", varied)
     response = activation_client.post("/api/activation/samples", json={
         "account_description": "分享产品经理的 AI 工具实践和效率方法",
@@ -183,7 +189,7 @@ def test_platform_metric_fields_are_enforced(activation_client, seed):
     assert accepted.status_code == 200
 
 
-def test_sample_delete_cascades_sample_events_and_contents(activation_client, conn):
+def test_sample_delete_hides_history_but_preserves_quota_audit_and_saved_content(activation_client, conn):
     from datetime import datetime
     now = datetime.now().isoformat(sep=" ")
     conn.execute(
@@ -213,9 +219,9 @@ def test_sample_delete_cascades_sample_events_and_contents(activation_client, co
     conn.commit()
     response = activation_client.delete("/api/activation/samples/delete-run")
     assert response.status_code == 200
-    assert conn.execute("SELECT COUNT(*) FROM sample_runs WHERE id='delete-run'").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM sample_contents WHERE id='delete-sample'").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM content_events WHERE id IN ('delete-start','delete-save')").fetchone()[0] == 0
+    assert conn.execute("SELECT deleted_at FROM sample_runs WHERE id='delete-run'").fetchone()[0] is not None
+    assert conn.execute("SELECT COUNT(*) FROM sample_contents WHERE id='delete-sample'").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM content_events WHERE id IN ('delete-start','delete-save')").fetchone()[0] == 2
 
 
 def test_activation_sample_read_is_tenant_scoped(activation_client, conn):
@@ -255,7 +261,7 @@ def test_manual_metrics_preserve_null_and_note_url_is_platform_validated(activat
 
     metrics = activation_client.post(
         f"/api/drafts/{draft_id}/metrics/manual",
-        json={"views": 128, "likes": 12, "collects": None, "measured_at": "2026-10-30T10:00:00"},
+        json={"views": 128, "likes": 12, "collects": None},
     )
     assert metrics.status_code == 200
     row = conn.execute(
@@ -417,10 +423,16 @@ def test_chinese_body_passes_character_level_quality_check(activation_client, co
         "刚开始不必追求复杂菜单，先固定三种容易执行的组合，再根据实际情况调整。"
         "这样既能减少临时决定吃什么的压力，也能降低外卖频率。"
     )
+    variations = [
+        "第一种方法是周末分装食材，按每餐用量冷冻保存，工作日只需简单加热和搭配。",
+        "第二种方法是提前准备调味汁和耐放配菜，早上快速组合，避免食材长时间浸泡。",
+        "第三种方法是固定三种基础菜单，再根据采购价格和当周安排灵活替换食材。",
+    ]
     calls = {"count": 0}
     def varied_chinese(*args, **kwargs):
+        index = calls["count"] % 3
         calls["count"] += 1
-        return (f"工作日带饭的准备方法{calls['count']}", body + f" 第{calls['count']}个角度补充了不同的执行细节。", ["带饭", "效率"])
+        return (f"工作日带饭的准备方法{index}", body + variations[index], ["带饭", "效率"])
     monkeypatch.setattr(content_pipeline, "generate_copy_content", varied_chinese)
     response = activation_client.post("/api/activation/samples", json={
         "account_description": "分享普通上班族的健康带饭方法",
