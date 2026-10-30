@@ -135,7 +135,9 @@ export default function Settings() {
     try {
       const res = await withPending("config:save", () => api.patchConfig(updates));
       if (!res) return;
-      showToast(`✓ 已保存 ${res.changed.length} 项配置`, "success");
+      showToast(res.restart_required
+        ? `已保存 ${res.changed.length} 项配置；业务时区将在服务重启后完整生效`
+        : `✓ 已保存 ${res.changed.length} 项配置`, res.restart_required ? "info" : "success");
       await loadConfig();
     } catch (e: any) {
       showToast(`保存失败: ${e?.message ?? e}`, "error");
