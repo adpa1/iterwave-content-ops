@@ -7,10 +7,10 @@ import { useApp } from "../AppContext";
 const STEPS = [
   { key: "persona",  label: "① 账号画像",     hint: "终极目标 / 红线 / 定位关键词" },
   { key: "platforms", label: "② 启用平台",    hint: "至少启用 1 个；建议先跑通 1 个平台" },
-  { key: "kb",       label: "③ 选题库",       hint: "上传 / 远程 / 服务器路径" },
-  { key: "llm",      label: "④ 模型配置",     hint: "Provider / Model / API Key" },
+  { key: "kb",       label: "③ 选题库",       hint: "上传或连接知识库来源" },
+  { key: "llm",      label: "④ 模型配置",     hint: "模型服务与密钥" },
   { key: "skills",   label: "⑤ 运行环境",     hint: "检查登录与运行环境" },
-  { key: "goals",    label: "⑥ 阶段目标",     hint: "指标 / 目标值 / 基线" },
+  { key: "goals",    label: "⑥ 阶段目标",     hint: "指标、目标值与基线" },
   { key: "check",    label: "⑦ 检查清单",     hint: "预检 + 启动首轮" },
 ] as const;
 
@@ -37,7 +37,7 @@ const GOAL_METRICS = [
 ];
 
 const GOAL_DATA_SOURCES = [
-  { value: "account_stats", label: "account_stats 平台读回" },
+  { value: "account_stats", label: "平台数据读回" },
   { value: "platform_api", label: "平台 API" },
   { value: "manual", label: "人工录入" },
 ];
@@ -151,6 +151,16 @@ export default function Onboarding() {
   const blockingOk = checks.persona_ok && checks.platforms_ok && checks.kb_ok
     && checks.llm_ok && checks.login_ok;
   const blocked = diag ? diag.overall === "block" : !blockingOk;
+  // 进度只表示当前配置确实满足要求，不表示用户曾经点过“下一步”。
+  const stepPassed: Record<StepKey, boolean> = {
+    persona: checks.persona_ok,
+    platforms: checks.platforms_ok,
+    kb: checks.kb_ok,
+    llm: checks.llm_ok,
+    skills: checks.login_ok,
+    goals: checks.goals_ok,
+    check: !!diag && diag.overall !== "block" && blockingOk,
+  };
 
   return (
     <>
@@ -176,8 +186,8 @@ export default function Onboarding() {
                 padding: "10px 12px",
                 borderRadius: 8,
                 cursor: i <= stepIdx ? "pointer" : "default",
-                background: i === stepIdx ? "var(--blue)" : i < stepIdx ? "rgba(66,99,235,0.1)" : "var(--card)",
-                color: i === stepIdx ? "#fff" : i < stepIdx ? "var(--blue)" : "var(--muted)",
+                background: i === stepIdx ? "var(--blue)" : stepPassed[s.key] ? "rgba(66,99,235,0.1)" : "var(--card)",
+                color: i === stepIdx ? "#fff" : stepPassed[s.key] ? "var(--blue)" : "var(--muted)",
                 border: `1px solid ${i === stepIdx ? "var(--blue)" : "var(--border)"}`,
                 fontSize: 12,
                 transition: "all .15s",
@@ -185,7 +195,7 @@ export default function Onboarding() {
             >
               <div style={{ fontWeight: 700 }}>{s.label}</div>
               <div style={{ fontSize: 10, opacity: 0.8, marginTop: 2 }}>{s.hint}</div>
-              {i < stepIdx && <div style={{ fontSize: 16, marginTop: 4 }}>✓</div>}
+              {stepPassed[s.key] && <div style={{ fontSize: 16, marginTop: 4 }}>✓ 已通过</div>}
             </div>
           ))}
         </div>
@@ -367,7 +377,7 @@ export default function Onboarding() {
           <div>
             <div className="panel-title" style={{ marginBottom: 16 }}>⑦ 检查清单 · 启动首轮</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              以下阻塞项全部通过才能开始真实生产。首轮依次完成：选题评分 → 文案生成 → 终极目标检查 → 图片卡片 → 保存草稿（不会自动发布）。
+              以下必需项全部通过才能开始真实生产。首轮依次完成：选题评分 → 文案生成 → 终极目标检查 → 图片卡片 → 保存草稿（不会自动发布）。
             </p>
             {diag && (
               <div className="table-wrap" style={{ marginBottom: 14 }}>
@@ -395,8 +405,8 @@ export default function Onboarding() {
               <CheckRow ok={checks.persona_ok}    label="账号画像"       detail={cfg.readonly.persona_keywords.join(", ")} />
               <CheckRow ok={checks.platforms_ok}   label="启用平台"       detail={`${status.enabled_platforms.length} 个 (${status.enabled_platforms.map((p) => PLATFORM_NAMES[p]).join(", ")})`} />
               <CheckRow ok={checks.login_ok}       label="登录态"         detail={`${status.logged_in_platforms.length} 个已登录`} />
-              <CheckRow ok={checks.kb_ok}          label="选题库 KB"      detail={`${cfg.readonly.kb_type} @ ${cfg.readonly.kb_path}`} />
-              <CheckRow ok={checks.llm_ok}         label="LLM API Key"    detail={cfg.readonly.llm_has_api_key ? "✓ 已配置" : "✕ 缺失"} />
+              <CheckRow ok={checks.kb_ok}          label="选题库"      detail={`${cfg.readonly.kb_type} @ ${cfg.readonly.kb_path}`} />
+              <CheckRow ok={checks.llm_ok}         label="模型服务密钥"    detail={cfg.readonly.llm_has_api_key ? "✓ 已配置" : "✕ 缺失"} />
               <CheckRow ok={checks.goals_ok}        label="阶段目标"       detail={`${goals.length} 条`} />
             </div>
 
@@ -431,7 +441,7 @@ export default function Onboarding() {
         <button
           className="btn sm"
           disabled={stepIdx === STEPS.length - 1}
-          onClick={() => setStepIdx(stepIdx + 1)}
+          onClick={() => { setStepIdx(stepIdx + 1); }}
         >下一步 →</button>
       </div>
     </>
