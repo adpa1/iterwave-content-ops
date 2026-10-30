@@ -53,7 +53,6 @@ def test_register_jobs_respects_enabled_and_trigger(cfg, tmp_path):
 
 
 def test_patch_switches_trigger_and_persists(cfg, conn, tmp_path, monkeypatch):
-    monkeypatch.setattr("src.core.config_store.OVERRIDES_FILE", tmp_path / "ov.json")
     r = patch_config(cfg, conn, {"scheduler.jobs.daily_ops.interval_minutes": 720})
     job = cfg.scheduler.job("daily_ops")
     assert job.interval_minutes == 720 and job.cron is None
@@ -61,9 +60,10 @@ def test_patch_switches_trigger_and_persists(cfg, conn, tmp_path, monkeypatch):
     patch_config(cfg, conn, {"scheduler.jobs.daily_ops.cron": "30 9 * * 1-5"})
     job = cfg.scheduler.job("daily_ops")
     assert job.cron == "30 9 * * 1-5" and job.interval_minutes is None
-    import json
-    ov = json.loads((tmp_path / "ov.json").read_text())
-    assert "scheduler.jobs.daily_ops.interval_minutes" not in ov       # 互斥键已清理
+    from src.core.config_repository import read_settings
+    settings = read_settings(conn)
+    assert "scheduler.jobs.daily_ops.interval_minutes" not in settings  # 互斥键已清理
+    assert settings["scheduler.jobs.daily_ops.cron"] == "30 9 * * 1-5"
     with pytest.raises(ConfigPatchError):
         patch_config(cfg, conn, {"scheduler.jobs.daily_ops.cron": "bad"})
     with pytest.raises(ConfigPatchError):
