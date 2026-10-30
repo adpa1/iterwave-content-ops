@@ -40,7 +40,8 @@ ROUND_TRANSITIONS: dict[str, set[str]] = {
     "analyzing":         {"completed", "partial_completed", "failed"},
     "completed":         set(),         # 终态
     "partial_completed": set(),         # 终态
-    "failed":            set(),         # 终态
+    # failed 仅允许在无已生成内容时显式重试；业务层会先检查无内容/草稿。
+    "failed":            {"created"},
     "cancelled":         set(),         # 终态
 }
 
