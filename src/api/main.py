@@ -3511,7 +3511,7 @@ def _register_routes(app: FastAPI) -> None:
         """总体目标进度（goal-hero）：等权平均口径由后端统一计算，前端只展示。"""
         conn = _g()["conn"]
         rows = conn.execute("SELECT * FROM goals").fetchall()
-        return GoalProgressUpdater.summarize(rows, mode=_g()["cfg"].ultimate_goal.goal_mode)
+        return GoalProgressUpdater.summarize(rows, mode=_g()["cfg"].ultimate_goal.goal_mode, now=_now())
 
     # --- 账号级快照（涨粉类目标的数据来源）---
     @app.get("/api/account_snapshots")
