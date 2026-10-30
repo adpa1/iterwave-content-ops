@@ -52,7 +52,9 @@ def connect_system(system_db_file: Path | str) -> sqlite3.Connection:
 
 
 def initialize_system_config(system_db_file: Path | str) -> None:
-    conn = connect_system(system_db_file)
+    db_path = Path(system_db_file).resolve()
+    db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    conn = connect_system(db_path)
     try:
         conn.executescript(
             """
