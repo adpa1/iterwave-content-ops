@@ -3841,20 +3841,32 @@ def _register_routes(app: FastAPI) -> None:
             "report": report, "error": None,
         }
 
-    @app.post("/api/rounds/{round_id}/save_pending")
+    @app.post("/api/rounds/{round_id}/save_pending", status_code=202)
     async def save_pending_drafts(round_id: int):
-        """恢复已生成但尚未存到平台的草稿，不重新生成内容、不执行发布操作。"""
-        if round_id in _running_rounds:
-            raise HTTPException(
-                409, f"轮次 {round_id} 正在执行中，请等待本次执行结束"
-            )
-        _running_rounds.add(round_id)
+        """将待存平台草稿的操作加入全局 FIFO 队列；不重新生成内容，也不自动发布。"""
+        if _task_queue is None:
+            raise HTTPException(503, "全局任务队列尚未初始化")
+        tenant_id = _g().get("runtime_tenant_id", "default")
+        round_row = _g()["conn"].execute(
+            "SELECT id FROM spiral_rounds WHERE id=?", (round_id,),
+        ).fetchone()
+        if round_row is None:
+            raise HTTPException(404, "当前账号组不存在该生产轮次")
         try:
-            return await _g()["executor"].save_pending_drafts(round_id)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        finally:
-            _running_rounds.discard(round_id)
+            task, created = _task_queue.enqueue(
+                task_type="round_run",
+                tenant_id=tenant_id,
+                aggregate_id=str(round_id),
+                payload={"operation": "save_pending_drafts", "round_id": round_id},
+            )
+        except (ValueError, sqlite3.Error) as exc:
+            logger.exception("待存草稿任务入队失败 tenant=%s round=%s", tenant_id, round_id)
+            raise HTTPException(503, "任务暂时无法入队，请稍后重试") from exc
+        return {
+            "round_id": round_id, "task_id": task.task_id,
+            "started": created, "running": task.status in ("queued", "running"),
+            "queued": task.status == "queued", "status": task.status,
+        }
 
     @app.post("/api/rounds/{round_id}/transition")
     def round_transition(round_id: int, req: TransitionRequest):
