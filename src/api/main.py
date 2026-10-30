@@ -3695,6 +3695,54 @@ def _register_routes(app: FastAPI) -> None:
             result.append(item)
         return {"updated": values, "goals": result, "summary": GoalProgressUpdater.summarize(rows, mode=_g()["cfg"].ultimate_goal.goal_mode)}
 
+    # --- 全局任务队列（跨账号组，仅供唯一运营者查看）---
+    @app.get("/api/task-queue")
+    def list_global_task_queue(limit: int = Query(100, ge=1, le=500)):
+        if _task_queue is None:
+            raise HTTPException(503, "全局任务队列尚未初始化")
+        registry = _g().get("tenant_registry")
+        items = []
+        for task in _task_queue.list(limit=limit):
+            try:
+                tenant_name = registry.get(task.tenant_id)["name"] if registry else task.tenant_id
+            except TenantError:
+                tenant_name = task.tenant_id
+            items.append({
+                "task_id": task.task_id, "task_type": task.task_type,
+                "tenant_id": task.tenant_id, "tenant_name": tenant_name,
+                "aggregate_id": task.aggregate_id, "status": task.status,
+                "created_at": task.created_at, "started_at": task.started_at,
+                "finished_at": task.finished_at, "attempts": task.attempts,
+                "error_code": task.error_code, "error_message": task.error_message,
+            })
+        return {"items": items}
+
+    @app.get("/api/task-queue/{task_id}")
+    def get_global_task(task_id: str):
+        if _task_queue is None:
+            raise HTTPException(503, "全局任务队列尚未初始化")
+        task = _task_queue.get(task_id)
+        if task is None:
+            raise HTTPException(404, "任务不存在")
+        return {
+            "task_id": task.task_id, "task_type": task.task_type,
+            "tenant_id": task.tenant_id, "aggregate_id": task.aggregate_id,
+            "status": task.status, "payload": task.payload, "result": task.result,
+            "created_at": task.created_at, "started_at": task.started_at,
+            "finished_at": task.finished_at, "attempts": task.attempts,
+            "error_code": task.error_code, "error_message": task.error_message,
+        }
+
+    @app.post("/api/task-queue/{task_id}/cancel")
+    def cancel_global_task(task_id: str):
+        if _task_queue is None:
+            raise HTTPException(503, "全局任务队列尚未初始化")
+        if _task_queue.get(task_id) is None:
+            raise HTTPException(404, "任务不存在")
+        if not _task_queue.cancel(task_id):
+            raise HTTPException(409, "任务已开始执行或已结束，当前不能取消")
+        return {"task_id": task_id, "status": "cancelled"}
+
     # --- 轮次 ---
     @app.get("/api/rounds")
     def list_rounds(status: Optional[str] = Query(None)):
