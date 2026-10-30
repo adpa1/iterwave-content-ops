@@ -1644,7 +1644,7 @@ export const api = {
     fetchJson<{ items: {
       id: string; draft_id: string; content_id: string; platform: Platform; source: string;
       views: number | null; likes: number | null; collects: number | null; comments: number | null;
-      shares: number | null; new_followers: number | null; measured_at: string; recorded_at: string;
+      shares: number | null; measured_at: string; recorded_at: string;
       correction_of: string | null;
     }[]; total: number }>(`/api/metrics/snapshots?draft_id=${encodeURIComponent(draftId)}`),
   submitManualMetrics: (draftId: string, data: {
