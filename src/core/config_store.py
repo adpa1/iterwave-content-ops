@@ -1,13 +1,9 @@
 """运行时配置白名单修改 + 审计（G-13 / G-24）。
 
-为什么不用 yaml.dump 直接改写 config.yaml：
-`config/config.yaml` 带大量中文注释，PyYAML 回写会全部丢失注释。
-所以采用「白名单补丁 + 覆盖文件」方案：
-
-1. 只允许改白名单里声明的字段（越权 → ConfigNotAllowedError）
-2. 改动实时写进内存中的 Config 对象（同一实例被 scheduler / adapters / ops 持有，立即生效）
-3. 覆盖值持久化到 `data/config_overrides.json`，下次启动 load_config 之后重新套用
-4. 每次改动写 `config_changes`（key / old_value / new_value）留痕
+`config/config.yaml` 提供部署初始值；账号组 SQLite 的 `tenant_settings`
+是运行时覆盖值的唯一持久化事实来源。配置更新在校验后原子写入 SQLite，
+同步更新当前进程内存配置，并写入版本快照与审计记录。
+旧 `config_overrides.json` 只用于一次性迁移/故障恢复兼容，不再作为日常写入目标。
 
 R22 硬锁：维度匹配门 / 可发布性门不在白名单内，且显式拒绝并给出原因，
 不允许通过本接口（或任何 UI 入口）关闭。
@@ -645,44 +641,6 @@ def load_overrides(cfg: Config) -> dict[str, Any]:
     except (json.JSONDecodeError, OSError) as e:
         logger.error("config_overrides.json 读取失败，本次不套用覆盖值: %s", e)
         return {}
-
-
-def _save_overrides(cfg: Config, overrides: dict[str, Any]) -> None:
-    path = overrides_path(cfg)
-    payload = json.dumps(overrides, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    with _OVERRIDES_WRITE_LOCK:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", newline="",
-                prefix=f".{path.name}.", suffix=".tmp",
-                dir=path.parent, delete=False,
-            ) as tmp:
-                tmp_path = Path(tmp.name)
-                try:
-                    os.fchmod(tmp.fileno(), 0o600)
-                except (AttributeError, OSError):
-                    os.chmod(tmp_path, 0o600)
-                tmp.write(payload)
-                tmp.flush()
-                os.fsync(tmp.fileno())
-            os.replace(tmp_path, path)
-            try:
-                path.chmod(0o600)
-            except OSError:
-                logger.warning("无法收紧运行时配置覆盖文件权限：%s", path.name)
-            try:
-                dir_fd = os.open(path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(dir_fd)
-                finally:
-                    os.close(dir_fd)
-            except OSError:
-                pass
-        finally:
-            if tmp_path is not None:
-                tmp_path.unlink(missing_ok=True)
 
 
 def apply_overrides(cfg: Config, overrides: dict[str, Any]) -> list[str]:
