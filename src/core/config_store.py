@@ -27,6 +27,7 @@ from typing import Any
 from src.core.config import DEFAULT_JOB_SCHEDULES, JOB_DESCRIPTIONS, Config, PlatformPersonaConfig, validate_cron
 from src.core.redact import redact, redact_path
 from src.core.notify import _EVENT_CATALOG
+from src.core.system_config_repository import SYSTEM_LLM_KEYS
 
 logger = logging.getLogger(__name__)
 _OVERRIDES_WRITE_LOCK = threading.RLock()
@@ -781,7 +782,7 @@ def config_metadata_view(cfg: Config) -> list[dict[str, Any]]:
                 else "object" if isinstance(value, dict) else "string"),
             "value": _redact_public_value(value),
             "min": minimum, "max": maximum, "editable": editable,
-            "tenant_scoped": True, "restart_required": False,
+            "tenant_scoped": not key.startswith("llm."), "restart_required": False,
             "sensitive": False, "description": description,
         }
 
@@ -1031,8 +1032,12 @@ def current_config_view(cfg: Config, conn) -> dict[str, Any]:
     }
 
 
-def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
-    """白名单批量修改：校验 → SQLite 原子持久化/审计 → 更新内存配置。"""
+def patch_config(
+    cfg: Config, conn, updates: dict[str, Any], *,
+    system_db_file: Path | str | None = None,
+) -> dict[str, Any]:
+    """白名单修改：租户策略写入租户库，llm.* 写入共享 system.db。"""
+
     if not updates:
         raise ConfigPatchError("updates 不能为空")
 
@@ -1051,6 +1056,13 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for key, value in updates.items():
         normalized[key] = _validate(key, value)
+
+    global_keys = set(normalized) & SYSTEM_LLM_KEYS
+    tenant_keys = set(normalized) - global_keys
+    if global_keys and tenant_keys:
+        raise ConfigPatchError("系统级模型配置与账号组业务配置必须分开保存")
+    if global_keys and system_db_file is None:
+        raise ConfigPatchError("系统级模型配置存储尚未初始化")
 
     for win in ("ops", "draft_save"):
         if f"rhythm.windows.{win}.start_hour" in normalized or f"rhythm.windows.{win}.end_hour" in normalized:
@@ -1113,32 +1125,50 @@ def patch_config(cfg: Config, conn, updates: dict[str, Any]) -> dict[str, Any]:
         raise ConfigPatchError("验证缺口建议选题数量下限不能大于上限")
 
     changes: list[dict[str, Any]] = []
-    persisted: dict[str, Any] = {}
-    audit_rows: list[tuple[str, str | None, str]] = []
+    persisted_tenant: dict[str, Any] = {}
+    persisted_system: dict[str, Any] = {}
+    tenant_audit_rows: list[tuple[str, str | None, str]] = []
+    system_audit_rows: list[tuple[str, str | None, str]] = []
     remove_keys: list[str] = []
     for key, value in normalized.items():
         old_value = _jsonable(_get_value(cfg, key))
         if old_value == value:
             continue
-        persisted[key] = value
-        other_key = _counterpart(key)
-        if other_key:
-            remove_keys.append(other_key)
-        audit_rows.append((
+        target = persisted_system if key in SYSTEM_LLM_KEYS else persisted_tenant
+        target[key] = value
+        audit = (
             key,
             None if old_value is None else json.dumps(old_value, ensure_ascii=False, sort_keys=True),
             json.dumps(value, ensure_ascii=False, sort_keys=True),
-        ))
+        )
+        (system_audit_rows if key in SYSTEM_LLM_KEYS else tenant_audit_rows).append(audit)
+        other_key = _counterpart(key)
+        if other_key:
+            remove_keys.append(other_key)
         changes.append({"key": key, "old": old_value, "new": value})
 
-    if persisted:
-        # Repository writes settings, version snapshot and audit rows in one transaction.
-        from src.core.config_repository import save_settings
+    if persisted_system:
+        from src.core.system_config_repository import save_system_llm_settings
         try:
-            save_settings(conn, persisted, audit_rows=audit_rows, remove_keys=remove_keys)
+            save_system_llm_settings(
+                system_db_file, persisted_system,
+                audit_rows=system_audit_rows,
+            )
         except (ValueError, sqlite3.Error) as exc:
             raise ConfigPatchError(str(exc)) from exc
-        for key, value in persisted.items():
-            _set_value(cfg, key, value)
+    if persisted_tenant:
+        # Tenant settings, version snapshot and audit rows share one SQLite transaction.
+        from src.core.config_repository import save_settings
+        try:
+            save_settings(
+                conn, persisted_tenant, audit_rows=tenant_audit_rows,
+                remove_keys=remove_keys,
+            )
+        except (ValueError, sqlite3.Error) as exc:
+            raise ConfigPatchError(str(exc)) from exc
+
+    for key, value in {**persisted_tenant, **persisted_system}.items():
+        _set_value(cfg, key, value)
+    if changes:
         logger.info("⚙️ 配置已修改 %d 项：%s", len(changes), [c["key"] for c in changes])
     return {"changed": changes, "applied": normalized, "noop": len(changes) == 0}
