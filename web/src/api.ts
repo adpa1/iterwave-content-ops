@@ -1190,7 +1190,7 @@ export interface ActivationMetrics {
   cohort_size: number; ttv_seconds: number | null; seven_day_activation_rate: number | null;
   first_publish_rate: number | null; data_return_rate: number | null;
   quick_experience_completion_rate?: number | null; sample_attempted_count?: number; sample_ready_count?: number;
-  weekly_adopted_published: number; published_content_count?: number;
+  weekly_adopted_published: number; weekly_effective_review_count?: number; published_content_count?: number;
   platform_model_breakdown?: { platform: Platform; model_mode: string; run_count: number; ready_count: number }[];
   data_returned_count?: number; observation_window_complete: boolean; limitations?: string[];
 }
@@ -1204,7 +1204,7 @@ export interface WeeklyReport {
   next_actions: { action: string; basis: string; verification: string; evidence_content_ids: string[];
     metric_snapshot_ids?: (string | number)[]; platform?: Platform; time_window?: { start: string; end: string };
     sample_size: number }[];
-  sample_size: number; data_sources: string[]; limitations: string[]; generated_at: string;
+  sample_size: number; effective_review_count?: number; data_sources: string[]; limitations: string[]; generated_at: string;
   data_conflicts?: { platform: Platform; content_id: string; metrics: string[]; selected_sources: Record<string, string> }[];
 }
 
