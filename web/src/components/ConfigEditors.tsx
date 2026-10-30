@@ -266,9 +266,7 @@ export function LlmEditor({ view, onSaved }: {
     if (fallback.trim() !== (view.readonly.llm_fallback_model || "")) {
       updates["llm.fallback_model"] = fallback.trim();
     }
-    if (baseUrl.trim() && baseUrl.trim().replace(/\/+$/, "") !== (view.readonly.llm_base_url || "").replace(/\/+$/, "")) {
-      updates["llm.base_url"] = baseUrl.trim();
-    }
+    if (baseUrl.trim()) updates["llm.base_url"] = baseUrl.trim();
     const temp = Number(temperature);
     if (temperature !== "" && temp !== Number(view.readonly.llm_temperature)) {
       if (!Number.isFinite(temp) || temp < 0 || temp > 2) { showToast("temperature 必须在 0-2 之间", "error"); return; }
@@ -344,8 +342,7 @@ export function LlmEditor({ view, onSaved }: {
         </Field>
       ) : (
         <div style={{ fontSize: 12, color: "var(--subtle)" }}>
-          端点：<span style={{ fontFamily: "monospace" }}>{ARK_CHANNEL_BASE[channel]}</span>
-          （切换通道后保存即生效，无需重启）
+          {channel === "plan" ? "使用专属 Agent Plan 服务通道" : "使用按量付费服务通道"}（切换通道后保存即生效，无需重启）
         </div>
       )}
       <div className="grid three" style={{ gap: 10 }}>
