@@ -75,6 +75,7 @@ class GlobalTaskWorker:
             if task.task_type != "round_run":
                 raise ValueError(f"不支持的任务类型：{task.task_type}")
             round_id = int(task.payload["round_id"])
+            operation = task.payload.get("operation", "run")
             context = self.build_tenant_context(task.tenant_id)
             from src.core import login_manager
 
@@ -85,13 +86,18 @@ class GlobalTaskWorker:
                 from src.core.autogrow import StrategyFeedback
                 feedback = StrategyFeedback(**feedback_data)
             with login_manager.tenant_login_dir(data_dir):
-                report = await context["executor"].run(
-                    round_id,
-                    topic_count=task.payload.get("topic_count"),
-                    platform_values=task.payload.get("platforms"),
-                    save_drafts=task.payload.get("save_drafts"),
-                    feedback=feedback,
-                )
+                if operation == "save_pending_drafts":
+                    report = await context["executor"].save_pending_drafts(round_id)
+                elif operation == "run":
+                    report = await context["executor"].run(
+                        round_id,
+                        topic_count=task.payload.get("topic_count"),
+                        platform_values=task.payload.get("platforms"),
+                        save_drafts=task.payload.get("save_drafts"),
+                        feedback=feedback,
+                    )
+                else:
+                    raise ValueError(f"不支持的轮次任务操作：{operation}")
             if not self.queue.finish(task.task_id, self.owner, result=report):
                 logger.error("任务完成状态写入失败，租约可能已失效 task_id=%s", task.task_id)
         except Exception as exc:  # noqa: BLE001 — 单任务失败不得终止消费者
