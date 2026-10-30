@@ -80,32 +80,46 @@ class GlobalTaskWorker:
                 return
 
     async def _run_task(self, task: QueuedTask) -> dict[str, Any]:
-        if task.task_type != "round_run":
+        allowed_scheduler_methods = {
+            "_job_publish_polling", "_job_data_fetch", "_job_daily_ops",
+            "_job_comment_polling", "_job_cb_recovery", "_job_kb_scan",
+            "_job_kb_sync", "_job_data_retention_cleanup",
+            "_job_round_timeout_sweeper", "_job_round_review",
+        }
+        if task.task_type not in {"round_run", "scheduler_job"}:
             raise ValueError(f"不支持的任务类型：{task.task_type}")
-        round_id = int(task.payload["round_id"])
-        operation = task.payload.get("operation", "run")
         context = self.build_tenant_context(task.tenant_id)
         from src.core import login_manager
 
         data_dir = Path(context["cfg"].resolve_path(context["cfg"].paths.data_dir))
-        feedback_data = task.payload.get("feedback")
-        feedback = None
-        if isinstance(feedback_data, dict):
-            from src.core.autogrow import StrategyFeedback
-            feedback = StrategyFeedback(**feedback_data)
         try:
             with login_manager.tenant_login_dir(data_dir):
-                if operation == "save_pending_drafts":
-                    return await context["executor"].save_pending_drafts(round_id)
-                if operation == "run":
-                    return await context["executor"].run(
-                        round_id,
-                        topic_count=task.payload.get("topic_count"),
-                        platform_values=task.payload.get("platforms"),
-                        save_drafts=task.payload.get("save_drafts"),
-                        feedback=feedback,
-                    )
-                raise ValueError(f"不支持的轮次任务操作：{operation}")
+                if task.task_type == "round_run":
+                    round_id = int(task.payload["round_id"])
+                    operation = task.payload.get("operation", "run")
+                    feedback_data = task.payload.get("feedback")
+                    feedback = None
+                    if isinstance(feedback_data, dict):
+                        from src.core.autogrow import StrategyFeedback
+                        feedback = StrategyFeedback(**feedback_data)
+                    if operation == "save_pending_drafts":
+                        return await context["executor"].save_pending_drafts(round_id)
+                    if operation == "run":
+                        return await context["executor"].run(
+                            round_id,
+                            topic_count=task.payload.get("topic_count"),
+                            platform_values=task.payload.get("platforms"),
+                            save_drafts=task.payload.get("save_drafts"),
+                            feedback=feedback,
+                        )
+                    raise ValueError(f"不支持的轮次任务操作：{operation}")
+
+                method = task.payload.get("method")
+                args = task.payload.get("args", [])
+                if method not in allowed_scheduler_methods or not isinstance(args, list):
+                    raise ValueError("定时任务类型或参数无效")
+                result = await getattr(context["scheduler"], method)(*args)
+                return result if isinstance(result, dict) else {"completed": True}
         finally:
             scheduler = context.get("scheduler")
             if scheduler is not None:
