@@ -374,7 +374,7 @@ class GlobalTaskQueue:
         try:
             return self._decode(conn.execute(
                 "SELECT * FROM global_task_queue WHERE tenant_id=? AND task_type=? "
-                "AND aggregate_id=? ORDER BY created_at DESC,task_id DESC LIMIT 1",
+                "AND aggregate_id=? ORDER BY queue_order DESC LIMIT 1",
                 (tenant_id, task_type, str(aggregate_id)),
             ).fetchone())
         finally:
