@@ -43,7 +43,8 @@ def _executor(cfg, conn, adapters=None, guard=None):
     )
 
 
-def test_empty_topic_pool_is_blocked_before_round_enters_producing(cfg, conn, seed):
+def test_empty_topic_pool_is_blocked_before_round_enters_producing(cfg, conn, seed, monkeypatch):
+    monkeypatch.setattr("src.core.round_executor.load_pool", lambda *args, **kwargs: ([], {"kb_error": None}))
     round_id = seed.round(status="created")
     executor = _executor(cfg, conn)
     try:
