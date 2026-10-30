@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from contextlib import nullcontext
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -90,10 +91,16 @@ class GlobalTaskWorker:
             raise ValueError(f"不支持的任务类型：{task.task_type}")
         context = self.build_tenant_context(task.tenant_id)
         from src.core import login_manager
+        from src.core.notify import bind_context_notifier
 
         data_dir = Path(context["cfg"].resolve_path(context["cfg"].paths.data_dir))
+        # 后台通知必须与任务 tenant_id 绑定，不能读取前台切换时更新的模块级通知器。
+        notifier_scope = (
+            bind_context_notifier(context["notifier"])
+            if context.get("notifier") is not None else nullcontext()
+        )
         try:
-            with login_manager.tenant_login_dir(data_dir):
+            with login_manager.tenant_login_dir(data_dir), notifier_scope:
                 if task.task_type == "round_run":
                     round_id = int(task.payload["round_id"])
                     operation = task.payload.get("operation", "run")
