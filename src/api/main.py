@@ -1833,8 +1833,8 @@ def _register_routes(app: FastAPI) -> None:
     def update_draft_note_url(draft_id: str, req: dict):
         conn = _g()["conn"]
         row = conn.execute(
-            "SELECT d.platform, d.status, d.content_id, d.user_confirmed_at FROM drafts d WHERE d.id=? AND d.tenant_id=?",
-            (draft_id, _tenant_id()),
+            "SELECT d.platform, d.status, d.content_id, d.user_confirmed_at FROM drafts d WHERE d.id=?",
+            (draft_id,),
         ).fetchone()
         if row is None:
             raise HTTPException(404, "草稿不存在")
