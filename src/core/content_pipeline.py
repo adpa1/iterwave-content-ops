@@ -334,7 +334,7 @@ def _generate_via_llm(
             success=False, output_valid=False,
         )
         raise ContentGenerationError(
-            "model_output_invalid", "模型返回结构不完整，请重试",
+            "model_output_invalid", "模型返回结构不完整，请重试", retryable=True,
         )
 
     usage = data.get("usage") or {}
@@ -349,7 +349,7 @@ def _generate_via_llm(
             success=False, output_valid=False,
         )
         raise ContentGenerationError(
-            "model_output_invalid", "模型返回内容格式不正确，请重试",
+            "model_output_invalid", "模型返回内容格式不正确，请重试", retryable=True,
         )
 
     if not isinstance(parsed, dict):
@@ -359,7 +359,7 @@ def _generate_via_llm(
             success=False, output_valid=False,
         )
         raise ContentGenerationError(
-            "model_output_invalid", "模型返回内容结构不正确，请重试",
+            "model_output_invalid", "模型返回内容结构不正确，请重试", retryable=True,
         )
 
     title = parsed.get("title")
@@ -374,7 +374,7 @@ def _generate_via_llm(
     )
     if not output_valid:
         raise ContentGenerationError(
-            "model_output_invalid", "模型未返回标题或正文，请重试",
+            "model_output_invalid", "模型未返回标题或正文，请重试", retryable=True,
         )
 
     # 标签是可选项；缺失时只使用账号配置的平台标签，不构造模板正文。
