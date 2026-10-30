@@ -485,19 +485,7 @@ export interface GlobalMonitorTenant {
   drafts_failed: number;
   media_active: number;
   media_usage: number;
-  registered_accounts: number;
-  registered_accounts_active: number;
-  platforms: Record<string, { contents: number; contents_period: number; drafts: number; registered_accounts?: number }>;
-}
-export interface RegisteredPlatformAccount {
-  id: number;
-  platform: Platform;
-  account_handle: string;
-  display_name: string;
-  status: "active" | "inactive";
-  notes: string;
-  created_at: string;
-  updated_at: string;
+  platforms: Record<string, { contents: number; contents_period: number; drafts: number }>;
 }
 export interface GlobalMonitorResponse {
   days: number;
@@ -506,9 +494,8 @@ export interface GlobalMonitorResponse {
     tenants: number; available_tenants: number; contents_period: number; contents_all: number;
     drafts_all: number; drafts_pending: number; drafts_saved: number; drafts_published: number;
     drafts_failed: number; media_active: number; media_usage: number;
-    registered_accounts: number; registered_accounts_active: number;
   };
-  platform_totals: Record<string, { contents: number; drafts: number; registered_accounts: number }>;
+  platform_totals: Record<string, { contents: number; drafts: number }>;
   tenants: GlobalMonitorTenant[];
   account_count_note: string;
 }
@@ -1280,13 +1267,6 @@ export const api = {
       `/api/schedule/${draft_id}`, { method: "PATCH", body: JSON.stringify({ scheduled_publish_at: scheduled }) },
     ),
   globalMonitor: (days = 30) => fetchJson<GlobalMonitorResponse>(`/api/global-monitor?days=${days}`),
-  registeredPlatformAccounts: () => fetchJson<{ items: RegisteredPlatformAccount[]; total: number; active_total: number; source: "user_registered" }>("/api/platform-accounts"),
-  createRegisteredPlatformAccount: (data: Pick<RegisteredPlatformAccount, "platform" | "account_handle" | "display_name" | "status" | "notes">) =>
-    fetchJson<RegisteredPlatformAccount>("/api/platform-accounts", { method: "POST", body: JSON.stringify(data) }),
-  updateRegisteredPlatformAccount: (id: number, data: Pick<RegisteredPlatformAccount, "platform" | "account_handle" | "display_name" | "status" | "notes">) =>
-    fetchJson<RegisteredPlatformAccount>("/api/platform-accounts/" + id, { method: "PUT", body: JSON.stringify(data) }),
-  deleteRegisteredPlatformAccount: (id: number) =>
-    fetchJson<void>("/api/platform-accounts/" + id, { method: "DELETE" }),
   // === 账号组隔离 ===
   tenants: () => fetchJson<TenantListResponse>("/api/tenants"),
   createTenant: (data: { tenant_id: string; name: string }) =>
@@ -1317,7 +1297,7 @@ export const api = {
     fetchJson<{ id: number; status: string; already_archived: boolean }>(`/api/media/${id}/archive`, { method: "POST" }),
   mediaUsageTargets: () => fetchJson<{ items: MediaUsageTarget[] }>("/api/media/targets"),
   recommendMediaAssets: (content_id: string, usage_role: "cover" | "illustration" | "background" = "cover") =>
-    fetchJson<{ content_id: string; usage_role: string; method: "keyword_match" | "vision_model"; automatic_assignment: false; items: MediaRecommendation[]; message: string }>(
+    fetchJson<{ content_id: string; usage_role: string; method: "keyword_match"; automatic_assignment: false; items: MediaRecommendation[]; message: string }>(
       `/api/media/recommendations?content_id=${encodeURIComponent(content_id)}&usage_role=${usage_role}`,
     ),
   useMediaAsset: (asset_id: number, content_id: string, usage_role: "cover" | "illustration" | "background" = "illustration") =>

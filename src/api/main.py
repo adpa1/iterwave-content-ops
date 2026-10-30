@@ -1624,7 +1624,7 @@ def _register_routes(app: FastAPI) -> None:
     def recommend_media_assets(
         content_id: str = Query(..., min_length=1, max_length=128),
         usage_role: str = Query("cover", pattern="^(cover|illustration|background)$"),
-        limit: int = Query(20, ge=1, le=20),
+        limit: int = Query(8, ge=1, le=20),
     ):
         """基于内容文本与素材标题/标签的可解释关键词匹配；只推荐已审核且未归档素材，不自动分配。"""
         conn = _g()["conn"]
@@ -1643,14 +1643,14 @@ def _register_routes(app: FastAPI) -> None:
         stopwords = {"我们", "你们", "他们", "这个", "那个", "可以", "如何", "因为", "所以", "以及", "但是", "如果", "门店", "内容", "介绍", "推荐"}
         tokens = {token for token in tokens if token not in stopwords}
         rows = conn.execute(
-            "SELECT id, title, original_filename, stored_filename, alt_text, tags, quality_score, width, height "
+            "SELECT id, title, original_filename, alt_text, tags, quality_score, width, height "
             "FROM media_assets WHERE status = 'active' AND review_status = 'approved' "
             "ORDER BY created_at DESC LIMIT 500"
         ).fetchall()
         purpose_terms = {
-            "cover": {"封面", "主图", "主体", "产品", "作品", "人物", "场景", "重点"},
-            "illustration": {"正文", "细节", "过程", "步骤", "使用", "功能", "特点", "局部", "说明"},
-            "background": {"背景", "底图", "纹理", "氛围", "色彩", "空间", "抽象"},
+            "cover": {"封面", "主图", "门头", "产品", "招牌"},
+            "illustration": {"正文", "细节", "环境", "过程", "服务", "产品"},
+            "background": {"背景", "底图", "纹理", "氛围"},
         }[usage_role]
         ranked = []
         for row in rows:
@@ -1675,54 +1675,11 @@ def _register_routes(app: FastAPI) -> None:
                     + (("；用途：" + "、".join(purpose_hits)) if purpose_hits else ""),
             })
         ranked.sort(key=lambda item: (-item["score"], -(item["quality_score"] or 0), item["asset_id"]))
-        method = "keyword_match"
-        message = "当前使用关键词和用途标签匹配；推荐结果需人工确认。"
-        registry = _g().get("tenant_registry")
-        if registry is not None and rows:
-            try:
-                from src.core.media_semantic import rank_media_with_vision
-                top = ranked[:8]
-                by_id = {int(row["id"]): row for row in rows}
-                if len(top) < min(8, len(rows)):
-                    already = {item["asset_id"] for item in top}
-                    rest = sorted((row for row in rows if int(row["id"]) not in already),
-                                  key=lambda row: (-(row["quality_score"] or 0), -int(row["id"])))
-                    for row in rest[:8 - len(top)]:
-                        top.append({"asset_id": int(row["id"]), "title": row["title"], "score": 0,
-                                    "matched_keywords": [], "purpose_matches": [],
-                                    "quality_score": row["quality_score"], "width": row["width"], "height": row["height"],
-                                    "reason": "候选图片"})
-                candidates = []
-                for item in top:
-                    row = by_id.get(item["asset_id"])
-                    if row is not None:
-                        candidates.append({"asset_id": item["asset_id"], "title": item["title"],
-                                           "stored_filename": row["stored_filename"]})
-                vision = rank_media_with_vision(
-                    title=str(content["title"] or ""), body=str(content["body"] or ""),
-                    usage_role=usage_role, candidates=candidates,
-                    media_dir=registry.paths(_g().get("runtime_tenant_id", "default")).media_dir,
-                )
-                if vision:
-                    indexed = {item["asset_id"]: item for item in top}
-                    ai_items = []
-                    for item in vision:
-                        if item["asset_id"] in indexed:
-                            ranked_item = dict(indexed[item["asset_id"]])
-                            ranked_item["reason"] = item["reason"]
-                            ranked_item["score"] = 1000 - len(ai_items)
-                            ai_items.append(ranked_item)
-                    if ai_items:
-                        ranked = ai_items
-                        method = "vision_model"
-                        message = "已使用视觉模型结合内容文本进行语义匹配；仅展示已审核素材，仍需人工确认。"
-            except Exception as exc:  # noqa: BLE001 — 模型未配置或调用失败时回退关键词
-                logger.warning("vision media ranking failed; using keyword fallback: %s", type(exc).__name__)
         return {
             "content_id": content_id, "usage_role": usage_role,
-            "method": method, "automatic_assignment": False,
+            "method": "keyword_match", "automatic_assignment": False,
             "items": ranked[:limit],
-            "message": message + " 不会自动替换内容图片。",
+            "message": "这是基于标题、正文、素材名称和标签的关键词推荐；无匹配项不代表素材不可用。推荐结果不会自动配图。",
         }
 
     @app.post("/api/media/{asset_id}/use")
@@ -1993,6 +1950,67 @@ def _register_routes(app: FastAPI) -> None:
                     platform_totals[platform]["registered_accounts"] += int(values.get("registered_accounts", 0))
             tenant_rows.append(row)
         return {"days": days, "since": since, "totals": totals, "platform_totals": platform_totals, "tenants": tenant_rows, "account_count_note": "账号数量来自用户登记的平台账号标识，按账号组和平台去重；未登记的账号不会自动推断计入。"}
+
+    @app.get("/api/global-monitor")
+    def global_monitor(days: int = Query(30, ge=1, le=365)):
+        """只读跨账号组汇总。每个数据库独立打开，缺表/未初始化数据库按不可用处理，不影响其他账号组。"""
+        registry = _g().get("tenant_registry")
+        if registry is None:
+            raise HTTPException(503, "账号组注册表尚未初始化")
+        from datetime import timedelta
+        since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        tenant_rows = []
+        totals = {"tenants": 0, "available_tenants": 0, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0}
+        platform_totals = {p: {"contents": 0, "drafts": 0} for p in ("xhs", "douyin", "kuaishou", "wechat_channels")}
+        for tenant in registry.list():
+            tenant_id = tenant["id"]
+            paths = registry.paths(tenant_id, name=str(tenant.get("name") or tenant_id))
+            row = {"tenant_id": tenant_id, "tenant_name": tenant["name"], "created_at": tenant.get("created_at"), "db_available": False, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0, "platforms": {}}
+            db_file = paths.db_file
+            if db_file.exists():
+                conn = None
+                try:
+                    conn = sqlite3.connect(db_file.as_uri() + "?mode=ro", uri=True, timeout=2)
+                    conn.row_factory = sqlite3.Row
+                    tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+                    if "contents" in tables:
+                        row["contents_all"] = int(conn.execute("SELECT COUNT(*) FROM contents").fetchone()[0])
+                        cols = {r["name"] for r in conn.execute("PRAGMA table_info(contents)").fetchall()}
+                        if "created_at" in cols:
+                            row["contents_period"] = int(conn.execute("SELECT COUNT(*) FROM contents WHERE datetime(created_at) >= datetime(?)", (since,)).fetchone()[0])
+                            for item in conn.execute("SELECT platform, COUNT(*) AS n FROM contents WHERE datetime(created_at) >= datetime(?) GROUP BY platform", (since,)).fetchall():
+                                platform = item["platform"]
+                                row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0})["contents_period"] = int(item["n"])
+                        for item in conn.execute("SELECT platform, COUNT(*) AS n FROM contents GROUP BY platform").fetchall():
+                            platform = item["platform"]
+                            row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0})["contents"] = int(item["n"])
+                            if platform in platform_totals: platform_totals[platform]["contents"] += int(item["n"])
+                    if "drafts" in tables:
+                        row["drafts_all"] = int(conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0])
+                        for item in conn.execute("SELECT status, COUNT(*) AS n FROM drafts GROUP BY status").fetchall():
+                            status, count = str(item["status"]), int(item["n"])
+                            if status in ("draft_pending", "pending", "pending_review"): row["drafts_pending"] += count
+                            elif status == "draft_saved": row["drafts_saved"] += count
+                            elif status in ("user_published", "data_fetching", "published"): row["drafts_published"] += count
+                            elif status in ("failed", "error"): row["drafts_failed"] += count
+                        for item in conn.execute("SELECT platform, COUNT(*) AS n FROM drafts GROUP BY platform").fetchall():
+                            platform = item["platform"]
+                            row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0})["drafts"] = int(item["n"])
+                            if platform in platform_totals: platform_totals[platform]["drafts"] += int(item["n"])
+                    if "media_assets" in tables:
+                        row["media_active"] = int(conn.execute("SELECT COUNT(*) FROM media_assets WHERE status = 'active'").fetchone()[0])
+                    if "media_asset_usages" in tables:
+                        row["media_usage"] = int(conn.execute("SELECT COUNT(*) FROM media_asset_usages").fetchone()[0])
+                    row["db_available"] = True
+                except (sqlite3.Error, OSError) as exc:
+                    logger.warning("global monitor skipped tenant=%s: %s", tenant_id, exc)
+                finally:
+                    if conn is not None: conn.close()
+            totals["tenants"] += 1
+            if row["db_available"]: totals["available_tenants"] += 1
+            for key in ("contents_period", "contents_all", "drafts_all", "drafts_pending", "drafts_saved", "drafts_published", "drafts_failed", "media_active", "media_usage"): totals[key] += row[key]
+            tenant_rows.append(row)
+        return {"days": days, "since": since, "totals": totals, "platform_totals": platform_totals, "tenants": tenant_rows, "account_count_note": "当前数据模型未保存可去重的平台账号身份；此处不将平台数或快照数冒充账号数。"}
 
     # --- 访问保护（口令 / 会话 / 脚本令牌）---
     @app.get("/api/auth/status")

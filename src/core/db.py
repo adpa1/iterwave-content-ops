@@ -185,15 +185,14 @@ class Database:
         """执行单个迁移脚本并记录版本。"""
         sql = mig.path.read_text(encoding="utf-8")
         logger.info("执行迁移 %d — %s（%s）", mig.version, mig.name, mig.path)
-        # 历史迁移曾发生版本号冲突。已重编号的迁移必须兼容旧库中已执行过部分 ALTER 的情况。
-        if mig.name in ("hot_topic_trend", "content_review_rejection"):
-            table_name = "hot_topics" if mig.name == "hot_topic_trend" else "contents"
-            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+        # 020 版本曾被两个不同迁移文件重复占用；旧数据库可能已执行过热点趋势列，
+        # 将该迁移升至 027 后，按列存在情况跳过已完成的 ALTER，兼容旧的部分迁移状态。
+        if mig.name == "hot_topic_trend":
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(hot_topics)").fetchall()}
             filtered = []
             for line in sql.splitlines():
-                prefix = f"ALTER TABLE {table_name} ADD COLUMN "
-                if line.startswith(prefix):
-                    column = line[len(prefix):].strip().split()[0]
+                if line.startswith("ALTER TABLE hot_topics ADD COLUMN "):
+                    column = line.split("ADD COLUMN", 1)[1].strip().split()[0]
                     if column in existing:
                         continue
                 filtered.append(line)

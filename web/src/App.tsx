@@ -242,14 +242,10 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
       setTenantData(latest);
       showToast(
         result.restart_required
-          ? `已选择「${result.selected.name}」，但当前运行空间仍是「${latest.items.find((tenant) => tenant.id === result.runtime_tenant_id)?.name ?? "当前账号组"}」。请安排后端重启后生效。`
+          ? `已选择「${result.selected.name}」，但当前运行空间仍是「${result.runtime_tenant_id}」。请安排后端重启后生效。`
           : result.message,
         result.restart_required ? "info" : "success",
       );
-      if (!result.restart_required && result.switch_status === "completed") {
-        // 其他页面持有旧账号组的查询结果；切换成功后重新加载整个工作台，避免显示旧租户数据。
-        window.setTimeout(() => window.location.reload(), 800);
-      }
     } catch (error) {
       showToast(error instanceof Error ? error.message : "切换账号组失败", "error");
       await loadTenants();
@@ -291,23 +287,16 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
               value={tenantData.selected_tenant_id}
               disabled={tenantLoading}
               onChange={(event) => void handleTenantChange(event.target.value)}
-              title={tenantData.hot_switch_enabled === false
-                ? "即时切换未启用，选择后需重启服务生效"
-                : tenantData.restart_required
-                  ? `当前运行：${tenantData.items.find((tenant) => tenant.id === tenantData.runtime_tenant_id)?.name ?? "当前账号组"}；待生效：${tenantData.items.find((tenant) => tenant.id === tenantData.selected_tenant_id)?.name ?? "所选账号组"}`
-                  : "选择工作空间"}
+              title={tenantData.restart_required
+                ? `当前运行：${tenantData.runtime_tenant_id}；待生效：${tenantData.selected_tenant_id}`
+                : "选择工作空间"}
             >
               {tenantData.items.map((tenant) => (
                 <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
               ))}
             </select>
-            {tenantLoading && (
-              <span className="tenant-switcher-pending" role="status" aria-live="polite">
-                切换中…
-              </span>
-            )}
-            {!tenantLoading && tenantData.restart_required && (
-              <span className="tenant-switcher-pending" title={`当前运行空间：${tenantData.items.find((tenant) => tenant.id === tenantData.runtime_tenant_id)?.name ?? "当前账号组"}`}>
+            {tenantData.restart_required && (
+              <span className="tenant-switcher-pending" title={`当前运行空间：${tenantData.runtime_tenant_id}`}>
                 待重启
               </span>
             )}

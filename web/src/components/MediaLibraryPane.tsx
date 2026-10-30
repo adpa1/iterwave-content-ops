@@ -1,19 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../AppContext";
 import { api, MediaAsset, MediaUsageTarget, MediaGenerationSettings, MediaRecommendation } from "../api";
-import { platformMeta } from "../platforms";
-
-type UsageRole = "cover" | "illustration" | "background";
-type Panel = "none" | "upload" | "generate" | "settings";
-type Filter = "all" | "pending" | "approved" | "rejected" | "archived";
-
-const MAX_BYTES = 12 * 1024 * 1024;
-// 通用用途分类（不绑定具体行业），与推荐接口的用途匹配词保持一致。
-const PURPOSES = ["封面主视觉", "产品/作品", "场景环境", "人物/团队", "过程/细节", "活动宣传", "品牌元素", "信息图示", "背景氛围", "其他"];
-const ROLE_LABEL: Record<UsageRole, string> = { cover: "封面", illustration: "正文配图", background: "背景" };
-const DRAFT_STATUS_LABEL: Record<string, string> = { draft_pending: "待保存草稿", draft_saved: "平台草稿已存" };
-const VISUAL_LABEL: Record<string, string> = { media_asset: "已用素材图", generated: "已用 AI 配图", degraded: "仅有模板图" };
-const PLATFORM_CODES = new Set(["xhs", "douyin", "kuaishou", "wechat_channels"]);
 
 function fileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -55,39 +42,23 @@ export default function MediaLibraryPane() {
   const [items, setItems] = useState<MediaAsset[]>([]);
   const [targets, setTargets] = useState<MediaUsageTarget[]>([]);
   const [selectedContentId, setSelectedContentId] = useState("");
-  const [usageRole, setUsageRole] = useState<UsageRole>("illustration");
-  const [settings, setSettings] = useState<MediaGenerationSettings | null>(null);
-  const [panel, setPanel] = useState<Panel>("none");
-  const [filter, setFilter] = useState<Filter>("all");
+  const [usageRole, setUsageRole] = useState<"cover" | "illustration" | "background">("illustration");
+  const [generationSettings, setGenerationSettings] = useState<MediaGenerationSettings | null>(null);
+  const [generationPrompt, setGenerationPrompt] = useState("");
   const [query, setQuery] = useState("");
   const [title, setTitle] = useState("");
   const [altText, setAltText] = useState("");
   const [tagsText, setTagsText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [purpose, setPurpose] = useState("场景环境");
+  const [purpose, setPurpose] = useState("门店环境");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [targetWarning, setTargetWarning] = useState("");
-
-  // 上传
-  const [files, setFiles] = useState<File[]>([]);
-  const [dragging, setDragging] = useState(false);
-  const [purpose, setPurpose] = useState("场景环境");
-  const [title, setTitle] = useState("");
-  const [altText, setAltText] = useState("");
-  const [tagsText, setTagsText] = useState("");
-  const fileInput = useRef<HTMLInputElement | null>(null);
-
-  // AI 生成 / 改图
-  const [prompt, setPrompt] = useState("");
-  const [genTitle, setGenTitle] = useState("");
-  const [editTarget, setEditTarget] = useState<MediaAsset | null>(null);
-
-  // 推荐
   const [recommendations, setRecommendations] = useState<MediaRecommendation[]>([]);
   const [recommendationMessage, setRecommendationMessage] = useState("");
-  const [recommendationKey, setRecommendationKey] = useState("");
   const [recommendationLoading, setRecommendationLoading] = useState(false);
+  const [recommendationContentId, setRecommendationContentId] = useState("");
+  const [recommendationRole, setRecommendationRole] = useState<"cover" | "illustration" | "background">("cover");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -98,20 +69,22 @@ export default function MediaLibraryPane() {
       ]);
       setItems(result.items);
       setTargets(targetResult.items);
-      setSettings(settingsResult);
+      setGenerationSettings(settingsResult);
       const requestedContentId = new URLSearchParams(window.location.search).get("focusContent");
       if (requestedContentId) {
-        if (targetResult.items.some((item) => item.id === requestedContentId)) {
+        const requestedTarget = targetResult.items.find((item) => item.id === requestedContentId);
+        if (requestedTarget) {
           setSelectedContentId(requestedContentId);
           setTargetWarning("");
         } else {
           setSelectedContentId("");
-          setTargetWarning("从编辑页跳转的这篇内容当前不能配图（可能已发布或不在草稿状态）。请手动选择要配图的草稿。");
+          setTargetWarning("从编辑页跳转的这篇内容当前不符合配图条件（可能已发布或不在待存草稿状态）。系统不会自动改选其他内容，请手动选择正确的待存草稿。");
         }
       } else {
         setTargetWarning("");
         setSelectedContentId((current) => (
-          current && targetResult.items.some((item) => item.id === current) ? current : targetResult.items[0]?.id ?? ""
+          current && targetResult.items.some((item) => item.id === current)
+            ? current : targetResult.items[0]?.id ?? ""
         ));
       }
     } catch (e) {
@@ -126,74 +99,53 @@ export default function MediaLibraryPane() {
     return () => window.clearTimeout(timer);
   }, [load]);
 
-  const counts = useMemo(() => {
-    const c: Record<Filter, number> = { all: 0, pending: 0, approved: 0, rejected: 0, archived: 0 };
-    for (const item of items) {
-      const state = assetState(item);
-      c[state] += 1;
-      if (state !== "archived") c.all += 1;
-    }
-    return c;
-  }, [items]);
-
-  const visible = useMemo(() => items.filter((item) => {
-    const state = assetState(item);
-    return filter === "all" ? state !== "archived" : state === filter;
-  }), [items, filter]);
-
-  const aiReady = Boolean(settings?.enabled && settings?.provider_configured);
-  const aiBlockedReason = !settings ? "正在加载 AI 配图设置" : !settings.provider_configured
-    ? "服务器尚未配置图片服务，请联系管理员" : !settings.enabled ? "AI 配图未启用，可在「AI 设置」中开启" : "";
-  const quotaLeft = settings ? Math.max(0, settings.monthly_quota - settings.used_this_month) : 0;
-  const selectedTarget = targets.find((t) => t.id === selectedContentId);
-
-  const togglePanel = (next: Panel) => setPanel((current) => (current === next ? "none" : next));
-
-  // ---------- 上传 ----------
   const chooseFiles = (next: File[]) => {
-    const images = next.filter((f) => /^image\/(jpeg|png|webp|gif)$/.test(f.type));
-    if (images.length < next.length) showToast(`已忽略 ${next.length - images.length} 个非图片文件（支持 JPG、PNG、WebP、GIF）`, "info");
-    setFiles(images);
-    setTitle(images.length === 1 ? images[0].name.replace(/\.[^.]+$/, "") : "");
-  };
-
-  const resetUpload = () => {
-    setFiles([]); setTitle(""); setAltText(""); setTagsText("");
-    if (fileInput.current) fileInput.current.value = "";
+    setFiles(next);
+    if (next.length === 1 && !title.trim()) setTitle(next[0].name.replace(/\.[^.]+$/, ""));
+    if (next.length > 1) setTitle("");
   };
 
   const upload = async () => {
     if (!files.length || isPending("media:upload")) return;
-    const invalid = files.filter((item) => item.size <= 0 || item.size > MAX_BYTES);
+    const invalid = files.filter((item) => item.size <= 0 || item.size > 12 * 1024 * 1024);
     if (invalid.length) {
-      showToast(`有 ${invalid.length} 张图片超过 12MB 或为空，请移除后再上传`, "error");
+      showToast(`有 ${invalid.length} 张图片大小不符合要求（单张需大于 0 且不超过 12MB），请移除后再上传`, "error");
       return;
     }
     await withPending("media:upload", async () => {
-      let succeeded = 0, duplicates = 0;
+      let succeeded = 0;
+      let duplicates = 0;
+      let failed = 0;
       const failedFiles: File[] = [];
-      const customTags = splitTags(tagsText);
+      const customTags = tagsText.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean);
       for (const item of files) {
         try {
+          const data = await fileAsBase64(item);
           const result = await api.uploadMediaAsset({
             filename: item.name,
-            title: files.length === 1 && title.trim() ? title.trim() : item.name.replace(/\.[^.]+$/, ""),
+            title: (files.length === 1 && title.trim()) ? title.trim() : item.name.replace(/\.[^.]+$/, ""),
             alt_text: altText.trim(),
             tags: Array.from(new Set([purpose, ...customTags])).slice(0, 30),
-            data_base64: await fileAsBase64(item),
+            data_base64: data,
           });
-          if (result.duplicate) duplicates += 1; else succeeded += 1;
+          if (result.duplicate) duplicates += 1;
+          else succeeded += 1;
         } catch (e) {
+          failed += 1;
           failedFiles.push(item);
           console.error("media upload failed:", item.name, e);
         }
       }
-      const parts = [`新增 ${succeeded} 张`];
-      if (duplicates) parts.push(`${duplicates} 张已存在，已复用`);
-      if (failedFiles.length) parts.push(`${failedFiles.length} 张失败，已保留可重试`);
-      showToast(`上传完成：${parts.join("，")}`, failedFiles.length ? "info" : "success");
-      if (failedFiles.length) setFiles(failedFiles);
-      else { resetUpload(); setPanel("none"); }
+      showToast(
+        `批量导入完成：新增 ${succeeded} 张，重复复用 ${duplicates} 张，失败 ${failed} 张。${failed ? "失败项已保留，可直接重试。" : ""}`,
+        failed ? "info" : "success",
+      );
+      setFiles(failedFiles);
+      setTitle("");
+      setAltText("");
+      setTagsText("");
+      const input = document.getElementById("media-upload-input") as HTMLInputElement | null;
+      if (input) input.value = "";
       await load();
     });
   };
@@ -267,17 +219,6 @@ export default function MediaLibraryPane() {
       if (result.items.length === 0) showToast("没有找到明显匹配的已审核素材，可调整素材标签或继续手动选择", "info");
     } catch (e) { showToast(e instanceof Error ? e.message : "素材推荐失败", "error"); }
     finally { setRecommendationLoading(false); }
-  };
-
-  const generateForContent = async () => {
-    if (!selectedContentId) { showToast("请先选择待配图内容", "error"); return; }
-    await withPending("media:generate-for-content", async () => {
-      try {
-        await api.generateMediaForContent(selectedContentId, usageRole);
-        showToast("已生成候选配图，需在素材库人工审核后才能使用", "success");
-        await load();
-      } catch (e) { showToast(e instanceof Error ? e.message : "内容配图生成失败", "error"); }
-    });
   };
 
   const assignToContent = async (item: MediaAsset) => {
@@ -365,8 +306,8 @@ export default function MediaLibraryPane() {
           <label className="field">
             <span className="field-label">用途分类（批量应用）</span>
             <select value={purpose} onChange={(event) => setPurpose(event.target.value)}>
-              <option>封面主视觉</option><option>产品/作品</option><option>场景环境</option><option>人物/团队</option>
-              <option>过程/细节</option><option>活动宣传</option><option>品牌元素</option><option>信息图示</option><option>背景氛围</option><option>其他</option>
+              <option>封面</option><option>商品/菜品</option><option>门店环境</option><option>团队人物</option>
+              <option>服务过程</option><option>活动海报</option><option>品牌标识</option><option>其他</option>
             </select>
           </label>
           <label className="field">
@@ -468,16 +409,13 @@ export default function MediaLibraryPane() {
         </div>
         {targetWarning && <div className="note" role="alert" style={{ color: "var(--orange)", marginBottom: 10 }}>{targetWarning}</div>}
         {targets.length > 0 && <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
-          <button className="btn sm" onClick={() => void recommendForContent()} disabled={!selectedContentId || recommendationLoading}>
+          <button className="btn sm primary" onClick={() => void recommendForContent()} disabled={!selectedContentId || recommendationLoading}>
             {recommendationLoading ? "匹配中…" : "为当前内容推荐素材"}
-          </button>
-          <button className="btn sm primary" onClick={() => void generateForContent()} disabled={!selectedContentId || isPending("media:generate-for-content") || !generationSettings?.enabled || !generationSettings.provider_configured}>
-            {isPending("media:generate-for-content") ? "生成中…" : "按当前内容生成配图"}
           </button>
         </div>}
         {recommendations.length > 0 && recommendationContentId === selectedContentId && recommendationRole === usageRole && <div className="panel" style={{ marginBottom: 14, padding: 12 }}>
           <div className="panel-title">匹配推荐（前 {recommendations.length} 项）</div>
-          <div className="panel-sub">{recommendationMessage || "推荐结果仅供确认，不会自动替换内容图片。"}</div>
+          <div className="panel-sub">按内容标题、正文、素材名称及标签进行关键词匹配；仅展示已审核素材，不会自动配图。</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 8, marginTop: 10 }}>
             {recommendations.map((rec) => {
               const asset = items.find((item) => item.id === rec.asset_id);
