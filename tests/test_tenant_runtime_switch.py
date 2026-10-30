@@ -93,6 +93,7 @@ def test_runtime_switch_supports_a_to_b_to_a(monkeypatch):
     }
     original_a = contexts["A"]()
     monkeypatch.setattr(api_main, "_g_ctx", original_a)
+    monkeypatch.setattr(api_main, "_tenant_runtime_contexts", {})
     monkeypatch.setattr(api_main, "_running_rounds", set())
     monkeypatch.setattr(api_main, "set_active_notifier", lambda notifier: None)
     monkeypatch.setattr(api_main, "_build_tenant_runtime_context", lambda _r, tid, run_startup_maintenance=False: contexts[tid]())
@@ -139,6 +140,7 @@ def test_runtime_switch_rolls_back_if_target_scheduler_fails(monkeypatch):
         return rollback
 
     monkeypatch.setattr(api_main, "_g_ctx", old)
+    monkeypatch.setattr(api_main, "_tenant_runtime_contexts", {})
     monkeypatch.setattr(api_main, "_running_rounds", set())
     monkeypatch.setattr(api_main, "set_active_notifier", lambda notifier: None)
     monkeypatch.setattr(api_main, "_build_tenant_runtime_context", build)
