@@ -780,7 +780,9 @@ class RoundExecutor:
                         except ContentGenerationError as exc:
                             if not exc.retryable or model_attempt >= self.cfg.llm.retry_attempts:
                                 raise
-                            delay = self.cfg.llm.retry_backoff_seconds * (2 ** model_attempt)
+                            delay = exc.retry_after_seconds or (
+                                self.cfg.llm.retry_backoff_seconds * (2 ** model_attempt)
+                            )
                             report["steps"].append({
                                 "step": "model_retry",
                                 "platform": platform.value,
