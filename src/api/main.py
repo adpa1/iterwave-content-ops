@@ -196,6 +196,8 @@ def _build_tenant_runtime_context(tenant_registry: TenantRegistry, tenant_id: st
         if applied_overrides:
             logger.info("账号组热切换已应用 %d 项 SQLite 配置 tenant=%s",
                         len(applied_overrides), tenant_id)
+        from src.core.tenant_business_config import initialize_tenant_business_data
+        initialize_tenant_business_data(conn, cfg)
         if tenant_id != "default":
             for platform_cfg in cfg.platforms.model_dump().keys():
                 item = getattr(cfg.platforms, platform_cfg)
@@ -475,6 +477,8 @@ def _build_app() -> FastAPI:
         if applied_overrides:
             logger.info("⚙️ 已套用 %d 项 SQLite 运行时配置：%s",
                         len(applied_overrides), applied_overrides)
+        from src.core.tenant_business_config import initialize_tenant_business_data
+        initialize_tenant_business_data(conn, cfg)
         if active_tenant_id != "default":
             # 在覆盖值应用后再次强制命名空间化，避免旧配置覆盖把登录态指回 default。
             for platform_cfg in cfg.platforms.model_dump().keys():
