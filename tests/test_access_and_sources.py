@@ -117,13 +117,17 @@ def test_public_first_password_setup_requires_bootstrap_token(unconfigured_api_c
 
 
 def test_login_rate_limit_returns_retry_after_header(api_client):
-    api_client.cookies.clear()
-    for _ in range(auth.LOGIN_MAX_FAILURES):
-        response = api_client.post("/api/auth/login", json={"password": "wrong"})
-        assert response.status_code == 401
-    blocked = api_client.post("/api/auth/login", json={"password": "wrong"})
-    assert blocked.status_code == 429
-    assert blocked.headers.get("Retry-After") == str(auth.LOGIN_WINDOW_SECONDS)
+    auth._failures.clear()
+    try:
+        api_client.cookies.clear()
+        for _ in range(auth.LOGIN_MAX_FAILURES):
+            response = api_client.post("/api/auth/login", json={"password": "wrong"})
+            assert response.status_code == 401
+        blocked = api_client.post("/api/auth/login", json={"password": "wrong"})
+        assert blocked.status_code == 429
+        assert blocked.headers.get("Retry-After") == str(auth.LOGIN_WINDOW_SECONDS)
+    finally:
+        auth._failures.clear()
 
 
 def test_bootstrap_token_guesses_are_rate_limited(monkeypatch):
