@@ -22,7 +22,7 @@ import logging
 import os
 import sqlite3
 import subprocess
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from ..timezone import business_now
 from typing import Optional
