@@ -19,7 +19,7 @@ _SECRET_KEY = re.compile(r"(api[_-]?key|secret|password|token|webhook|credential
 
 
 def _safe_value(key: str, value: Any) -> bool:
-    if _SECRET_KEY.search(key):
+    if _SECRET_KEY.search(key) and not key.endswith(".webhook_url_env"):
         return False
     if isinstance(value, str):
         # Do not persist URL userinfo, even if a future whitelist accidentally allows it.
@@ -115,7 +115,7 @@ def import_legacy_overrides(conn: sqlite3.Connection, legacy_path: Path) -> dict
     return {"imported": len(accepted), "rejected": rejected}
 
 
-def save_settings(conn: sqlite3.Connection, updates: dict[str, Any], *, audit_rows: list[tuple[str, str | None, str]] | None = None, changed_by: str = "settings_ui") -> int:
+def save_settings(conn: sqlite3.Connection, updates: dict[str, Any], *, audit_rows: list[tuple[str, str | None, str]] | None = None, remove_keys: list[str] | None = None, changed_by: str = "settings_ui") -> int:
     """Atomically upsert changed keys and persist a complete version snapshot."""
     if not updates:
         row = conn.execute("SELECT COALESCE(MAX(version),0) FROM tenant_setting_versions").fetchone()
@@ -127,9 +127,13 @@ def save_settings(conn: sqlite3.Connection, updates: dict[str, Any], *, audit_ro
     try:
         conn.execute("BEGIN IMMEDIATE")
         current = read_settings(conn)
+        for key in (remove_keys or []):
+            current.pop(key, None)
         current.update(updates)
         row = conn.execute("SELECT COALESCE(MAX(version),0) FROM tenant_setting_versions").fetchone()
         version = int(row[0]) + 1
+        for key in (remove_keys or []):
+            conn.execute("DELETE FROM tenant_settings WHERE key=?", (key,))
         for key, value in updates.items():
             conn.execute(
                 """INSERT INTO tenant_settings(key,value_json,value_type,version,updated_at,updated_by)
