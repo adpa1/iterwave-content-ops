@@ -1745,7 +1745,7 @@ def _register_routes(app: FastAPI) -> None:
         rows = conn.execute(
             "SELECT sc.id, sc.sample_run_id, sc.platform, sc.angle, sc.title, sc.body, "
             "sc.hashtags_json, sc.adopted_at, sc.created_at, sr.account_description "
-            "FROM sample_contents sc JOIN sample_runs sr ON sr.id=sc.sample_run_id "
+            "FROM sample_contents sc JOIN sample_runs sr ON sr.id=sc.sample_run_id AND sr.tenant_id=sc.tenant_id "
             "WHERE sc.tenant_id=? AND sc.adopted_at IS NOT NULL "
             "ORDER BY sc.adopted_at DESC, sc.id DESC LIMIT ?",
             (tenant_id, limit),
@@ -1833,8 +1833,8 @@ def _register_routes(app: FastAPI) -> None:
     def update_draft_note_url(draft_id: str, req: dict):
         conn = _g()["conn"]
         row = conn.execute(
-            "SELECT d.platform, d.status, d.content_id, d.user_confirmed_at FROM drafts d WHERE d.id=?",
-            (draft_id,),
+            "SELECT d.platform, d.status, d.content_id, d.user_confirmed_at FROM drafts d WHERE d.id=? AND d.tenant_id=?",
+            (draft_id, _tenant_id()),
         ).fetchone()
         if row is None:
             raise HTTPException(404, "草稿不存在")
