@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -52,6 +53,40 @@ def test_activation_samples_without_model_fail_without_content(activation_client
     assert payload["status"] == "failed"
     assert payload["error_code"] == "model_not_configured"
     assert conn.execute("SELECT COUNT(*) FROM sample_contents").fetchone()[0] == 0
+
+
+def test_activation_sample_success_stays_outside_formal_production(activation_client, conn, monkeypatch):
+    cfg = main._g_ctx["cfg"]
+    cfg.llm.enabled = True
+    monkeypatch.setenv(cfg.llm.api_key_env, "test-only-key")
+    from src.core import content_pipeline
+
+    body = (
+        "个人成长 实用经验 产品经理 AI工具 需求分析 用户研究 项目管理 工作效率 数据分析 "
+        "业务流程 产品设计 用户反馈 方案验证 目标拆解 方法总结 实践案例 场景分析 效率提升 团队协作 持续迭代 经验复盘"
+    )
+    monkeypatch.setattr(
+        content_pipeline, "generate_copy_content",
+        lambda *args, **kwargs: ("产品经理的实用方法", body, ["产品经理", "实用经验"]),
+    )
+    response = activation_client.post("/api/activation/samples", json={
+        "account_description": "分享产品经理的 AI 工具实践和效率方法",
+        "platform": "xhs",
+        "idempotency_key": "request-success",
+    })
+    assert response.status_code == 202
+    run_id = response.json()["sample_run_id"]
+    result = None
+    for _ in range(100):
+        result = activation_client.get(f"/api/activation/samples/{run_id}").json()
+        if result["run"]["status"] in ("ready", "failed"):
+            break
+        time.sleep(0.02)
+    assert result["run"]["status"] == "ready", result["run"]
+    assert len(result["contents"]) == 3
+    assert all(item["quality_status"] == "pass" for item in result["contents"])
+    assert conn.execute("SELECT COUNT(*) FROM contents").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0] == 0
 
 
 def test_activation_sample_read_is_tenant_scoped(activation_client, conn):
