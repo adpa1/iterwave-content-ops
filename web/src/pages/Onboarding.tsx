@@ -234,7 +234,7 @@ export default function Onboarding() {
               </div>
             )}
             <div className="note" style={{ marginTop: 12 }}>
-              ▣ 启用 ≠ 可发布：还需要扫码登录，入口在「账号连接」页。
+              ▣ 启用 ≠ 可发布：还需要扫码登录，入口在「账号与登录」页。
             </div>
           </div>
         )}
@@ -243,8 +243,8 @@ export default function Onboarding() {
           <div>
             <div className="panel-title" style={{ marginBottom: 16 }}>③ 选题库</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              选题来源可以是本地上传（CSV / JSON / JSONL / XLSX）、远程地址（含 RSS）或服务器路径，
-              至少要有「标题」和「维度」两列。完整来源管理在「内容资产 → 字段映射检查」。
+              选题来源可以是本地上传（CSV / JSON / JSONL / XLSX）、远程地址（含 RSS），也可以使用管理员添加的服务器来源。
+              来源至少要有「标题」和「维度」两列。完整来源管理在「内容资产 → 知识库来源」。
             </p>
             <KbEditor view={cfg} onSaved={reload} />
           </div>
@@ -254,12 +254,12 @@ export default function Onboarding() {
           <div>
             <div className="panel-title" style={{ marginBottom: 16 }}>④ 模型配置</div>
             <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
-              选择服务商与模型并填写 API Key（Key 只保存在本机，不会回显）。
+              选择模型服务商与模型，并填写服务密钥（密钥只保存在服务端，不会回显）。
             </p>
             <LlmEditor view={cfg} onSaved={reload} />
             {!cfg.readonly.llm_has_api_key && (
               <div className="note" style={{ marginTop: 12, color: "var(--orange)" }}>
-                ! API Key 未配置 → 选题评分 + 文案生成 + 终极目标检查 全部不可用。
+                ! 服务密钥尚未配置，选题评分和文案生成将无法调用模型。
               </div>
             )}
           </div>
