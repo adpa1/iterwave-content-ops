@@ -452,11 +452,14 @@ class MediaQualityConfig(BaseModel):
     landscape_ratio_max: float = Field(1.7, ge=1.0, le=5.0)
     brightness_min: float = Field(45.0, ge=0.0, le=255.0)
     brightness_max: float = Field(210.0, ge=0.0, le=255.0)
+    brightness_penalty_scale: float = Field(8.5, ge=0.1, le=64.0)
+    contrast_reference: float = Field(45.0, ge=1.0, le=128.0)
     sharpness_reference: float = Field(500.0, ge=1.0, le=10000.0)
     sharpness_warning_threshold: float = Field(35.0, ge=0.0, le=1000.0)
     low_contrast_threshold: float = Field(18.0, ge=0.0, le=128.0)
     low_resolution_pixels: int = Field(500_000, ge=10_000, le=20_000_000)
     low_color_count: int = Field(3, ge=1, le=16)
+    color_count_reference: int = Field(16, ge=1, le=256)
 
 
 class TenantSwitchConfig(BaseModel):
