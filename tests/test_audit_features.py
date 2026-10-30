@@ -151,6 +151,15 @@ def test_executor_follows_plan(cfg, conn, seed, kb, monkeypatch):
     for p in ("xhs", "douyin"):
         getattr(cfg.platforms, p).enabled = True
     cfg.llm.enabled = False
+    monkeypatch.setattr("src.core.round_executor._llm_available", lambda _cfg: True)
+    monkeypatch.setattr(
+        "src.core.round_executor.generate_copy_content",
+        lambda *args, **kwargs: (
+            "测试标题",
+            "个人成长与实用经验：拆解一个真实问题，给出具体步骤、适用条件和可验证结果。" * 8,
+            ["个人成长", "实用经验"],
+        ),
+    )
     monkeypatch.setattr("src.core.round_executor.make_card_set",
                         lambda title, dim, body, out, platform, footer="": [out / f"{abs(hash(title))}.png"])
     pvm = PlanVersionManager(cfg, conn)
