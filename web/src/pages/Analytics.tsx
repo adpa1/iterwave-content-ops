@@ -84,7 +84,7 @@ export default function Analytics() {
       api.activationMetrics(),
       api.activationStatus(),
     ]).then(([allDrafts, report, metrics, status]) => {
-      const published = allDrafts.filter((d) => ["user_published", "data_fetching", "published"].includes(d.status));
+      const published = allDrafts.filter((d) => !!d.user_confirmed_at);
       setPublishedDrafts(published);
       setWeeklyReport(report);
       setActivationMetrics(metrics);
@@ -139,7 +139,7 @@ export default function Analytics() {
         });
       }
       const refreshed = await api.drafts();
-      setPublishedDrafts(refreshed.filter((d) => ["user_published", "data_fetching", "published"].includes(d.status)));
+      setPublishedDrafts(refreshed.filter((d) => !!d.user_confirmed_at));
       setBackfillValues((prev) => ({ ...prev, [draft.id]: {
         ...prev[draft.id], views: "", likes: "", collects: "", comments: "", shares: "",
         correction_of: "",
