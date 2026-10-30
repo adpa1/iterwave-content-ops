@@ -17,6 +17,10 @@ from src.core.task_queue import GlobalTaskQueue, QueuedTask
 logger = logging.getLogger(__name__)
 
 
+class WorkerLeaseLost(RuntimeError):
+    """消费者无法确认自己仍持有全局任务租约。"""
+
+
 class GlobalTaskWorker:
     def __init__(
         self,
@@ -59,47 +63,92 @@ class GlobalTaskWorker:
         except asyncio.TimeoutError:
             pass
 
-    async def _heartbeat(self, task: QueuedTask) -> None:
+    async def _heartbeat(self, task: QueuedTask, lease_lost: asyncio.Event) -> None:
         while True:
             await asyncio.sleep(self.heartbeat_seconds)
-            if not self.queue.renew(
-                task.task_id, self.owner, lease_seconds=self.lease_seconds,
-            ):
-                logger.error("任务租约续期失败 task_id=%s", task.task_id)
+            try:
+                renewed = self.queue.renew(
+                    task.task_id, self.owner, lease_seconds=self.lease_seconds,
+                )
+            except Exception:
+                logger.exception("任务租约续期异常 task_id=%s", task.task_id)
+                lease_lost.set()
+                return
+            if not renewed:
+                logger.error("任务租约续期失败，停止执行 task_id=%s", task.task_id)
+                lease_lost.set()
                 return
 
-    async def _execute(self, task: QueuedTask) -> None:
-        context: dict[str, Any] | None = None
-        heartbeat = asyncio.create_task(self._heartbeat(task))
-        try:
-            if task.task_type != "round_run":
-                raise ValueError(f"不支持的任务类型：{task.task_type}")
-            round_id = int(task.payload["round_id"])
-            operation = task.payload.get("operation", "run")
-            context = self.build_tenant_context(task.tenant_id)
-            from src.core import login_manager
+    async def _run_task(self, task: QueuedTask) -> dict[str, Any]:
+        if task.task_type != "round_run":
+            raise ValueError(f"不支持的任务类型：{task.task_type}")
+        round_id = int(task.payload["round_id"])
+        operation = task.payload.get("operation", "run")
+        context = self.build_tenant_context(task.tenant_id)
+        from src.core import login_manager
 
-            data_dir = Path(context["cfg"].resolve_path(context["cfg"].paths.data_dir))
-            feedback_data = task.payload.get("feedback")
-            feedback = None
-            if isinstance(feedback_data, dict):
-                from src.core.autogrow import StrategyFeedback
-                feedback = StrategyFeedback(**feedback_data)
+        data_dir = Path(context["cfg"].resolve_path(context["cfg"].paths.data_dir))
+        feedback_data = task.payload.get("feedback")
+        feedback = None
+        if isinstance(feedback_data, dict):
+            from src.core.autogrow import StrategyFeedback
+            feedback = StrategyFeedback(**feedback_data)
+        try:
             with login_manager.tenant_login_dir(data_dir):
                 if operation == "save_pending_drafts":
-                    report = await context["executor"].save_pending_drafts(round_id)
-                elif operation == "run":
-                    report = await context["executor"].run(
+                    return await context["executor"].save_pending_drafts(round_id)
+                if operation == "run":
+                    return await context["executor"].run(
                         round_id,
                         topic_count=task.payload.get("topic_count"),
                         platform_values=task.payload.get("platforms"),
                         save_drafts=task.payload.get("save_drafts"),
                         feedback=feedback,
                     )
-                else:
-                    raise ValueError(f"不支持的轮次任务操作：{operation}")
+                raise ValueError(f"不支持的轮次任务操作：{operation}")
+        finally:
+            scheduler = context.get("scheduler")
+            if scheduler is not None:
+                try:
+                    scheduler.shutdown()
+                except Exception:
+                    logger.exception("关闭任务账号组调度器失败")
+            conn = context.get("conn")
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    logger.exception("关闭任务账号组数据库连接失败")
+
+    async def _execute(self, task: QueuedTask) -> None:
+        lease_lost = asyncio.Event()
+        heartbeat = asyncio.create_task(self._heartbeat(task, lease_lost))
+        execution = asyncio.create_task(self._run_task(task))
+        try:
+            done, _ = await asyncio.wait(
+                {execution, heartbeat}, return_when=asyncio.FIRST_COMPLETED,
+            )
+            if heartbeat in done and not execution.done():
+                execution.cancel()
+                try:
+                    await execution
+                except asyncio.CancelledError:
+                    pass
+                raise WorkerLeaseLost("任务租约丢失，已请求停止当前任务")
+            report = await execution
+            if lease_lost.is_set():
+                raise WorkerLeaseLost("任务租约丢失，拒绝提交完成状态")
             if not self.queue.finish(task.task_id, self.owner, result=report):
-                logger.error("任务完成状态写入失败，租约可能已失效 task_id=%s", task.task_id)
+                raise WorkerLeaseLost("任务完成状态写入失败，租约可能已失效")
+        except WorkerLeaseLost:
+            # 不尝试覆盖其他 worker 的状态；租约过期后由恢复流程标记 interrupted。
+            logger.error(
+                "任务因租约丢失停止 task_id=%s tenant_id=%s",
+                task.task_id, task.tenant_id,
+            )
+        except asyncio.CancelledError:
+            execution.cancel()
+            raise
         except Exception as exc:  # noqa: BLE001 — 单任务失败不得终止消费者
             logger.exception(
                 "全局队列任务执行失败 task_id=%s tenant_id=%s",
@@ -115,20 +164,12 @@ class GlobalTaskWorker:
                 error_code=error_code, error_message=safe_message,
             )
         finally:
-            if context is not None:
-                scheduler = context.get("scheduler")
-                if scheduler is not None:
-                    try:
-                        scheduler.shutdown()
-                    except Exception:
-                        pass
-                conn = context.get("conn")
-                if conn is not None:
-                    try:
-                        conn.close()
-                    except Exception:
-                        logger.exception("关闭任务账号组数据库连接失败")
-            # 直到任务上下文完全释放后才停止续租，避免另一消费者提前启动下一项。
+            if not execution.done():
+                execution.cancel()
+                try:
+                    await execution
+                except asyncio.CancelledError:
+                    pass
             heartbeat.cancel()
             try:
                 await heartbeat
