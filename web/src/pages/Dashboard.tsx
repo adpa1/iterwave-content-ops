@@ -213,10 +213,10 @@ export default function Dashboard() {
           label="本周复盘"
           icon="↗"
           iconTone="teal"
-          value={failed.has("复盘") ? "—" : insightsThisWeek.length}
-          unit="条结论"
+          value={failed.has("复盘") ? "—" : insightsWithSamples.length}
+          unit="条有效结论"
           foot={[
-            <span key="w">{failed.has("复盘") ? "复盘数据待加载" : `${insightsWithSamples.length} 条有有效样本`}</span>,
+            <span key="w">{failed.has("复盘") ? "复盘数据待加载" : `${insightsThisWeek.length - insightsWithSamples.length} 条无样本记录已排除`}</span>,
             <span key="p">已发布样本 {status?.published_samples ?? "—"}</span>,
           ]}
         />
