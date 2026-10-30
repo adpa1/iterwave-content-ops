@@ -35,7 +35,7 @@ from .topic_pool import load_pool
 from .persona import effective_persona
 from .hot_topics import _sensitive_topic_hits
 from .orchestration import Orchestration, step_status_from_report
-from .content_pipeline import generate_copy_content, make_card_set, _llm_available
+from .content_pipeline import (\n    ContentGenerationError, generate_copy_content, make_card_set, _llm_available,\n)
 from .plan_version import PlanVersionManager
 from .guard.ultimate_goal_checker import CheckOutcome, CheckResult
 from ..adapters.base import Platform, ContentToPublish
@@ -138,6 +138,13 @@ class RoundExecutor:
         if not platforms:
             raise ValueError("没有可用平台：请检查 config.platforms 的 enabled 与请求参数")
 
+        # P0：正式生产必须先确认自带模型已配置；不能进入生产后再生成模板伪稿。
+        if not _llm_available(self.cfg):
+            raise ContentGenerationError(
+                "model_not_configured",
+                "尚未配置可用模型，请先配置模型服务和 API Key 后再运行",
+            )
+
         # 运行前硬门：本轮每个目标平台都必须有可比较的账号定位关键词。
         missing_persona = [
             p.value for p in platforms
@@ -217,9 +224,28 @@ class RoundExecutor:
             # 收尾状态
             self._finalize_round(round_id, report, save_drafts)
 
+        except ContentGenerationError as exc:
+            logger.warning(
+                "轮次 %s 文案生成失败 code=%s retryable=%s",
+                round_id, exc.code, exc.retryable,
+            )
+            report["failure_code"] = exc.code
+            report["failure_message"] = str(exc)
+            report["errors"].append(str(exc))
+            report["final_status"] = "failed"
+            try:
+                transitioned = self.sm_round.transition(
+                    round_id, "failed", f"文案生成失败：{exc.code}",
+                )
+                if not transitioned:
+                    report["errors"].append("失败收尾：轮次状态未能迁移到 failed")
+            except Exception as cleanup_exc:  # noqa: BLE001
+                logger.exception("轮次失败状态收尾异常 round=%s", round_id)
+                report["errors"].append(f"失败状态收尾异常: {cleanup_exc}")
         except Exception as exc:  # noqa: BLE001 — 执行器兜底，必须留痕
             logger.exception("轮次 %s 执行异常", round_id)
-            report["errors"].append(f"执行异常: {exc}")
+            report["errors"].append("执行异常，请检查运行日志")
+            report["failure_code"] = "generation_pipeline_failed"
             report["final_status"] = "failed"
             # 状态迁移本身也可能因数据库/状态机异常失败；不能让它覆盖原始异常，
             # 否则下方 task_runs 收尾和 run_report 持久化都不会执行。
@@ -337,9 +363,7 @@ class RoundExecutor:
                 )
 
             # 跟初始生产保持一致：只有模板降级（无 LLM）的 WARN 可带告警采用。
-            accepted = outcome.passes or (
-                outcome.result == CheckResult.WARN and not llm_available
-            )
+            accepted = outcome.passes
             self.conn.execute(
                 "UPDATE contents SET guard_outcome = ?, guard_reason = ? WHERE id = ?",
                 (outcome.result.value, outcome.reason, item["content_id"]),
@@ -770,14 +794,6 @@ class RoundExecutor:
                     # D8：模板降级（无 LLM，无法自我改写）下 WARN 会确定性重复相同文案，
                     # 重试只会第 3 次仍 WARN → 被当 FAIL 确定性丢弃。故无 LLM 时 WARN 不再丢弃，
                     # 改为"采用 + 告警留痕"；有 LLM 时仍走重检（能改写，命中 R2 重检要求）。
-                    if outcome.result == CheckResult.WARN and not _llm_available(self.cfg):
-                        logger.warning(
-                            "⚠️ G2 WARN 采用+告警（非丢弃）%s 第 %d 次: %s",
-                            platform.value, attempt + 1, outcome.reason,
-                        )
-                        accepted = (title, body, tags, outcome)
-                        break
-
                     # 未通过：计数 + 留痕，然后携带原因回 G1 重写
                     report["guard_rejected"] += 1
                     report["steps"].append({
