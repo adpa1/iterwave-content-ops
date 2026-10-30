@@ -51,7 +51,8 @@ from typing import Callable, Optional
 import httpx
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, RequestValidationError
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
