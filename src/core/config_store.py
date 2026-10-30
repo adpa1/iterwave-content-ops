@@ -72,6 +72,7 @@ STRING_RULES: dict[str, tuple[int, int]] = {
     "llm.model": (1, 128),
     "llm.fallback_model": (0, 128),
     "vision_ranking.model": (1, 128),
+    "media_generation.base_url": (1, 256),
 }
 
 # 字符串列表白名单（账号画像 / 红线词库）：路径 → 最大条数
@@ -292,6 +293,13 @@ def _validate(key: str, value: Any) -> Any:
         if len(value) > 256:
             raise ConfigPatchError(f"{key} 最长 256 字符")
         return value.strip()
+
+    if key == "media_generation.base_url":
+        if not isinstance(value, str) or not value.strip().startswith(("http://", "https://")):
+            raise ConfigPatchError(f"{key} 必须是 http(s) URL")
+        if len(value) > 256:
+            raise ConfigPatchError(f"{key} 最长 256 字符")
+        return value.rstrip("/")
 
     # —— Vision API base_url ——
     if key == "vision_ranking.base_url":
