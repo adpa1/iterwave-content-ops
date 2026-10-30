@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS sample_runs (
     model_mode TEXT NOT NULL DEFAULT 'byok' CHECK (model_mode IN ('byok','hosted_trial')),
     error_code TEXT,
     error_message_safe TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
     idempotency_key TEXT NOT NULL,
     created_at DATETIME NOT NULL,
     started_at DATETIME,
