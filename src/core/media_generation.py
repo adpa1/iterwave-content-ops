@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 import httpx
 from PIL import Image, UnidentifiedImageError
 
+from src.core.redact import redact
+
 
 _FORMATS = {
     "JPEG": ("image/jpeg", ".jpg"),
@@ -106,12 +108,12 @@ def generate_image_bytes(
                 message = str(payload.get("error", {}).get("message") or payload.get("message") or "")
             except (ValueError, AttributeError):
                 message = response.text[:300]
-            raise ImageGenerationError(f"图片服务返回 HTTP {response.status_code}: {message[:300]}")
+            raise ImageGenerationError(f"图片服务返回 HTTP {response.status_code}: {redact(message[:300])}")
         payload = response.json()
     except ImageGenerationError:
         raise
     except (httpx.HTTPError, ValueError) as exc:
-        raise ImageGenerationError(f"图片服务请求失败：{exc}") from exc
+        raise ImageGenerationError(f"图片服务请求失败：{redact(str(exc))}") from None
     items = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(items, list) or not items or not isinstance(items[0], dict):
         raise ImageGenerationError("图片服务响应缺少 data[0]")
