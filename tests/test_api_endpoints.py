@@ -1188,3 +1188,33 @@ def test_worker_result_links_round_drafts_and_updates_plan_status(client):
         "SELECT round_id FROM content_plan_drafts WHERE plan_id=? AND draft_id=?",
         (plan_id, draft_id),
     ).fetchone()["round_id"] == round_id
+
+
+def test_content_plan_recovers_to_retryable_after_worker_interruption(client, tmp_path, monkeypatch):
+    tc, _, _ = client
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    monkeypatch.setattr(api_main, "_task_queue", queue)
+    monkeypatch.setattr(api_main, "_build_task_execution_snapshot", lambda *args, **kwargs: {"test_snapshot": True})
+    created = tc.post("/api/content-plans", json={
+        "title": "中断恢复计划", "scheduled_date": "2026-11-09",
+        "platforms": ["xhs"], "planned_count": 1,
+    })
+    plan_id = created.json()["id"]
+    started = tc.post(f"/api/content-plans/{plan_id}/start")
+    assert started.status_code == 202
+    task_id = started.json()["task_id"]
+
+    queue_conn = queue._connect()
+    queue_conn.execute(
+        "UPDATE global_task_queue SET status='interrupted',finished_at='2026-11-09T10:00:00' WHERE task_id=?",
+        (task_id,),
+    )
+    queue_conn.commit()
+    queue_conn.close()
+
+    listed = tc.get("/api/content-plans?start_date=2026-11-09&end_date=2026-11-09")
+    assert listed.status_code == 200
+    recovered = listed.json()["items"][0]
+    assert recovered["status"] == "failed"
+    assert recovered["version"] == 3
