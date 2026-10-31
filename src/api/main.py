@@ -5295,6 +5295,14 @@ def _register_routes(app: FastAPI) -> None:
         import re
         if not re.fullmatch(r"[a-z][a-z0-9_.-]{1,63}", skill_id):
             raise HTTPException(422, "skill_id 必须以小写字母开头，仅允许小写字母、数字、点、下划线和连字符")
+        builtin_skill_ids = {
+            "topic_scoring", "prompt_variants", "ultimate_goal_check", "image_card",
+            "draft_saver", "circuit_breaker", "rhythm_controller", "ops_engine",
+            "spiral_engine", "zscore_normalize", "recovery_manager", "autogrow",
+            "topic_pool", "orchestration", "scheduler", "platform_readback",
+        }
+        if skill_id in builtin_skill_ids:
+            raise HTTPException(409, "该 ID 已被系统内置 Skill 占用")
         if not name or len(name) > 120 or len(description) > 2000:
             raise HTTPException(422, "Skill 名称必填且不超过 120 字，说明不超过 2000 字")
         if not re.fullmatch(r"\d+\.\d+\.\d+", version):
@@ -5311,8 +5319,12 @@ def _register_routes(app: FastAPI) -> None:
         for schema in [*inputs, *outputs]:
             if not isinstance(schema, dict) or len(json.dumps(schema, ensure_ascii=False)) > 2000:
                 raise HTTPException(422, "输入输出 schema 必须为 JSON 对象且单项不超过 2000 字")
+        if len(json.dumps([inputs, outputs], ensure_ascii=False)) > 20000:
+            raise HTTPException(422, "输入输出 schema 总大小不能超过 20000 字")
         now = _now().isoformat(timespec="seconds")
         conn = _g()["conn"]
+        if conn.execute("SELECT COUNT(*) FROM tenant_skill_registry").fetchone()[0] >= 200:
+            raise HTTPException(409, "每个账号组最多登记 200 个自定义 Skills")
         try:
             conn.execute(
                 "INSERT INTO tenant_skill_registry(skill_id,name,version,description,category,inputs_json,outputs_json,permissions_json,enabled,manifest_version,created_at,updated_at) "
