@@ -63,6 +63,21 @@ def test_hot_topic_timestamps_are_emitted_with_explicit_utc_offset():
     assert parsed == datetime(2026, 10, 30, 6, 58, 43)
 
 
+def test_hot_source_dns_resolution_has_a_hard_timeout(monkeypatch):
+    import threading
+    from src.core.safe_http import SafeFetchError, _resolve_public_url
+
+    blocked = threading.Event()
+    monkeypatch.setattr(
+        "src.core.safe_http.socket.getaddrinfo",
+        lambda *args, **kwargs: (blocked.wait(30) and []),
+    )
+    started = __import__("time").monotonic()
+    with pytest.raises(SafeFetchError, match="解析超时"):
+        _resolve_public_url("https://slow-dns.example/feed")
+    assert __import__("time").monotonic() - started < 6
+
+
 def test_hot_source_fetch_rejects_private_destinations(monkeypatch):
     with pytest.raises(ValueError, match="内网|本机|保留"):
         _fetch_public_text("http://127.0.0.1/internal", headers={}, timeout=1)
