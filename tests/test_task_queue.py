@@ -341,3 +341,30 @@ def test_queue_active_page_keeps_fifo_order(tmp_path):
     assert total == 4
     assert [task.task_id for task in page] == [task.task_id for task in tasks]
 
+
+
+def test_queue_history_can_filter_by_task_type(tmp_path):
+    queue = make_queue(tmp_path)
+    round_task, _ = queue.enqueue(
+        task_type="round_run", tenant_id="tenant-a", aggregate_id="round",
+        payload={"round_id": 1},
+    )
+    scheduler_task, _ = queue.enqueue(
+        task_type="scheduler_job", tenant_id="tenant-a", aggregate_id="daily",
+        payload={"method": "_job_daily_ops"},
+    )
+    conn = queue._connect()
+    try:
+        conn.executemany(
+            "UPDATE global_task_queue SET status='succeeded' WHERE task_id=?",
+            [(round_task.task_id,), (scheduler_task.task_id,)],
+        )
+    finally:
+        conn.close()
+
+    rounds, rounds_total = queue.list_page(scope="history", task_type="round_run")
+    scheduler, scheduler_total = queue.list_page(scope="history", task_type="scheduler_job")
+    all_items, all_total = queue.list_page(scope="history")
+    assert rounds_total == 1 and [item.task_id for item in rounds] == [round_task.task_id]
+    assert scheduler_total == 1 and [item.task_id for item in scheduler] == [scheduler_task.task_id]
+    assert all_total == 2 and {item.task_id for item in all_items} == {round_task.task_id, scheduler_task.task_id}
