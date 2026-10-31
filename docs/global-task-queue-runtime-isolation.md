@@ -44,14 +44,13 @@ IterWave 是单一运营者使用的运营工作台。客户是业务归属，�
 
 ## 登录态隔离
 
-当前 `account_login` 和 `login_manager` 通过模块级变量保存登录目录。此设计不适用于后台任务跨账号组执行。
+当前实现已按账号组隔离登录进程与登录产物：
 
-改造方向：
-
-- `login_manager` 的 storage_state 路径必须来自任务上下文/显式参数；过渡期可用 ContextVar，但必须由任务执行器在 try/finally 中设置和恢复。
-- `account_login` 的扫码登录进程、二维码、临时状态和导出任务必须按 tenant_id + platform 管理，不能仅用 platform 作为进程字典键。
-- `_build_tenant_runtime_context()` 只能构造上下文，不得改变任何模块级目录或全局活动账号组。
-- 切换账号组不再终止其他账号组已提交的 Agent 任务；交互式扫码登录也必须按账号组隔离。
+- `account_login` 的登录进程键为“账号组 data_dir 绝对路径 + platform”；二维码、状态 JSON、日志、短信验证码、浏览器 profile 和 storage_state 均由显式 `data_dir` 派生，不能只按 platform 共用进程或文件。
+- 登录 API 从当前前台运行时取得账号组 data_dir，并显式传给登录管理函数。前台切换只更换运行时引用，不调用 `stop_tenant_logins()`，因此切换不会终止原账号组扫码进程，也不会清理其二维码、状态文件或导出文件；切回原账号组后可继续查看和管理该登录流程。
+- `login_manager` 的后台任务登录态目录通过 `tenant_login_dir()` 的 ContextVar 绑定到任务上下文，并在 `finally` 中恢复；需要查询前台账号组登录态的 API 使用显式 `data_dir`。模块级 `LOGIN_DIR` 仅保留兼容/默认目录用途，后台任务不得依赖它推断租户。
+- `_build_tenant_runtime_context()` 只构造指定账号组上下文，不修改模块级登录目录或全局活动账号组。
+- 自动化测试已覆盖同平台不同账号组进程键、文件路径、取消隔离及 storage_state 导出路径；但真实 HTTP 切换期间扫码窗口持续运行、二维码可在切回后继续读取，仍须按下方真机验收步骤确认。
 
 ## 即时热切换开关与验收前置条件
 
@@ -75,7 +74,7 @@ ITERWAVE_ENABLE_TENANT_HOT_SWITCH=0
 - 前台切换只更新活动账号组指针和前台运行时引用。
 - 应用启动时为注册表中所有账号组建立常驻运行时与 APScheduler，并各自持有独立数据库连接；新建账号组在首次即时切换时初始化。单个账号组初始化失败只记录该组错误，不阻止其他账号组继续运行，切换到该组时再重试。
 - 前台切换只替换 `_g_ctx` 指向的前台上下文，不 quiesce/shutdown 旧账号组调度器，也不关闭旧账号组数据库连接。所有常驻调度器仅在应用关闭时统一停止并释放连接。
-- 不等待全局任务队列 drain，也不关闭任务消费者持有的连接。现有切换流程仍会停止前台账号组的交互式扫码登录进程；扫码登录进程按 tenant_id + platform 隔离是后续整改项，不应与队列消费者混为一谈。
+- 不等待全局任务队列 drain，也不关闭任务消费者持有的连接。账号组切换不终止任何账号组的交互式扫码登录进程；登录进程及二维码/状态/导出文件按账号组 data_dir + platform 隔离，切回原账号组后继续查看和管理。
 - 每个账号组的定时作业通过 SchedulerEngine._invoke 写入全局队列，由 worker 在任务所属账号组运行时中执行；APScheduler 只负责定时触发，不直接执行账号组业务作业。
 - APScheduler 的生命周期与全局任务消费者生命周期分离。活动账号组切换不应启动/停止全局消费者。
 
@@ -127,7 +126,7 @@ ITERWAVE_ENABLE_TENANT_HOT_SWITCH=0
 3. A 完成后 B 执行，B 完成后 C 执行。
 4. 一个任务失败，后续任务仍继续。
 5. 同一轮次重复提交只生成一个活动队列任务。
-6. 两个 API worker 同时启动时，只允许一个全局消费者执行任务。
+6. 并发启动两个队列消费者争抢任务时，system.db worker lease 只允许一个消费者持有有效租约并领取任务；这不代表允许部署多个 Uvicorn worker。
 7. 服务重启后 queued 任务继续；running 任务安全进入 interrupted。
 8. 任务状态查询不能把其它账号组的业务结果混入当前账号组内容页面。
 9. 执行器不得读取当前活动账号组或模块级可变登录目录。
@@ -136,7 +135,7 @@ ITERWAVE_ENABLE_TENANT_HOT_SWITCH=0
 
 ## 部署进程数约束
 
-当前应用 lifespan 会在每个 Uvicorn 进程内启动各账号组 APScheduler。全局任务消费者通过 system.db 租约实现跨进程单消费者，但 APScheduler 本身尚无跨进程 leader election；多个 Uvicorn worker 可能重复触发同一批定时作业。**当前部署必须使用单个 Uvicorn worker**（默认启动方式即可），在实现并验证调度器选主前，不得通过 `--workers N` 扩容。此限制不影响单进程内 A/B/C 前台切换和全局 FIFO 队列。
+当前应用 lifespan 会在 API 进程内启动各账号组 APScheduler。生产启动时先取得 `shared/api.lock` 的 flock 单实例锁；第二个 API 进程（包括额外 Uvicorn worker）会启动失败。因此**当前部署必须使用单个 Uvicorn worker**（默认启动方式即可）。APScheduler 尚无跨进程 leader election；system.db 的 worker lease 是队列消费者的并发保护，不是多 Uvicorn worker 部署许可。实现并验证调度器选主前，不得通过 `--workers N` 扩容。此限制不影响单进程内 A/B/C 前台切换和全局 FIFO 队列。
 
 ## 当前代码验收基线（2026-10-31）
 
