@@ -136,6 +136,8 @@ def test_auth(monkeypatch, tmp_path):
     def authorize(client):
         response = client.post("/api/auth/login", json={"password": "Test-access9!"})
         assert response.status_code == 200
+        # 租户作用域写 API 必须显式声明当前测试账号组。
+        client.headers.update({"X-Tenant-Id": "default"})
         return client
 
     yield authorize
