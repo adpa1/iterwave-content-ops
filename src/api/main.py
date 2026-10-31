@@ -5275,6 +5275,14 @@ def _register_routes(app: FastAPI) -> None:
             clauses.append("scheduled_date >= ?"); params.append(start_date)
         if end_date:
             clauses.append("scheduled_date <= ?"); params.append(end_date)
+        for label, value in (("start_date", start_date), ("end_date", end_date)):
+            if value:
+                try:
+                    datetime.strptime(value, "%Y-%m-%d")
+                except ValueError as exc:
+                    raise HTTPException(422, f"{label} 必须为 YYYY-MM-DD") from exc
+        if start_date and end_date and end_date < start_date:
+            raise HTTPException(422, "end_date 不能早于 start_date")
         if status:
             allowed = {"planned", "generating", "generated", "reviewed", "archived", "cancelled"}
             if status not in allowed:
@@ -5375,9 +5383,14 @@ def _register_routes(app: FastAPI) -> None:
         platforms = sorted({str(p) for p in platforms})
         if any(p not in allowed_platforms for p in platforms):
             raise HTTPException(422, "包含未配置的平台")
-        planned_count = int(values["planned_count"])
+        try:
+            planned_count = int(values["planned_count"])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, "计划产出数量必须是整数") from exc
         if not 1 <= planned_count <= 100:
             raise HTTPException(422, "计划产出数量必须在 1 到 100 之间")
+        if len(str(values["topic"] or "")) > 500 or len(str(values["notes"] or "")) > 4000:
+            raise HTTPException(422, "选题或备注内容过长")
         now = _now().isoformat(timespec="seconds")
         cursor = conn.execute(
             "UPDATE content_plans SET title=?,topic=?,platforms_json=?,planned_count=?,scheduled_date=?,status=?,notes=?,version=version+1,updated_at=? "
