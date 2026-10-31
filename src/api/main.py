@@ -5450,6 +5450,33 @@ def _register_routes(app: FastAPI) -> None:
         return {"skill_id": skill_id, "deleted": True}
 
     # --- 内容计划（tenant-scoped；计划本身永不触发发布）---
+    def _sync_content_plan_task_state(conn, plan_row):
+        """队列恢复/进程重启后，按共享队列终态修复计划状态，避免卡在 generating。"""
+        if plan_row is None or plan_row["status"] != "generating" or _task_queue is None:
+            return plan_row
+        link = conn.execute(
+            "SELECT task_id FROM content_plan_rounds WHERE plan_id=? ORDER BY created_at DESC LIMIT 1",
+            (plan_row["id"],),
+        ).fetchone()
+        if link is None or not link["task_id"]:
+            return plan_row
+        task = _task_queue.get(link["task_id"])
+        terminal = {
+            "succeeded": "generated",
+            "failed": "failed",
+            "interrupted": "failed",
+            "cancelled": "cancelled",
+        }.get(task.status if task else "")
+        if terminal:
+            conn.execute(
+                "UPDATE content_plans SET status=?,version=version+1,updated_at=? "
+                "WHERE id=? AND version=? AND status='generating'",
+                (terminal, _now().isoformat(timespec="seconds"), plan_row["id"], int(plan_row["version"])),
+            )
+            conn.commit()
+            return conn.execute("SELECT * FROM content_plans WHERE id=?", (plan_row["id"],)).fetchone()
+        return plan_row
+
     @app.get("/api/content-plans")
     def list_content_plans(
         start_date: Optional[str] = Query(None, description="YYYY-MM-DD 起始日期"),
@@ -5481,6 +5508,7 @@ def _register_routes(app: FastAPI) -> None:
             "SELECT * FROM content_plans" + where + " ORDER BY scheduled_date ASC, created_at ASC",
             params,
         ).fetchall()
+        rows = [_sync_content_plan_task_state(conn, row) for row in rows]
         items = []
         for row in rows:
             item = dict(row)
@@ -5616,6 +5644,7 @@ def _register_routes(app: FastAPI) -> None:
         row = conn.execute("SELECT * FROM content_plans WHERE id=?", (plan_id,)).fetchone()
         if row is None:
             raise HTTPException(404, "计划不存在")
+        row = _sync_content_plan_task_state(conn, row)
         item = dict(row)
         item["platforms"] = json.loads(item.pop("platforms_json") or "[]")
         linked = conn.execute(
@@ -5682,8 +5711,12 @@ def _register_routes(app: FastAPI) -> None:
     def cancel_content_plan(plan_id: str, version: int = Query(..., ge=1)):
         conn = _g()["conn"]
         row = conn.execute(
-            "SELECT status FROM content_plans WHERE id=? AND version=?", (plan_id, version),
+            "SELECT * FROM content_plans WHERE id=? AND version=?", (plan_id, version),
         ).fetchone()
+        if row is not None:
+            row = _sync_content_plan_task_state(conn, row)
+            if int(row["version"]) != version:
+                raise HTTPException(409, "计划状态已同步更新，请刷新后重试")
         if row is None:
             exists = conn.execute("SELECT 1 FROM content_plans WHERE id=?", (plan_id,)).fetchone()
             if exists is None:
