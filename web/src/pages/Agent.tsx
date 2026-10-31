@@ -417,7 +417,8 @@ function SkillsPane() {
   const [skillName, setSkillName] = useState("");
   const [skillDescription, setSkillDescription] = useState("");
   const [skillCategory, setSkillCategory] = useState("custom");
-  const [skillVersion, setSkillVersion] = useState("1.0.0");\n  const [skillInputsJson, setSkillInputsJson] = useState("[]");\n  const [skillOutputsJson, setSkillOutputsJson] = useState("[]");\n  const [skillPermissions, setSkillPermissions] = useState<string[]>([]);
+  const [skillVersion, setSkillVersion] = useState("1.0.0");
+  const [skillInputsJson, setSkillInputsJson] = useState("[]");\n  const [skillOutputsJson, setSkillOutputsJson] = useState("[]");\n  const [skillPermissions, setSkillPermissions] = useState<string[]>([]);
 
   const load = async () => {
     setLoading(true);
@@ -447,7 +448,8 @@ function SkillsPane() {
           permissions: [],
         });
         showToast("Skill manifest 已登记，默认停用且不会执行代码", "success");
-        setSkillId(""); setSkillName(""); setSkillDescription(""); setSkillVersion("1.0.0");\n        setSkillInputsJson("[]"); setSkillOutputsJson("[]"); setSkillPermissions([]);
+        setSkillId(""); setSkillName(""); setSkillDescription(""); setSkillVersion("1.0.0");
+        setSkillInputsJson("[]"); setSkillOutputsJson("[]"); setSkillPermissions([]);
         await load();
       } catch (e: any) { showToast(`登记失败：${e?.message ?? e}`, "error"); }
     });
