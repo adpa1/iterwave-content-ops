@@ -95,7 +95,7 @@ export default function Production() {
   const [contents, setContents] = useState<ContentItem[]>([]);
   const [reviewSearch, setReviewSearch] = useState("");
   const [reviewPlatform, setReviewPlatform] = useState<"all" | Platform>("all");
-  const [reviewState, setReviewState] = useState("all");
+  const [reviewState, setReviewState] = useState("all");\n  const [reviewMobilePane, setReviewMobilePane] = useState<"list" | "editor" | "preview">("list");
   // 搜索结果可带目标内容 ID；加载轮次内容后自动选中并填入编辑区。
   const [selectedContentId, setSelectedContentId] = useState<string | null>(() => {
     const value = new URLSearchParams(window.location.search).get("focusContent");
@@ -1035,7 +1035,7 @@ export default function Production() {
 
       {/* ============ ④ 内容编辑与审核 ============ */}
       {tab === "review" && (
-        <div className="review-layout">
+        <div className="review-mobile-tabs" role="group" aria-label="审核工作台视图">\n          {([["list", "内容列表"], ["editor", "文案编辑"], ["preview", "卡片预览"]] as const).map(([key, label]) => (\n            <button key={key} className={reviewMobilePane === key ? "btn sm primary" : "btn sm"} aria-pressed={reviewMobilePane === key} onClick={() => setReviewMobilePane(key)}>{label}</button>\n          ))}\n        </div>\n        <div className={`review-layout review-layout-mobile-${reviewMobilePane}`}>
           {/* 左：本轮内容列表 */}
           <div className="panel">
             <div className="panel-head">
