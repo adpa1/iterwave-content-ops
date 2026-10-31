@@ -178,6 +178,20 @@ class HotTopicMatcher:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def pending_count(self) -> int:
+        """Count every unjudged item in the current board, without the per-run processing cap."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM hot_topics t WHERE t.evidence_status = 'collected' "
+            "AND t.title IS NOT NULL AND t.duplicate_of IS NULL "
+            "AND (t.match_version IS NULL OR t.match_version != ?) "
+            "AND COALESCE(t.last_seen_at, t.discovered_at) = ("
+            "  SELECT MAX(COALESCE(x.last_seen_at, x.discovered_at)) FROM hot_topics x "
+            "  WHERE x.source = t.source AND x.evidence_status = 'collected'"
+            ")",
+            (self.version,),
+        ).fetchone()
+        return int(row["n"] if row else 0)
+
     def run(self, limit: int | None = None) -> dict:
         rows = self.pending(limit)
         report = {"pending": len(rows), "llm": 0, "keyword": 0, "unjudged": 0, "failed_batches": 0,
