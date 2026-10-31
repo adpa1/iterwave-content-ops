@@ -82,9 +82,24 @@ _EXPORT_LOCK = threading.Lock()
 _EXPORTING: set[str] = set()
 
 
-def _ensure_dirs() -> None:
+def _data_paths(data_dir: Path | str | None = None) -> tuple[Path, Path, Path]:
+    """返回指定账号组的登录目录；不修改模块级路径，兼容旧调用者。"""
+    if data_dir is None:
+        return LOGIN_DIR, PROFILE_BASE, STORAGE_STATE_DIR
+    root = Path(data_dir).resolve()
+    return root / "_login", root / "_profiles", root / "login_states"
+
+
+def _process_key(platform: str, data_dir: Path | str | None = None):
+    if data_dir is None:
+        return platform
+    return (str(Path(data_dir).resolve()), platform)
+
+
+def _ensure_dirs(data_dir: Path | str | None = None) -> None:
     # 浏览器 profile 包含可复用的社交平台 Cookie；目录权限必须阻止同机其他用户遍历。
-    for d in (LOGIN_DIR, PROFILE_BASE, STORAGE_STATE_DIR):
+    login_dir, profile_base, storage_state_dir = _data_paths(data_dir)
+    for d in (login_dir, profile_base, storage_state_dir):
         d.mkdir(parents=True, exist_ok=True)
         try:
             d.chmod(0o700)
@@ -97,18 +112,20 @@ def _headed() -> bool:
     return os.environ.get("ITERWAVE_LOGIN_HEADED", "").strip().lower() in ("1", "true", "yes")
 
 
-def _files(platform: str) -> dict[str, Path]:
+def _files(platform: str, data_dir: Path | str | None = None) -> dict[str, Path]:
+    login_dir, _, storage_state_dir = _data_paths(data_dir)
     return {
-        "qr": LOGIN_DIR / f"{platform}.png",
-        "status": LOGIN_DIR / f"{platform}.json",
-        "log": LOGIN_DIR / f"{platform}.log",
-        "code": LOGIN_DIR / f"{platform}.code",
-        "storage": STORAGE_STATE_DIR / f"{platform}.json",
+        "qr": login_dir / f"{platform}.png",
+        "status": login_dir / f"{platform}.json",
+        "log": login_dir / f"{platform}.log",
+        "code": login_dir / f"{platform}.code",
+        "storage": storage_state_dir / f"{platform}.json",
     }
 
 
-def profile_dir(platform: str) -> Path:
-    return PROFILE_BASE / PROFILE_NAMES[platform]
+def profile_dir(platform: str, data_dir: Path | str | None = None) -> Path:
+    _, profile_base, _ = _data_paths(data_dir)
+    return profile_base / PROFILE_NAMES[platform]
 
 
 def _login_env() -> dict[str, str]:
@@ -124,14 +141,15 @@ def _login_env() -> dict[str, str]:
     return env
 
 
-def build_cmd(platform: str, timeout_seconds: int | None = None) -> list[str]:
+def build_cmd(platform: str, timeout_seconds: int | None = None, data_dir: Path | str | None = None) -> list[str]:
     """构造登录命令；等待时限来自当前账号组运行配置。"""
     if timeout_seconds is None:
         from .config import get_config
         timeout_seconds = get_config().timeouts.login_timeout_seconds
-    f = _files(platform)
+    f = _files(platform, data_dir)
+    _, profile_base, _ = _data_paths(data_dir)
     py = sys.executable
-    common = ["--profile-base", str(PROFILE_BASE),
+    common = ["--profile-base", str(profile_base),
               "--qr-out", str(f["qr"]), "--status-file", str(f["status"]),
               "--timeout", str(timeout_seconds)]
     if platform == "xhs":
@@ -153,28 +171,29 @@ def build_cmd(platform: str, timeout_seconds: int | None = None) -> list[str]:
 # 启动 / 取消 / 注销
 # ---------------------------------------------------------------------------
 
-def start_login(platform: str, restart: bool = False) -> dict:
+def start_login(platform: str, restart: bool = False, data_dir: Path | str | None = None) -> dict:
     """启动后台登录并立即返回当前状态；二维码由前端轮询 get_login_status 获取。"""
-    _ensure_dirs()
-    f = _files(platform)
+    _ensure_dirs(data_dir)
+    f = _files(platform, data_dir)
+    process_key = _process_key(platform, data_dir)
     with _PROCESS_LOCK:
-        existing = _LOGIN_PROCESSES.get(platform)
+        existing = _LOGIN_PROCESSES.get(process_key)
         if existing is not None and existing.poll() is None:
             if not restart:
-                return get_login_status(platform)
+                return get_login_status(platform, data_dir=data_dir)
             existing.terminate()
             try:
                 existing.wait(timeout=8)
             except subprocess.TimeoutExpired:
                 existing.kill()
                 existing.wait(timeout=5)
-            _LOGIN_PROCESSES.pop(platform, None)
+            _LOGIN_PROCESSES.pop(process_key, None)
 
         for key in ("qr", "status", "code"):
             f[key].unlink(missing_ok=True)
 
         try:
-            cmd = build_cmd(platform)
+            cmd = build_cmd(platform, data_dir=data_dir)
         except ValueError as e:
             return {**_empty_status(platform), "state": "error", "message": str(e)}
 
@@ -186,25 +205,25 @@ def start_login(platform: str, restart: bool = False) -> dict:
             return {**_empty_status(platform), "state": "error", "message": f"登录进程启动失败: {e}"}
         finally:
             log_fh.close()
-        _LOGIN_PROCESSES[platform] = proc
+        _LOGIN_PROCESSES[process_key] = proc
 
-    status = get_login_status(platform)
+    status = get_login_status(platform, data_dir=data_dir)
     if status["state"] == "unknown":
         status.update(state="starting", message="正在启动浏览器并准备二维码…")
     return status
 
 
-def cancel_login(platform: str) -> dict:
+def cancel_login(platform: str, data_dir: Path | str | None = None) -> dict:
     """终止登录进程 + 清理临时产物（不动已有登录态）。"""
     with _PROCESS_LOCK:
-        proc = _LOGIN_PROCESSES.pop(platform, None)
+        proc = _LOGIN_PROCESSES.pop(_process_key(platform, data_dir), None)
         if proc is not None and proc.poll() is None:
             proc.terminate()
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-    f = _files(platform)
+    f = _files(platform, data_dir)
     for key in ("qr", "status", "code"):
         f[key].unlink(missing_ok=True)
     return {"ok": True, "platform": platform}
@@ -238,7 +257,7 @@ def stop_all_logins(timeout_seconds: float = 10.0) -> None:
     # 已完成登录但尚未导出的状态先触发导出；不能因切换目录而丢失刚完成的登录态。
     for platform, proc in active:
         if completed_before_stop.get(platform) and _read_status_file(_files(platform)["status"]).get("state") == "success":
-            _schedule_export(platform)
+            _schedule_export(platform, data_dir=data_dir)
 
     while True:
         with _EXPORT_LOCK:
@@ -256,21 +275,21 @@ def stop_all_logins(timeout_seconds: float = 10.0) -> None:
             f[key].unlink(missing_ok=True)
 
 
-def clear_login(platform: str) -> dict:
+def clear_login(platform: str, data_dir: Path | str | None = None) -> dict:
     """注销：删持久化 profile、storage_state 和登录标记（下次需重新扫码）。"""
-    cancel_login(platform)
-    shutil.rmtree(profile_dir(platform), ignore_errors=True)
-    _files(platform)["storage"].unlink(missing_ok=True)
+    cancel_login(platform, data_dir=data_dir)
+    shutil.rmtree(profile_dir(platform, data_dir), ignore_errors=True)
+    _files(platform, data_dir)["storage"].unlink(missing_ok=True)
     return {"ok": True, "platform": platform}
 
 
-def submit_sms_code(platform: str, code: str) -> dict:
+def submit_sms_code(platform: str, code: str, data_dir: Path | str | None = None) -> dict:
     """回填短信验证码（对齐 Easel /api/login/{platform}/sms）：写一次性验证码文件，runner 读走后提交。"""
     digits = "".join(ch for ch in (code or "") if ch.isdigit())
     if not 4 <= len(digits) <= 8:
         raise ValueError("验证码应为 4-8 位数字")
-    _ensure_dirs()
-    _files(platform)["code"].write_text(digits, encoding="utf-8")
+    _ensure_dirs(data_dir)
+    _files(platform, data_dir)["code"].write_text(digits, encoding="utf-8")
     return {"ok": True, "platform": platform}
 
 
@@ -303,14 +322,14 @@ def _last_log_line(path: Path) -> str:
         return ""
 
 
-def get_login_status(platform: str) -> dict:
+def get_login_status(platform: str, data_dir: Path | str | None = None) -> dict:
     """读状态文件 + 二维码（仅 qr_ready / window_login 时返回二维码，附 qr_ts 防缓存）。"""
-    f = _files(platform)
+    f = _files(platform, data_dir)
     raw = _read_status_file(f["status"])
     state = raw.get("state", "unknown")
     message = redact(str(raw.get("message") or ""))
 
-    proc = _LOGIN_PROCESSES.get(platform)
+    proc = _LOGIN_PROCESSES.get(_process_key(platform, data_dir))
     proc_alive = proc is not None and proc.poll() is None
     if proc is None and state not in TERMINAL_STATES and state != "unknown":
         # 账号组切换或服务重启后，状态文件可能残留，但进程句柄已不存在；不得继续显示扫码中。
@@ -357,18 +376,18 @@ def get_login_status(platform: str) -> dict:
     }
 
 
-def is_logged_in(platform: str) -> bool:
+def is_logged_in(platform: str, data_dir: Path | str | None = None) -> bool:
     """对齐 Easel _account_logged_in：profile 目录里总有 Cookies 文件，存在 ≠ 已登录，
     只信「最近一次登录流程成功」或已导出的 storage_state。"""
-    f = _files(platform)
+    f = _files(platform, data_dir)
     return _read_status_file(f["status"]).get("state") == "success" or f["storage"].is_file()
 
 
-def get_all_accounts() -> list[dict]:
+def get_all_accounts(data_dir: Path | str | None = None) -> list[dict]:
     accounts = []
     for p in PLATFORMS:
-        st = get_login_status(p)
-        if is_logged_in(p):
+        st = get_login_status(p, data_dir=data_dir)
+        if is_logged_in(p, data_dir=data_dir):
             status = "logged_in"
         elif st["proc_alive"]:
             status = "logging_in"
@@ -389,36 +408,39 @@ def get_all_accounts() -> list[dict]:
 # 登录成功 → 导出 storage_state
 # ---------------------------------------------------------------------------
 
-def _schedule_export(platform: str) -> None:
+def _schedule_export(platform: str, data_dir: Path | str | None = None) -> None:
     """登录 runner 退出后（profile 锁已释放）在后台把 profile 导出为 storage_state。"""
-    f = _files(platform)
+    f = _files(platform, data_dir)
+    process_key = _process_key(platform, data_dir)
     status_mtime = f["status"].stat().st_mtime if f["status"].is_file() else 0
     if f["storage"].is_file() and f["storage"].stat().st_mtime >= status_mtime:
         return
     with _EXPORT_LOCK:
-        if platform in _EXPORTING:
+        if process_key in _EXPORTING:
             return
-        _EXPORTING.add(platform)
+        _EXPORTING.add(process_key)
 
     def _run():
         try:
-            export_storage_state(platform)
+            export_storage_state(platform, data_dir=data_dir)
         finally:
             with _EXPORT_LOCK:
-                _EXPORTING.discard(platform)
+                _EXPORTING.discard(process_key)
 
-    threading.Thread(target=_run, name=f"login-export-{platform}", daemon=True).start()
+    tenant_tag = Path(data_dir).resolve().name if data_dir is not None else "default"
+    threading.Thread(target=_run, name=f"login-export-{tenant_tag}-{platform}", daemon=True).start()
 
 
-def export_storage_state(platform: str, timeout: int | None = None) -> bool:
+def export_storage_state(platform: str, timeout: int | None = None, data_dir: Path | str | None = None) -> bool:
     """用与登录脚本相同的浏览器 / profile 打开一次，导出 cookies + localStorage。"""
     if timeout is None:
         from .config import get_config
         timeout = get_config().timeouts.login_export_timeout_seconds
-    _ensure_dirs()
-    out = _files(platform)["storage"]
+    _ensure_dirs(data_dir)
+    _, profile_base, _ = _data_paths(data_dir)
+    out = _files(platform, data_dir)["storage"]
     cmd = [sys.executable, "-m", "src.core.login_export",
-           "--platform", platform, "--profile-base", str(PROFILE_BASE), "--out", str(out)]
+           "--platform", platform, "--profile-base", str(profile_base), "--out", str(out)]
     try:
         r = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=_login_env(),
                            capture_output=True, text=True, timeout=timeout)
