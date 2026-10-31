@@ -715,3 +715,11 @@ html, body, #root { width: 100%; max-width: 100%; overflow-x: clip; }
 .status-pill.producing { background: var(--blue-weak); color: var(--blue); }
 .status-pill.creating { background: var(--orange-weak); color: var(--orange); }
 .status-pill.cancelled { background: #eef1f6; color: #6b7b93; }
+
+@media (min-width: 761px) {
+  .calendar-toolbar { flex-wrap: nowrap; gap: 6px; }
+  .calendar-toolbar > * { flex: 0 0 auto; }
+}
+@media (max-width: 760px) {
+  .calendar-toolbar { justify-content: flex-start; }
+}
