@@ -47,9 +47,19 @@ def sanitize_snapshot(value: Any) -> Any:
     return str(value)
 
 
+# 只固定会改变本轮选题、内容生成或平台执行结果的配置。
+# 运维/观测/熔断/通知/调度等无关配置调整，不应取消已排队的生产任务。
+_PRODUCTION_CONFIG_FIELDS = (
+    "topic_kb", "platforms", "scoring", "ultimate_goal", "llm",
+    "copy_generation", "media_generation", "media_quality", "vision_ranking",
+    "spiral", "plan_suggestion", "timeouts",
+)
+
+
 def config_fingerprint(cfg) -> str:
     raw = cfg.model_dump(mode="json")
-    safe = sanitize_snapshot(raw)
+    production = {key: raw.get(key) for key in _PRODUCTION_CONFIG_FIELDS}
+    safe = sanitize_snapshot(production)
     canonical = json.dumps(safe, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
