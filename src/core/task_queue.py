@@ -555,6 +555,40 @@ class GlobalTaskQueue:
         finally:
             conn.close()
 
+    def status_counts(self, *, scope: str = "active") -> dict:
+        """Aggregate queue status counts globally and by tenant without loading task rows."""
+        if scope == "active":
+            statuses = ("queued", "running")
+        elif scope == "failed":
+            statuses = ("failed", "interrupted")
+        elif scope == "history":
+            statuses = ("succeeded", "failed", "cancelled", "interrupted")
+        else:
+            raise ValueError("scope must be active, failed, or history")
+        placeholders = ",".join("?" for _ in statuses)
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                f"SELECT tenant_id, status, COUNT(*) AS n FROM global_task_queue "
+                f"WHERE status IN ({placeholders}) GROUP BY tenant_id, status",
+                statuses,
+            ).fetchall()
+            by_status = {status: 0 for status in statuses}
+            by_tenant: dict[str, dict[str, int]] = {}
+            for row in rows:
+                status = str(row["status"])
+                tenant_id = str(row["tenant_id"])
+                count = int(row["n"])
+                by_status[status] = by_status.get(status, 0) + count
+                by_tenant.setdefault(tenant_id, {})[status] = count
+            return {
+                "total": sum(by_status.values()),
+                "by_status": by_status,
+                "by_tenant": by_tenant,
+            }
+        finally:
+            conn.close()
+
     def list(self, *, limit: int = 100, tenant_id: str | None = None) -> list[QueuedTask]:
         limit = max(1, min(int(limit), 500))
         conn = self._connect()
