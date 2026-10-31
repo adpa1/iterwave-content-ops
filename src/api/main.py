@@ -109,20 +109,36 @@ _task_queue: GlobalTaskQueue | None = None
 _tenant_runtime_contexts: dict[str, dict] = {}
 
 
+def _build_task_execution_snapshot(tenant_id: str, round_id: int, parameters: dict) -> dict:
+    """只从任务所属账号组的常驻上下文捕获配置快照，绝不读取其他活动租户。"""
+    from src.core.task_snapshot import build_execution_snapshot
+
+    context = _tenant_runtime_contexts.get(tenant_id)
+    if context is None and _g_ctx.get("runtime_tenant_id") == tenant_id:
+        context = _g_ctx
+    if context is None:
+        raise RuntimeError(f"账号组 {tenant_id} 运行时尚未就绪，无法创建任务快照")
+    return build_execution_snapshot(
+        context["cfg"], context["conn"], round_id=round_id, parameters=parameters,
+    )
+
+
 def _enqueue_round_task(*, tenant_id: str, round_id: int, topic_count=None,
                         platforms=None, save_drafts=None, feedback=None):
     """供自动闭环等后台入口使用；队列归属由运行时闭包固定，不读取活动账号组。"""
     if _task_queue is None:
         raise RuntimeError("全局任务队列尚未初始化")
+    parameters = {
+        "round_id": round_id, "topic_count": topic_count,
+        "platforms": platforms, "save_drafts": save_drafts,
+        "feedback": feedback,
+    }
+    snapshot = _build_task_execution_snapshot(tenant_id, round_id, parameters)
     return _task_queue.enqueue(
         task_type="round_run",
         tenant_id=tenant_id,
         aggregate_id=str(round_id),
-        payload={
-            "round_id": round_id, "topic_count": topic_count,
-            "platforms": platforms, "save_drafts": save_drafts,
-            "feedback": feedback,
-        },
+        payload={**parameters, "execution_snapshot": snapshot},
     )
 
 
@@ -3941,6 +3957,14 @@ def _register_routes(app: FastAPI) -> None:
                     "topic_count": req.topic_count,
                     "platforms": req.platforms,
                     "save_drafts": req.save_drafts,
+                    "execution_snapshot": _build_task_execution_snapshot(
+                        tenant_id, round_id, {
+                            "round_id": round_id,
+                            "topic_count": req.topic_count,
+                            "platforms": req.platforms,
+                            "save_drafts": req.save_drafts,
+                        },
+                    ),
                 },
             )
         except (ValueError, sqlite3.Error) as exc:
