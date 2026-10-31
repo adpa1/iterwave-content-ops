@@ -3459,9 +3459,11 @@ def _register_routes(app: FastAPI) -> None:
         for tenant in registry.list():
             tenant_id = tenant["id"]
             paths = registry.paths(tenant_id, name=str(tenant.get("name") or tenant_id))
-            row = {"tenant_id": tenant_id, "tenant_name": tenant["name"], "created_at": tenant.get("created_at"), "db_available": False, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0, "registered_accounts": 0, "registered_accounts_active": 0, "platforms": {}}
+            row = {"tenant_id": tenant_id, "tenant_name": tenant["name"], "created_at": tenant.get("created_at"), "db_available": False, "db_status": "uninitialized", "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0, "registered_accounts": 0, "registered_accounts_active": 0, "platforms": {}}
             db_file = paths.db_file
             if db_file.exists():
+                # 文件存在但读取失败才是故障；尚未创建数据库属于正常的未初始化状态。
+                row["db_status"] = "unavailable"
                 conn = None
                 try:
                     conn = sqlite3.connect(db_file.as_uri() + "?mode=ro", uri=True, timeout=2)
@@ -3502,6 +3504,7 @@ def _register_routes(app: FastAPI) -> None:
                             platform = item["platform"]
                             row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0, "registered_accounts": 0})["registered_accounts"] = int(item["n"])
                     row["db_available"] = True
+                    row["db_status"] = "available"
                 except (sqlite3.Error, OSError) as exc:
                     logger.warning("global monitor skipped tenant=%s: %s", tenant_id, exc)
                 finally:
