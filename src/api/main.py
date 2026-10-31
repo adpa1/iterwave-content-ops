@@ -32,6 +32,7 @@ POST /api/hot_topics/refresh  触发后台采集 + 标签匹配
 
 from __future__ import annotations
 
+import atexit
 import asyncio
 import base64
 import hashlib
@@ -522,6 +523,13 @@ def _friendly_validation_messages(errors: list[dict]) -> list[str]:
 def _build_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # 先取得单实例锁，再初始化队列/恢复 running 任务；避免第二个 worker 抢先回收首个实例的任务。
+        process_lock = None
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            from src.core.process_lock import ProcessSingletonLock
+            process_lock = ProcessSingletonLock(PROJECT_ROOT / "shared" / "api.lock")
+            process_lock.acquire()
+            atexit.register(process_lock.release)
         # 启动阶段
         cfg = load_config()
         # 账号组注册表是共享基础设施；默认组继续使用原有 data/ 与 backups/。
@@ -767,6 +775,9 @@ def _build_app() -> FastAPI:
                 except Exception:
                     logger.exception("关闭账号组数据库连接失败 tenant=%s", tenant_id)
             _tenant_runtime_contexts.clear()
+            if process_lock is not None:
+                atexit.unregister(process_lock.release)
+                process_lock.release()
             logger.info("⏹️ FastAPI 应用关闭")
 
     app = FastAPI(
