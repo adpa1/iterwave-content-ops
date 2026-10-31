@@ -89,13 +89,13 @@ export default function GlobalOperations() {
 
       <section className="panel" style={{ marginBottom: 16 }}>
         <div className="panel-head">
-          <div><div className="panel-title">账号组运行矩阵</div><div className="panel-sub">账号组数据库状态与任务分布；查看详情不会切换当前账号组。</div></div>
+          <div><div className="panel-title">账号组运行矩阵</div><div className="panel-sub">账号组数据库、真实登录态、调度器和全局队列分布；查看详情不会切换当前账号组。</div></div>
           <span className="muted">{monitor?.tenants.length ?? "—"} 个账号组</span>
         </div>
         {loading && !monitor ? <div className="empty-state">正在汇总账号组…</div> : !monitor ? <div className="empty-state">账号组数据暂不可用。</div> : (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>账号组</th><th>数据库</th><th>近 30 天内容</th><th>草稿</th><th>运行中</th><th>排队中</th><th>失败 / 中断</th><th>操作</th></tr></thead>
+              <thead><tr><th>账号组</th><th>数据库</th><th>平台账号</th><th>平台登录</th><th>运行中</th><th>排队中</th><th>失败 / 中断</th><th>定时调度</th><th>活跃轮次</th><th>操作</th></tr></thead>
               <tbody>{monitor.tenants.map((tenant) => {
                 const q = byTenant.get(tenant.tenant_id) ?? { queued: 0, running: 0, failed: 0 };
                 return <tr key={tenant.tenant_id}>
