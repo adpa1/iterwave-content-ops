@@ -340,4 +340,4 @@ def test_queue_active_page_keeps_fifo_order(tmp_path):
     page, total = queue.list_page(scope="active", page=1, page_size=10)
     assert total == 4
     assert [task.task_id for task in page] == [task.task_id for task in tasks]
-\n
+
