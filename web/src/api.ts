@@ -1402,7 +1402,11 @@ export const api = {
     ),
   globalMonitor: (days = 30) => fetchJson<GlobalMonitorResponse>(`/api/global-monitor?days=${days}`),
   // === 账号组隔离 ===
-  tenants: () => fetchJson<TenantListResponse>("/api/tenants"),
+  tenants: async () => {
+    const result = await fetchJson<TenantListResponse>("/api/tenants");
+    activeTenantId = result.runtime_tenant_id || result.selected_tenant_id || null;
+    return result;
+  },
   createTenant: (data: { tenant_id: string; name: string }) =>
     fetchJson<{ tenant: TenantItem; restart_required: boolean }>("/api/tenants", {
       method: "POST", body: JSON.stringify(data),
@@ -1416,10 +1420,13 @@ export const api = {
     fetchJson<{ staged: boolean; restart_required: boolean; backup_name: string; message: string }>(
       "/api/tenant-backup/restore", { method: "POST", body: JSON.stringify({ backup_name, confirm }) },
     ),
-  selectTenant: (tenant_id: string) =>
-    fetchJson<{ selected: { id: string; name: string }; runtime_tenant_id: string; restart_required: boolean; switch_status?: "completed" | "unchanged"; message: string }>(
+  selectTenant: async (tenant_id: string) => {
+    const result = await fetchJson<{ selected: { id: string; name: string }; runtime_tenant_id: string; restart_required: boolean; switch_status?: "completed" | "unchanged"; message: string }>(
       "/api/tenants/select", { method: "POST", body: JSON.stringify({ tenant_id }) },
-    ),
+    );
+    activeTenantId = result.runtime_tenant_id || activeTenantId;
+    return result;
+  },
   // === 图片素材库 ===
   mediaAssets: (query = "", status: "active" | "archived" | "all" = "active") =>
     fetchJson<{ items: MediaAsset[]; limit: number; offset: number }>(
