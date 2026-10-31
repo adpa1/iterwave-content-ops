@@ -425,9 +425,9 @@ export default function Calendar() {
 }
 
 function shiftCalendarDate(date: Date, mode: "month" | "week" | "day", direction: number): Date {
+  if (mode === "month") return new Date(date.getFullYear(), date.getMonth() + direction, 1);
   const next = new Date(date);
-  if (mode === "month") next.setMonth(next.getMonth() + direction);
-  else next.setDate(next.getDate() + (mode === "week" ? 7 : 1) * direction);
+  next.setDate(next.getDate() + (mode === "week" ? 7 : 1) * direction);
   return next;
 }
 
