@@ -186,7 +186,7 @@ def _tenant_hot_switch_enabled() -> bool:
     value = os.getenv("ITERWAVE_ENABLE_TENANT_HOT_SWITCH")
     if value is None:
         return True
-    return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    return value.strip().lower() not in {"", "0", "false", "no", "off", "disabled"}
 
 
 class TenantRuntimeRollbackError(RuntimeError):
