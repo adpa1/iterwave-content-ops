@@ -475,6 +475,20 @@ export interface ScheduleEvent {
   day: number | null;
 }
 
+export interface ContentPlan {
+  id: string;
+  title: string;
+  topic: string;
+  platforms: Platform[];
+  planned_count: number;
+  scheduled_date: string;
+  status: "planned" | "generating" | "generated" | "reviewed" | "archived" | "cancelled";
+  notes: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ScheduleResponse {
   start_date: string;
   end_date: string;
@@ -1439,6 +1453,18 @@ export const api = {
     fetchJson<{ draft_id: string; scheduled_publish_at: string | null }>(
       `/api/schedule/${draft_id}`, { method: "PATCH", body: JSON.stringify({ scheduled_publish_at: scheduled }) },
     ),
+  contentPlans: (startDate?: string, endDate?: string) => {
+    const p = new URLSearchParams();
+    if (startDate) p.set("start_date", startDate);
+    if (endDate) p.set("end_date", endDate);
+    return fetchJson<{ items: ContentPlan[]; total: number }>(`/api/content-plans?${p}`);
+  },
+  createContentPlan: (data: Pick<ContentPlan, "title" | "topic" | "platforms" | "planned_count" | "scheduled_date" | "notes">) =>
+    fetchJson<ContentPlan>("/api/content-plans", { method: "POST", body: JSON.stringify(data) }),
+  updateContentPlan: (id: string, data: Partial<Pick<ContentPlan, "title" | "topic" | "platforms" | "planned_count" | "scheduled_date" | "status" | "notes">> & { version: number }) =>
+    fetchJson<ContentPlan>(`/api/content-plans/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  cancelContentPlan: (id: string, version: number) =>
+    fetchJson<{ id: string; status: string }>(`/api/content-plans/${id}?version=${version}`, { method: "DELETE" }),
   globalMonitor: (days = 30) => fetchJson<GlobalMonitorResponse>(`/api/global-monitor?days=${days}`),
   // === 账号组隔离 ===
   tenants: async () => {
