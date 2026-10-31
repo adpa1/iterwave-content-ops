@@ -169,6 +169,8 @@ class GlobalTaskWorker:
     @staticmethod
     def _mark_content_plan_failed(conn, round_id: int) -> None:
         """生产异常时将关联计划标记失败，允许用户修复后重试。"""
+        if conn is None or not callable(getattr(conn, "execute", None)):
+            return
         relation = conn.execute(
             "SELECT plan_id FROM content_plan_rounds WHERE round_id=?", (round_id,),
         ).fetchone()
@@ -184,6 +186,8 @@ class GlobalTaskWorker:
     @staticmethod
     def _complete_content_plan(conn, round_id: int, report: Any) -> None:
         """生产完成后把轮次产出的草稿关联回计划，并推进计划状态。"""
+        if conn is None or not callable(getattr(conn, "execute", None)):
+            return
         relation = conn.execute(
             "SELECT plan_id FROM content_plan_rounds WHERE round_id=?", (round_id,),
         ).fetchone()
