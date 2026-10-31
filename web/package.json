@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc && vite build --base=/iterwave/",
     "preview": "vite preview --port 4173",
     "build:demo": "vite build --config vite.demo.config.ts && python3 scripts/build-demo-singlefile.py"
   },
