@@ -4,7 +4,7 @@ import { useApp } from "../AppContext";
 import { navigate, useUrlTab } from "../nav";
 import {
   api, Platform, SystemStatus, AiCallRecord, UserOverrideRecord, RedlineRecord,
-  OrchestrationView, OrchestrationRun, DiagnoseResult, StepState,
+  OrchestrationView, OrchestrationRun, DiagnoseResult, StepState, TenantSkillManifest,
 } from "../api";
 
 const PLATFORM_LABEL: Record<string, string> = {
@@ -409,32 +409,136 @@ function TracePane({ status, runs }: { status: SystemStatus | null; runs: Orches
 
 // ============================================================ Skills 注册表
 function SkillsPane() {
+  const { showToast, withPending, isPending } = useApp();
+  const [customSkills, setCustomSkills] = useState<TenantSkillManifest[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [skillId, setSkillId] = useState("");
+  const [skillName, setSkillName] = useState("");
+  const [skillDescription, setSkillDescription] = useState("");
+  const [skillCategory, setSkillCategory] = useState("custom");
+  const [skillVersion, setSkillVersion] = useState("1.0.0");
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const result = await api.tenantSkills();
+      setCustomSkills(result.items ?? []);
+      setLoadError("");
+    } catch (e: any) {
+      setLoadError(e?.message ?? "加载自定义 Skills 失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { void load(); }, []);
+
+  const register = async () => {
+    await withPending("skill:register", async () => {
+      try {
+        await api.registerTenantSkill({
+          skill_id: skillId.trim().toLowerCase(),
+          name: skillName.trim(),
+          version: skillVersion.trim(),
+          description: skillDescription.trim(),
+          category: skillCategory.trim().toLowerCase() || "custom",
+          inputs: [],
+          outputs: [],
+          permissions: [],
+        });
+        showToast("Skill manifest 已登记，默认停用且不会执行代码", "success");
+        setSkillId(""); setSkillName(""); setSkillDescription(""); setSkillVersion("1.0.0");
+        await load();
+      } catch (e: any) { showToast(`登记失败：${e?.message ?? e}`, "error"); }
+    });
+  };
+
+  const toggle = async (skill: TenantSkillManifest) => {
+    try {
+      await withPending(`skill:toggle:${skill.skill_id}`, () =>
+        api.setTenantSkillEnabled(skill.skill_id, !skill.enabled, skill.manifest_version));
+      await load();
+      showToast(skill.enabled ? "Skill 已停用" : "Skill 已启用（仅登记状态，不会执行）", "success");
+    } catch (e: any) { showToast(`状态更新失败：${e?.message ?? e}`, "error"); }
+  };
+
+  const remove = async (skill: TenantSkillManifest) => {
+    try {
+      await withPending(`skill:delete:${skill.skill_id}`, () => api.deleteTenantSkill(skill.skill_id));
+      await load();
+      showToast("Skill 登记已删除", "success");
+    } catch (e: any) { showToast(`删除失败：${e?.message ?? e}`, "error"); }
+  };
+
   return (
-    <div className="panel">
-      <div className="panel-head"><div>
-        <div className="panel-title"><span className="icon">▧</span>Skills 注册表</div>
-        <div className="panel-sub">{SKILLS.reduce((a, g) => a + g.rows.length, 0)} 个 Skills · {SKILLS.length} 个分组</div>
-      </div></div>
-      {SKILLS.map((g) => (
-        <div key={g.group} style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 6 }}>{g.group}</div>
+    <>
+      <div className="panel">
+        <div className="panel-head"><div>
+          <div className="panel-title"><span className="icon">▧</span>系统内置 Skills</div>
+          <div className="panel-sub">{SKILLS.reduce((a, g) => a + g.rows.length, 0)} 个内置能力 · 只读元数据</div>
+        </div></div>
+        {SKILLS.map((g) => (
+          <div key={g.group} style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 6 }}>{g.group}</div>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>能力</th><th>状态</th><th>说明</th></tr></thead>
+                <tbody>
+                  {g.rows.map((skill) => (
+                    <tr key={skill.id}>
+                      <td title={skill.src}>{skill.name.replace(/（R\d+）/g, "").replace("Playwright ", "")}</td>
+                      <td><span className={`tag ${skill.status === "OK" ? "green" : "orange"}`}>{skill.status === "OK" ? "正常" : "部分可用"}</span></td>
+                      <td style={{ fontSize: 12, color: "var(--muted)" }}>{skill.note.replace(/R\d+[：:]\s*/g, "")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="panel" style={{ marginTop: 14 }}>
+        <div className="panel-head">
+          <div><div className="panel-title">账号组自定义 Skills</div><div className="panel-sub">登记 manifest、预览和启停。当前仅管理元数据，不上传、不执行 Python / JavaScript 代码。</div></div>
+          <button className="btn sm" onClick={() => void load()} disabled={loading}>↻ 刷新</button>
+        </div>
+        {loadError && <div className="note" style={{ color: "var(--red)" }}>加载失败：{loadError}</div>}
+        <div className="skill-register-form">
+          <label>Skill ID<input className="field" value={skillId} onChange={(e) => setSkillId(e.target.value)} placeholder="例如 brand_voice_check" /></label>
+          <label>名称<input className="field" value={skillName} onChange={(e) => setSkillName(e.target.value)} maxLength={120} placeholder="能力名称" /></label>
+          <label>版本<input className="field" value={skillVersion} onChange={(e) => setSkillVersion(e.target.value)} placeholder="1.0.0" /></label>
+          <label>分类<input className="field" value={skillCategory} onChange={(e) => setSkillCategory(e.target.value)} placeholder="custom" /></label>
+          <label className="skill-register-description">能力说明<input className="field" value={skillDescription} onChange={(e) => setSkillDescription(e.target.value)} maxLength={2000} placeholder="说明输入、输出和适用场景" /></label>
+          <button className="btn primary" disabled={!skillId.trim() || !skillName.trim() || isPending("skill:register")} onClick={register}>
+            {isPending("skill:register") ? "登记中…" : "登记 Skill"}
+          </button>
+        </div>
+        {loading ? <div className="empty-state">正在加载登记表…</div> : customSkills.length === 0 ? (
+          <EmptyHint next="填写上方 manifest 元数据后登记">暂无自定义 Skills</EmptyHint>
+        ) : (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>能力</th><th>状态</th><th>说明</th></tr></thead>
-              <tbody>
-                {g.rows.map((s) => (
-                  <tr key={s.id}>
-                    <td title={s.src}>{s.name.replace(/（R\d+）/g, "").replace("Playwright ", "")}</td>
-                    <td><span className={`tag ${s.status === "OK" ? "green" : "orange"}`}>{s.status === "OK" ? "正常" : "部分可用"}</span></td>
-                    <td style={{ fontSize: 12, color: "var(--muted)" }}>{s.note.replace(/R\d+[：:]\s*/g, "")}</td>
-                  </tr>
-                ))}
-              </tbody>
+              <thead><tr><th>Skill</th><th>版本</th><th>分类</th><th>权限</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody>{customSkills.map((skill) => (
+                <tr key={skill.skill_id}>
+                  <td><strong>{skill.name}</strong><div className="tiny">{skill.skill_id}</div><div className="tiny">{skill.description}</div></td>
+                  <td>{skill.version}</td>
+                  <td>{skill.category}</td>
+                  <td>{skill.permissions.length ? skill.permissions.join("、") : "无"}</td>
+                  <td><span className={skill.enabled ? "tag green" : "tag gray"}>{skill.enabled ? "已启用（仅登记）" : "已停用"}</span></td>
+                  <td><div className="skill-row-actions">
+                    <button className="btn sm" disabled={isPending(`skill:toggle:${skill.skill_id}`)} onClick={() => void toggle(skill)}>{skill.enabled ? "停用" : "启用"}</button>
+                    <button className="btn sm" disabled={skill.enabled || isPending(`skill:delete:${skill.skill_id}`)} onClick={() => void remove(skill)}>删除</button>
+                  </div></td>
+                </tr>
+              ))}</tbody>
             </table>
           </div>
-        </div>
-      ))}
-    </div>
+        )}
+        <div className="note" style={{ marginTop: 10 }}>安全限制：登记记录按账号组隔离；新建默认停用；权限仅允许读取类声明；启用不代表具备执行能力，Agent 当前不会加载或运行用户代码。</div>
+      </div>
+    </>
   );
 }
 
