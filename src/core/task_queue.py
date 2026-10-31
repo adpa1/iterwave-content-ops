@@ -511,6 +511,7 @@ class GlobalTaskQueue:
     def list_page(
         self, *, page: int = 1, page_size: int = 20,
         scope: str = "history", tenant_id: str | None = None,
+        task_type: str | None = None,
     ) -> tuple[list[QueuedTask], int]:
         """Return a stable, database-paginated slice of active or historical tasks."""
         page = max(1, int(page))
@@ -528,6 +529,11 @@ class GlobalTaskQueue:
         if tenant_id is not None:
             where += " AND tenant_id=?"
             params.append(tenant_id)
+        if task_type is not None:
+            if not task_type or len(task_type) > 80:
+                raise ValueError("task_type is invalid")
+            where += " AND task_type=?"
+            params.append(task_type)
         offset = (page - 1) * page_size
         conn = self._connect()
         try:
