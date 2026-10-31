@@ -58,7 +58,8 @@ IterWave 是单一运营者使用的运营工作台。客户是业务归属，�
 即时热切换由部署环境变量控制，不属于 `config/config.yaml` 中的业务配置：
 
 ```bash
-ITERWAVE_ENABLE_TENANT_HOT_SWITCH=1
+# 即时热切换默认开启；只有明确要关闭时才设置：
+ITERWAVE_ENABLE_TENANT_HOT_SWITCH=0
 ```
 
 - 当前主分支默认启用：未设置该变量时即时热切换开启。只有显式设置为空字符串或 `0/false/no/off/disabled`（忽略大小写与首尾空格）才关闭；其他非空值均视为开启。
