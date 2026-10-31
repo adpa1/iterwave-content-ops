@@ -236,6 +236,17 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
 
   useEffect(() => {
     let disposed = false;
+    // 后端运行时账号组是整个服务实例的全局上下文，不是单标签页状态。
+    // 任一标签页切换后，通知其它标签页立即刷新，避免旧页面继续对新账号组发起操作。
+    const channel = typeof BroadcastChannel !== "undefined"
+      ? new BroadcastChannel("iterwave-tenant-context")
+      : null;
+    const onTenantContextChanged = () => window.location.reload();
+    channel?.addEventListener("message", onTenantContextChanged);
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === "iterwave-tenant-context-changed") onTenantContextChanged();
+    };
+    window.addEventListener("storage", onStorage);
     const refresh = () => {
       api.tenants()
         .then((data) => { if (!disposed) setTenantData(data); })
@@ -254,6 +265,9 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
       window.removeEventListener("iterwave:tenants-changed", refresh);
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      channel?.removeEventListener("message", onTenantContextChanged);
+      channel?.close();
+      window.removeEventListener("storage", onStorage);
     };
   }, []);
 
@@ -274,7 +288,22 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
         result.restart_required ? "info" : "success",
       );
       if (!result.restart_required && result.switch_status === "completed") {
-        // 账号组切换会改变所有页面的数据上下文；完整刷新清除旧账号组的本地查询状态。
+        // 账号组是服务级全局上下文：同步通知同源其它标签页刷新，防止旧标签页串组操作。
+        try {
+          const channel = new BroadcastChannel("iterwave-tenant-context");
+          channel.postMessage({ tenant_id: result.selected.id });
+          channel.close();
+        } catch {
+          // BroadcastChannel 不可用时使用 storage event 作为跨标签页回退。
+        }
+        try {
+          window.localStorage.setItem(
+            "iterwave-tenant-context-changed",
+            JSON.stringify({ tenant_id: result.selected.id, at: Date.now() }),
+          );
+        } catch {
+          // 隐私模式禁用 storage 时，当前标签页仍会正常刷新。
+        }
         reloadScheduled = true;
         window.setTimeout(() => window.location.reload(), 800);
       }
