@@ -571,3 +571,17 @@ html, body, #root { width: 100%; max-width: 100%; overflow-x: clip; }
   .content { padding: 10px 9px 28px; }
   .panel { padding: 11px; }
 }
+
+/* ===== 全局运营中心与日历控件 ===== */
+.global-operations-page .table-wrap { overflow-x: auto; }
+.global-operations-page table { min-width: 820px; }
+.global-operations-page .tiny { color: var(--subtle); font-size: 11px; margin-top: 4px; }
+.calendar-month-grid { min-width: 0; }
+.calendar-month-grid > div { min-width: 0; }
+.calendar-month-grid > div > div { overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .calendar-month-grid { gap: 4px !important; }
+  .calendar-month-grid > div { min-height: 92px !important; padding: 6px !important; }
+  .calendar-month-grid > div > div:not(:first-child) { font-size: 10px !important; padding: 3px 4px !important; }
+}
+\n
