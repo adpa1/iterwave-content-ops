@@ -1459,6 +1459,11 @@ export const api = {
     if (endDate) p.set("end_date", endDate);
     return fetchJson<{ items: ContentPlan[]; total: number }>(`/api/content-plans?${p}`);
   },
+  contentPlan: (id: string) => fetchJson<ContentPlan & { drafts: Array<{ draft_id: string; platform: Platform; status: string; title: string; round_id: number | null }> }>(`/api/content-plans/${id}`),
+  linkContentPlanDrafts: (id: string, draft_ids: string[]) =>
+    fetchJson<{ plan_id: string; linked_now: string[]; linked_count: number; status: string }>(
+      `/api/content-plans/${id}/drafts`, { method: "POST", body: JSON.stringify({ draft_ids }) },
+    ),
   createContentPlan: (data: Pick<ContentPlan, "title" | "topic" | "platforms" | "planned_count" | "scheduled_date" | "notes">) =>
     fetchJson<ContentPlan>("/api/content-plans", { method: "POST", body: JSON.stringify(data) }),
   updateContentPlan: (id: string, data: Partial<Pick<ContentPlan, "title" | "topic" | "platforms" | "planned_count" | "scheduled_date" | "status" | "notes">> & { version: number }) =>
