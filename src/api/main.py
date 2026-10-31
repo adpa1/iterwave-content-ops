@@ -5261,6 +5261,114 @@ def _register_routes(app: FastAPI) -> None:
         }
 
 
+    # --- Skills 注册表（仅登记 manifest 元数据，不执行用户上传代码）---
+    @app.get("/api/skills")
+    def list_tenant_skills(enabled: Optional[bool] = Query(None)):
+        conn = _g()["conn"]
+        sql = "SELECT * FROM tenant_skill_registry"
+        params: list = []
+        if enabled is not None:
+            sql += " WHERE enabled = ?"
+            params.append(1 if enabled else 0)
+        sql += " ORDER BY category ASC, name ASC"
+        rows = conn.execute(sql, params).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            for source, target in (("inputs_json", "inputs"), ("outputs_json", "outputs"), ("permissions_json", "permissions")):
+                try:
+                    item[target] = json.loads(item.pop(source) or "[]")
+                except (TypeError, ValueError):
+                    item[target] = []
+            item["enabled"] = bool(item["enabled"])
+            items.append(item)
+        return {"items": items, "total": len(items), "execution_enabled": False}
+
+    @app.post("/api/skills")
+    def register_tenant_skill(req: dict):
+        body = req or {}
+        skill_id = str(body.get("skill_id") or "").strip().lower()
+        name = str(body.get("name") or "").strip()
+        version = str(body.get("version") or "1.0.0").strip()
+        description = str(body.get("description") or "").strip()
+        category = str(body.get("category") or "custom").strip().lower()
+        import re
+        if not re.fullmatch(r"[a-z][a-z0-9_.-]{1,63}", skill_id):
+            raise HTTPException(422, "skill_id 必须以小写字母开头，仅允许小写字母、数字、点、下划线和连字符")
+        if not name or len(name) > 120 or len(description) > 2000:
+            raise HTTPException(422, "Skill 名称必填且不超过 120 字，说明不超过 2000 字")
+        if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+            raise HTTPException(422, "版本号必须采用 x.y.z 格式")
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{1,39}", category):
+            raise HTTPException(422, "分类标识无效")
+        inputs = body.get("inputs") or []
+        outputs = body.get("outputs") or []
+        permissions = body.get("permissions") or []
+        if not isinstance(inputs, list) or len(inputs) > 30 or not isinstance(outputs, list) or len(outputs) > 30:
+            raise HTTPException(422, "inputs / outputs 必须是最多 30 项的数组")
+        if not isinstance(permissions, list) or any(p not in {"read_content", "read_plan", "read_drafts"} for p in permissions):
+            raise HTTPException(422, "权限只允许 read_content / read_plan / read_drafts；不允许执行代码或访问外网")
+        for schema in [*inputs, *outputs]:
+            if not isinstance(schema, dict) or len(json.dumps(schema, ensure_ascii=False)) > 2000:
+                raise HTTPException(422, "输入输出 schema 必须为 JSON 对象且单项不超过 2000 字")
+        now = _now().isoformat(timespec="seconds")
+        conn = _g()["conn"]
+        try:
+            conn.execute(
+                "INSERT INTO tenant_skill_registry(skill_id,name,version,description,category,inputs_json,outputs_json,permissions_json,enabled,manifest_version,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,0,1,?,?)",
+                (skill_id, name, version, description, category,
+                 json.dumps(inputs, ensure_ascii=False), json.dumps(outputs, ensure_ascii=False),
+                 json.dumps(sorted(set(permissions)), ensure_ascii=False), now, now),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            raise HTTPException(409, "该 Skill ID 已存在") from exc
+        return {"skill_id": skill_id, "name": name, "version": version, "description": description,
+                "category": category, "inputs": inputs, "outputs": outputs,
+                "permissions": sorted(set(permissions)), "enabled": False,
+                "manifest_version": 1, "created_at": now, "updated_at": now,
+                "execution_enabled": False}
+
+    @app.patch("/api/skills/{skill_id}")
+    def update_tenant_skill(skill_id: str, req: dict):
+        body = req or {}
+        try:
+            expected_version = int(body.get("manifest_version"))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, "更新必须提供当前 manifest_version") from exc
+        if not isinstance(body.get("enabled"), bool):
+            raise HTTPException(422, "enabled 必须是布尔值")
+        conn = _g()["conn"]
+        now = _now().isoformat(timespec="seconds")
+        cursor = conn.execute(
+            "UPDATE tenant_skill_registry SET enabled=?,manifest_version=manifest_version+1,updated_at=? "
+            "WHERE skill_id=? AND manifest_version=?",
+            (1 if body["enabled"] else 0, now, skill_id, expected_version),
+        )
+        conn.commit()
+        if cursor.rowcount != 1:
+            exists = conn.execute("SELECT 1 FROM tenant_skill_registry WHERE skill_id=?", (skill_id,)).fetchone()
+            if exists is None:
+                raise HTTPException(404, "Skill 不存在")
+            raise HTTPException(409, "Skill 已在其他窗口更新，请刷新后重试")
+        return {"skill_id": skill_id, "enabled": body["enabled"],
+                "manifest_version": expected_version + 1, "updated_at": now,
+                "execution_enabled": False}
+
+    @app.delete("/api/skills/{skill_id}")
+    def delete_tenant_skill(skill_id: str):
+        conn = _g()["conn"]
+        row = conn.execute("SELECT enabled FROM tenant_skill_registry WHERE skill_id=?", (skill_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Skill 不存在")
+        if row["enabled"]:
+            raise HTTPException(409, "请先停用 Skill，再删除登记")
+        conn.execute("DELETE FROM tenant_skill_registry WHERE skill_id=?", (skill_id,))
+        conn.commit()
+        return {"skill_id": skill_id, "deleted": True}
+
     # --- 内容计划（tenant-scoped；计划本身永不触发发布）---
     @app.get("/api/content-plans")
     def list_content_plans(
