@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import { useUrlTab } from "../nav";
 import {
-  api, RunRoundReport, SpiralRound, Draft, Platform,
+  api, RunRoundReport, SpiralRound, Draft, Platform, AssetItem,
   PlanResponse, ContentItem, PipelineResponse, RecheckResult, Goal,
 } from "../api";
 import DemoBadge from "../components/DemoBadge";
@@ -115,6 +115,8 @@ export default function Production() {
   // 运行本轮
   const [topicCount, setTopicCount] = useState(5);
   const [selPlatforms, setSelPlatforms] = useState<Platform[]>(ALL_PLATFORMS);
+  const [templates, setTemplates] = useState<AssetItem[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [saveDrafts, setSaveDrafts] = useState(true);
   const [running, setRunning] = useState(false);
   const [report, setReport] = useState<RunRoundReport | null>(null);
@@ -184,6 +186,7 @@ export default function Production() {
 
   useEffect(() => {
     loadPlan();
+    api.assets("template").then((r) => setTemplates(r.items)).catch(() => setTemplates([]));
     api.goals().then((g) => setGoals(g.filter((x) => x.status === "active"))).catch(() => {});
     refresh().catch((e) => showToast(`加载轮次失败: ${e.message}`, "error"));
     api.status()
@@ -256,8 +259,8 @@ export default function Production() {
       const started = await api.runRound(
         currentRoundId,
         usePlan
-          ? { save_drafts: saveDrafts }
-          : { topic_count: topicCount, platforms: selPlatforms, save_drafts: saveDrafts },
+          ? { save_drafts: saveDrafts, ...(selectedTemplateId ? { template_id: Number(selectedTemplateId) } : {}) }
+          : { topic_count: topicCount, platforms: selPlatforms, save_drafts: saveDrafts, ...(selectedTemplateId ? { template_id: Number(selectedTemplateId) } : {}) },
       );
       if (!started.started) throw new Error("本轮任务未能启动");
       // 后端立即返回任务 ID；页面通过轻量状态接口轮询，不再让启动请求等待整轮生成。
@@ -880,6 +883,18 @@ export default function Production() {
                     ))}
                   </div>
 
+                </div>
+                <div style={{ marginTop: 12, padding: 10, border: "1px solid var(--line)", borderRadius: 9 }}>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 700, marginBottom: 6 }} htmlFor="production-template-select">内容结构模板（可选）</label>
+                  <select id="production-template-select" className="field" value={selectedTemplateId} onChange={(e) => setSelectedTemplateId(e.target.value)} disabled={running}>
+                    <option value="">不使用模板 · 按默认生成逻辑</option>
+                    {templates.map((item) => <option key={item.id} value={String(item.id)}>{item.title}</option>)}
+                  </select>
+                  <div className="note" style={{ marginTop: 6 }}>
+                    {selectedTemplateId
+                      ? (templates.find((item) => String(item.id) === selectedTemplateId)?.body || "已选择模板，AI 将参考其结构组织正文。")
+                      : "选择后会把模板结构注入本轮 AI 提示词；模板只约束文章组织方式，不替代账号定位与质量检查。"}
+                  </div>
                 </div>
                 <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                   <label style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 5 }}>
