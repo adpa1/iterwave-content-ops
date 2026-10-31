@@ -317,45 +317,39 @@ class HotTopicCollector:
 
         emit("fetching", "抓取平台热榜", 5, message=f"共 {total} 个数据源")
 
+        # 每个来源完成后立即落库，避免慢来源阻塞时已完成来源的数据一直留在内存。
+        saved = 0
         with ThreadPoolExecutor(max_workers=min(self.hcfg.max_concurrent_fetches, max(1, total))) as pool:
             futures = {pool.submit(fn): (key, label) for key, label, fn in jobs}
-            results: dict[str, tuple[str, list[dict] | Exception]] = {}
             done = 0
             for fut in as_completed(futures):
                 key, label = futures[fut]
                 try:
-                    results[key] = (label, fut.result())
+                    result = fut.result()
                 except Exception as exc:  # noqa: BLE001 — 单来源失败不影响其他来源
-                    results[key] = (label, exc)
+                    result = exc
                 done += 1
                 state = next(s for s in src_state if s["key"] == key)
-                payload = results[key][1]
-                if isinstance(payload, Exception) or not payload:
+                if isinstance(result, Exception):
+                    safe_key = redact(str(key))
+                    safe_error = redact(str(result))
+                    logger.warning("热点采集失败 %s: %s", safe_key, safe_error)
+                    self._record_failure(key, label, safe_error)
+                    report[key] = "failed"
+                    state["status"] = "failed"
+                elif not result:
+                    self._record_failure(key, label, "接口返回空列表")
+                    report[key] = "failed"
                     state["status"] = "failed"
                 else:
+                    self._upsert(key, label, result)
+                    report[key] = "collected"
                     state["status"] = "collected"
-                    state["items"] = len(payload)
-                emit("fetching", "抓取平台热榜", 5 + int(55 * done / max(1, total)),
-                     message=f"已完成 {done}/{total} 个数据源")
-
-        saved = 0
-        for key, (label, result) in results.items():
-            if isinstance(result, Exception):
-                safe_key = redact(str(key))
-                safe_error = redact(str(result))
-                logger.warning("热点采集失败 %s: %s", safe_key, safe_error)
-                self._record_failure(key, label, safe_error)
-                report[key] = "failed"
-            elif not result:
-                self._record_failure(key, label, "接口返回空列表")
-                report[key] = "failed"
-            else:
-                self._upsert(key, label, result)
-                report[key] = "collected"
-                logger.info("🔥 热点采集成功 %s：%d 条", key, len(result))
-            saved += 1
-            emit("saving", "写入热点库", 60 + int(25 * saved / max(1, len(results))),
-                 message=f"已写入 {saved}/{len(results)} 个数据源")
+                    state["items"] = len(result)
+                    logger.info("🔥 热点采集成功 %s：%d 条", key, len(result))
+                saved += 1
+                emit("fetching", "抓取并保存平台热榜", 5 + int(80 * done / max(1, total)),
+                     message=f"已完成并保存 {done}/{total} 个数据源")
 
         self.apply_dedup_and_retention(report)
         emit("dedup", "去重与旧热点清理", 90, message="跨平台合并 + 旧热点滚动清理完成")
