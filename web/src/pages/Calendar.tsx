@@ -4,6 +4,16 @@ import EmptyHint from "../components/EmptyHint";
 import { api, ContentPlan, Platform, ScheduleEvent, UnscheduledDraft } from "../api";
 import { platformMeta } from "../platforms";
 
+const PLAN_STATUS_LABEL: Record<ContentPlan["status"], string> = {
+  planned: "待执行",
+  generating: "生产中",
+  generated: "已生成",
+  reviewed: "已审核",
+  archived: "已归档",
+  cancelled: "已取消",
+  failed: "失败，可重试",
+};
+
 export default function Calendar() {
   const { showToast, withPending, isPending } = useApp();
   const today = new Date();
@@ -254,7 +264,7 @@ export default function Calendar() {
                 {d.plans.map((plan) => (
                   <div className="calendar-agenda-plan" key={plan.id}>
                     <button className="calendar-plan-label" onClick={() => void openPlanDetails(plan.id)}>计划详情</button>
-                    <span className="calendar-agenda-copy"><strong>{plan.title}</strong><small>{plan.planned_count} 篇/平台 · {plan.platforms.length ? plan.platforms.map((p) => platformMeta(p).label).join("、") : "使用启用平台"} · {plan.status}</small></span>
+                    <span className="calendar-agenda-copy"><strong>{plan.title}</strong><small>{plan.planned_count} 篇/平台 · {plan.platforms.length ? plan.platforms.map((p) => platformMeta(p).label).join("、") : "使用启用平台"} · {PLAN_STATUS_LABEL[plan.status]}</small></span>
                     {(plan.status === "planned" || plan.status === "failed") && (
                       <button className="btn sm primary" disabled={isPending(`content-plan:start:${plan.id}`)} onClick={() => void startPlan(plan)}>
                         {isPending(`content-plan:start:${plan.id}`) ? "入队中…" : plan.status === "failed" ? "重试入队" : "加入全局队列"}
@@ -329,7 +339,7 @@ export default function Calendar() {
         <div className="calendar-plan-modal" role="dialog" aria-modal="true" aria-label="内容计划详情" onClick={() => setPlanDetail(null)}>
           <section className="panel" onClick={(e) => e.stopPropagation()}>
             <div className="panel-head">
-              <div><div className="panel-title">{planDetail.title}</div><div className="panel-sub">{planDetail.scheduled_date} · {planDetail.planned_count} 篇/平台 · {planDetail.status}</div></div>
+              <div><div className="panel-title">{planDetail.title}</div><div className="panel-sub">{planDetail.scheduled_date} · {planDetail.planned_count} 篇/平台 · {PLAN_STATUS_LABEL[planDetail.status]}</div></div>
               <button className="btn sm" onClick={() => setPlanDetail(null)}>关闭</button>
             </div>
             {planDetail.topic && <div className="note">{planDetail.topic}</div>}
