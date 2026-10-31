@@ -522,7 +522,20 @@ export interface GlobalMonitorTenant {
   drafts_failed: number;
   media_active: number;
   media_usage: number;
-  platforms: Record<string, { contents: number; contents_period: number; drafts: number }>;
+  registered_accounts?: number;
+  registered_accounts_active?: number;
+  runtime?: {
+    available: boolean;
+    enabled_platforms: Platform[];
+    logged_in_platforms: Platform[];
+    platforms_without_login: Platform[];
+    circuit_broken_platforms: Platform[];
+    scheduler_running: boolean | null;
+    scheduler_job_count: number | null;
+    scheduler_enabled_count: number | null;
+    active_rounds: number | null;
+  };
+  platforms: Record<string, { contents: number; contents_period: number; drafts: number; registered_accounts?: number }>;
 }
 export interface GlobalMonitorResponse {
   days: number;
