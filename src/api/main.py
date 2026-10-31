@@ -1292,6 +1292,7 @@ class RunRoundRequest(BaseModel):
     topic_count: Optional[int] = Field(None, ge=1, le=50)
     platforms: Optional[list[str]] = None
     save_drafts: Optional[bool] = None
+    template_id: Optional[int] = Field(None, ge=1)
 
 
 class IdsRequest(BaseModel):
@@ -4003,6 +4004,19 @@ def _register_routes(app: FastAPI) -> None:
                 f"当前轮次状态为「{round_row['status']}」，不能再次启动生产；"
                 "只有「created」状态的轮次可以运行",
             )
+        template_snapshot = None
+        if req.template_id is not None:
+            template_row = runtime_context["conn"].execute(
+                "SELECT id, title, body FROM content_assets WHERE id=? AND asset_type='template'",
+                (req.template_id,),
+            ).fetchone()
+            if template_row is None:
+                raise HTTPException(404, "所选内容模板不存在或已删除，请刷新模板列表")
+            template_snapshot = {
+                "id": int(template_row["id"]),
+                "title": str(template_row["title"] or "")[:200],
+                "body": str(template_row["body"] or "")[:8000],
+            }
         from src.core.task_snapshot import StaleTaskSnapshot
         try:
             task, created = _task_queue.enqueue(
@@ -4014,12 +4028,14 @@ def _register_routes(app: FastAPI) -> None:
                     "topic_count": req.topic_count,
                     "platforms": req.platforms,
                     "save_drafts": req.save_drafts,
+                    "template_snapshot": template_snapshot,
                     "execution_snapshot": _build_task_execution_snapshot(
                         tenant_id, round_id, {
                             "round_id": round_id,
                             "topic_count": req.topic_count,
                             "platforms": req.platforms,
                             "save_drafts": req.save_drafts,
+                            "template_snapshot": template_snapshot,
                         }, runtime_context=runtime_context,
                     ),
                 },

@@ -135,6 +135,7 @@ class GlobalTaskWorker:
                                 platform_values=task.payload.get("platforms"),
                                 save_drafts=task.payload.get("save_drafts"),
                                 feedback=feedback,
+                                template_data=task.payload.get("template_snapshot"),
                             )
                         except asyncio.CancelledError:
                             self._mark_content_plan_failed(context["conn"], round_id)
