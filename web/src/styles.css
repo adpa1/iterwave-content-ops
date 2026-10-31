@@ -744,3 +744,46 @@ html, body, #root { width: 100%; max-width: 100%; overflow-x: clip; }
 @media (max-width: 760px) {
   .calendar-toolbar { justify-content: flex-start; }
 }
+
+
+/* ===== Account/workspace menu: secondary global destinations live here ===== */
+.account-menu-wrap { position: relative; display: flex; align-items: center; }
+.account-menu-trigger {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 36px;
+  padding: 3px 9px 3px 4px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface); color: var(--text); cursor: pointer; font: inherit;
+}
+.account-menu-trigger:hover { background: var(--surface-2); }
+.account-menu-trigger .avatar { display: grid; place-items: center; flex: 0 0 auto; }
+.account-menu-name { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 650; }
+.account-menu-chevron { color: var(--muted); font-size: 13px; }
+.account-menu {
+  position: absolute; z-index: 130; top: calc(100% + 8px); right: 0;
+  width: min(300px, calc(100vw - 24px)); padding: 8px;
+  border: 1px solid var(--line); border-radius: 12px; background: #fff;
+  box-shadow: 0 16px 42px #172b4924;
+}
+.account-menu-section { display: grid; gap: 7px; padding: 8px; }
+.account-menu-section strong { font-size: 11px; }
+.account-menu-section select { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--text); }
+.account-menu-section small, .account-menu-muted { color: var(--muted); font-size: 10px; }
+.account-menu-divider { height: 1px; margin: 5px 0; background: var(--line); }
+.account-menu > button {
+  display: flex; flex-direction: column; gap: 3px; width: 100%; padding: 9px 10px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--text);
+  text-align: left; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer;
+}
+.account-menu > button:hover { background: var(--surface-2); }
+.account-menu > button span { color: var(--muted); font-size: 10px; font-weight: 400; }
+.calendar-more-link {
+  display: block; width: 100%; margin-top: 4px; padding: 3px 4px; border: 0;
+  background: transparent; color: var(--blue); text-align: left; font-size: 10px; cursor: pointer;
+}
+.calendar-more-link:hover { text-decoration: underline; }
+.calendar-month-grid .calendar-event { margin-top: 3px; padding: 3px 5px; }
+.calendar-month-grid .calendar-event-title { font-size: 10px; }
+.calendar-month-grid .calendar-event-meta { font-size: 9px; }
+.calendar-month-grid .calendar-plan-chip { margin-top: 3px; padding: 3px 5px; }
+@media (max-width: 760px) {
+  .account-menu-name { max-width: 90px; }
+}
