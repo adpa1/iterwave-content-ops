@@ -196,7 +196,7 @@ export default function Analytics() {
           <div className="eyebrow">数据复盘</div>
           <h1 className="page-title">数据分析</h1>
           <div className="page-desc">
-            总览看整体表现与本周建议；详细数据查看逐篇原始指标、平台基准和发布后数据回填。
+            总览看整体表现与本周建议；详细数据查看逐篇原始指标、平台基准和发布后数据回填。 当前视图：{detailView === "overview" ? "经营摘要" : "逐篇数据与回填"}.
           </div>
         </div>
         <div className="head-actions">
@@ -206,6 +206,7 @@ export default function Analytics() {
         </div>
       </div>
 
+      {detailView === "overview" && <>
       <div className="grid kpis" style={{ marginBottom: 15 }}>
         <div className="metric">
           <div className="metric-top"><span className="metric-label">已采集内容</span><span className="metric-icon" aria-hidden="true">▤</span></div>
@@ -241,6 +242,7 @@ export default function Analytics() {
       {activationMetrics?.platform_model_breakdown?.length ? <div className="panel-sub" style={{ marginBottom: 15 }}>
         体验分布：{activationMetrics.platform_model_breakdown.map((item) => `${PLATFORM_NAME[item.platform]} / ${item.model_mode}：${item.ready_count}/${item.run_count} 完成`).join("；")}
       </div> : null}
+      </>}
 
       {detailView === "details" && <>
       <div className="panel" style={{ marginBottom: 15 }}>
