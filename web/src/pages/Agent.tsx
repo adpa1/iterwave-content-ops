@@ -366,11 +366,11 @@ function TracePane({ status, runs }: { status: SystemStatus | null; runs: Orches
           <div className="panel-title"><span className="icon">☷</span>平台子流程</div>
           <div className="panel-sub">每个平台独立运行</div>
         </div></div>
-        {status.enabled_platforms.length === 0 ? (
+        {(status.enabled_platforms ?? []).length === 0 ? (
           <EmptyHint next="到「系统设置」启用至少 1 个平台">暂无启用的平台</EmptyHint>
         ) : (
           <div className="list">
-            {status.enabled_platforms.map((p: Platform) => {
+            {(status.enabled_platforms ?? []).map((p: Platform) => {
               const b = broken.includes(p), n = noLogin.includes(p);
               return (
                 <div key={p} className="task-row">
@@ -394,8 +394,8 @@ function TracePane({ status, runs }: { status: SystemStatus | null; runs: Orches
         </div></div>
         <div className="list">
           <div className="task-row"><i className="task-prio green" /><div className="task-main"><div className="task-title">中断任务</div><div className="task-desc">{status.recovery?.interrupted_tasks ?? 0} 个已重登</div></div></div>
-          <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">补登记采集</div><div className="task-desc">{status.recovery?.requeued_data_fetch.length ?? 0} 篇重入列</div></div></div>
-          <div className="task-row"><i className="task-prio orange" /><div className="task-main"><div className="task-title">卡住轮次</div><div className="task-desc">{status.recovery?.stale_rounds.length ? `#${status.recovery.stale_rounds.join(", #")}` : "无"}</div></div></div>
+          <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">补登记采集</div><div className="task-desc">{status.recovery?.requeued_data_fetch?.length ?? 0} 篇重入列</div></div></div>
+          <div className="task-row"><i className="task-prio orange" /><div className="task-main"><div className="task-title">卡住轮次</div><div className="task-desc">{status.recovery?.stale_rounds?.length ? `#${status.recovery.stale_rounds.join(", #")}` : "无"}</div></div></div>
           <div className="task-row"><i className="task-prio purple" /><div className="task-main"><div className="task-title">最近一轮</div><div className="task-desc">
             {runs && runs[0] ? `第 ${runs[0].round_number} 轮 · ${ROUND_STATUS_LABEL[runs[0].status] ?? runs[0].status}${runs[0].duration_seconds != null ? ` · 用时 ${runs[0].duration_seconds}s` : ""}` : "还没有轮次"}
           </div></div>
