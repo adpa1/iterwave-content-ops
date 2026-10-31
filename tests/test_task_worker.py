@@ -468,7 +468,11 @@ def test_worker_heartbeat_runs_in_background_thread(tmp_path):
         target=worker._heartbeat_loop, args=(claimed, stopped, loop, asyncio.Event()),
     )
     thread.start()
-    time.sleep(0.06)
+    # 在 CI 负载下线程调度可能超过固定 60ms；等待实际观察到两次续租，
+    # 同时设置上限，避免测试因调度抖动产生偶发失败。
+    deadline = time.monotonic() + 1.0
+    while len(renewed) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
     stopped.set()
     thread.join(timeout=1)
     loop.close()

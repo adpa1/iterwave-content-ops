@@ -180,7 +180,7 @@ class HotTopicMatcher:
 
     def run(self, limit: int | None = None) -> dict:
         rows = self.pending(limit)
-        report = {"pending": len(rows), "llm": 0, "keyword": 0, "failed_batches": 0,
+        report = {"pending": len(rows), "llm": 0, "keyword": 0, "unjudged": 0, "failed_batches": 0,
                   "method": "llm" if self.llm_fn else "keyword"}
         if not rows:
             return report
@@ -188,6 +188,8 @@ class HotTopicMatcher:
             for r in rows:
                 self._save_keyword(r)
                 report["keyword"] += 1
+                if not keyword_judgement(self.persona, r["title"])["keyword_hits"] and not keyword_judgement(self.persona, r["title"])["forbidden"]:
+                    report["unjudged"] += 1
             self.conn.commit()
             return report
         for i in range(0, len(rows), self.policy.batch_size):
@@ -201,6 +203,7 @@ class HotTopicMatcher:
             for r in batch:
                 res = results.get(r["id"])
                 if res is None:
+                    report["unjudged"] += 1
                     continue  # 模型漏掉的条目保持待研判，下次重试
                 self._save(r, res, method="llm")
                 report["llm"] += 1

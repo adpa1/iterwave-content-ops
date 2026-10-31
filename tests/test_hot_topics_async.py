@@ -63,6 +63,21 @@ def test_hot_topic_timestamps_are_emitted_with_explicit_utc_offset():
     assert parsed == datetime(2026, 10, 30, 6, 58, 43)
 
 
+def test_hot_source_dns_resolution_has_a_hard_timeout(monkeypatch):
+    import threading
+    from src.core.safe_http import SafeFetchError, _resolve_public_url
+
+    blocked = threading.Event()
+    monkeypatch.setattr(
+        "src.core.safe_http.socket.getaddrinfo",
+        lambda *args, **kwargs: (blocked.wait(30) and []),
+    )
+    started = __import__("time").monotonic()
+    with pytest.raises(SafeFetchError, match="解析超时"):
+        _resolve_public_url("https://slow-dns.example/feed")
+    assert __import__("time").monotonic() - started < 6
+
+
 def test_hot_source_fetch_rejects_private_destinations(monkeypatch):
     with pytest.raises(ValueError, match="内网|本机|保留"):
         _fetch_public_text("http://127.0.0.1/internal", headers={}, timeout=1)
@@ -134,6 +149,7 @@ def test_keyword_mode_never_scores_unmatched_as_zero(cfg, conn):
     m = HotTopicMatcher(cfg, conn, use_default_llm=False)
     rep = m.run()
     assert rep["keyword"] == 2
+    assert rep["unjudged"] >= 1
     rows = {r["id"]: r for r in conn.execute("SELECT * FROM hot_topics").fetchall()}
     assert dimension_match_of(rows["a"], m.version) is True
     assert rows["b"]["match_score"] is None
@@ -244,11 +260,17 @@ def test_refresh_reports_progress(cfg, conn, monkeypatch):
                                           "heat_unit": "热度", "time_sensitive": None}])
     c.aggregate_sources = [{"name": "60s.viki.moe", "platforms": ["weibo", "douyin"]}]
     c.custom_sources = []
-    c.refresh(on_progress=events.append)
+    def capture(update):
+        events.append(update)
+        if update["stage"] == "fetching" and update["message"].startswith("已完成并保存 1/"):
+            # 至少一个来源完成时，其结果必须已经落库，不再等待所有来源结束。
+            assert conn.execute("SELECT COUNT(*) FROM hot_topics WHERE evidence_status='collected'").fetchone()[0] >= 1
+
+    c.refresh(on_progress=capture)
     stages = [e["stage"] for e in events]
     assert stages[0] == "fetching" and stages[-1] == "dedup"
     fetch_done = [e for e in events if e["stage"] == "fetching"][-1]
-    assert fetch_done["percent"] <= 60
+    assert fetch_done["percent"] <= 85
     assert [s["status"] for s in fetch_done["sources"]] == ["collected", "collected"]
     assert {s["items"] for s in fetch_done["sources"]} == {1}
 

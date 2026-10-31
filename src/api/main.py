@@ -914,6 +914,37 @@ def _build_app() -> FastAPI:
                     status_code=503,
                     headers={"Retry-After": "2"},
                 )
+        tenant_context_exempt = (
+            path in ("/api/tenants", "/api/tenants/select")
+            or path.startswith("/api/auth/")
+        )
+        tenant_scoped_api = path.startswith("/api/") and not tenant_context_exempt
+        tenant_write = tenant_scoped_api and request.method in ("POST", "PUT", "PATCH", "DELETE")
+        if tenant_scoped_api and tracked_request:
+            supplied_tenant_id = (request.headers.get("x-tenant-id") or "").strip()
+            expected_tenant_id = str(_g_ctx.get("runtime_tenant_id") or "default")
+            if supplied_tenant_id and supplied_tenant_id != expected_tenant_id:
+                _tenant_switch_gate.leave_request()
+                tracked_request = False
+                return JSONResponse(
+                    {
+                        "detail": "账号组已在其他会话切换；当前请求未执行，请刷新页面后重试。",
+                        "code": "TENANT_CONTEXT_CHANGED",
+                        "expected_tenant_id": expected_tenant_id,
+                    },
+                    status_code=409,
+                )
+            if tenant_write and not supplied_tenant_id:
+                _tenant_switch_gate.leave_request()
+                tracked_request = False
+                return JSONResponse(
+                    {
+                        "detail": "写请求缺少账号组上下文，已拒绝执行。请刷新页面后重试。",
+                        "code": "TENANT_CONTEXT_REQUIRED",
+                    },
+                    status_code=409,
+                )
+
         try:
             response = await call_next(request)
             if tracked_request:
@@ -3946,10 +3977,19 @@ def _register_routes(app: FastAPI) -> None:
         runtime_context = _g()
         tenant_id = runtime_context.get("runtime_tenant_id", "default")
         round_row = runtime_context["conn"].execute(
-            "SELECT id FROM spiral_rounds WHERE id=?", (round_id,),
+            "SELECT id, status FROM spiral_rounds WHERE id=?", (round_id,),
         ).fetchone()
         if round_row is None:
             raise HTTPException(404, "当前账号组不存在该生产轮次")
+        # 仅允许新建轮次入队。producing 及后续状态不能再次启动，
+        # 防止已进入发布/采集/复盘或终态的轮次被重复生产。
+        # 并发重复请求仍由全局队列的 aggregate 去重负责（状态尚未推进时）。
+        if round_row["status"] != "created":
+            raise HTTPException(
+                409,
+                f"当前轮次状态为「{round_row['status']}」，不能再次启动生产；"
+                "只有「created」状态的轮次可以运行",
+            )
         from src.core.task_snapshot import StaleTaskSnapshot
         try:
             task, created = _task_queue.enqueue(

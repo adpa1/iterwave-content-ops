@@ -56,6 +56,12 @@ def test_activation_cohort_is_independent_per_tenant(activation_client, conn):
     first = activation_client.post("/api/activation/start")
     assert first.status_code == 200
     main._g_ctx["runtime_tenant_id"] = "tenant-b"
+    # 原会话仍携带 default，不能把请求写入新活动账号组。
+    stale = activation_client.post("/api/activation/start")
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "TENANT_CONTEXT_CHANGED"
+    # 模拟另一个已刷新上下文的客户端。
+    activation_client.headers.update({"X-Tenant-Id": "tenant-b"})
     second = activation_client.post("/api/activation/start")
     assert second.status_code == 200
     assert conn.execute("SELECT COUNT(*) FROM activation_cohort").fetchone()[0] == 2

@@ -1,5 +1,20 @@
 """签名会话：重启不掉线、跨进程登出、改口令失效、篡改拒绝。"""
+import pytest
+
 from src.core import auth
+
+
+@pytest.fixture(autouse=True)
+def isolate_auth_environment(monkeypatch, tmp_path):
+    """所有口令、会话密钥和吊销表均写入本用例临时目录，不触碰真实 config/.env。"""
+    monkeypatch.setenv("ITERWAVE_ENV_FILE", str(tmp_path / ".env"))
+    monkeypatch.delenv(auth.PASSWORD_ENV, raising=False)
+    monkeypatch.delenv(auth.SESSION_SECRET_ENV, raising=False)
+    auth._reset_revocations()
+    auth._failures.clear()
+    yield
+    auth._reset_revocations()
+    auth._failures.clear()
 
 
 def _simulate_restart():

@@ -94,11 +94,20 @@ def run_once(
             "message": "按账号画像匹配定位关联",
         })
         try:
-            match = HotTopicMatcher(cfg, conn).run()
+            matcher = HotTopicMatcher(cfg, conn)
+            match = matcher.run()
+            # 将模型批次失败和未能得到语义结论显式暴露，不能把部分失败报成完整完成。
+            match["remaining_pending"] = max(len(matcher.pending()), int(match.get("unjudged", 0)))
+            if match.get("failed_batches"):
+                match["status"] = "partial"
+            elif match.get("remaining_pending"):
+                match["status"] = "pending"
+            else:
+                match["status"] = "completed"
         except Exception as exc:  # noqa: BLE001 — 匹配失败不回滚采集结果
             from .redact import redact
             logger.error("热点标签匹配失败 tenant=%s error=%s", tenant_id, redact(str(exc))[:500])
-            match = {"error": redact(str(exc))[:500]}
+            match = {"error": redact(str(exc))[:500], "status": "failed"}
         logger.info(
             "热点后台刷新完成 trigger=%s tenant=%s report=%s",
             trigger, tenant_id, report,
@@ -117,10 +126,18 @@ def run_once(
             prog = dict(_STATE.get("progress") or {})
             collected = sum(1 for v in (report or {}).values() if v == "collected")
             prog.update({
-                "stage": "failed" if error else "done",
-                "label": "采集失败" if error else "采集完成",
+                "stage": "failed" if error else (
+                    "matching_partial" if (match or {}).get("status") in ("partial", "pending", "failed") else "done"
+                ),
+                "label": "任务失败" if error else (
+                    "采集完成，研判待处理" if (match or {}).get("status") in ("partial", "pending") else
+                    "研判失败" if (match or {}).get("status") == "failed" else "采集与研判完成"
+                ),
                 "percent": 100,
-                "message": error or f"{collected} 个数据源采集成功",
+                "message": error or (
+                    f"{collected} 个数据源采集成功；研判成功 {int((match or {}).get('llm', 0)) + int((match or {}).get('keyword', 0))} 条，"
+                    f"待研判 {int((match or {}).get('remaining_pending', 0))} 条，失败批次 {int((match or {}).get('failed_batches', 0))}"
+                ),
             })
             prog["sources"] = prog.get("sources") or []
             prog["updated_at"] = datetime.now().isoformat(timespec="seconds")

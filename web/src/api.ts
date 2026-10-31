@@ -401,7 +401,7 @@ export interface HotSourceStatus {
 }
 
 export interface HotRefreshProgress {
-  stage: "fetching" | "saving" | "dedup" | "matching" | "done" | "failed";
+  stage: "fetching" | "saving" | "dedup" | "matching" | "matching_partial" | "done" | "failed";
   label: string;
   percent: number;
   message?: string | null;
@@ -1154,6 +1154,7 @@ export interface RhythmConfig {
 }
 
 // ===== fetch wrapper =====
+let activeTenantId: string | null = null;
 // vite import.meta.env.BASE_URL 在 base: "/iterwave/" 时为 "/iterwave/"
 // 本地 vite dev 时 BASE_URL 为 "/"，去掉尾部斜杠 → ""，等价于原来的空字符串
 const API = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
@@ -1161,10 +1162,10 @@ const API = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(API + path, {
-      headers: { "Content-Type": "application/json" },
-      ...options,
-    });
+    const headers = new Headers(options?.headers);
+    if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    if (activeTenantId) headers.set("X-Tenant-Id", activeTenantId);
+    res = await fetch(API + path, { ...options, headers });
   } catch (error) {
     if (error instanceof TypeError) {
       throw new Error("网络连接失败，请检查服务是否运行及网络状态后重试");
@@ -1174,14 +1175,25 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     let detail = text || res.statusText;
+    let errorCode = "";
     try {
       const parsed = JSON.parse(text);
-      if (parsed?.detail) detail = String(parsed.detail);
+      const payload = parsed?.detail ?? parsed;
+      if (typeof payload === "string") detail = payload;
+      else if (payload && typeof payload === "object") {
+        detail = String(payload.message || payload.detail || detail);
+        errorCode = String(payload.code || "");
+      }
     } catch {
       // 非 JSON 错误体，保留原文
     }
-    const error = new Error(detail) as Error & { status?: number };
+    const error = new Error(detail) as Error & { status?: number; code?: string };
     error.status = res.status;
+    error.code = errorCode;
+    if (res.status === 409 && errorCode === "TENANT_CONTEXT_CHANGED") {
+      // 页面展示的数据属于旧账号组；不得继续留在旧页面上操作新运行空间。
+      if (typeof window !== "undefined") window.location.reload();
+    }
     throw error;
   }
   return res.json();
@@ -1401,7 +1413,18 @@ export const api = {
     ),
   globalMonitor: (days = 30) => fetchJson<GlobalMonitorResponse>(`/api/global-monitor?days=${days}`),
   // === 账号组隔离 ===
-  tenants: () => fetchJson<TenantListResponse>("/api/tenants"),
+  tenants: async () => {
+    const result = await fetchJson<TenantListResponse>("/api/tenants");
+    const runtimeTenantId = result.runtime_tenant_id || result.selected_tenant_id || null;
+    if (activeTenantId === null) {
+      // 仅首次加载建立页面租户身份；后续发现服务端已切换，必须刷新整页，
+      // 不能静默把旧页面的数据上下文改成新账号组。
+      activeTenantId = runtimeTenantId;
+    } else if (runtimeTenantId && runtimeTenantId !== activeTenantId) {
+      if (typeof window !== "undefined") window.location.reload();
+    }
+    return result;
+  },
   createTenant: (data: { tenant_id: string; name: string }) =>
     fetchJson<{ tenant: TenantItem; restart_required: boolean }>("/api/tenants", {
       method: "POST", body: JSON.stringify(data),
@@ -1415,10 +1438,13 @@ export const api = {
     fetchJson<{ staged: boolean; restart_required: boolean; backup_name: string; message: string }>(
       "/api/tenant-backup/restore", { method: "POST", body: JSON.stringify({ backup_name, confirm }) },
     ),
-  selectTenant: (tenant_id: string) =>
-    fetchJson<{ selected: { id: string; name: string }; runtime_tenant_id: string; restart_required: boolean; switch_status?: "completed" | "unchanged"; message: string }>(
+  selectTenant: async (tenant_id: string) => {
+    const result = await fetchJson<{ selected: { id: string; name: string }; runtime_tenant_id: string; restart_required: boolean; switch_status?: "completed" | "unchanged"; message: string }>(
       "/api/tenants/select", { method: "POST", body: JSON.stringify({ tenant_id }) },
-    ),
+    );
+    activeTenantId = result.runtime_tenant_id || activeTenantId;
+    return result;
+  },
   // === 图片素材库 ===
   mediaAssets: (query = "", status: "active" | "archived" | "all" = "active") =>
     fetchJson<{ items: MediaAsset[]; limit: number; offset: number }>(
