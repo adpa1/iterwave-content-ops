@@ -707,3 +707,11 @@ html, body, #root { width: 100%; max-width: 100%; overflow-x: clip; }
 
 .global-platform-cell { display: grid; gap: 3px; min-width: 140px; }
 .global-platform-cell .tiny { white-space: normal; overflow-wrap: anywhere; }
+
+
+/* Queue history status differentiation */
+.status-pill.success, .status-pill.completed { background: var(--green-weak); color: var(--green); }
+.status-pill.failed { background: var(--red-weak); color: var(--red); }
+.status-pill.producing { background: var(--blue-weak); color: var(--blue); }
+.status-pill.creating { background: var(--orange-weak); color: var(--orange); }
+.status-pill.cancelled { background: #eef1f6; color: #6b7b93; }
