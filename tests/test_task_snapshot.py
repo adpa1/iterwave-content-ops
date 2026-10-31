@@ -48,3 +48,18 @@ def test_execution_snapshot_rejects_changed_master_plan(cfg, conn, seed):
 
     with pytest.raises(StaleTaskSnapshot, match="母计划已变化"):
         validate_execution_snapshot(snapshot, cfg, conn)
+
+
+def test_enqueue_rejects_round_already_based_on_old_plan(cfg, conn, seed):
+    round_id = seed.round(status="created")
+    manager = PlanVersionManager(cfg, conn)
+    original_plan = manager.load_plan()[0]
+    manager.record(round_id, original_plan)
+    changed_plan = dict(original_plan)
+    changed_plan["topic_count_per_platform"] = int(original_plan["topic_count_per_platform"]) + 1
+    manager.save_plan(changed_plan)
+
+    with pytest.raises(StaleTaskSnapshot, match="目标轮次已基于旧母计划"):
+        build_execution_snapshot(
+            cfg, conn, round_id=round_id, parameters={"round_id": round_id},
+        )
