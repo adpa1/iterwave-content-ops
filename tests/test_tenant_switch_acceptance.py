@@ -192,7 +192,7 @@ def test_process_singleton_lock_writes_real_newline(tmp_path):
     lock.acquire()
     try:
         payload = path.read_bytes()
-        assert payload.endswith(b"\\n")
+        assert payload.endswith(b"\n")
         assert payload[:-1].isdigit()
     finally:
         lock.release()
