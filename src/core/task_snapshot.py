@@ -105,7 +105,9 @@ def validate_execution_snapshot(snapshot: dict[str, Any], cfg, conn) -> None:
     if not expected_config or config_fingerprint(cfg) != expected_config:
         raise StaleTaskSnapshot("任务入队后账号组配置已变化；为避免使用新配置误执行，任务已停止，请确认配置后重新提交")
     expected_plan = str(snapshot.get("plan_signature") or "")
-    if expected_plan:
+    # derived 轮次以创建时持久化的 round_plan_snapshot 为准；当前推导母计划会随最近轮次变化，
+    # 不是可用于验证旧轮次的稳定版本。保存过的正式母计划仍必须严格比对。
+    if expected_plan and snapshot.get("plan_source") != "derived":
         from .plan_version import PlanVersionManager
         _, current_signature, _, _ = PlanVersionManager(cfg, conn).load_plan()
         if current_signature != expected_plan:
