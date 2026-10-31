@@ -24,7 +24,7 @@ export default function GlobalOperations() {
     setLoading(true);
     setError("");
     const results = await Promise.allSettled([
-      api.globalMonitor(30), api.taskQueue({ scope: "active" }), api.taskQueue({ scope: "failed" }),
+      api.globalOperationsSummary(30), api.taskQueue({ scope: "active" }), api.taskQueue({ scope: "failed" }),
     ]);
     if (results[0].status === "fulfilled") setMonitor(results[0].value);
     if (results[1].status === "fulfilled") { setTasks(results[1].value.items ?? []); setActiveCount(results[1].value.total ?? results[1].value.items.length); }
