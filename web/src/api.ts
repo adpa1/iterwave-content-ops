@@ -1299,7 +1299,7 @@ export const api = {
     fetchJson<{ updated: Record<string, number | null>; goals: Goal[]; summary: GoalSummary }>(
       "/api/goals/progress/refresh", { method: "POST" },
     ),
-  taskQueue: (params: { scope?: "all" | "active" | "history"; page?: number; pageSize?: number } = {}) => {
+  taskQueue: (params: { scope?: "all" | "active" | "history" | "failed"; page?: number; pageSize?: number } = {}) => {
     const query = new URLSearchParams();
     if (params.scope) query.set("scope", params.scope);
     if (params.page != null) query.set("page", String(params.page));
