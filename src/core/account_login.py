@@ -284,6 +284,7 @@ def stop_all_logins(timeout_seconds: float = 10.0) -> None:
     with _PROCESS_LOCK:
         active = [(platform, proc) for key, proc in _LOGIN_PROCESSES.items()
                   if isinstance(key, str) for platform in (key,)]
+        completed_before_stop = {platform: proc.poll() is not None for platform, proc in active}
         for _, proc in active:
             if proc.poll() is None:
                 proc.terminate()
@@ -295,7 +296,7 @@ def stop_all_logins(timeout_seconds: float = 10.0) -> None:
                 proc.wait(timeout=2)
             _LOGIN_PROCESSES.pop(platform, None)
     for platform, proc in active:
-        if proc.poll() is not None and _read_status_file(_files(platform)["status"]).get("state") == "success":
+        if completed_before_stop.get(platform) and _read_status_file(_files(platform)["status"]).get("state") == "success":
             _schedule_export(platform)
 
 
