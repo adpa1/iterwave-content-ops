@@ -5622,9 +5622,8 @@ def _register_routes(app: FastAPI) -> None:
             (plan_id,),
         ).fetchall()
         rounds = conn.execute(
-            "SELECT cpr.round_id,cpr.task_id,cpr.created_at,q.status AS task_status,q.error_message "
-            "FROM content_plan_rounds cpr LEFT JOIN global_task_queue q ON q.task_id=cpr.task_id "
-            "WHERE cpr.plan_id=? ORDER BY cpr.created_at DESC",
+            "SELECT round_id,task_id,created_at FROM content_plan_rounds "
+            "WHERE plan_id=? ORDER BY created_at DESC",
             (plan_id,),
         ).fetchall()
         item["drafts"] = [dict(r) for r in linked]
