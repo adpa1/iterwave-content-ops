@@ -109,16 +109,16 @@ export default function GlobalOperations() {
                       <span className="tiny">未登录：{tenant.runtime.platforms_without_login.map((p) => PLATFORMS[p] ?? p).join("、") || "无"}</span>
                       {tenant.runtime.circuit_broken_platforms.length > 0 && <span className="tiny" style={{ color: "var(--red)" }}>熔断：{tenant.runtime.circuit_broken_platforms.map((p) => PLATFORMS[p] ?? p).join("、")}</span>}
                     </div>
-                  ) : "运行时不可用"}</td>
+                  ) : tenant.db_available ? <span className="tag gray">未启动</span> : <span className="tag red">数据库不可用</span>}</td>
                   <td>{q.running}</td><td>{q.queued}</td><td>{q.failed}</td>
                   <td>{tenant.runtime?.available ? (
                     <div className="global-scheduler-cell">
                       <span className={tenant.runtime.scheduler_running ? "tag green" : "tag red"}>{tenant.runtime.scheduler_running ? "运行中" : "已停止"}</span>
                       <span className="tiny">启用 {tenant.runtime.scheduler_enabled_count ?? "—"} / 注册 {tenant.runtime.scheduler_job_count ?? "—"}</span>
                     </div>
-                  ) : "—"}</td>
+                  ) : tenant.db_available ? <span className="tag gray">未启动</span> : <span className="tag gray">—</span>}</td>
                   <td>{tenant.runtime?.active_rounds ?? "—"}</td>
-                  <td><button className="btn sm" onClick={() => navigate("global-monitor")}>统计详情</button></td>
+                  <td><span className="muted">—</span></td>
                 </tr>;
               })}</tbody>
             </table>
