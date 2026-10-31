@@ -1116,3 +1116,8 @@ def test_skill_registry_rejects_unsafe_permissions_and_invalid_manifest(client):
         "skill_id": "bad_version", "name": "错误版本", "version": "latest",
     })
     assert invalid_version.status_code == 422
+
+    reserved_id = tc.post("/api/skills", json={
+        "skill_id": "topic_scoring", "name": "伪装内置能力", "version": "1.0.0",
+    })
+    assert reserved_id.status_code == 409
