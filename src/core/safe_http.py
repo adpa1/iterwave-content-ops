@@ -12,6 +12,7 @@ TLS SNI、证书主机名验证和 HTTP Host 仍使用原始域名。
 from __future__ import annotations
 
 import ipaddress
+import queue
 import socket
 import threading
 from urllib.parse import urljoin, urlsplit
@@ -65,16 +66,35 @@ def _resolve_public_url(url: str) -> tuple[object, str, int, tuple[str, ...]]:
         literal_ip = ipaddress.ip_address(host)
         candidates = (literal_ip,)
     except ValueError:
+        # getaddrinfo 没有原生 timeout；直接调用会让采集线程永久卡在 DNS。
+        # 使用 daemon resolver + 有界等待，超时后让本次来源失败并继续其他来源。
+        result_queue: queue.Queue[tuple[object, object]] = queue.Queue(maxsize=1)
+
+        def resolve() -> None:
+            try:
+                result_queue.put((socket.getaddrinfo(
+                    host,
+                    port,
+                    family=socket.AF_UNSPEC,
+                    type=socket.SOCK_STREAM,
+                    proto=socket.IPPROTO_TCP,
+                ), None))
+            except Exception as exc:  # noqa: BLE001 — 交给调用线程转换为安全错误
+                try:
+                    result_queue.put((None, exc))
+                except queue.Full:
+                    pass
+
+        resolver = threading.Thread(
+            target=resolve, name="iterwave-dns-resolver", daemon=True,
+        )
+        resolver.start()
         try:
-            records = socket.getaddrinfo(
-                host,
-                port,
-                family=socket.AF_UNSPEC,
-                type=socket.SOCK_STREAM,
-                proto=socket.IPPROTO_TCP,
-            )
-        except (OSError, ValueError) as exc:
-            raise SafeFetchError("远程域名无法解析") from exc
+            records, resolve_error = result_queue.get(timeout=5.0)
+        except queue.Empty as exc:
+            raise SafeFetchError("远程域名解析超时") from exc
+        if resolve_error is not None:
+            raise SafeFetchError("远程域名无法解析") from resolve_error
         candidates = tuple(
             {
                 ipaddress.ip_address(record[4][0].split("%", 1)[0])
