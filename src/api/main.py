@@ -182,9 +182,11 @@ _tenant_switch_gate = TenantSwitchGate()
 
 
 def _tenant_hot_switch_enabled() -> bool:
-    """即时热切换默认关闭；只有完成部署环境验收后才显式启用。"""
-    return (os.getenv("ITERWAVE_ENABLE_TENANT_HOT_SWITCH", "").strip().lower()
-            in {"1", "true", "yes", "on"})
+    """即时热切换默认启用；仅在运维显式设置为 0/false/no/off 时关闭。"""
+    value = os.getenv("ITERWAVE_ENABLE_TENANT_HOT_SWITCH")
+    if value is None:
+        return True
+    return value.strip().lower() not in {"", "0", "false", "no", "off", "disabled"}
 
 
 class TenantRuntimeRollbackError(RuntimeError):

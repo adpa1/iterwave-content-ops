@@ -47,9 +47,19 @@ def sanitize_snapshot(value: Any) -> Any:
     return str(value)
 
 
+# 只固定会改变本轮选题、内容生成或平台执行结果的配置。
+# 运维/观测/熔断/通知/调度等无关配置调整，不应取消已排队的生产任务。
+_PRODUCTION_CONFIG_FIELDS = (
+    "topic_kb", "platforms", "scoring", "ultimate_goal", "llm",
+    "copy_generation", "media_generation", "media_quality", "vision_ranking",
+    "spiral", "plan_suggestion", "timeouts",
+)
+
+
 def config_fingerprint(cfg) -> str:
     raw = cfg.model_dump(mode="json")
-    safe = sanitize_snapshot(raw)
+    production = {key: raw.get(key) for key in _PRODUCTION_CONFIG_FIELDS}
+    safe = sanitize_snapshot(production)
     canonical = json.dumps(safe, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -62,8 +72,6 @@ def build_execution_snapshot(cfg, conn, *, round_id: int, parameters: dict[str, 
         "SELECT plan_signature FROM spiral_rounds WHERE id = ?", (round_id,),
     ).fetchone()
     round_signature = round_row["plan_signature"] if round_row else None
-    if round_signature and round_signature != signature:
-        raise StaleTaskSnapshot("目标轮次已基于旧母计划；请先确认并更新轮次，再重新提交生产任务")
     round_plan = None
     if round_signature:
         row = conn.execute(
@@ -76,11 +84,21 @@ def build_execution_snapshot(cfg, conn, *, round_id: int, parameters: dict[str, 
                 round_plan = json.loads(row["plan_snapshot"])
             except (TypeError, ValueError):
                 round_plan = None
+
+    # 未保存母计划时，轮次签名代表创建该轮时的显式参数（选题数/平台等）。
+    # load_plan(source='derived') 是默认推导值，不是该轮的计划，不能拿它覆盖/否定轮次快照。
+    if source == "derived" and round_signature:
+        effective_signature = round_signature
+    else:
+        if round_signature and round_signature != signature:
+            raise StaleTaskSnapshot("目标轮次已基于旧母计划；请先确认并更新轮次，再重新提交生产任务")
+        effective_signature = signature
+
     return {
         "schema_version": 1,
         "captured_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "config_fingerprint": config_fingerprint(cfg),
-        "plan_signature": signature,
+        "plan_signature": effective_signature,
         "plan_updated_at": updated_at,
         "plan_source": source,
         "round_plan_signature": round_signature,
@@ -97,8 +115,13 @@ def validate_execution_snapshot(snapshot: dict[str, Any], cfg, conn) -> None:
     if not expected_config or config_fingerprint(cfg) != expected_config:
         raise StaleTaskSnapshot("任务入队后账号组配置已变化；为避免使用新配置误执行，任务已停止，请确认配置后重新提交")
     expected_plan = str(snapshot.get("plan_signature") or "")
+    # derived 轮次以创建时持久化的 round_plan_snapshot 为准；当前推导母计划会随最近轮次变化，
+    # 不是可用于验证旧轮次的稳定版本。保存过的正式母计划仍必须严格比对。
     if expected_plan:
         from .plan_version import PlanVersionManager
-        _, current_signature, _, _ = PlanVersionManager(cfg, conn).load_plan()
-        if current_signature != expected_plan:
+        _, current_signature, _, current_source = PlanVersionManager(cfg, conn).load_plan()
+        # 仅当入队和执行时都没有正式母计划，才忽略动态推导签名；
+        # 入队后若用户保存了正式母计划，仍应按版本变化拒绝旧任务。
+        if current_source == "plan_settings" and current_signature != expected_plan:
             raise StaleTaskSnapshot("任务入队后母计划已变化；为避免按错误计划生产，任务已停止，请确认计划后重新提交")
+
