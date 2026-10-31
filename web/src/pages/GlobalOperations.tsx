@@ -132,7 +132,7 @@ export default function GlobalOperations() {
       </div>
 
       <section className="panel" style={{ marginTop: 16 }}>
-        <div className="panel-head"><div><div className="panel-title">平台与内容汇总</div><div className="panel-sub">近 30 天跨账号组内容产出；平台账号登录状态将在全局状态 API 阶段接入。</div></div></div>
+        <div className="panel-head"><div><div className="panel-title">平台与内容汇总</div><div className="panel-sub">近 30 天跨账号组内容产出；账号组登录态与调度状态来自各自运行时快照。</div></div></div>
         <div className="grid four">
           {Object.entries(monitor?.platform_totals ?? {}).map(([platform, value]) => <div className="metric" key={platform}>
             <div className="metric-label">{PLATFORMS[platform] ?? platform}</div><div className="metric-val">{monitor?.tenants.reduce((sum, tenant) => sum + (tenant.platforms[platform]?.contents_period ?? 0), 0) ?? "—"}</div><div className="metric-foot">近 30 天内容 · 草稿 {value.drafts}</div>
