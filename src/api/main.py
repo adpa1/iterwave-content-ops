@@ -5455,7 +5455,7 @@ def _register_routes(app: FastAPI) -> None:
         if plan_row is None or plan_row["status"] != "generating" or _task_queue is None:
             return plan_row
         link = conn.execute(
-            "SELECT task_id FROM content_plan_rounds WHERE plan_id=? ORDER BY created_at DESC LIMIT 1",
+            "SELECT round_id,task_id FROM content_plan_rounds WHERE plan_id=? ORDER BY created_at DESC LIMIT 1",
             (plan_row["id"],),
         ).fetchone()
         if link is None or not link["task_id"]:
@@ -5468,10 +5468,21 @@ def _register_routes(app: FastAPI) -> None:
             "cancelled": "cancelled",
         }.get(task.status if task else "")
         if terminal:
+            now = _now().isoformat(timespec="seconds")
+            if terminal in ("generated", "failed"):
+                drafts = conn.execute(
+                    "SELECT d.id FROM drafts d JOIN contents c ON c.id=d.content_id WHERE c.round_id=?",
+                    (link["round_id"],),
+                ).fetchall()
+                for draft in drafts:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO content_plan_drafts(plan_id,draft_id,round_id,created_at) VALUES(?,?,?,?)",
+                        (plan_row["id"], draft["id"], link["round_id"], now),
+                    )
             conn.execute(
                 "UPDATE content_plans SET status=?,version=version+1,updated_at=? "
                 "WHERE id=? AND version=? AND status='generating'",
-                (terminal, _now().isoformat(timespec="seconds"), plan_row["id"], int(plan_row["version"])),
+                (terminal, now, plan_row["id"], int(plan_row["version"])),
             )
             conn.commit()
             return conn.execute("SELECT * FROM content_plans WHERE id=?", (plan_row["id"],)).fetchone()
