@@ -401,7 +401,7 @@ export interface HotSourceStatus {
 }
 
 export interface HotRefreshProgress {
-  stage: "fetching" | "saving" | "dedup" | "matching" | "done" | "failed";
+  stage: "fetching" | "saving" | "dedup" | "matching" | "matching_partial" | "done" | "failed";
   label: string;
   percent: number;
   message?: string | null;
