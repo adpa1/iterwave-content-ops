@@ -31,6 +31,10 @@ export interface GlobalTaskQueueItem {
 
 export interface GlobalTaskQueueResponse {
   items: GlobalTaskQueueItem[];
+  total?: number;
+  page?: number;
+  page_size?: number;
+  pages?: number;
 }
 
 export interface QueueTaskSubmission {
@@ -1295,7 +1299,14 @@ export const api = {
     fetchJson<{ updated: Record<string, number | null>; goals: Goal[]; summary: GoalSummary }>(
       "/api/goals/progress/refresh", { method: "POST" },
     ),
-  taskQueue: () => fetchJson<GlobalTaskQueueResponse>("/api/task-queue"),
+  taskQueue: (params: { scope?: "all" | "active" | "history"; page?: number; pageSize?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.scope) query.set("scope", params.scope);
+    if (params.page != null) query.set("page", String(params.page));
+    if (params.pageSize != null) query.set("page_size", String(params.pageSize));
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return fetchJson<GlobalTaskQueueResponse>(`/api/task-queue${suffix}`);
+  },
   cancelTask: (taskId: string) =>
     fetchJson<{ task_id: string; status: string }>(`/api/task-queue/${encodeURIComponent(taskId)}/cancel`, {
       method: "POST",
