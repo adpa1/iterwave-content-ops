@@ -97,7 +97,7 @@ def run_once(
             matcher = HotTopicMatcher(cfg, conn)
             match = matcher.run()
             # 将模型批次失败和未能得到语义结论显式暴露，不能把部分失败报成完整完成。
-            match["remaining_pending"] = len(matcher.pending())
+            match["remaining_pending"] = len(matcher.pending()) + int(match.get("unjudged", 0))
             if match.get("failed_batches"):
                 match["status"] = "partial"
             elif match.get("remaining_pending"):
