@@ -117,8 +117,11 @@ def validate_execution_snapshot(snapshot: dict[str, Any], cfg, conn) -> None:
     expected_plan = str(snapshot.get("plan_signature") or "")
     # derived 轮次以创建时持久化的 round_plan_snapshot 为准；当前推导母计划会随最近轮次变化，
     # 不是可用于验证旧轮次的稳定版本。保存过的正式母计划仍必须严格比对。
-    if expected_plan and snapshot.get("plan_source") != "derived":
+    if expected_plan:
         from .plan_version import PlanVersionManager
-        _, current_signature, _, _ = PlanVersionManager(cfg, conn).load_plan()
-        if current_signature != expected_plan:
+        _, current_signature, _, current_source = PlanVersionManager(cfg, conn).load_plan()
+        # 仅当入队和执行时都没有正式母计划，才忽略动态推导签名；
+        # 入队后若用户保存了正式母计划，仍应按版本变化拒绝旧任务。
+        if current_source == "plan_settings" and current_signature != expected_plan:
             raise StaleTaskSnapshot("任务入队后母计划已变化；为避免按错误计划生产，任务已停止，请确认计划后重新提交")
+
