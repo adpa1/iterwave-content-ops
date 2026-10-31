@@ -139,3 +139,55 @@ def test_orphaned_qr_status_does_not_stay_in_starting_state(tmp_login):
     assert status["state"] == "error"
     assert status["proc_alive"] is False
     assert "重新发起扫码登录" in status["message"]
+
+
+
+def test_same_platform_logins_are_isolated_by_tenant(tmp_login, tmp_path, monkeypatch):
+    tenant_a = tmp_path / "tenants" / "a" / "data"
+    tenant_b = tmp_path / "tenants" / "b" / "data"
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+            self.terminated = False
+
+        def poll(self):
+            return None if not self.terminated else 0
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.terminated = True
+            self.returncode = -9
+
+    proc_a, proc_b = FakeProcess(), FakeProcess()
+    processes = iter((proc_a, proc_b))
+    monkeypatch.setattr(al, "build_cmd", lambda platform, timeout_seconds=None, data_dir=None: ["fake"])
+    monkeypatch.setattr(al.subprocess, "Popen", lambda *args, **kwargs: next(processes))
+
+    al.start_login("xhs", data_dir=tenant_a)
+    al.start_login("xhs", data_dir=tenant_b)
+
+    assert al._LOGIN_PROCESSES[(str(tenant_a.resolve()), "xhs")] is proc_a
+    assert al._LOGIN_PROCESSES[(str(tenant_b.resolve()), "xhs")] is proc_b
+    assert al._files("xhs", tenant_a)["status"] != al._files("xhs", tenant_b)["status"]
+
+    al.cancel_login("xhs", data_dir=tenant_a)
+
+    assert proc_a.terminated is True
+    assert proc_b.terminated is False
+    assert (str(tenant_b.resolve()), "xhs") in al._LOGIN_PROCESSES
+    assert al._files("xhs", tenant_b)["status"].parent.exists()
+
+
+def test_tenant_profile_and_storage_paths_do_not_share_default_globals(tmp_login, tmp_path):
+    tenant_data = tmp_path / "tenants" / "brand_a" / "data"
+    assert al._files("douyin", tenant_data)["qr"] == tenant_data / "_login" / "douyin.png"
+    assert al.profile_dir("douyin", tenant_data) == tenant_data / "_profiles" / "DouyinProfile"
+    assert al._files("douyin", tenant_data)["storage"] == tenant_data / "login_states" / "douyin.json"
+    assert al._files("douyin")["storage"] == tmp_login / "login_states" / "douyin.json"
