@@ -109,15 +109,13 @@ _task_queue: GlobalTaskQueue | None = None
 _tenant_runtime_contexts: dict[str, dict] = {}
 
 
-def _build_task_execution_snapshot(tenant_id: str, round_id: int, parameters: dict) -> dict:
-    """只从任务所属账号组的常驻上下文捕获配置快照，绝不读取其他活动租户。"""
+def _build_task_execution_snapshot(
+    tenant_id: str, round_id: int, parameters: dict, *, runtime_context: dict | None = None,
+) -> dict:
+    """只从任务所属账号组的运行时捕获配置快照，绝不读取其他活动租户。"""
     from src.core.task_snapshot import build_execution_snapshot
 
-    context = _tenant_runtime_contexts.get(tenant_id)
-    if context is None:
-        current = _g()
-        if current.get("runtime_tenant_id", "default") == tenant_id and "cfg" in current and "conn" in current:
-            context = current
+    context = runtime_context or _tenant_runtime_contexts.get(tenant_id)
     if context is None:
         raise RuntimeError(f"账号组 {tenant_id} 运行时尚未就绪，无法创建任务快照")
     return build_execution_snapshot(
@@ -3943,8 +3941,9 @@ def _register_routes(app: FastAPI) -> None:
         """将生产轮次写入跨账号组全局 FIFO 队列；切换前台账号组不会影响任务。"""
         if _task_queue is None:
             raise HTTPException(503, "全局任务队列尚未初始化")
-        tenant_id = _g().get("runtime_tenant_id", "default")
-        round_row = _g()["conn"].execute(
+        runtime_context = _g()
+        tenant_id = runtime_context.get("runtime_tenant_id", "default")
+        round_row = runtime_context["conn"].execute(
             "SELECT id FROM spiral_rounds WHERE id=?", (round_id,),
         ).fetchone()
         if round_row is None:
@@ -3965,7 +3964,7 @@ def _register_routes(app: FastAPI) -> None:
                             "topic_count": req.topic_count,
                             "platforms": req.platforms,
                             "save_drafts": req.save_drafts,
-                        },
+                        }, runtime_context=runtime_context,
                     ),
                 },
             )
