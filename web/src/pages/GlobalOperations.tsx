@@ -104,7 +104,12 @@ export default function GlobalOperations() {
                   <td>{tenant.registered_accounts_active ?? tenant.registered_accounts ?? "—"} / {tenant.registered_accounts ?? "—"}</td>
                   <td>{tenant.runtime?.available ? `${tenant.runtime.logged_in_platforms.length}/${tenant.runtime.enabled_platforms.length} 已登录` : "运行时不可用"}</td>
                   <td>{q.running}</td><td>{q.queued}</td><td>{q.failed}</td>
-                  <td>{tenant.runtime?.available ? (tenant.runtime.scheduler_running ? <span className="tag green">运行中</span> : <span className="tag red">已停止</span>) : "—"}</td>
+                  <td>{tenant.runtime?.available ? (
+                    <div className="global-scheduler-cell">
+                      <span className={tenant.runtime.scheduler_running ? "tag green" : "tag red"}>{tenant.runtime.scheduler_running ? "运行中" : "已停止"}</span>
+                      <span className="tiny">启用 {tenant.runtime.scheduler_enabled_count ?? "—"} / 注册 {tenant.runtime.scheduler_job_count ?? "—"}</span>
+                    </div>
+                  ) : "—"}</td>
                   <td>{tenant.runtime?.active_rounds ?? "—"}</td>
                   <td><button className="btn sm" onClick={() => navigate("global-monitor")}>统计详情</button></td>
                 </tr>;
