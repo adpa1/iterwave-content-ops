@@ -924,6 +924,8 @@ def _build_app() -> FastAPI:
             supplied_tenant_id = (request.headers.get("x-tenant-id") or "").strip()
             expected_tenant_id = str(_g_ctx.get("runtime_tenant_id") or "default")
             if supplied_tenant_id and supplied_tenant_id != expected_tenant_id:
+                _tenant_switch_gate.leave_request()
+                tracked_request = False
                 return JSONResponse(
                     {
                         "detail": "账号组已在其他会话切换；当前请求未执行，请刷新页面后重试。",
@@ -933,6 +935,8 @@ def _build_app() -> FastAPI:
                     status_code=409,
                 )
             if tenant_write and not supplied_tenant_id:
+                _tenant_switch_gate.leave_request()
+                tracked_request = False
                 return JSONResponse(
                     {
                         "detail": "写请求缺少账号组上下文，已拒绝执行。请刷新页面后重试。",
