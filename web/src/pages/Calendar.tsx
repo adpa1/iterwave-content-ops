@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useApp } from "../AppContext";
 import EmptyHint from "../components/EmptyHint";
-import { api, ScheduleEvent, UnscheduledDraft } from "../api";
+import { api, ContentPlan, Platform, ScheduleEvent, UnscheduledDraft } from "../api";
 import { platformMeta } from "../platforms";
 
 export default function Calendar() {
@@ -12,7 +12,7 @@ export default function Calendar() {
   const year = cursorDate.getFullYear();
   const month = cursorDate.getMonth();
 
-  const [events, setEvents] = useState<ScheduleEvent[]>([]);
+  const [events, setEvents] = useState<ScheduleEvent[]>([]);\n  const [plans, setPlans] = useState<ContentPlan[]>([]);\n  const [planTitle, setPlanTitle] = useState("");\n  const [planTopic, setPlanTopic] = useState("");\n  const [planDate, setPlanDate] = useState(_fmt(today));\n  const [planCount, setPlanCount] = useState("1");\n  const [planPlatforms, setPlanPlatforms] = useState<Platform[]>([]);\n  const [planNotes, setPlanNotes] = useState("");
   const [unscheduled, setUnscheduled] = useState<UnscheduledDraft[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -50,21 +50,25 @@ export default function Calendar() {
     return d;
   }, [viewMode, visibleStart, year, month]);
   const days = useMemo(() => {
-    const result: { date: Date; key: string; events: ScheduleEvent[]; inMonth: boolean }[] = [];
+    const result: { date: Date; key: string; events: ScheduleEvent[]; plans: ContentPlan[]; inMonth: boolean }[] = [];
     for (let d = new Date(visibleStart); d < visibleEndExclusive; d.setDate(d.getDate() + 1)) {
       const date = new Date(d);
       const key = _fmt(date);
-      result.push({ date, key, events: events.filter((event) => _eventDate(event) === key), inMonth: date.getMonth() === month });
+      result.push({ date, key, events: events.filter((event) => _eventDate(event) === key), plans: plans.filter((plan) => plan.scheduled_date === key && plan.status !== "cancelled" && plan.status !== "archived"), inMonth: date.getMonth() === month });
     }
     return result;
-  }, [visibleStart, visibleEndExclusive, events, month]);
+  }, [visibleStart, visibleEndExclusive, events, plans, month]);
 
   const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const r = await api.schedule(_fmt(visibleStart), _fmt(visibleEndExclusive));
+      const [r, planResult] = await Promise.all([
+        api.schedule(_fmt(visibleStart), _fmt(visibleEndExclusive)),
+        api.contentPlans(_fmt(visibleStart), _fmt(new Date(visibleEndExclusive.getTime() - 86400000))),
+      ]);
       setEvents(r.items);
+      setPlans(planResult.items);
       setUnscheduled(r.unscheduled ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -177,6 +181,11 @@ export default function Calendar() {
                     </button>
                     {loading && <div className="loading" style={{ marginTop: 6, fontSize: 11, color: "var(--muted)" }}><div className="spinner" />加载中...</div>}
                     {!loading && d.events.length === 0 && <div style={{ marginTop: 6, fontSize: 11, color: "var(--subtle)" }}>空</div>}
+                    {d.plans.map((plan) => (
+                      <div key={plan.id} className="calendar-plan-chip" title={`${plan.title} · ${plan.planned_count} 篇计划`}>
+                        <strong>计划</strong><span>{plan.title}</span>
+                      </div>
+                    ))}
                     {d.events.map((e) => {
                       const editable = e.status === "draft_pending" || e.status === "draft_saved";
                       return (
@@ -203,7 +212,14 @@ export default function Calendar() {
                   <strong>{d.date.toLocaleDateString("zh-CN", { weekday: "long" })}</strong>
                   <span>{d.key}{d.date.toDateString() === today.toDateString() ? " · 今天" : ""}</span>
                 </button>
-                {loading ? <div className="loading"><div className="spinner" />加载中...</div> : d.events.length === 0 ? (
+                {d.plans.map((plan) => (
+                  <div className="calendar-agenda-plan" key={plan.id}>
+                    <span className="calendar-plan-label">计划</span>
+                    <span className="calendar-agenda-copy"><strong>{plan.title}</strong><small>{plan.planned_count} 篇 · {plan.platforms.length ? plan.platforms.map((p) => platformMeta(p).label).join("、") : "未指定平台"} · {plan.status}</small></span>
+                    <button className="btn sm" onClick={async () => { try { await api.cancelContentPlan(plan.id, plan.version); showToast("计划已取消", "success"); await load(); } catch (e: any) { showToast(`取消失败：${e?.message ?? e}`, "error"); } }}>取消</button>
+                  </div>
+                ))}
+                {loading ? <div className="loading"><div className="spinner" />加载中...</div> : d.events.length === 0 && d.plans.length === 0 ? (
                   <div className="calendar-agenda-empty">当天没有排期</div>
                 ) : d.events.map((e) => {
                   const editable = e.status === "draft_pending" || e.status === "draft_saved";
@@ -262,6 +278,33 @@ export default function Calendar() {
           </div>
         )}
       </div>
+
+      <section className="panel calendar-plan-create">
+        <div className="panel-head">
+          <div><div className="panel-title">内容计划</div><div className="panel-sub">计划独立于草稿保存，可先安排主题和产出数量；创建计划不会生成内容或发布。</div></div>
+        </div>
+        <div className="calendar-plan-form">
+          <label>计划名称<input className="field" value={planTitle} maxLength={160} onChange={(e) => setPlanTitle(e.target.value)} placeholder="例如：本周产品功能系列" /></label>
+          <label>选题／主题<input className="field" value={planTopic} maxLength={500} onChange={(e) => setPlanTopic(e.target.value)} placeholder="填写计划主题或核心选题" /></label>
+          <label>计划日期<input className="field" type="date" value={planDate} onChange={(e) => setPlanDate(e.target.value)} /></label>
+          <label>计划篇数<input className="field" type="number" min="1" max="100" value={planCount} onChange={(e) => setPlanCount(e.target.value)} /></label>
+          <label className="calendar-plan-platforms">目标平台
+            <span>{(["xhs", "douyin", "wechat_channels", "kuaishou"] as Platform[]).map((platform) => (
+              <label key={platform} className="calendar-plan-check"><input type="checkbox" checked={planPlatforms.includes(platform)} onChange={(e) => setPlanPlatforms((old) => e.target.checked ? [...old, platform] : old.filter((p) => p !== platform))} />{platformMeta(platform).label}</label>
+            ))}</span>
+          </label>
+          <label className="calendar-plan-notes">备注<textarea className="field" rows={2} value={planNotes} maxLength={4000} onChange={(e) => setPlanNotes(e.target.value)} placeholder="可选" /></label>
+          <button className="btn primary" disabled={!planTitle.trim() || !planDate || Number(planCount) < 1 || Number(planCount) > 100 || isPending("content-plan:create")} onClick={async () => {
+            try {
+              await withPending("content-plan:create", () => api.createContentPlan({ title: planTitle.trim(), topic: planTopic.trim(), platforms: planPlatforms, planned_count: Number(planCount), scheduled_date: planDate, notes: planNotes.trim() }));
+              showToast("内容计划已创建", "success");
+              setPlanTitle(""); setPlanTopic(""); setPlanCount("1"); setPlanPlatforms([]); setPlanNotes("");
+              setCursorDate(new Date(`${planDate}T12:00:00`));
+              await load();
+            } catch (e: any) { showToast(`创建计划失败：${e?.message ?? e}`, "error"); }
+          }}>{isPending("content-plan:create") ? "创建中…" : "创建计划"}</button>
+        </div>
+      </section>
 
       {/* 未排期草稿：直接挑选时间写入排期 */}
       <div className="panel">
