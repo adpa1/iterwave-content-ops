@@ -489,8 +489,8 @@ export default function Settings() {
           {status?.recovery ? (
           <div className="list">
             <div className="task-row"><i className="task-prio green" /><div className="task-main"><div className="task-title">中断任务</div><div className="task-desc">{status.recovery.interrupted_tasks} 个已重登</div></div></div>
-            <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">补登记采集</div><div className="task-desc">{status.recovery.requeued_data_fetch.length} 篇（{status.recovery.requeued_data_fetch.join(", ") || "无"}）</div></div></div>
-            <div className="task-row"><i className="task-prio orange" /><div className="task-main"><div className="task-title">卡住轮次</div><div className="task-desc">{status.recovery.stale_rounds.length > 0 ? `#${status.recovery.stale_rounds.join(", #")}` : "无"}</div></div></div>
+            <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">补登记采集</div><div className="task-desc">{(status.recovery.requeued_data_fetch ?? []).length} 篇（{(status.recovery.requeued_data_fetch ?? []).join(", ") || "无"}）</div></div></div>
+            <div className="task-row"><i className="task-prio orange" /><div className="task-main"><div className="task-title">卡住轮次</div><div className="task-desc">{(status.recovery.stale_rounds ?? []).length > 0 ? `#${(status.recovery.stale_rounds ?? []).join(", #")}` : "无"}</div></div></div>
             <div className="task-row"><i className="task-prio red" /><div className="task-main"><div className="task-title">待核实</div><div className="task-desc">{status.recovery.pending_verify} 条</div></div></div>
           </div>
           ) : err ? (
