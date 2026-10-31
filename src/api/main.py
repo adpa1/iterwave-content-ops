@@ -422,7 +422,6 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
         _tenant_runtime_contexts[old_tenant_id] = _g_ctx
         raise HTTPException(409, "目标账号组存在待恢复快照，请先重启服务完成恢复，再执行热切换")
 
-    from src.core import account_login, login_manager
     try:
         # 账号组切换不终止任何租户的扫码登录；登录子进程按租户与平台分别管理。
         selected = registry.select_active(tenant_id)
