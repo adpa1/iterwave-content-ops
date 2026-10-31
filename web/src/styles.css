@@ -328,10 +328,20 @@ details[open] > summary::before { content: "▾ "; }
   display: block; margin: 0 auto; max-width: 100%;
   max-height: calc(92vh - 110px); object-fit: contain; border-radius: 8px;
 }
-@media (max-width: 1500px) {
-  .review-layout { grid-template-columns: minmax(200px, 240px) minmax(0, 1fr); }
-  .review-cardcol { grid-column: 1 / -1; }
-  .card-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+@media (max-width: 1500px) and (min-width: 1201px) {
+  .review-layout { grid-template-columns: minmax(300px, 340px) minmax(420px, 1fr) minmax(260px, 310px); }
+  .review-cardcol { grid-column: auto; }
+  .review-list-panel .panel-head { min-width: 0; }
+  .review-filters { grid-template-columns: minmax(0, 1fr); }
+  .card-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+}
+.queue-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 760px) {
+  .queue-summary-grid { grid-template-columns: minmax(0, 1fr); }
 }
 .review-mobile-tabs { display: none; }
 @media (max-width: 1200px) and (min-width: 681px) {
