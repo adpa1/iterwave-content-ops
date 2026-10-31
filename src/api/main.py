@@ -1216,6 +1216,9 @@ class CreateRoundRequest(BaseModel):
     goal_id: Optional[str] = None
     topic_count: int = 5
     platforms: Optional[list[str]] = None
+    # 内容计划 ID/版本仅参与请求去重键，不改变生产配置来源。
+    content_plan_id: Optional[str] = None
+    content_plan_version: Optional[int] = None
 
 class NotifyRuleRequest(BaseModel):
     scenario: str
@@ -4090,6 +4093,69 @@ def _register_routes(app: FastAPI) -> None:
             "queued": task.status == "queued", "status": task.status,
         }
 
+    @app.post("/api/content-plans/{plan_id}/start", status_code=202)
+    async def start_content_plan(plan_id: str):
+        conn = _g()["conn"]
+        plan = conn.execute("SELECT * FROM content_plans WHERE id=?", (plan_id,)).fetchone()
+        if plan is None:
+            raise HTTPException(404, "计划不存在")
+        if plan["status"] not in ("planned", "failed"):
+            raise HTTPException(409, "只有待执行或失败的计划可以加入生产队列")
+        try:
+            platforms = json.loads(plan["platforms_json"] or "[]")
+        except (TypeError, ValueError):
+            platforms = []
+        if not platforms:
+            platforms = _g()["cfg"].platforms.enabled_keys()
+        if not platforms:
+            raise HTTPException(422, "计划没有目标平台，当前也没有启用的平台")
+        allowed_platforms = set(_g()["cfg"].platforms.model_dump().keys())
+        if any(p not in allowed_platforms for p in platforms):
+            raise HTTPException(422, "计划包含当前账号组未配置的平台")
+        round_result = create_round(CreateRoundRequest(
+            topic_count=int(plan["planned_count"]), platforms=platforms,
+            content_plan_id=plan_id, content_plan_version=int(plan["version"]),
+        ))
+        round_id = int(round_result["id"])
+        now = _now().isoformat(timespec="seconds")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                "UPDATE content_plans SET status='generating',platforms_json=?,version=version+1,updated_at=? "
+                "WHERE id=? AND version=? AND status IN ('planned','failed')",
+                (json.dumps(platforms, ensure_ascii=False), now, plan_id, int(plan["version"])),
+            )
+            if cursor.rowcount != 1:
+                raise HTTPException(409, "计划已在其他窗口启动，请刷新后重试")
+            conn.execute(
+                "INSERT INTO content_plan_rounds(plan_id,round_id,created_at) VALUES(?,?,?)",
+                (plan_id, round_id, now),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            conn.execute("UPDATE spiral_rounds SET status='cancelled' WHERE id=? AND status='created'", (round_id,))
+            conn.commit()
+            raise
+        try:
+            queued = await run_round(round_id, RunRoundRequest(
+                topic_count=int(plan["planned_count"]), platforms=platforms, save_drafts=True,
+            ))
+        except HTTPException:
+            conn.execute(
+                "UPDATE content_plans SET status='failed',version=version+1,updated_at=? WHERE id=? AND status='generating'",
+                (_now().isoformat(timespec="seconds"), plan_id),
+            )
+            conn.commit()
+            raise
+        conn.execute(
+            "UPDATE content_plan_rounds SET task_id=? WHERE plan_id=? AND round_id=?",
+            (queued["task_id"], plan_id, round_id),
+        )
+        conn.commit()
+        return {"plan_id": plan_id, "round_id": round_id, "task_id": queued["task_id"],
+                "status": queued["status"], "queued": queued["queued"]}
+
     @app.get("/api/rounds/{round_id}/run_status")
     def round_run_status(round_id: int):
         """查询当前账号组轮次在全局队列中的状态与最终报告。"""
@@ -5404,7 +5470,7 @@ def _register_routes(app: FastAPI) -> None:
         if start_date and end_date and end_date < start_date:
             raise HTTPException(422, "end_date 不能早于 start_date")
         if status:
-            allowed = {"planned", "generating", "generated", "reviewed", "archived", "cancelled"}
+            allowed = {"planned", "generating", "generated", "reviewed", "archived", "cancelled", "failed"}
             if status not in allowed:
                 raise HTTPException(400, "无效的计划状态")
             clauses.append("status = ?"); params.append(status)
@@ -5493,15 +5559,16 @@ def _register_routes(app: FastAPI) -> None:
             datetime.strptime(str(values["scheduled_date"]), "%Y-%m-%d")
         except ValueError as exc:
             raise HTTPException(422, "计划日期必须为 YYYY-MM-DD") from exc
-        status_values = {"planned", "generating", "generated", "reviewed", "archived", "cancelled"}
+        status_values = {"planned", "generating", "generated", "reviewed", "archived", "cancelled", "failed"}
         if values["status"] not in status_values:
             raise HTTPException(422, "无效的计划状态")
         current_status = str(existing["status"])
         next_status = str(values["status"])
         transitions = {
             "planned": {"planned", "generating", "cancelled"},
-            "generating": {"generating", "generated", "cancelled"},
+            "generating": {"generating", "generated", "failed", "cancelled"},
             "generated": {"generated", "reviewed", "cancelled"},
+            "failed": {"failed", "generating", "cancelled"},
             "reviewed": {"reviewed", "archived", "cancelled"},
             "archived": {"archived"},
             "cancelled": {"cancelled"},
@@ -5554,7 +5621,14 @@ def _register_routes(app: FastAPI) -> None:
             "JOIN contents c ON c.id=d.content_id WHERE cpd.plan_id=? ORDER BY cpd.created_at,d.id",
             (plan_id,),
         ).fetchall()
+        rounds = conn.execute(
+            "SELECT cpr.round_id,cpr.task_id,cpr.created_at,q.status AS task_status,q.error_message "
+            "FROM content_plan_rounds cpr LEFT JOIN global_task_queue q ON q.task_id=cpr.task_id "
+            "WHERE cpr.plan_id=? ORDER BY cpr.created_at DESC",
+            (plan_id,),
+        ).fetchall()
         item["drafts"] = [dict(r) for r in linked]
+        item["rounds"] = [dict(r) for r in rounds]
         return item
 
     @app.post("/api/content-plans/{plan_id}/drafts")
@@ -5605,16 +5679,30 @@ def _register_routes(app: FastAPI) -> None:
     @app.delete("/api/content-plans/{plan_id}")
     def cancel_content_plan(plan_id: str, version: int = Query(..., ge=1)):
         conn = _g()["conn"]
+        row = conn.execute(
+            "SELECT status FROM content_plans WHERE id=? AND version=?", (plan_id, version),
+        ).fetchone()
+        if row is None:
+            exists = conn.execute("SELECT 1 FROM content_plans WHERE id=?", (plan_id,)).fetchone()
+            if exists is None:
+                raise HTTPException(404, "计划不存在")
+            raise HTTPException(409, "计划状态已变化，请刷新后重试")
+        if row["status"] == "generating":
+            link = conn.execute(
+                "SELECT task_id FROM content_plan_rounds WHERE plan_id=? ORDER BY created_at DESC LIMIT 1",
+                (plan_id,),
+            ).fetchone()
+            if link is None or not link["task_id"] or _task_queue is None or not _task_queue.cancel(link["task_id"]):
+                raise HTTPException(409, "该计划对应任务已开始执行或任务状态不可取消，请到全局任务队列查看")
+        elif row["status"] not in ("planned", "failed"):
+            raise HTTPException(409, "当前计划状态不能取消")
         cursor = conn.execute(
             "UPDATE content_plans SET status='cancelled',version=version+1,updated_at=? "
-            "WHERE id=? AND version=? AND status NOT IN ('archived','cancelled')",
+            "WHERE id=? AND version=? AND status IN ('planned','failed','generating')",
             (_now().isoformat(timespec="seconds"), plan_id, version),
         )
         conn.commit()
-        if cursor.rowcount == 0:
-            row = conn.execute("SELECT status FROM content_plans WHERE id=?", (plan_id,)).fetchone()
-            if row is None:
-                raise HTTPException(404, "计划不存在")
+        if cursor.rowcount != 1:
             raise HTTPException(409, "计划状态已变化，请刷新后重试")
         return {"id": plan_id, "status": "cancelled"}
 
