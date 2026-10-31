@@ -33,7 +33,7 @@ class ProcessSingletonLock:
             os.close(fd)
             raise
         os.ftruncate(fd, 0)
-        os.write(fd, f"{os.getpid()}\\n".encode("ascii"))
+        os.write(fd, f"{os.getpid()}\n".encode("ascii"))
         os.fsync(fd)
         self._fd = fd
 
