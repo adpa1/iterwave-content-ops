@@ -352,7 +352,7 @@ def test_worker_shows_redacted_user_facing_precondition_error(tmp_path):
     assert "sk-a***" in (saved.error_message or "")
 
 
-def test_worker_keeps_unknown_value_error_generic(tmp_path):
+def test_worker_preserves_redacted_unknown_error_detail(tmp_path):
     queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
     queue.initialize()
     task, _ = queue.enqueue(
@@ -380,7 +380,7 @@ def test_worker_keeps_unknown_value_error_generic(tmp_path):
 
     saved = queue.get(task.task_id)
     assert saved is not None and saved.status == "failed"
-    assert saved.error_message == "本轮执行失败，请检查运行记录"
+    assert saved.error_message == "ValueError: third-party internal failure api_key=sk-a***"
 
 
 def test_worker_shutdown_cancels_long_task_after_grace_and_marks_interrupted(tmp_path):
