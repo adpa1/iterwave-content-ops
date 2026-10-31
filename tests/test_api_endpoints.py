@@ -55,6 +55,7 @@ def test_tenant_write_requires_explicit_context_and_rejects_stale_context(client
     stale = tc.post("/api/rounds", json={"topic_count": 3})
     assert stale.status_code == 409
     assert stale.json()["code"] == "TENANT_CONTEXT_CHANGED"
+    assert api_main._tenant_switch_gate.active_requests == 0
     assert conn.execute("SELECT COUNT(*) FROM spiral_rounds").fetchone()[0] == before
 
 
