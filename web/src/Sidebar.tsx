@@ -13,7 +13,7 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { page: "dashboard",  label: "运营总览",   icon: "▦", section: "指挥与发现" },
   { page: "activation", label: "快速体验",   icon: "✧", section: "指挥与发现", hidden: true },
-  { page: "global-ops", label: "全局运营中心", icon: "▥", section: "指挥与发现" },
+  { page: "global-ops", label: "全局运营中心", icon: "▥", section: "指挥与发现", hidden: true },
   { page: "hot",        label: "热点雷达",   icon: "✳", section: "指挥与发现" },
   { page: "goals",      label: "目标与策略", icon: "◎", section: "指挥与发现" },
 
@@ -68,14 +68,6 @@ export default function Sidebar({ current, onChange, brokenPlatforms, loggedIn, 
         <div>
           <div className="brand-name">IterWave</div>
           <div className="brand-sub">多平台内容运营工作台</div>
-        </div>
-      </div>
-
-      <div className="workspace">
-        <div className="w-dot" aria-hidden="true" />
-        <div>
-          <div className="w-name">本地工作区</div>
-          <div className="w-sub">{ALL_PLATFORMS.length} 个平台 · {platforms.length} 个已启用 · 1 个运营 Agent</div>
         </div>
       </div>
 
