@@ -1369,11 +1369,20 @@ async def _invoke(engine, method_name: str, *args) -> None:
     }
     if queue is not None and tenant_id and method_name in queued_methods:
         aggregate_id = method_name + (":" + ":".join(map(str, args)) if args else "")
+        from ..task_snapshot import config_fingerprint
         queue.enqueue(
             task_type="scheduler_job",
             tenant_id=tenant_id,
             aggregate_id=aggregate_id,
-            payload={"method": method_name, "args": list(args)},
+            payload={
+                "method": method_name,
+                "args": list(args),
+                "execution_snapshot": {
+                    "schema_version": 1,
+                    "config_fingerprint": config_fingerprint(engine.cfg),
+                    "parameters": {"method": method_name, "args": list(args)},
+                },
+            },
         )
         return
     tracked = getattr(engine, "_run_tracked", None)
