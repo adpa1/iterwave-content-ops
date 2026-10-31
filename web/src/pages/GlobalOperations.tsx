@@ -13,6 +13,7 @@ const PLATFORMS: Record<string, string> = {
 export default function GlobalOperations() {
   const [monitor, setMonitor] = useState<GlobalMonitorResponse | null>(null);
   const [tasks, setTasks] = useState<GlobalTaskQueueItem[]>([]);
+  const [failedCount, setFailedCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
@@ -20,11 +21,14 @@ export default function GlobalOperations() {
   const refresh = useCallback(async () => {
     setLoading(true);
     setError("");
-    const results = await Promise.allSettled([api.globalMonitor(30), api.taskQueue()]);
+    const results = await Promise.allSettled([
+      api.globalMonitor(30), api.taskQueue({ scope: "active" }), api.taskQueue({ scope: "failed" }),
+    ]);
     if (results[0].status === "fulfilled") setMonitor(results[0].value);
     if (results[1].status === "fulfilled") setTasks(results[1].value.items ?? []);
+    if (results[2].status === "fulfilled") setFailedCount(results[2].value.total ?? 0);
     const failures = results.flatMap((r, i) => r.status === "rejected"
-      ? [`${i === 0 ? "账号组汇总" : "全局任务队列"}：${r.reason instanceof Error ? r.reason.message : String(r.reason)}`]
+      ? [`${["账号组汇总", "活跃任务", "失败任务统计"][i]}：${r.reason instanceof Error ? r.reason.message : String(r.reason)}`]
       : []);
     setError(failures.join("；"));
     setUpdatedAt(new Date());
@@ -74,7 +78,7 @@ export default function GlobalOperations() {
         <div className="metric"><div className="metric-label">账号组</div><div className="metric-val">{monitor?.totals.tenants ?? "—"}</div><div className="metric-foot">数据库可读取 {monitor?.totals.available_tenants ?? "—"} 个</div></div>
         <div className="metric"><div className="metric-label">运行中任务</div><div className="metric-val">{tasks.length ? active.filter((t) => t.status === "running").length : monitor ? 0 : "—"}</div><div className="metric-foot">来自全局队列当前返回记录</div></div>
         <div className="metric"><div className="metric-label">等待任务</div><div className="metric-val">{tasks.length ? active.filter((t) => t.status === "queued").length : monitor ? 0 : "—"}</div><div className="metric-foot">按全局 FIFO 入队顺序</div></div>
-        <div className="metric"><div className="metric-label">失败 / 中断</div><div className="metric-val">{tasks.length ? failed.length : monitor ? 0 : "—"}</div><div className="metric-foot">当前队列返回范围内</div></div>
+        <div className="metric"><div className="metric-label">失败 / 中断</div><div className="metric-val">{failedCount ?? "—"}</div><div className="metric-foot">当前队列返回范围内</div></div>
       </div>
 
       <section className="panel" style={{ marginBottom: 16 }}>
@@ -111,7 +115,7 @@ export default function GlobalOperations() {
           {active.length > 12 && <div className="panel-sub">另有 {active.length - 12} 个任务，请进入完整队列查看。</div>}
         </section>
         <section className="panel">
-          <div className="panel-head"><div><div className="panel-title">异常与待处理</div><div className="panel-sub">当前返回的队列记录中失败或中断的任务。</div></div><span className="tag">{failed.length} 项</span></div>
+          <div className="panel-head"><div><div className="panel-title">异常与待处理</div><div className="panel-sub">当前返回的队列记录中失败或中断的任务。</div></div><span className="tag">{failedCount ?? "—"} 项</span></div>
           {failed.length ? <div className="list">{failed.slice(0, 12).map((task) => <div className="task-row" key={task.task_id}>
             <i className="task-prio red" /><div className="task-main"><div className="task-title">{task.tenant_name} · {STATUS[task.status]}</div><div className="task-desc">{task.error_message || task.task_type}</div></div>
           </div>)}</div> : <div className="empty-state">当前返回范围内没有失败或中断任务。</div>}
