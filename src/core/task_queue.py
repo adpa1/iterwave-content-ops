@@ -508,6 +508,93 @@ class GlobalTaskQueue:
         finally:
             conn.close()
 
+    def list_page(
+        self, *, page: int = 1, page_size: int = 20,
+        scope: str = "history", tenant_id: str | None = None,
+        task_type: str | None = None,
+    ) -> tuple[list[QueuedTask], int]:
+        """Return a stable, database-paginated slice of active or historical tasks."""
+        page = max(1, int(page))
+        page_size = max(1, min(int(page_size), 500))
+        if scope not in {"active", "history", "failed"}:
+            raise ValueError("scope must be active or history")
+        statuses = (
+            ("queued", "running") if scope == "active"
+            else ("failed", "interrupted") if scope == "failed"
+            else ("succeeded", "failed", "cancelled", "interrupted")
+        )
+        placeholders = ",".join("?" for _ in statuses)
+        where = f"status IN ({placeholders})"
+        params: list[object] = list(statuses)
+        if tenant_id is not None:
+            where += " AND tenant_id=?"
+            params.append(tenant_id)
+        if task_type is not None:
+            if not task_type or len(task_type) > 80:
+                raise ValueError("task_type is invalid")
+            where += " AND task_type=?"
+            params.append(task_type)
+        offset = (page - 1) * page_size
+        conn = self._connect()
+        try:
+            total_row = conn.execute(
+                f"SELECT COUNT(*) AS n FROM global_task_queue WHERE {where}", params
+            ).fetchone()
+            rows = conn.execute(
+                f"SELECT * FROM global_task_queue WHERE {where} "
+                f"ORDER BY queue_order {'ASC' if scope == 'active' else 'DESC'} LIMIT ? OFFSET ?",
+                (*params, page_size, offset),
+            ).fetchall()
+            tasks: list[QueuedTask] = []
+            for row in rows:
+                try:
+                    task = self._decode(row)
+                except TaskQueueError as exc:
+                    logger.error(
+                        "跳过无法解码的队列记录 task_id=%s error=%s",
+                        row["task_id"], str(exc),
+                    )
+                    continue
+                if task is not None:
+                    tasks.append(task)
+            return tasks, int(total_row["n"] if total_row else 0)
+        finally:
+            conn.close()
+
+    def status_counts(self, *, scope: str = "active") -> dict:
+        """Aggregate queue status counts globally and by tenant without loading task rows."""
+        if scope == "active":
+            statuses = ("queued", "running")
+        elif scope == "failed":
+            statuses = ("failed", "interrupted")
+        elif scope == "history":
+            statuses = ("succeeded", "failed", "cancelled", "interrupted")
+        else:
+            raise ValueError("scope must be active, failed, or history")
+        placeholders = ",".join("?" for _ in statuses)
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                f"SELECT tenant_id, status, COUNT(*) AS n FROM global_task_queue "
+                f"WHERE status IN ({placeholders}) GROUP BY tenant_id, status",
+                statuses,
+            ).fetchall()
+            by_status = {status: 0 for status in statuses}
+            by_tenant: dict[str, dict[str, int]] = {}
+            for row in rows:
+                status = str(row["status"])
+                tenant_id = str(row["tenant_id"])
+                count = int(row["n"])
+                by_status[status] = by_status.get(status, 0) + count
+                by_tenant.setdefault(tenant_id, {})[status] = count
+            return {
+                "total": sum(by_status.values()),
+                "by_status": by_status,
+                "by_tenant": by_tenant,
+            }
+        finally:
+            conn.close()
+
     def list(self, *, limit: int = 100, tenant_id: str | None = None) -> list[QueuedTask]:
         limit = max(1, min(int(limit), 500))
         conn = self._connect()

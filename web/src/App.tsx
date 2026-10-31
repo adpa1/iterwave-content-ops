@@ -5,7 +5,7 @@ import { api, TenantListResponse } from "./api";
 import { platformMeta } from "./platforms";
 import Dashboard from "./pages/Dashboard";
 import Activation from "./pages/Activation";
-import GlobalMonitor from "./pages/GlobalMonitor";
+import GlobalOperations from "./pages/GlobalOperations";
 import HotTopics from "./pages/HotTopics";
 import Goals from "./pages/Goals";
 import Production from "./pages/Production";
@@ -59,7 +59,7 @@ function Router() {
     switch (page) {
       case "dashboard": return <Dashboard />;
       case "activation": return <Activation />;
-      case "global-monitor": return <GlobalMonitor />;
+      case "global-ops": return <GlobalOperations />;
       case "hot": return <HotTopics />;
       case "goals": return <Goals />;
       case "production": return <Production />;

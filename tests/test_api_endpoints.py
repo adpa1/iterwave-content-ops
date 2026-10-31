@@ -17,6 +17,7 @@ from src.core.ops.pause import is_ops_paused
 from src.core.plan_version import PlanVersionManager
 from src.core.state_machine import DraftStateMachine, RoundStateMachine
 from src.core.task_queue import GlobalTaskQueue
+from src.core.task_worker import GlobalTaskWorker
 
 
 @pytest.fixture()
@@ -956,3 +957,300 @@ def test_scheduler_run_unknown_job_404(client):
 
     api_main._g_ctx["scheduler"] = _StubSched()
     assert tc.post("/api/scheduler/jobs/not_a_job/run").status_code == 404
+
+
+# ---------------------------------------------------------------- Content plans
+
+def test_content_plan_create_list_update_and_cancel_are_tenant_scoped(client):
+    tc, conn, _ = client
+    before_drafts = conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0]
+    payload = {
+        "title": "本周产品内容计划",
+        "topic": "围绕真实使用场景制作系列内容",
+        "platforms": ["xhs", "douyin"],
+        "planned_count": 3,
+        "scheduled_date": "2026-11-02",
+        "notes": "先做用户问题梳理",
+    }
+    created = tc.post("/api/content-plans", json=payload)
+    assert created.status_code == 200
+    plan = created.json()
+    assert plan["status"] == "planned"
+    assert plan["version"] == 1
+    assert plan["platforms"] == ["douyin", "xhs"]
+
+    listed = tc.get("/api/content-plans?start_date=2026-11-01&end_date=2026-11-03")
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 1
+    assert listed.json()["items"][0]["id"] == plan["id"]
+
+    updated = tc.patch(
+        f"/api/content-plans/{plan['id']}",
+        json={"version": 1, "scheduled_date": "2026-11-03", "topic": "补充主题说明"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["version"] == 2
+    assert updated.json()["status"] == "planned"
+
+    stale = tc.patch(
+        f"/api/content-plans/{plan['id']}",
+        json={"version": 1, "title": "过期窗口覆盖"},
+    )
+    assert stale.status_code == 409
+
+    cancelled = tc.delete(f"/api/content-plans/{plan['id']}?version=2")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0] == before_drafts
+
+
+def test_content_plan_rejects_invalid_payload_and_platform(client):
+    tc, _, _ = client
+    invalid_date = tc.post("/api/content-plans", json={
+        "title": "计划", "scheduled_date": "2026-13-40",
+    })
+    assert invalid_date.status_code == 422
+
+    invalid_count = tc.post("/api/content-plans", json={
+        "title": "计划", "scheduled_date": "2026-11-02", "planned_count": 101,
+    })
+    assert invalid_count.status_code == 422
+
+    invalid_platform = tc.post("/api/content-plans", json={
+        "title": "计划", "scheduled_date": "2026-11-02", "platforms": ["not-a-platform"],
+    })
+    assert invalid_platform.status_code == 422
+
+
+
+def test_content_plan_links_generated_drafts_idempotently_and_rolls_back_invalid_batch(client):
+    tc, conn, seed = client
+    created = tc.post("/api/content-plans", json={
+        "title": "多平台内容计划", "scheduled_date": "2026-11-04",
+        "platforms": ["xhs"], "planned_count": 2,
+    })
+    assert created.status_code == 200
+    plan_id = created.json()["id"]
+    round_id = seed.round()
+    draft_id = seed.draft(round_id, platform="xhs", draft_status="draft_saved")
+
+    missing = tc.post(f"/api/content-plans/{plan_id}/drafts", json={
+        "draft_ids": [draft_id, "missing-draft"],
+    })
+    assert missing.status_code == 404
+    assert conn.execute(
+        "SELECT COUNT(*) FROM content_plan_drafts WHERE plan_id=?", (plan_id,)
+    ).fetchone()[0] == 0
+
+    linked = tc.post(f"/api/content-plans/{plan_id}/drafts", json={"draft_ids": [draft_id]})
+    assert linked.status_code == 200
+    assert linked.json()["linked_count"] == 1
+    duplicate = tc.post(f"/api/content-plans/{plan_id}/drafts", json={"draft_ids": [draft_id]})
+    assert duplicate.status_code == 200
+    assert duplicate.json()["linked_count"] == 0
+
+    detail = tc.get(f"/api/content-plans/{plan_id}")
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "generated"
+    assert detail.json()["drafts"][0]["draft_id"] == draft_id
+    assert detail.json()["drafts"][0]["round_id"] == round_id
+
+
+# ---------------------------------------------------------------- Safe tenant Skills registry
+
+def test_skill_registry_registers_metadata_disabled_and_never_executes(client):
+    tc, conn, _ = client
+    created = tc.post("/api/skills", json={
+        "skill_id": "my_content_audit",
+        "name": "内容审阅辅助",
+        "version": "1.0.0",
+        "description": "登记一个只读内容审阅能力的 manifest",
+        "category": "review",
+        "inputs": [{"name": "content_id", "type": "string", "required": True}],
+        "outputs": [{"name": "findings", "type": "array"}],
+        "permissions": ["read_content"],
+    })
+    assert created.status_code == 200
+    assert created.json()["enabled"] is False
+    assert created.json()["execution_enabled"] is False
+
+    listed = tc.get("/api/skills")
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 1
+    assert listed.json()["execution_enabled"] is False
+
+    enabled = tc.patch("/api/skills/my_content_audit", json={
+        "enabled": True, "manifest_version": 1,
+    })
+    assert enabled.status_code == 200
+    assert enabled.json()["enabled"] is True
+    assert enabled.json()["execution_enabled"] is False
+
+    blocked_delete = tc.delete("/api/skills/my_content_audit")
+    assert blocked_delete.status_code == 409
+
+    stale = tc.patch("/api/skills/my_content_audit", json={
+        "enabled": False, "manifest_version": 1,
+    })
+    assert stale.status_code == 409
+
+    disabled = tc.patch("/api/skills/my_content_audit", json={
+        "enabled": False, "manifest_version": 2,
+    })
+    assert disabled.status_code == 200
+    deleted = tc.delete("/api/skills/my_content_audit")
+    assert deleted.status_code == 200
+    assert conn.execute(
+        "SELECT COUNT(*) FROM tenant_skill_registry WHERE skill_id='my_content_audit'"
+    ).fetchone()[0] == 0
+
+
+def test_skill_registry_rejects_unsafe_permissions_and_invalid_manifest(client):
+    tc, _, _ = client
+    unsafe = tc.post("/api/skills", json={
+        "skill_id": "unsafe_skill", "name": "危险 Skill", "version": "1.0.0",
+        "permissions": ["execute_python"],
+    })
+    assert unsafe.status_code == 422
+
+    invalid_version = tc.post("/api/skills", json={
+        "skill_id": "bad_version", "name": "错误版本", "version": "latest",
+    })
+    assert invalid_version.status_code == 422
+
+    reserved_id = tc.post("/api/skills", json={
+        "skill_id": "topic_scoring", "name": "伪装内置能力", "version": "1.0.0",
+    })
+    assert reserved_id.status_code == 409
+
+
+def test_content_plan_start_enqueues_global_task_and_cancel_only_cancels_queued_task(client, tmp_path, monkeypatch):
+    tc, conn, _ = client
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    monkeypatch.setattr(api_main, "_task_queue", queue)
+    monkeypatch.setattr(api_main, "_build_task_execution_snapshot", lambda *args, **kwargs: {"test_snapshot": True})
+
+    created = tc.post("/api/content-plans", json={
+        "title": "排队生产计划", "scheduled_date": "2026-11-06",
+        "platforms": ["xhs"], "planned_count": 2,
+    })
+    assert created.status_code == 200
+    plan_id = created.json()["id"]
+
+    started = tc.post(f"/api/content-plans/{plan_id}/start")
+    assert started.status_code == 202
+    body = started.json()
+    assert body["round_id"] > 0
+    assert body["queued"] is True
+    queued_task = queue.get(body["task_id"])
+    assert queued_task is not None and queued_task.status == "queued"
+
+    detail = tc.get(f"/api/content-plans/{plan_id}")
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "generating"
+    assert detail.json()["rounds"][0]["round_id"] == body["round_id"]
+    assert detail.json()["rounds"][0]["task_id"] == body["task_id"]
+
+    cancelled = tc.delete(f"/api/content-plans/{plan_id}?version=2")
+    assert cancelled.status_code == 200
+    assert queue.get(body["task_id"]).status == "cancelled"
+    assert conn.execute(
+        "SELECT status FROM content_plans WHERE id=?", (plan_id,)
+    ).fetchone()["status"] == "cancelled"
+
+
+def test_worker_result_links_round_drafts_and_updates_plan_status(client):
+    tc, conn, seed = client
+    created = tc.post("/api/content-plans", json={
+        "title": "Worker 回写计划", "scheduled_date": "2026-11-08",
+        "platforms": ["xhs"], "planned_count": 1,
+    })
+    assert created.status_code == 200
+    plan_id = created.json()["id"]
+    round_id = seed.round(status="producing")
+    draft_id = seed.draft(round_id, platform="xhs", draft_status="draft_saved")
+    conn.execute(
+        "INSERT INTO content_plan_rounds(plan_id,round_id,task_id,created_at) VALUES(?,?,?,?)",
+        (plan_id, round_id, "task-test", "2026-11-08T10:00:00"),
+    )
+    conn.execute(
+        "UPDATE content_plans SET status='generating',version=version+1 WHERE id=?",
+        (plan_id,),
+    )
+    conn.commit()
+
+    GlobalTaskWorker._complete_content_plan(conn, round_id, {"final_status": "completed"})
+    plan = conn.execute("SELECT status,version FROM content_plans WHERE id=?", (plan_id,)).fetchone()
+    assert plan["status"] == "generated"
+    assert plan["version"] == 3
+    assert conn.execute(
+        "SELECT round_id FROM content_plan_drafts WHERE plan_id=? AND draft_id=?",
+        (plan_id, draft_id),
+    ).fetchone()["round_id"] == round_id
+
+
+def test_content_plan_recovers_to_retryable_after_worker_interruption(client, tmp_path, monkeypatch):
+    tc, _, seed = client
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    monkeypatch.setattr(api_main, "_task_queue", queue)
+    monkeypatch.setattr(api_main, "_build_task_execution_snapshot", lambda *args, **kwargs: {"test_snapshot": True})
+    created = tc.post("/api/content-plans", json={
+        "title": "中断恢复计划", "scheduled_date": "2026-11-09",
+        "platforms": ["xhs"], "planned_count": 1,
+    })
+    plan_id = created.json()["id"]
+    started = tc.post(f"/api/content-plans/{plan_id}/start")
+    assert started.status_code == 202
+    task_id = started.json()["task_id"]
+    round_id = started.json()["round_id"]
+    draft_id = seed.draft(round_id, platform="xhs", draft_status="draft_saved")
+
+    queue_conn = queue._connect()
+    queue_conn.execute(
+        "UPDATE global_task_queue SET status='interrupted',finished_at='2026-11-09T10:00:00' WHERE task_id=?",
+        (task_id,),
+    )
+    queue_conn.commit()
+    queue_conn.close()
+
+    listed = tc.get("/api/content-plans?start_date=2026-11-09&end_date=2026-11-09")
+    assert listed.status_code == 200
+    recovered = listed.json()["items"][0]
+    assert recovered["status"] == "failed"
+    assert recovered["version"] == 3
+    detail = tc.get(f"/api/content-plans/{plan_id}")
+    assert detail.status_code == 200
+    assert detail.json()["drafts"][0]["draft_id"] == draft_id
+
+
+def test_orchestration_rejects_unregistered_disabled_and_unsupported_custom_skill_refs(client):
+    tc, _, _ = client
+    from src.core.orchestration import default_steps
+
+    steps = default_steps()
+    steps[0]["skill_id"] = "not_registered"
+    unknown = tc.post("/api/orchestration/validate", json={"steps": steps})
+    assert unknown.status_code == 200
+    assert unknown.json()["valid"] is False
+    assert any("未登记" in error for error in unknown.json()["errors"])
+
+    registered = tc.post("/api/skills", json={
+        "skill_id": "custom_review_helper", "name": "自定义审阅", "version": "1.0.0",
+    })
+    assert registered.status_code == 200
+    steps[0]["skill_id"] = "custom_review_helper"
+    disabled = tc.post("/api/orchestration/validate", json={"steps": steps})
+    assert any("尚未启用" in error for error in disabled.json()["errors"])
+
+    enabled = tc.patch("/api/skills/custom_review_helper", json={
+        "enabled": True, "manifest_version": 1,
+    })
+    assert enabled.status_code == 200
+    unsupported = tc.post("/api/orchestration/validate", json={"steps": steps})
+    assert unsupported.json()["valid"] is False
+    assert any("仅支持内置步骤" in error for error in unsupported.json()["errors"])
+
+    saved = tc.put("/api/orchestration", json={"steps": steps})
+    assert saved.status_code == 422

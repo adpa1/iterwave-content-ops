@@ -10,6 +10,7 @@ import logging
 import os
 import threading
 import uuid
+from datetime import datetime
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -127,13 +128,22 @@ class GlobalTaskWorker:
                     if operation == "save_pending_drafts":
                         return await context["executor"].save_pending_drafts(round_id)
                     if operation == "run":
-                        return await context["executor"].run(
-                            round_id,
-                            topic_count=task.payload.get("topic_count"),
-                            platform_values=task.payload.get("platforms"),
-                            save_drafts=task.payload.get("save_drafts"),
-                            feedback=feedback,
-                        )
+                        try:
+                            report = await context["executor"].run(
+                                round_id,
+                                topic_count=task.payload.get("topic_count"),
+                                platform_values=task.payload.get("platforms"),
+                                save_drafts=task.payload.get("save_drafts"),
+                                feedback=feedback,
+                            )
+                        except asyncio.CancelledError:
+                            self._mark_content_plan_failed(context["conn"], round_id)
+                            raise
+                        except Exception:
+                            self._mark_content_plan_failed(context["conn"], round_id)
+                            raise
+                        self._complete_content_plan(context["conn"], round_id, report)
+                        return report
                     raise ValueError(f"不支持的轮次任务操作：{operation}")
 
                 method = task.payload.get("method")
@@ -155,6 +165,53 @@ class GlobalTaskWorker:
                     conn.close()
                 except Exception:
                     logger.exception("关闭任务账号组数据库连接失败")
+
+    @staticmethod
+    def _mark_content_plan_failed(conn, round_id: int) -> None:
+        """生产异常时将关联计划标记失败，允许用户修复后重试。"""
+        if conn is None or not callable(getattr(conn, "execute", None)):
+            return
+        relation = conn.execute(
+            "SELECT plan_id FROM content_plan_rounds WHERE round_id=?", (round_id,),
+        ).fetchone()
+        if relation is None:
+            return
+        conn.execute(
+            "UPDATE content_plans SET status='failed',version=version+1,updated_at=? "
+            "WHERE id=? AND status='generating'",
+            (datetime.now().astimezone().isoformat(timespec="seconds"), relation["plan_id"]),
+        )
+        conn.commit()
+
+    @staticmethod
+    def _complete_content_plan(conn, round_id: int, report: Any) -> None:
+        """生产完成后把轮次产出的草稿关联回计划，并推进计划状态。"""
+        if conn is None or not callable(getattr(conn, "execute", None)):
+            return
+        relation = conn.execute(
+            "SELECT plan_id FROM content_plan_rounds WHERE round_id=?", (round_id,),
+        ).fetchone()
+        if relation is None:
+            return
+        plan_id = relation["plan_id"]
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        drafts = conn.execute(
+            "SELECT d.id FROM drafts d JOIN contents c ON c.id=d.content_id WHERE c.round_id=?",
+            (round_id,),
+        ).fetchall()
+        for draft in drafts:
+            conn.execute(
+                "INSERT OR IGNORE INTO content_plan_drafts(plan_id,draft_id,round_id,created_at) VALUES(?,?,?,?)",
+                (plan_id, draft["id"], round_id, now),
+            )
+        failed = isinstance(report, dict) and report.get("final_status") == "failed"
+        status = "failed" if failed else "generated"
+        conn.execute(
+            "UPDATE content_plans SET status=?,version=version+1,updated_at=? "
+            "WHERE id=? AND status='generating'",
+            (status, now, plan_id),
+        )
+        conn.commit()
 
     async def _execute(
         self, task: QueuedTask, *, stop_event: asyncio.Event | None = None,
@@ -216,10 +273,13 @@ class GlobalTaskWorker:
         except Exception as exc:  # noqa: BLE001 — 单任务失败不得终止消费者
             from src.core.redact import redact
             error_code = redact(str(getattr(exc, "code", "round_execution_failed")))[:80]
-            if getattr(exc, "code", None) or getattr(exc, "safe_for_user", False):
-                safe_message = redact(str(exc))[:500]
-            else:
-                safe_message = "本轮执行失败，请检查运行记录"
+            # 历史列表需要可诊断的失败原因；先统一脱敏，再隐藏本机绝对路径。
+            # 不把原始 traceback、请求头或平台响应对象写入用户可见字段。
+            import re
+            detail = redact(str(exc)).strip()
+            detail = re.sub(r"(?<!:)/(?:[^\s:'\"<>]+/)*[^\s:'\"<>]+", "[路径已隐藏]", detail)
+            safe_message = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+            safe_message = safe_message[:500]
             logger.error(
                 "全局队列任务执行失败 task_id=%s tenant_id=%s error=%s",
                 task.task_id, task.tenant_id, safe_message,

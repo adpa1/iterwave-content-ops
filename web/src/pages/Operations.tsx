@@ -847,11 +847,21 @@ function SchedulerPane({ jobs, onTriggered }: {
       <AutogrowPanel />
       <div className="grid three" style={{ marginBottom: 16 }}>
         <div className="metric">
-          <div className="metric-label">定时调度状态</div>
+          <div className="metric-label">定时调度器</div>
           <div className="metric-val" style={{ color: jobs.running ? "var(--green)" : "var(--red)" }}>
             {jobs.running ? "运行中" : "已停止"}
           </div>
-          <div className="metric-foot">{active} / {jobs.jobs.length} 个任务已启用</div>
+          <div className="metric-foot">调度器进程状态</div>
+        </div>
+        <div className="metric">
+          <div className="metric-label">已启用任务</div>
+          <div className="metric-val">{active}<span className="metric-unit"> / {jobs.jobs.length}</span></div>
+          <div className="metric-foot">已启用 / 全部配置任务</div>
+        </div>
+        <div className="metric">
+          <div className="metric-label">待执行时间</div>
+          <div className="metric-val">{jobs.jobs.filter((job) => job.enabled && job.next_run_time).length}</div>
+          <div className="metric-foot">有明确下次执行时间的任务</div>
         </div>
       </div>
       <div className="panel">

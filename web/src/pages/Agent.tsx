@@ -4,7 +4,7 @@ import { useApp } from "../AppContext";
 import { navigate, useUrlTab } from "../nav";
 import {
   api, Platform, SystemStatus, AiCallRecord, UserOverrideRecord, RedlineRecord,
-  OrchestrationView, OrchestrationRun, DiagnoseResult, StepState,
+  OrchestrationView, OrchestrationRun, DiagnoseResult, StepState, TenantSkillManifest,
 } from "../api";
 
 const PLATFORM_LABEL: Record<string, string> = {
@@ -55,7 +55,7 @@ const SKILLS = [
     { id: "autogrow",           name: "自动闭环（自生长）",   src: "src/core/autogrow.py",              status: "OK", note: "复盘→评分/文案，条件满足自动开下一轮" },
     { id: "topic_pool",         name: "选题池",              src: "src/core/topic_pool.py",            status: "OK", note: "本地库 + 热点 + 手动，软删除可恢复" },
     { id: "orchestration",      name: "编排与诊断",           src: "src/core/orchestration.py",         status: "OK", note: "步骤开关 / 依赖校验 / 自检清单" },
-    { id: "scheduler",          name: "定时任务调度（10 类）", src: "src/core/scheduler/",             status: "OK", note: "任务记录持久化到本地数据库" },
+    { id: "scheduler",          name: "定时任务调度（11 类）", src: "src/core/scheduler/",             status: "OK", note: "任务记录持久化到本地数据库" },
     { id: "platform_readback",  name: "平台数据读回",        src: "src/vendor/easel/",                 status: "!", note: "account_stats / platform_readback 需登录态" },
   ]},
 ];
@@ -366,11 +366,11 @@ function TracePane({ status, runs }: { status: SystemStatus | null; runs: Orches
           <div className="panel-title"><span className="icon">☷</span>平台子流程</div>
           <div className="panel-sub">每个平台独立运行</div>
         </div></div>
-        {status.enabled_platforms.length === 0 ? (
+        {(status.enabled_platforms ?? []).length === 0 ? (
           <EmptyHint next="到「系统设置」启用至少 1 个平台">暂无启用的平台</EmptyHint>
         ) : (
           <div className="list">
-            {status.enabled_platforms.map((p: Platform) => {
+            {(status.enabled_platforms ?? []).map((p: Platform) => {
               const b = broken.includes(p), n = noLogin.includes(p);
               return (
                 <div key={p} className="task-row">
@@ -394,8 +394,8 @@ function TracePane({ status, runs }: { status: SystemStatus | null; runs: Orches
         </div></div>
         <div className="list">
           <div className="task-row"><i className="task-prio green" /><div className="task-main"><div className="task-title">中断任务</div><div className="task-desc">{status.recovery?.interrupted_tasks ?? 0} 个已重登</div></div></div>
-          <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">补登记采集</div><div className="task-desc">{status.recovery?.requeued_data_fetch.length ?? 0} 篇重入列</div></div></div>
-          <div className="task-row"><i className="task-prio orange" /><div className="task-main"><div className="task-title">卡住轮次</div><div className="task-desc">{status.recovery?.stale_rounds.length ? `#${status.recovery.stale_rounds.join(", #")}` : "无"}</div></div></div>
+          <div className="task-row"><i className="task-prio blue" /><div className="task-main"><div className="task-title">补登记采集</div><div className="task-desc">{status.recovery?.requeued_data_fetch?.length ?? 0} 篇重入列</div></div></div>
+          <div className="task-row"><i className="task-prio orange" /><div className="task-main"><div className="task-title">卡住轮次</div><div className="task-desc">{status.recovery?.stale_rounds?.length ? `#${status.recovery.stale_rounds.join(", #")}` : "无"}</div></div></div>
           <div className="task-row"><i className="task-prio purple" /><div className="task-main"><div className="task-title">最近一轮</div><div className="task-desc">
             {runs && runs[0] ? `第 ${runs[0].round_number} 轮 · ${ROUND_STATUS_LABEL[runs[0].status] ?? runs[0].status}${runs[0].duration_seconds != null ? ` · 用时 ${runs[0].duration_seconds}s` : ""}` : "还没有轮次"}
           </div></div>
@@ -409,32 +409,154 @@ function TracePane({ status, runs }: { status: SystemStatus | null; runs: Orches
 
 // ============================================================ Skills 注册表
 function SkillsPane() {
+  const { showToast, withPending, isPending } = useApp();
+  const [customSkills, setCustomSkills] = useState<TenantSkillManifest[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [skillId, setSkillId] = useState("");
+  const [skillName, setSkillName] = useState("");
+  const [skillDescription, setSkillDescription] = useState("");
+  const [skillCategory, setSkillCategory] = useState("custom");
+  const [skillVersion, setSkillVersion] = useState("1.0.0");
+  const [skillInputsJson, setSkillInputsJson] = useState("[]");
+  const [skillOutputsJson, setSkillOutputsJson] = useState("[]");
+  const [skillPermissions, setSkillPermissions] = useState<string[]>([]);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const result = await api.tenantSkills();
+      setCustomSkills(result.items ?? []);
+      setLoadError("");
+    } catch (e: any) {
+      setLoadError(e?.message ?? "加载自定义 Skills 失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { void load(); }, []);
+
+  const register = async () => {
+    await withPending("skill:register", async () => {
+      try {
+        await api.registerTenantSkill({
+          skill_id: skillId.trim().toLowerCase(),
+          name: skillName.trim(),
+          version: skillVersion.trim(),
+          description: skillDescription.trim(),
+          category: skillCategory.trim().toLowerCase() || "custom",
+          inputs: [],
+          outputs: [],
+          permissions: [],
+        });
+        showToast("Skill manifest 已登记，默认停用且不会执行代码", "success");
+        setSkillId(""); setSkillName(""); setSkillDescription(""); setSkillVersion("1.0.0");
+        setSkillInputsJson("[]"); setSkillOutputsJson("[]"); setSkillPermissions([]);
+        await load();
+      } catch (e: any) { showToast(`登记失败：${e?.message ?? e}`, "error"); }
+    });
+  };
+
+  const toggle = async (skill: TenantSkillManifest) => {
+    try {
+      await withPending(`skill:toggle:${skill.skill_id}`, () =>
+        api.setTenantSkillEnabled(skill.skill_id, !skill.enabled, skill.manifest_version));
+      await load();
+      showToast(skill.enabled ? "Skill 已停用" : "Skill 已启用（仅登记状态，不会执行）", "success");
+    } catch (e: any) { showToast(`状态更新失败：${e?.message ?? e}`, "error"); }
+  };
+
+  const remove = async (skill: TenantSkillManifest) => {
+    try {
+      await withPending(`skill:delete:${skill.skill_id}`, () => api.deleteTenantSkill(skill.skill_id));
+      await load();
+      showToast("Skill 登记已删除", "success");
+    } catch (e: any) { showToast(`删除失败：${e?.message ?? e}`, "error"); }
+  };
+
   return (
-    <div className="panel">
-      <div className="panel-head"><div>
-        <div className="panel-title"><span className="icon">▧</span>Skills 注册表</div>
-        <div className="panel-sub">{SKILLS.reduce((a, g) => a + g.rows.length, 0)} 个 Skills · {SKILLS.length} 个分组</div>
-      </div></div>
-      {SKILLS.map((g) => (
-        <div key={g.group} style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 6 }}>{g.group}</div>
+    <>
+      <div className="panel">
+        <div className="panel-head"><div>
+          <div className="panel-title"><span className="icon">▧</span>系统内置 Skills</div>
+          <div className="panel-sub">{SKILLS.reduce((a, g) => a + g.rows.length, 0)} 个内置能力 · 只读元数据</div>
+        </div></div>
+        {SKILLS.map((g) => (
+          <div key={g.group} style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", marginBottom: 6 }}>{g.group}</div>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>能力</th><th>状态</th><th>说明</th></tr></thead>
+                <tbody>
+                  {g.rows.map((skill) => (
+                    <tr key={skill.id}>
+                      <td title={skill.src}>
+                        <strong>{skill.name.replace(/（R\d+）/g, "").replace("Playwright ", "")}</strong>
+                        <details className="skill-manifest-preview">
+                          <summary>预览能力定义</summary>
+                          <pre>{JSON.stringify({ schema_version: 1, skill_id: skill.id, name: skill.name, source: skill.src, status: skill.status === "OK" ? "available" : "limited", description: skill.note }, null, 2)}</pre>
+                        </details>
+                      </td>
+                      <td><span className={`tag ${skill.status === "OK" ? "green" : "orange"}`}>{skill.status === "OK" ? "正常" : "部分可用"}</span></td>
+                      <td style={{ fontSize: 12, color: "var(--muted)" }}>{skill.note.replace(/R\d+[：:]\s*/g, "")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="panel" style={{ marginTop: 14 }}>
+        <div className="panel-head">
+          <div><div className="panel-title">账号组自定义 Skills</div><div className="panel-sub">登记 manifest、预览和启停。当前仅管理元数据，不上传、不执行 Python / JavaScript 代码。</div></div>
+          <button className="btn sm" onClick={() => void load()} disabled={loading}>↻ 刷新</button>
+        </div>
+        {loadError && <div className="note" style={{ color: "var(--red)" }}>加载失败：{loadError}</div>}
+        <div className="skill-register-form">
+          <label>Skill ID<input className="field" value={skillId} onChange={(e) => setSkillId(e.target.value)} placeholder="例如 brand_voice_check" /></label>
+          <label>名称<input className="field" value={skillName} onChange={(e) => setSkillName(e.target.value)} maxLength={120} placeholder="能力名称" /></label>
+          <label>版本<input className="field" value={skillVersion} onChange={(e) => setSkillVersion(e.target.value)} placeholder="1.0.0" /></label>
+          <label>分类<input className="field" value={skillCategory} onChange={(e) => setSkillCategory(e.target.value)} placeholder="custom" /></label>
+          <label className="skill-register-description">能力说明<input className="field" value={skillDescription} onChange={(e) => setSkillDescription(e.target.value)} maxLength={2000} placeholder="说明输入、输出和适用场景" /></label>
+          <label>输入 Schema（JSON 数组）<textarea className="field" rows={3} value={skillInputsJson} onChange={(e) => setSkillInputsJson(e.target.value)} spellCheck={false} /></label>
+          <label>输出 Schema（JSON 数组）<textarea className="field" rows={3} value={skillOutputsJson} onChange={(e) => setSkillOutputsJson(e.target.value)} spellCheck={false} /></label>
+          <div className="skill-permissions">
+            <span>只读权限声明</span>
+            {(["read_content", "read_plan", "read_drafts"] as const).map((permission) => (
+              <label key={permission}><input type="checkbox" checked={skillPermissions.includes(permission)} onChange={(e) => setSkillPermissions((old) => e.target.checked ? [...old, permission] : old.filter((p) => p !== permission))} />{permission}</label>
+            ))}
+          </div>
+          <button className="btn primary" disabled={!skillId.trim() || !skillName.trim() || isPending("skill:register")} onClick={register}>
+            {isPending("skill:register") ? "登记中…" : "登记 Skill"}
+          </button>
+        </div>
+        {loading ? <div className="empty-state">正在加载登记表…</div> : customSkills.length === 0 ? (
+          <EmptyHint next="填写上方 manifest 元数据后登记">暂无自定义 Skills</EmptyHint>
+        ) : (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>能力</th><th>状态</th><th>说明</th></tr></thead>
-              <tbody>
-                {g.rows.map((s) => (
-                  <tr key={s.id}>
-                    <td title={s.src}>{s.name.replace(/（R\d+）/g, "").replace("Playwright ", "")}</td>
-                    <td><span className={`tag ${s.status === "OK" ? "green" : "orange"}`}>{s.status === "OK" ? "正常" : "部分可用"}</span></td>
-                    <td style={{ fontSize: 12, color: "var(--muted)" }}>{s.note.replace(/R\d+[：:]\s*/g, "")}</td>
-                  </tr>
-                ))}
-              </tbody>
+              <thead><tr><th>Skill</th><th>版本</th><th>分类</th><th>权限</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody>{customSkills.map((skill) => (
+                <tr key={skill.skill_id}>
+                  <td><strong>{skill.name}</strong><div className="tiny">{skill.skill_id}</div><div className="tiny">{skill.description}</div><details className="skill-manifest-preview"><summary>预览 Manifest</summary><pre>{JSON.stringify(skill, null, 2)}</pre></details></td>
+                  <td>{skill.version}</td>
+                  <td>{skill.category}</td>
+                  <td>{skill.permissions.length ? skill.permissions.join("、") : "无"}</td>
+                  <td><span className={skill.enabled ? "tag green" : "tag gray"}>{skill.enabled ? "已启用（仅登记）" : "已停用"}</span></td>
+                  <td><div className="skill-row-actions">
+                    <button className="btn sm" disabled={isPending(`skill:toggle:${skill.skill_id}`)} onClick={() => void toggle(skill)}>{skill.enabled ? "停用" : "启用"}</button>
+                    <button className="btn sm" disabled={skill.enabled || isPending(`skill:delete:${skill.skill_id}`)} onClick={() => void remove(skill)}>删除</button>
+                  </div></td>
+                </tr>
+              ))}</tbody>
             </table>
           </div>
-        </div>
-      ))}
-    </div>
+        )}
+        <div className="note" style={{ marginTop: 10 }}>安全限制：登记记录按账号组隔离；新建默认停用；权限仅允许读取类声明；启用不代表具备执行能力，Agent 当前不会加载或运行用户代码。</div>
+      </div>
+    </>
   );
 }
 

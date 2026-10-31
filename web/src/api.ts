@@ -31,6 +31,10 @@ export interface GlobalTaskQueueItem {
 
 export interface GlobalTaskQueueResponse {
   items: GlobalTaskQueueItem[];
+  total?: number;
+  page?: number;
+  page_size?: number;
+  pages?: number;
 }
 
 export interface QueueTaskSubmission {
@@ -471,6 +475,35 @@ export interface ScheduleEvent {
   day: number | null;
 }
 
+export interface TenantSkillManifest {
+  skill_id: string;
+  name: string;
+  version: string;
+  description: string;
+  category: string;
+  inputs: Array<Record<string, unknown>>;
+  outputs: Array<Record<string, unknown>>;
+  permissions: string[];
+  enabled: boolean;
+  manifest_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ContentPlan {
+  id: string;
+  title: string;
+  topic: string;
+  platforms: Platform[];
+  planned_count: number;
+  scheduled_date: string;
+  status: "planned" | "generating" | "generated" | "reviewed" | "archived" | "cancelled" | "failed";
+  notes: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ScheduleResponse {
   start_date: string;
   end_date: string;
@@ -509,6 +542,8 @@ export interface GlobalMonitorTenant {
   tenant_name: string;
   created_at: string | null;
   db_available: boolean;
+  /** uninitialized: DB file has not been created; unavailable: file exists but cannot be opened. */
+  db_status?: "uninitialized" | "available" | "unavailable";
   contents_period: number;
   contents_all: number;
   drafts_all: number;
@@ -518,17 +553,30 @@ export interface GlobalMonitorTenant {
   drafts_failed: number;
   media_active: number;
   media_usage: number;
-  platforms: Record<string, { contents: number; contents_period: number; drafts: number }>;
+  registered_accounts?: number;
+  registered_accounts_active?: number;
+  runtime?: {
+    available: boolean;
+    enabled_platforms: Platform[];
+    logged_in_platforms: Platform[];
+    platforms_without_login: Platform[];
+    circuit_broken_platforms: Platform[];
+    scheduler_running: boolean | null;
+    scheduler_job_count: number | null;
+    scheduler_enabled_count: number | null;
+    active_rounds: number | null;
+  };
+  platforms: Record<string, { contents: number; contents_period: number; drafts: number; registered_accounts?: number }>;
 }
 export interface GlobalMonitorResponse {
   days: number;
   since: string;
   totals: {
-    tenants: number; available_tenants: number; contents_period: number; contents_all: number;
+    tenants: number; available_tenants: number; registered_accounts?: number; registered_accounts_active?: number; contents_period: number; contents_all: number;
     drafts_all: number; drafts_pending: number; drafts_saved: number; drafts_published: number;
     drafts_failed: number; media_active: number; media_usage: number;
   };
-  platform_totals: Record<string, { contents: number; drafts: number }>;
+  platform_totals: Record<string, { contents: number; drafts: number; registered_accounts?: number }>;
   tenants: GlobalMonitorTenant[];
   account_count_note: string;
 }
@@ -1295,7 +1343,16 @@ export const api = {
     fetchJson<{ updated: Record<string, number | null>; goals: Goal[]; summary: GoalSummary }>(
       "/api/goals/progress/refresh", { method: "POST" },
     ),
-  taskQueue: () => fetchJson<GlobalTaskQueueResponse>("/api/task-queue"),
+  taskQueue: (params: { scope?: "all" | "active" | "history" | "failed"; page?: number; pageSize?: number; taskType?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (params.scope) query.set("scope", params.scope);
+    if (params.page != null) query.set("page", String(params.page));
+    if (params.pageSize != null) query.set("page_size", String(params.pageSize));
+    if (params.taskType) query.set("task_type", params.taskType);
+    const encoded = query.toString();
+    const suffix = encoded ? `?${encoded}` : "";
+    return fetchJson<GlobalTaskQueueResponse>(`/api/task-queue${suffix}`);
+  },
   cancelTask: (taskId: string) =>
     fetchJson<{ task_id: string; status: string }>(`/api/task-queue/${encodeURIComponent(taskId)}/cancel`, {
       method: "POST",
@@ -1414,7 +1471,37 @@ export const api = {
     fetchJson<{ draft_id: string; scheduled_publish_at: string | null }>(
       `/api/schedule/${draft_id}`, { method: "PATCH", body: JSON.stringify({ scheduled_publish_at: scheduled }) },
     ),
-  globalMonitor: (days = 30) => fetchJson<GlobalMonitorResponse>(`/api/global-monitor?days=${days}`),
+  contentPlans: (startDate?: string, endDate?: string) => {
+    const p = new URLSearchParams();
+    if (startDate) p.set("start_date", startDate);
+    if (endDate) p.set("end_date", endDate);
+    return fetchJson<{ items: ContentPlan[]; total: number }>(`/api/content-plans?${p}`);
+  },
+  tenantSkills: (enabled?: boolean) => fetchJson<{ items: TenantSkillManifest[]; total: number; execution_enabled: false }>(`/api/skills${enabled === undefined ? "" : `?enabled=${enabled}`}`),
+  registerTenantSkill: (data: Pick<TenantSkillManifest, "skill_id" | "name" | "version" | "description" | "category" | "inputs" | "outputs" | "permissions">) =>
+    fetchJson<TenantSkillManifest & { execution_enabled: false }>("/api/skills", { method: "POST", body: JSON.stringify(data) }),
+  setTenantSkillEnabled: (skill_id: string, enabled: boolean, manifest_version: number) =>
+    fetchJson<{ skill_id: string; enabled: boolean; manifest_version: number; execution_enabled: false }>(
+      `/api/skills/${skill_id}`, { method: "PATCH", body: JSON.stringify({ enabled, manifest_version }) },
+    ),
+  deleteTenantSkill: (skill_id: string) =>
+    fetchJson<{ skill_id: string; deleted: boolean }>(`/api/skills/${skill_id}`, { method: "DELETE" }),
+  contentPlan: (id: string) => fetchJson<ContentPlan & { drafts: Array<{ draft_id: string; platform: Platform; status: string; title: string; round_id: number | null }>; rounds: Array<{ round_id: number; task_id: string | null; created_at: string }> }>(`/api/content-plans/${id}`),
+  linkContentPlanDrafts: (id: string, draft_ids: string[]) =>
+    fetchJson<{ plan_id: string; linked_now: string[]; linked_count: number; status: string }>(
+      `/api/content-plans/${id}/drafts`, { method: "POST", body: JSON.stringify({ draft_ids }) },
+    ),
+  createContentPlan: (data: Pick<ContentPlan, "title" | "topic" | "platforms" | "planned_count" | "scheduled_date" | "notes">) =>
+    fetchJson<ContentPlan>("/api/content-plans", { method: "POST", body: JSON.stringify(data) }),
+  updateContentPlan: (id: string, data: Partial<Pick<ContentPlan, "title" | "topic" | "platforms" | "planned_count" | "scheduled_date" | "status" | "notes">> & { version: number }) =>
+    fetchJson<ContentPlan>(`/api/content-plans/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  cancelContentPlan: (id: string, version: number) =>
+    fetchJson<{ id: string; status: string }>(`/api/content-plans/${id}?version=${version}`, { method: "DELETE" }),
+  startContentPlan: (id: string) =>
+    fetchJson<{ plan_id: string; round_id: number; task_id: string; status: string; queued: boolean }>(
+      `/api/content-plans/${id}/start`, { method: "POST" },
+    ),
+  globalOperationsSummary: (days = 30) => fetchJson<GlobalMonitorResponse>(`/api/global-monitor?days=${days}`),
   // === 账号组隔离 ===
   tenants: async () => {
     const result = await fetchJson<TenantListResponse>("/api/tenants");

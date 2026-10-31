@@ -91,3 +91,28 @@ def test_new_builtin_presets_are_seeded_after_first_install(conn, monkeypatch):
     monkeypatch.setattr(repository, "PRESETS", [*repository.PRESETS, new_item])
     assert seed_builtins(conn) == {"imported": 1}
     assert get_preset(conn, "future_builtin")["is_builtin"] is True
+
+def test_new_tenant_business_defaults_do_not_inherit_deployment_persona():
+    from types import SimpleNamespace
+
+    from src.core.tenant_business_config import reset_new_tenant_business_defaults
+
+    goal = SimpleNamespace(
+        persona_keywords=["AI教育", "在线课程"],
+        positioning="AI教育内容运营",
+        forbidden_directions=["竞品攻击"],
+        goal_mode="per_platform",
+        platform_personas={"xhs": object()},
+        platform_links=[{"source": "xhs", "target": "douyin"}],
+        redline_keywords=["赌博", "色情"],
+    )
+    reset_new_tenant_business_defaults(SimpleNamespace(ultimate_goal=goal))
+    assert goal.persona_keywords == []
+    assert goal.positioning == ""
+    assert goal.forbidden_directions == []
+    assert goal.goal_mode == "unified"
+    assert goal.platform_personas == {}
+    assert goal.platform_links == []
+    # 全局安全红线不因清空业务画像而被移除。
+    assert goal.redline_keywords == ["赌博", "色情"]
+

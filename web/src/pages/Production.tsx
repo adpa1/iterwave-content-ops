@@ -96,6 +96,7 @@ export default function Production() {
   const [reviewSearch, setReviewSearch] = useState("");
   const [reviewPlatform, setReviewPlatform] = useState<"all" | Platform>("all");
   const [reviewState, setReviewState] = useState("all");
+  const [reviewMobilePane, setReviewMobilePane] = useState<"list" | "editor" | "preview">("list");
   // 搜索结果可带目标内容 ID；加载轮次内容后自动选中并填入编辑区。
   const [selectedContentId, setSelectedContentId] = useState<string | null>(() => {
     const value = new URLSearchParams(window.location.search).get("focusContent");
@@ -1035,9 +1036,15 @@ export default function Production() {
 
       {/* ============ ④ 内容编辑与审核 ============ */}
       {tab === "review" && (
-        <div className="review-layout">
+        <>
+        <div className="review-mobile-tabs" role="group" aria-label="审核工作台视图">
+          {([["list", "内容列表"], ["editor", "文案编辑"], ["preview", "卡片预览"]] as const).map(([key, label]) => (
+            <button key={key} className={reviewMobilePane === key ? "btn sm primary" : "btn sm"} aria-pressed={reviewMobilePane === key} onClick={() => setReviewMobilePane(key)}>{label}</button>
+          ))}
+        </div>
+        <div className={`review-layout review-layout-mobile-${reviewMobilePane}`}>
           {/* 左：本轮内容列表 */}
-          <div className="panel">
+          <div className="panel review-list-panel">
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">✎</span>本轮内容（{filteredReviewContents.length}/{contents.length}）</div>
@@ -1071,7 +1078,7 @@ export default function Production() {
                     cursor: "pointer",
                     border: selectedContentId === c.id ? "2px solid var(--blue)" : "2px solid transparent",
                   }}
-                  onClick={() => setSelectedContentId(c.id)}
+                  onClick={() => { setSelectedContentId(c.id); setReviewMobilePane("editor"); }}
                 >
                   <i className={`task-prio ${GUARD_CLS[c.guard_outcome ?? ""] ?? "gray"}`} />
                   <div className="task-main">
@@ -1087,7 +1094,7 @@ export default function Production() {
           </div>
 
           {/* 中：文案编辑 */}
-          <div className="panel">
+          <div className="panel review-editor-panel">
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">⌕</span>编辑与重检</div>
@@ -1297,6 +1304,7 @@ export default function Production() {
             </div>
           )}
         </div>
+        </>
       )}
 
       {/* ============ ⑤ 轮次状态 ============ */}

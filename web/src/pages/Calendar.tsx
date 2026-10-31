@@ -1,16 +1,37 @@
 import { useEffect, useMemo, useState } from "react";
 import { useApp } from "../AppContext";
 import EmptyHint from "../components/EmptyHint";
-import { api, ScheduleEvent, UnscheduledDraft } from "../api";
+import { api, ContentPlan, Platform, ScheduleEvent, UnscheduledDraft } from "../api";
 import { platformMeta } from "../platforms";
+
+const PLAN_STATUS_LABEL: Record<ContentPlan["status"], string> = {
+  planned: "待执行",
+  generating: "生产中",
+  generated: "已生成",
+  reviewed: "已审核",
+  archived: "已归档",
+  cancelled: "已取消",
+  failed: "失败，可重试",
+};
 
 export default function Calendar() {
   const { showToast, withPending, isPending } = useApp();
   const today = new Date();
-  const year = today.getFullYear();
-  const month = today.getMonth();
+  const [cursorDate, setCursorDate] = useState(() => new Date(today));
+  const [viewMode, setViewMode] = useState<"month" | "week" | "day">("month");
+  const year = cursorDate.getFullYear();
+  const month = cursorDate.getMonth();
 
   const [events, setEvents] = useState<ScheduleEvent[]>([]);
+  const [plans, setPlans] = useState<ContentPlan[]>([]);
+  const [planDetail, setPlanDetail] = useState<(ContentPlan & { drafts: Array<{ draft_id: string; platform: Platform; status: string; title: string; round_id: number | null }>; rounds: Array<{ round_id: number; task_id: string | null; created_at: string }> }) | null>(null);
+  const [planDetailLoading, setPlanDetailLoading] = useState(false);
+  const [planTitle, setPlanTitle] = useState("");
+  const [planTopic, setPlanTopic] = useState("");
+  const [planDate, setPlanDate] = useState(_fmt(today));
+  const [planCount, setPlanCount] = useState("1");
+  const [planPlatforms, setPlanPlatforms] = useState<Platform[]>([]);
+  const [planNotes, setPlanNotes] = useState("");
   const [unscheduled, setUnscheduled] = useState<UnscheduledDraft[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -19,27 +40,78 @@ export default function Calendar() {
   const [draftTime, setDraftTime] = useState("");
   const [pendingDraft, setPendingDraft] = useState<Record<string, string>>({});
 
-  // 本周 7 天（以周日为周首）
-  const startOfWeek = useMemo(() => {
-    const d = new Date(today);
-    d.setDate(today.getDate() - today.getDay());
+  // API 查询范围与当前视图一致：月视图覆盖完整日历网格，周/日视图只请求可见日期。
+  const visibleStart = useMemo(() => {
+    if (viewMode === "day") return new Date(year, month, cursorDate.getDate());
+    if (viewMode === "week") {
+      const d = new Date(cursorDate);
+      d.setDate(d.getDate() - d.getDay());
+      d.setHours(0, 0, 0, 0);
+      return d;
+    }
+    const d = new Date(year, month, 1);
+    d.setDate(1 - d.getDay());
     return d;
-  }, [today.toDateString()]);
-  const endOfWeek = useMemo(() => {
-    const d = new Date(startOfWeek);
-    d.setDate(startOfWeek.getDate() + 6);
+  }, [viewMode, year, month, cursorDate]);
+  const visibleEndExclusive = useMemo(() => {
+    if (viewMode === "day") {
+      const d = new Date(visibleStart);
+      d.setDate(d.getDate() + 1);
+      return d;
+    }
+    if (viewMode === "week") {
+      const d = new Date(visibleStart);
+      d.setDate(d.getDate() + 7);
+      return d;
+    }
+    const d = new Date(year, month + 1, 1);
+    d.setDate(d.getDate() + (6 - d.getDay()) + 1);
     return d;
-  }, [startOfWeek.toDateString()]);
+  }, [viewMode, visibleStart, year, month]);
+  const days = useMemo(() => {
+    const result: { date: Date; key: string; events: ScheduleEvent[]; plans: ContentPlan[]; inMonth: boolean }[] = [];
+    for (let d = new Date(visibleStart); d < visibleEndExclusive; d.setDate(d.getDate() + 1)) {
+      const date = new Date(d);
+      const key = _fmt(date);
+      result.push({ date, key, events: events.filter((event) => _eventDate(event) === key), plans: plans.filter((plan) => plan.scheduled_date === key && plan.status !== "cancelled" && plan.status !== "archived"), inMonth: date.getMonth() === month });
+    }
+    return result;
+  }, [visibleStart, visibleEndExclusive, events, plans, month]);
+
+  const openPlanDetails = async (planId: string) => {
+    setPlanDetailLoading(true);
+    try { setPlanDetail(await api.contentPlan(planId)); }
+    catch (e: any) { showToast(`加载计划详情失败：${e?.message ?? e}`, "error"); }
+    finally { setPlanDetailLoading(false); }
+  };
+
+  const startPlan = async (plan: ContentPlan) => {
+    try {
+      const result = await withPending(`content-plan:start:${plan.id}`, () => api.startContentPlan(plan.id));
+      if (!result) return;
+      showToast(`已加入全局 FIFO 队列：第 ${result.round_id} 轮`, "success");
+      await load();
+    } catch (e: any) { showToast(`启动计划失败：${e?.message ?? e}`, "error"); }
+  };
+
+  const cancelPlan = async (plan: ContentPlan) => {
+    try {
+      await api.cancelContentPlan(plan.id, plan.version);
+      showToast("计划已取消", "success");
+      await load();
+    } catch (e: any) { showToast(`取消失败：${e?.message ?? e}`, "error"); }
+  };
 
   const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const r = await api.schedule(
-        _fmt(startOfWeek),
-        _fmt(new Date(endOfWeek.getTime() + 86_400_000)), // 包含周日
-      );
+      const [r, planResult] = await Promise.all([
+        api.schedule(_fmt(visibleStart), _fmt(visibleEndExclusive)),
+        api.contentPlans(_fmt(visibleStart), _fmt(new Date(visibleEndExclusive.getTime() - 86400000))),
+      ]);
       setEvents(r.items);
+      setPlans(planResult.items);
       setUnscheduled(r.unscheduled ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -48,7 +120,13 @@ export default function Calendar() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { void load(); }, [viewMode, year, month, cursorDate]);
+  useEffect(() => {
+    if (!plans.some((plan) => plan.status === "generating")) return;
+    const timer = window.setInterval(() => { void load(); }, 10000);
+    return () => window.clearInterval(timer);
+  }, [plans, viewMode, year, month, cursorDate]);
+
 
   const platformColors: Record<string, string> = {
     xhs: "#fe2c55", douyin: "#000", wechat_channels: "#07c160", kuaishou: "#ff6a00",
@@ -59,18 +137,6 @@ export default function Calendar() {
     user_published: "用户确认",
     published: "已发布",
   };
-
-  const days: { date: Date; key: string; events: ScheduleEvent[] }[] = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(startOfWeek);
-    d.setDate(startOfWeek.getDate() + i);
-    const key = _fmt(d);
-    days.push({
-      date: d,
-      key,
-      events: events.filter((e) => _eventDate(e) === key),
-    });
-  }
 
   /** 保存排期：datetime-local 的值是 "YYYY-MM-DDTHH:MM"，后端按本地时间解释（R5） */
   const saveSchedule = async (draftId: string, value: string) => {
@@ -106,14 +172,23 @@ export default function Calendar() {
           <h1 className="page-title">内容日历与排期</h1>
           <div className="page-desc">
             以「内容 × 平台 × 发布时间」为最小排期单元。系统永不自动触发发布动作。
-            {events.length > 0 && loading === false && (
-              <span className="tag teal" style={{ marginLeft: 8 }}>
-                本周 {events.length} 条
-              </span>
-            )}
+            {!loading && <span className="tag teal" style={{ marginLeft: 8 }}>
+              当前{viewMode === "month" ? "月" : viewMode === "week" ? "周" : "日"} {events.length} 条
+            </span>}
           </div>
         </div>
-        <div className="head-actions">
+        <div className="head-actions calendar-toolbar">
+          <div className="segmented-control" role="group" aria-label="日历视图">
+            {(["month", "week", "day"] as const).map((mode) => (
+              <button key={mode} className={`btn sm ${viewMode === mode ? "primary" : ""}`} aria-pressed={viewMode === mode} onClick={() => setViewMode(mode)}>
+                {mode === "month" ? "月" : mode === "week" ? "周" : "日"}
+              </button>
+            ))}
+          </div>
+          <button className="btn sm" onClick={() => setCursorDate((d) => shiftCalendarDate(d, viewMode, -1))}>上一{viewMode === "month" ? "月" : viewMode === "week" ? "周" : "日"}</button>
+          <button className="btn sm" onClick={() => setCursorDate(new Date(today))}>今天</button>
+          <button className="btn sm" onClick={() => setCursorDate((d) => shiftCalendarDate(d, viewMode, 1))}>下一{viewMode === "month" ? "月" : viewMode === "week" ? "周" : "日"}</button>
+          <input aria-label="选择日历日期" className="field" type="date" value={_fmt(cursorDate)} onChange={(e) => { if (e.target.value) { const [y, m, d] = e.target.value.split("-").map(Number); setCursorDate(new Date(y, m - 1, d)); } }} />
           <button className="btn sm" onClick={load} disabled={loading}>↻ 刷新</button>
         </div>
       </div>
@@ -129,74 +204,95 @@ export default function Calendar() {
         <div className="panel-head">
           <div>
             <div className="panel-title">
-              <span className="icon">◷</span>{year} 年 {month + 1} 月 · 本周排期
+              <span className="icon">◷</span>{viewMode === "month" ? `${year} 年 ${month + 1} 月` : viewMode === "week" ? `${_fmt(visibleStart)} — ${_fmt(new Date(visibleEndExclusive.getTime() - 86400000))}` : _fmt(cursorDate)} · {viewMode === "month" ? "月视图" : viewMode === "week" ? "周视图" : "日视图"}
             </div>
             <div className="panel-sub">
-              按平台色标显示每篇草稿的计划发布时间；点击可修改排期。
+              月视图查看整月分布，周／日视图聚焦具体排期；点击可编辑草稿时间。排期不会触发自动发布。
             </div>
           </div>
         </div>
-        <div className="grid" style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 10 }}>
-          {["日", "一", "二", "三", "四", "五", "六"].map((d, i) => (
-            <div key={i} style={{ textAlign: "center", fontSize: 12, fontWeight: 600, color: "var(--muted)" }}>{d}</div>
-          ))}
-          {days.map((d, i) => {
-            const isToday = d.date.toDateString() === today.toDateString();
-            return (
-              <div key={i} style={{
-                border: "1px solid var(--line)", borderRadius: 10, padding: 10, minHeight: 120,
-                background: isToday ? "var(--blue-weak)" : "#fff",
-              }}>
-                <div style={{
-                  fontSize: 16, fontWeight: 700,
-                  color: isToday ? "var(--blue)" : "var(--text)",
-                }}>
-                  {d.date.getDate()}
-                </div>
-                {loading && (
-                  <div className="loading" style={{ marginTop: 6, fontSize: 11, color: "var(--muted)" }}>
-                    <div className="spinner" />加载中...
+        {viewMode === "month" ? (
+          <div className="calendar-month-scroll">
+            <div className="calendar-month-grid" style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 8 }}>
+              {["日", "一", "二", "三", "四", "五", "六"].map((d, i) => (
+                <div key={i} style={{ textAlign: "center", fontSize: 12, fontWeight: 600, color: "var(--muted)" }}>{d}</div>
+              ))}
+              {days.map((d) => {
+                const isToday = d.date.toDateString() === today.toDateString();
+                return (
+                  <div key={d.key} style={{
+                    border: "1px solid var(--line)", borderRadius: 10, padding: 10, minHeight: 120,
+                    background: isToday ? "var(--blue-weak)" : "var(--surface)",
+                    opacity: d.inMonth ? 1 : 0.48,
+                  }}>
+                    <button className="calendar-day-number" onClick={() => { setCursorDate(d.date); setViewMode("day"); }} aria-label={`查看 ${d.key}`}>
+                      {d.date.getDate()}
+                    </button>
+                    {loading && <div className="loading" style={{ marginTop: 6, fontSize: 11, color: "var(--muted)" }}><div className="spinner" />加载中...</div>}
+                    {!loading && d.events.length === 0 && <div style={{ marginTop: 6, fontSize: 11, color: "var(--subtle)" }}>空</div>}
+                    {d.plans.map((plan) => (
+                      <button type="button" key={plan.id} className="calendar-plan-chip" title={`${plan.title} · ${plan.planned_count} 篇/平台`} onClick={() => void openPlanDetails(plan.id)}>
+                        <strong>计划</strong><span>{plan.title}</span>
+                      </button>
+                    ))}
+                    {d.events.map((e) => {
+                      const editable = e.status === "draft_pending" || e.status === "draft_saved";
+                      return (
+                        <button type="button" key={e.id} className="calendar-event"
+                          title={editable ? `${e.title} · 点击改排期` : `${e.title} · ${statusLabel[e.status] ?? e.status}（不可改排期）`}
+                          disabled={!editable}
+                          onClick={() => { setSelected({ id: e.id, title: e.title }); setDraftTime(_toLocalInput(e.scheduled || e.saved_at)); }}
+                          style={{ borderLeft: `3px solid ${platformColors[e.platform] || "#666"}`, outline: selected?.id === e.id ? "2px solid var(--blue)" : "none" }}>
+                          <span className="calendar-event-title">{e.title}</span>
+                          <span className="calendar-event-meta">{e.scheduled ? e.scheduled.slice(11, 16) : "未排期"}{statusLabel[e.status] ? ` · ${statusLabel[e.status]}` : ""}</span>
+                        </button>
+                      );
+                    })}
                   </div>
-                )}
-                {!loading && d.events.length === 0 && (
-                  <div style={{ marginTop: 6, fontSize: 11, color: "var(--subtle)" }}>空</div>
-                )}
-                {d.events.map((e, j) => {
-                  // 只有 draft_pending / draft_saved 可改排期；其余状态点了会被后端 409
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <div className="calendar-agenda">
+            {days.map((d) => (
+              <section className="calendar-agenda-day" key={d.key}>
+                <button className="calendar-agenda-date" onClick={() => { setCursorDate(d.date); setViewMode("day"); }}>
+                  <strong>{d.date.toLocaleDateString("zh-CN", { weekday: "long" })}</strong>
+                  <span>{d.key}{d.date.toDateString() === today.toDateString() ? " · 今天" : ""}</span>
+                </button>
+                {d.plans.map((plan) => (
+                  <div className="calendar-agenda-plan" key={plan.id}>
+                    <button className="calendar-plan-label" onClick={() => void openPlanDetails(plan.id)}>计划详情</button>
+                    <span className="calendar-agenda-copy"><strong>{plan.title}</strong><small>{plan.planned_count} 篇/平台 · {plan.platforms.length ? plan.platforms.map((p) => platformMeta(p).label).join("、") : "使用启用平台"} · {PLAN_STATUS_LABEL[plan.status]}</small></span>
+                    {(plan.status === "planned" || plan.status === "failed") && (
+                      <button className="btn sm primary" disabled={isPending(`content-plan:start:${plan.id}`)} onClick={() => void startPlan(plan)}>
+                        {isPending(`content-plan:start:${plan.id}`) ? "入队中…" : plan.status === "failed" ? "重试入队" : "加入全局队列"}
+                      </button>
+                    )}
+                    {(plan.status === "planned" || plan.status === "failed" || plan.status === "generating") && (
+                      <button className="btn sm" onClick={() => void cancelPlan(plan)}>取消</button>
+                    )}
+                  </div>
+                ))}
+                {loading ? <div className="loading"><div className="spinner" />加载中...</div> : d.events.length === 0 && d.plans.length === 0 ? (
+                  <div className="calendar-agenda-empty">当天没有排期</div>
+                ) : d.events.map((e) => {
                   const editable = e.status === "draft_pending" || e.status === "draft_saved";
                   return (
-                  <div
-                    key={j}
-                    title={editable
-                      ? `${e.title} · 点击改排期`
-                      : `${e.title} · ${statusLabel[e.status] ?? e.status}（不可改排期）`}
-                    onClick={editable ? () => {
-                      setSelected({ id: e.id, title: e.title });
-                      setDraftTime(_toLocalInput(e.scheduled || e.saved_at));
-                    } : undefined}
-                    style={{
-                      marginTop: 6, padding: "4px 8px", borderRadius: 6, fontSize: 11, color: "var(--text)",
-                      background: "var(--surface-2)",
-                      borderLeft: `3px solid ${platformColors[e.platform] || "#666"}`,
-                      cursor: editable ? "pointer" : "not-allowed",
-                      opacity: editable ? 1 : 0.62,
-                      outline: selected?.id === e.id ? "2px solid var(--blue)" : "none",
-                    }}
-                  >
-                    <div style={{ fontWeight: 600 }}>
-                      {e.title.length > 16 ? e.title.slice(0, 15) + "…" : e.title}
-                    </div>
-                    <div style={{ color: "var(--muted)", marginTop: 2, fontSize: 10 }}>
-                      {e.scheduled ? e.scheduled.slice(11, 16) : "未排期"}
-                      {statusLabel[e.status] ? ` · ${statusLabel[e.status]}` : ""}
-                    </div>
-                  </div>
+                    <button type="button" key={e.id} className="calendar-agenda-event" disabled={!editable}
+                      onClick={() => { setSelected({ id: e.id, title: e.title }); setDraftTime(_toLocalInput(e.scheduled || e.saved_at)); }}>
+                      <span className="calendar-agenda-time">{e.scheduled ? e.scheduled.slice(11, 16) : "—"}</span>
+                      <span className="calendar-agenda-color" style={{ background: platformColors[e.platform] || "#666" }} />
+                      <span className="calendar-agenda-copy"><strong>{e.title}</strong><small>{platformMeta(e.platform).label} · {statusLabel[e.status] ?? e.status}</small></span>
+                      <span className="calendar-agenda-action">{editable ? "编辑排期" : "不可编辑"}</span>
+                    </button>
                   );
                 })}
-              </div>
-            );
-          })}
-        </div>
+              </section>
+            ))}
+          </div>
+        )}
 
         {selected && (
           <div className="panel" style={{ marginTop: 14, borderColor: "var(--blue)" }}>
@@ -238,6 +334,55 @@ export default function Calendar() {
           </div>
         )}
       </div>
+
+      {planDetail && (
+        <div className="calendar-plan-modal" role="dialog" aria-modal="true" aria-label="内容计划详情" onClick={() => setPlanDetail(null)}>
+          <section className="panel" onClick={(e) => e.stopPropagation()}>
+            <div className="panel-head">
+              <div><div className="panel-title">{planDetail.title}</div><div className="panel-sub">{planDetail.scheduled_date} · {planDetail.planned_count} 篇/平台 · {PLAN_STATUS_LABEL[planDetail.status]}</div></div>
+              <button className="btn sm" onClick={() => setPlanDetail(null)}>关闭</button>
+            </div>
+            {planDetail.topic && <div className="note">{planDetail.topic}</div>}
+            {planDetail.notes && <div className="note">备注：{planDetail.notes}</div>}
+            <div className="calendar-plan-detail-grid">
+              <div><strong>生产轮次（{planDetail.rounds.length}）</strong>
+                {planDetail.rounds.length ? planDetail.rounds.map((round) => <div className="calendar-plan-detail-row" key={round.round_id}>第 {round.round_id} 轮 · {round.task_id ? `任务 ${round.task_id.slice(0, 8)}` : "尚未入队"}</div>) : <div className="note">尚未启动生产</div>}
+              </div>
+              <div><strong>关联草稿（{planDetail.drafts.length}）</strong>
+                {planDetail.drafts.length ? planDetail.drafts.map((draft) => <div className="calendar-plan-detail-row" key={draft.draft_id}>{draft.title || draft.draft_id} · {platformMeta(draft.platform).label} · {draft.status}</div>) : <div className="note">生产完成后自动回写草稿</div>}
+              </div>
+            </div>
+            {planDetailLoading && <div className="loading"><div className="spinner" />刷新中…</div>}
+          </section>
+        </div>
+      )}
+
+      <section className="panel calendar-plan-create">
+        <div className="panel-head">
+          <div><div className="panel-title">内容计划</div><div className="panel-sub">计划独立于草稿保存；创建不触发生产，点击「加入全局队列」才开始生成，发布仍需人工确认。</div></div>
+        </div>
+        <div className="calendar-plan-form">
+          <label>计划名称<input className="field" value={planTitle} maxLength={160} onChange={(e) => setPlanTitle(e.target.value)} placeholder="例如：本周产品功能系列" /></label>
+          <label>选题方向备注（非过滤条件）<input className="field" value={planTopic} maxLength={500} onChange={(e) => setPlanTopic(e.target.value)} placeholder="选题方向备注；生产时仍从选题池取题" /></label>
+          <label>计划日期<input className="field" type="date" value={planDate} onChange={(e) => setPlanDate(e.target.value)} /></label>
+          <label>每个平台篇数<input className="field" type="number" min="1" max="50" value={planCount} onChange={(e) => setPlanCount(e.target.value)} /></label>
+          <label className="calendar-plan-platforms">目标平台
+            <span>{(["xhs", "douyin", "wechat_channels", "kuaishou"] as Platform[]).map((platform) => (
+              <label key={platform} className="calendar-plan-check"><input type="checkbox" checked={planPlatforms.includes(platform)} onChange={(e) => setPlanPlatforms((old) => e.target.checked ? [...old, platform] : old.filter((p) => p !== platform))} />{platformMeta(platform).label}</label>
+            ))}</span>
+          </label>
+          <label className="calendar-plan-notes">备注<textarea className="field" rows={2} value={planNotes} maxLength={4000} onChange={(e) => setPlanNotes(e.target.value)} placeholder="可选" /></label>
+          <button className="btn primary" disabled={!planTitle.trim() || !planDate || Number(planCount) < 1 || Number(planCount) > 50 || isPending("content-plan:create")} onClick={async () => {
+            try {
+              await withPending("content-plan:create", () => api.createContentPlan({ title: planTitle.trim(), topic: planTopic.trim(), platforms: planPlatforms, planned_count: Number(planCount), scheduled_date: planDate, notes: planNotes.trim() }));
+              showToast("内容计划已创建", "success");
+              setPlanTitle(""); setPlanTopic(""); setPlanCount("1"); setPlanPlatforms([]); setPlanNotes("");
+              setCursorDate(new Date(`${planDate}T12:00:00`));
+              await load();
+            } catch (e: any) { showToast(`创建计划失败：${e?.message ?? e}`, "error"); }
+          }}>{isPending("content-plan:create") ? "创建中…" : "创建计划"}</button>
+        </div>
+      </section>
 
       {/* 未排期草稿：直接挑选时间写入排期 */}
       <div className="panel">
@@ -293,6 +438,13 @@ export default function Calendar() {
       </div>
     </>
   );
+}
+
+function shiftCalendarDate(date: Date, mode: "month" | "week" | "day", direction: number): Date {
+  if (mode === "month") return new Date(date.getFullYear(), date.getMonth() + direction, 1);
+  const next = new Date(date);
+  next.setDate(next.getDate() + (mode === "week" ? 7 : 1) * direction);
+  return next;
 }
 
 function _fmt(d: Date): string {

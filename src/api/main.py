@@ -230,6 +230,11 @@ def _build_tenant_runtime_context(
     cfg = load_config()
     base_llm_config = cfg.llm.model_dump()
     tenant = tenant_registry.get(tenant_id)
+    if tenant_id != "default":
+        # 部署级 config.yaml 只提供基础默认值，不能把默认账号组的行业画像带进新账号组。
+        # 后续会从该账号组自己的 tenant_settings / legacy override 恢复其显式配置。
+        from src.core.tenant_business_config import reset_new_tenant_business_defaults
+        reset_new_tenant_business_defaults(cfg)
     tenant_paths = None
     if tenant_id != "default":
         tenant_paths = tenant_registry.paths(
@@ -1211,6 +1216,9 @@ class CreateRoundRequest(BaseModel):
     goal_id: Optional[str] = None
     topic_count: int = 5
     platforms: Optional[list[str]] = None
+    # 内容计划 ID/版本仅参与请求去重键，不改变生产配置来源。
+    content_plan_id: Optional[str] = None
+    content_plan_version: Optional[int] = None
 
 class NotifyRuleRequest(BaseModel):
     scenario: str
@@ -3451,9 +3459,11 @@ def _register_routes(app: FastAPI) -> None:
         for tenant in registry.list():
             tenant_id = tenant["id"]
             paths = registry.paths(tenant_id, name=str(tenant.get("name") or tenant_id))
-            row = {"tenant_id": tenant_id, "tenant_name": tenant["name"], "created_at": tenant.get("created_at"), "db_available": False, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0, "registered_accounts": 0, "registered_accounts_active": 0, "platforms": {}}
+            row = {"tenant_id": tenant_id, "tenant_name": tenant["name"], "created_at": tenant.get("created_at"), "db_available": False, "db_status": "uninitialized", "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0, "registered_accounts": 0, "registered_accounts_active": 0, "platforms": {}}
             db_file = paths.db_file
             if db_file.exists():
+                # 文件存在但读取失败才是故障；尚未创建数据库属于正常的未初始化状态。
+                row["db_status"] = "unavailable"
                 conn = None
                 try:
                     conn = sqlite3.connect(db_file.as_uri() + "?mode=ro", uri=True, timeout=2)
@@ -3494,10 +3504,52 @@ def _register_routes(app: FastAPI) -> None:
                             platform = item["platform"]
                             row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0, "registered_accounts": 0})["registered_accounts"] = int(item["n"])
                     row["db_available"] = True
+                    row["db_status"] = "available"
                 except (sqlite3.Error, OSError) as exc:
                     logger.warning("global monitor skipped tenant=%s: %s", tenant_id, exc)
                 finally:
                     if conn is not None: conn.close()
+            # 从每个账号组自己的常驻运行时读取真实平台登录态和调度器状态。
+            # 未初始化/启动失败的组显式标记 unavailable，不借用当前活动账号组数据。
+            runtime = {
+                "available": False, "enabled_platforms": [], "logged_in_platforms": [],
+                "platforms_without_login": [], "circuit_broken_platforms": [],
+                "scheduler_running": None, "scheduler_job_count": None,
+                "scheduler_enabled_count": None, "active_rounds": None,
+            }
+            context = _tenant_runtime_contexts.get(tenant_id)
+            if context is not None:
+                try:
+                    cfg = context["cfg"]
+                    enabled = cfg.platforms.enabled_keys()
+                    from src.core.login_manager import has_login_state
+                    login_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
+                    logged = [
+                        platform.value for platform in Platform
+                        if platform.value in enabled and has_login_state(platform, data_dir=login_dir)
+                    ]
+                    scheduler = context.get("scheduler")
+                    jobs = scheduler.scheduler.get_jobs() if scheduler is not None else []
+                    enabled_jobs = sum(1 for job in cfg.scheduler.jobs.values() if job.enabled)
+                    cb_events = context["cb"].active_events()
+                    runtime.update({
+                        "available": True,
+                        "enabled_platforms": enabled,
+                        "logged_in_platforms": logged,
+                        "platforms_without_login": [p for p in enabled if p not in logged],
+                        "circuit_broken_platforms": sorted({event["platform"] for event in cb_events}),
+                        "scheduler_running": bool(scheduler and scheduler.scheduler.running),
+                        "scheduler_job_count": len(jobs),
+                        "scheduler_enabled_count": enabled_jobs,
+                        "active_rounds": int(context["conn"].execute(
+                            "SELECT COUNT(*) FROM spiral_rounds WHERE status IN "
+                            "('producing','awaiting_publish','collecting_metrics')"
+                        ).fetchone()[0]),
+                    })
+                except Exception as exc:
+                    logger.warning("global runtime status unavailable tenant=%s error=%s", tenant_id, type(exc).__name__)
+            row["runtime"] = runtime
+
             totals["tenants"] += 1
             if row["db_available"]: totals["available_tenants"] += 1
             for key in ("contents_period", "contents_all", "drafts_all", "drafts_pending", "drafts_saved", "drafts_published", "drafts_failed", "media_active", "media_usage", "registered_accounts", "registered_accounts_active"): totals[key] += row[key]
@@ -3506,67 +3558,6 @@ def _register_routes(app: FastAPI) -> None:
                     platform_totals[platform]["registered_accounts"] += int(values.get("registered_accounts", 0))
             tenant_rows.append(row)
         return {"days": days, "since": since, "totals": totals, "platform_totals": platform_totals, "tenants": tenant_rows, "account_count_note": "账号数量来自用户登记的平台账号标识，按账号组和平台去重；未登记的账号不会自动推断计入。"}
-
-    @app.get("/api/global-monitor")
-    def global_monitor(days: int = Query(30, ge=1, le=365)):
-        """只读跨账号组汇总。每个数据库独立打开，缺表/未初始化数据库按不可用处理，不影响其他账号组。"""
-        registry = _g().get("tenant_registry")
-        if registry is None:
-            raise HTTPException(503, "账号组注册表尚未初始化")
-        from datetime import timedelta
-        since = (_now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-        tenant_rows = []
-        totals = {"tenants": 0, "available_tenants": 0, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0}
-        platform_totals = {p: {"contents": 0, "drafts": 0} for p in ("xhs", "douyin", "kuaishou", "wechat_channels")}
-        for tenant in registry.list():
-            tenant_id = tenant["id"]
-            paths = registry.paths(tenant_id, name=str(tenant.get("name") or tenant_id))
-            row = {"tenant_id": tenant_id, "tenant_name": tenant["name"], "created_at": tenant.get("created_at"), "db_available": False, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0, "platforms": {}}
-            db_file = paths.db_file
-            if db_file.exists():
-                conn = None
-                try:
-                    conn = sqlite3.connect(db_file.as_uri() + "?mode=ro", uri=True, timeout=2)
-                    conn.row_factory = sqlite3.Row
-                    tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
-                    if "contents" in tables:
-                        row["contents_all"] = int(conn.execute("SELECT COUNT(*) FROM contents").fetchone()[0])
-                        cols = {r["name"] for r in conn.execute("PRAGMA table_info(contents)").fetchall()}
-                        if "created_at" in cols:
-                            row["contents_period"] = int(conn.execute("SELECT COUNT(*) FROM contents WHERE datetime(created_at) >= datetime(?)", (since,)).fetchone()[0])
-                            for item in conn.execute("SELECT platform, COUNT(*) AS n FROM contents WHERE datetime(created_at) >= datetime(?) GROUP BY platform", (since,)).fetchall():
-                                platform = item["platform"]
-                                row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0})["contents_period"] = int(item["n"])
-                        for item in conn.execute("SELECT platform, COUNT(*) AS n FROM contents GROUP BY platform").fetchall():
-                            platform = item["platform"]
-                            row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0})["contents"] = int(item["n"])
-                            if platform in platform_totals: platform_totals[platform]["contents"] += int(item["n"])
-                    if "drafts" in tables:
-                        row["drafts_all"] = int(conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0])
-                        for item in conn.execute("SELECT status, COUNT(*) AS n FROM drafts GROUP BY status").fetchall():
-                            status, count = str(item["status"]), int(item["n"])
-                            if status in ("draft_pending", "pending", "pending_review"): row["drafts_pending"] += count
-                            elif status == "draft_saved": row["drafts_saved"] += count
-                            elif status in ("user_published", "data_fetching", "published"): row["drafts_published"] += count
-                            elif status in ("failed", "error"): row["drafts_failed"] += count
-                        for item in conn.execute("SELECT platform, COUNT(*) AS n FROM drafts GROUP BY platform").fetchall():
-                            platform = item["platform"]
-                            row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0})["drafts"] = int(item["n"])
-                            if platform in platform_totals: platform_totals[platform]["drafts"] += int(item["n"])
-                    if "media_assets" in tables:
-                        row["media_active"] = int(conn.execute("SELECT COUNT(*) FROM media_assets WHERE status = 'active'").fetchone()[0])
-                    if "media_asset_usages" in tables:
-                        row["media_usage"] = int(conn.execute("SELECT COUNT(*) FROM media_asset_usages").fetchone()[0])
-                    row["db_available"] = True
-                except (sqlite3.Error, OSError) as exc:
-                    logger.warning("global monitor skipped tenant=%s: %s", tenant_id, exc)
-                finally:
-                    if conn is not None: conn.close()
-            totals["tenants"] += 1
-            if row["db_available"]: totals["available_tenants"] += 1
-            for key in ("contents_period", "contents_all", "drafts_all", "drafts_pending", "drafts_saved", "drafts_published", "drafts_failed", "media_active", "media_usage"): totals[key] += row[key]
-            tenant_rows.append(row)
-        return {"days": days, "since": since, "totals": totals, "platform_totals": platform_totals, "tenants": tenant_rows, "account_count_note": "当前数据模型未保存可去重的平台账号身份；此处不将平台数或快照数冒充账号数。"}
 
     # --- 访问保护（口令 / 会话 / 脚本令牌）---
     @app.get("/api/auth/status")
@@ -3842,12 +3833,27 @@ def _register_routes(app: FastAPI) -> None:
 
     # --- 全局任务队列（跨账号组，仅供唯一运营者查看）---
     @app.get("/api/task-queue")
-    def list_global_task_queue(limit: int = Query(500, ge=1, le=500)):
+    def list_global_task_queue(
+        limit: int = Query(500, ge=1, le=500),
+        scope: str = Query("all", pattern="^(all|active|history|failed)$"),
+        page: int = Query(1, ge=1),
+        page_size: int = Query(20, ge=1, le=100),
+        task_type: str | None = Query(None, min_length=1, max_length=80),
+    ):
         if _task_queue is None:
             raise HTTPException(503, "全局任务队列尚未初始化")
         registry = _g().get("tenant_registry")
+        if scope == "all":
+            tasks = _task_queue.list(limit=limit)
+            total = None
+        else:
+            tasks, total = _task_queue.list_page(
+                page=1 if scope in {"active", "failed"} else page,
+                page_size=500 if scope in {"active", "failed"} else page_size,
+                scope=scope, task_type=task_type if scope == "history" else None,
+            )
         items = []
-        for task in _task_queue.list(limit=limit):
+        for task in tasks:
             try:
                 tenant_name = registry.get(task.tenant_id)["name"] if registry else task.tenant_id
             except TenantError:
@@ -3862,7 +3868,14 @@ def _register_routes(app: FastAPI) -> None:
                 "finished_at": task.finished_at, "attempts": task.attempts,
                 "error_code": task.error_code, "error_message": task.error_message,
             })
-        return {"items": items}
+        response = {"items": items}
+        if scope != "all":
+            response.update({
+                "total": total, "page": 1 if scope == "active" else page,
+                "page_size": 500 if scope == "active" else page_size,
+                "pages": 1 if scope == "active" else max(1, (total + page_size - 1) // page_size),
+            })
+        return response
 
     @app.get("/api/task-queue/{task_id}")
     def get_global_task(task_id: str):
@@ -4022,6 +4035,71 @@ def _register_routes(app: FastAPI) -> None:
             "running": task.status in ("queued", "running"),
             "queued": task.status == "queued", "status": task.status,
         }
+
+    @app.post("/api/content-plans/{plan_id}/start", status_code=202)
+    async def start_content_plan(plan_id: str):
+        conn = _g()["conn"]
+        plan = conn.execute("SELECT * FROM content_plans WHERE id=?", (plan_id,)).fetchone()
+        if plan is None:
+            raise HTTPException(404, "计划不存在")
+        if plan["status"] not in ("planned", "failed"):
+            raise HTTPException(409, "只有待执行或失败的计划可以加入生产队列")
+        try:
+            platforms = json.loads(plan["platforms_json"] or "[]")
+        except (TypeError, ValueError):
+            platforms = []
+        if not platforms:
+            platforms = _g()["cfg"].platforms.enabled_keys()
+        if not platforms:
+            raise HTTPException(422, "计划没有目标平台，当前也没有启用的平台")
+        allowed_platforms = set(_g()["cfg"].platforms.model_dump().keys())
+        if any(p not in allowed_platforms for p in platforms):
+            raise HTTPException(422, "计划包含当前账号组未配置的平台")
+        round_result = create_round(CreateRoundRequest(
+            topic_count=int(plan["planned_count"]), platforms=platforms,
+            content_plan_id=plan_id, content_plan_version=int(plan["version"]),
+        ))
+        round_id = int(round_result["id"])
+        now = _now().isoformat(timespec="seconds")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                "UPDATE content_plans SET status='generating',platforms_json=?,version=version+1,updated_at=? "
+                "WHERE id=? AND version=? AND status IN ('planned','failed')",
+                (json.dumps(platforms, ensure_ascii=False), now, plan_id, int(plan["version"])),
+            )
+            if cursor.rowcount != 1:
+                raise HTTPException(409, "计划已在其他窗口启动，请刷新后重试")
+            conn.execute(
+                "INSERT INTO content_plan_rounds(plan_id,round_id,created_at) VALUES(?,?,?)",
+                (plan_id, round_id, now),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            # create_round 的短时去重可能把并发请求指向同一轮；只有本请求新建的轮次才允许回滚取消。
+            if not round_result.get("deduped"):
+                conn.execute("UPDATE spiral_rounds SET status='cancelled' WHERE id=? AND status='created'", (round_id,))
+                conn.commit()
+            raise
+        try:
+            queued = await run_round(round_id, RunRoundRequest(
+                topic_count=int(plan["planned_count"]), platforms=platforms, save_drafts=True,
+            ))
+        except HTTPException:
+            conn.execute(
+                "UPDATE content_plans SET status='failed',version=version+1,updated_at=? WHERE id=? AND status='generating'",
+                (_now().isoformat(timespec="seconds"), plan_id),
+            )
+            conn.commit()
+            raise
+        conn.execute(
+            "UPDATE content_plan_rounds SET task_id=? WHERE plan_id=? AND round_id=?",
+            (queued["task_id"], plan_id, round_id),
+        )
+        conn.commit()
+        return {"plan_id": plan_id, "round_id": round_id, "task_id": queued["task_id"],
+                "status": queued["status"], "queued": queued["queued"]}
 
     @app.get("/api/rounds/{round_id}/run_status")
     def round_run_status(round_id: int):
@@ -4699,6 +4777,23 @@ def _register_routes(app: FastAPI) -> None:
         return purge_topics(_g()["conn"], req.ids)
 
     # --- Agent 编排（§21）---
+    def _custom_skill_reference_errors(conn, steps: list[dict]) -> list[str]:
+        errors = []
+        for index, step in enumerate(steps):
+            skill_id = str(step.get("skill_id") or step.get("custom_skill_id") or "").strip()
+            if not skill_id:
+                continue
+            row = conn.execute(
+                "SELECT enabled FROM tenant_skill_registry WHERE skill_id=?", (skill_id,),
+            ).fetchone()
+            if row is None:
+                errors.append(f"步骤 {index + 1} 引用了未登记的自定义 Skill：{skill_id}")
+            elif not row["enabled"]:
+                errors.append(f"步骤 {index + 1} 引用的自定义 Skill 尚未启用：{skill_id}")
+            else:
+                errors.append(f"自定义 Skill {skill_id} 已登记，但当前 Agent 编排执行器仅支持内置步骤，不能执行自定义代码")
+        return errors
+
     @app.get("/api/orchestration")
     def get_orchestration():
         from src.core import orchestration as orch
@@ -4707,6 +4802,9 @@ def _register_routes(app: FastAPI) -> None:
     @app.put("/api/orchestration")
     def put_orchestration(req: OrchestrationRequest):
         from src.core import orchestration as orch
+        custom_errors = _custom_skill_reference_errors(_g()["conn"], req.steps)
+        if custom_errors:
+            raise HTTPException(422, "；".join(custom_errors))
         try:
             orch.save_steps(_g()["conn"], req.steps)
         except ValueError as exc:
@@ -4716,7 +4814,9 @@ def _register_routes(app: FastAPI) -> None:
     @app.post("/api/orchestration/validate")
     def validate_orchestration(req: OrchestrationRequest):
         from src.core import orchestration as orch
+        conn = _g()["conn"]
         errors = orch.validate_steps([{"id": s.get("id"), "enabled": bool(s.get("enabled"))} for s in req.steps])
+        errors.extend(_custom_skill_reference_errors(conn, req.steps))
         return {"valid": not errors, "errors": errors}
 
     @app.post("/api/orchestration/reset")
@@ -5193,6 +5293,435 @@ def _register_routes(app: FastAPI) -> None:
             "per_platform": per_platform,
         }
 
+
+    # --- Skills 注册表（仅登记 manifest 元数据，不执行用户上传代码）---
+    @app.get("/api/skills")
+    def list_tenant_skills(enabled: Optional[bool] = Query(None)):
+        conn = _g()["conn"]
+        sql = "SELECT * FROM tenant_skill_registry"
+        params: list = []
+        if enabled is not None:
+            sql += " WHERE enabled = ?"
+            params.append(1 if enabled else 0)
+        sql += " ORDER BY category ASC, name ASC"
+        rows = conn.execute(sql, params).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            for source, target in (("inputs_json", "inputs"), ("outputs_json", "outputs"), ("permissions_json", "permissions")):
+                try:
+                    item[target] = json.loads(item.pop(source) or "[]")
+                except (TypeError, ValueError):
+                    item[target] = []
+            item["enabled"] = bool(item["enabled"])
+            items.append(item)
+        return {"items": items, "total": len(items), "execution_enabled": False}
+
+    @app.post("/api/skills")
+    def register_tenant_skill(req: dict):
+        body = req or {}
+        skill_id = str(body.get("skill_id") or "").strip().lower()
+        name = str(body.get("name") or "").strip()
+        version = str(body.get("version") or "1.0.0").strip()
+        description = str(body.get("description") or "").strip()
+        category = str(body.get("category") or "custom").strip().lower()
+        import re
+        if not re.fullmatch(r"[a-z][a-z0-9_.-]{1,63}", skill_id):
+            raise HTTPException(422, "skill_id 必须以小写字母开头，仅允许小写字母、数字、点、下划线和连字符")
+        builtin_skill_ids = {
+            "topic_scoring", "prompt_variants", "ultimate_goal_check", "image_card",
+            "draft_saver", "circuit_breaker", "rhythm_controller", "ops_engine",
+            "spiral_engine", "zscore_normalize", "recovery_manager", "autogrow",
+            "topic_pool", "orchestration", "scheduler", "platform_readback",
+        }
+        if skill_id in builtin_skill_ids:
+            raise HTTPException(409, "该 ID 已被系统内置 Skill 占用")
+        if not name or len(name) > 120 or len(description) > 2000:
+            raise HTTPException(422, "Skill 名称必填且不超过 120 字，说明不超过 2000 字")
+        if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+            raise HTTPException(422, "版本号必须采用 x.y.z 格式")
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{1,39}", category):
+            raise HTTPException(422, "分类标识无效")
+        inputs = body.get("inputs") or []
+        outputs = body.get("outputs") or []
+        permissions = body.get("permissions") or []
+        if not isinstance(inputs, list) or len(inputs) > 30 or not isinstance(outputs, list) or len(outputs) > 30:
+            raise HTTPException(422, "inputs / outputs 必须是最多 30 项的数组")
+        if not isinstance(permissions, list) or any(p not in {"read_content", "read_plan", "read_drafts"} for p in permissions):
+            raise HTTPException(422, "权限只允许 read_content / read_plan / read_drafts；不允许执行代码或访问外网")
+        for schema in [*inputs, *outputs]:
+            if not isinstance(schema, dict) or len(json.dumps(schema, ensure_ascii=False)) > 2000:
+                raise HTTPException(422, "输入输出 schema 必须为 JSON 对象且单项不超过 2000 字")
+        if len(json.dumps([inputs, outputs], ensure_ascii=False)) > 20000:
+            raise HTTPException(422, "输入输出 schema 总大小不能超过 20000 字")
+        now = _now().isoformat(timespec="seconds")
+        conn = _g()["conn"]
+        if conn.execute("SELECT COUNT(*) FROM tenant_skill_registry").fetchone()[0] >= 200:
+            raise HTTPException(409, "每个账号组最多登记 200 个自定义 Skills")
+        try:
+            conn.execute(
+                "INSERT INTO tenant_skill_registry(skill_id,name,version,description,category,inputs_json,outputs_json,permissions_json,enabled,manifest_version,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,0,1,?,?)",
+                (skill_id, name, version, description, category,
+                 json.dumps(inputs, ensure_ascii=False), json.dumps(outputs, ensure_ascii=False),
+                 json.dumps(sorted(set(permissions)), ensure_ascii=False), now, now),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            raise HTTPException(409, "该 Skill ID 已存在") from exc
+        return {"skill_id": skill_id, "name": name, "version": version, "description": description,
+                "category": category, "inputs": inputs, "outputs": outputs,
+                "permissions": sorted(set(permissions)), "enabled": False,
+                "manifest_version": 1, "created_at": now, "updated_at": now,
+                "execution_enabled": False}
+
+    @app.patch("/api/skills/{skill_id}")
+    def update_tenant_skill(skill_id: str, req: dict):
+        body = req or {}
+        try:
+            expected_version = int(body.get("manifest_version"))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, "更新必须提供当前 manifest_version") from exc
+        if not isinstance(body.get("enabled"), bool):
+            raise HTTPException(422, "enabled 必须是布尔值")
+        conn = _g()["conn"]
+        now = _now().isoformat(timespec="seconds")
+        cursor = conn.execute(
+            "UPDATE tenant_skill_registry SET enabled=?,manifest_version=manifest_version+1,updated_at=? "
+            "WHERE skill_id=? AND manifest_version=?",
+            (1 if body["enabled"] else 0, now, skill_id, expected_version),
+        )
+        conn.commit()
+        if cursor.rowcount != 1:
+            exists = conn.execute("SELECT 1 FROM tenant_skill_registry WHERE skill_id=?", (skill_id,)).fetchone()
+            if exists is None:
+                raise HTTPException(404, "Skill 不存在")
+            raise HTTPException(409, "Skill 已在其他窗口更新，请刷新后重试")
+        return {"skill_id": skill_id, "enabled": body["enabled"],
+                "manifest_version": expected_version + 1, "updated_at": now,
+                "execution_enabled": False}
+
+    @app.delete("/api/skills/{skill_id}")
+    def delete_tenant_skill(skill_id: str):
+        conn = _g()["conn"]
+        row = conn.execute("SELECT enabled FROM tenant_skill_registry WHERE skill_id=?", (skill_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Skill 不存在")
+        if row["enabled"]:
+            raise HTTPException(409, "请先停用 Skill，再删除登记")
+        conn.execute("DELETE FROM tenant_skill_registry WHERE skill_id=?", (skill_id,))
+        conn.commit()
+        return {"skill_id": skill_id, "deleted": True}
+
+    # --- 内容计划（tenant-scoped；计划本身永不触发发布）---
+    def _sync_content_plan_task_state(conn, plan_row):
+        """队列恢复/进程重启后，按共享队列终态修复计划状态，避免卡在 generating。"""
+        if plan_row is None or plan_row["status"] != "generating" or _task_queue is None:
+            return plan_row
+        link = conn.execute(
+            "SELECT round_id,task_id FROM content_plan_rounds WHERE plan_id=? ORDER BY created_at DESC LIMIT 1",
+            (plan_row["id"],),
+        ).fetchone()
+        if link is None or not link["task_id"]:
+            return plan_row
+        try:
+            task = _task_queue.get(link["task_id"])
+        except Exception:
+            logger.warning("内容计划队列状态暂不可读，保留当前状态 plan=%s", plan_row["id"], exc_info=True)
+            return plan_row
+        terminal = {
+            "succeeded": "generated",
+            "failed": "failed",
+            "interrupted": "failed",
+            "cancelled": "cancelled",
+        }.get(task.status if task else "")
+        if terminal:
+            now = _now().isoformat(timespec="seconds")
+            if terminal in ("generated", "failed"):
+                drafts = conn.execute(
+                    "SELECT d.id FROM drafts d JOIN contents c ON c.id=d.content_id WHERE c.round_id=?",
+                    (link["round_id"],),
+                ).fetchall()
+                for draft in drafts:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO content_plan_drafts(plan_id,draft_id,round_id,created_at) VALUES(?,?,?,?)",
+                        (plan_row["id"], draft["id"], link["round_id"], now),
+                    )
+            conn.execute(
+                "UPDATE content_plans SET status=?,version=version+1,updated_at=? "
+                "WHERE id=? AND version=? AND status='generating'",
+                (terminal, now, plan_row["id"], int(plan_row["version"])),
+            )
+            conn.commit()
+            return conn.execute("SELECT * FROM content_plans WHERE id=?", (plan_row["id"],)).fetchone()
+        return plan_row
+
+    @app.get("/api/content-plans")
+    def list_content_plans(
+        start_date: Optional[str] = Query(None, description="YYYY-MM-DD 起始日期"),
+        end_date: Optional[str] = Query(None, description="YYYY-MM-DD 结束日期"),
+        status: Optional[str] = Query(None),
+    ):
+        conn = _g()["conn"]
+        clauses: list[str] = []
+        params: list = []
+        if start_date:
+            clauses.append("scheduled_date >= ?"); params.append(start_date)
+        if end_date:
+            clauses.append("scheduled_date <= ?"); params.append(end_date)
+        for label, value in (("start_date", start_date), ("end_date", end_date)):
+            if value:
+                try:
+                    datetime.strptime(value, "%Y-%m-%d")
+                except ValueError as exc:
+                    raise HTTPException(422, f"{label} 必须为 YYYY-MM-DD") from exc
+        if start_date and end_date and end_date < start_date:
+            raise HTTPException(422, "end_date 不能早于 start_date")
+        if status:
+            allowed = {"planned", "generating", "generated", "reviewed", "archived", "cancelled", "failed"}
+            if status not in allowed:
+                raise HTTPException(400, "无效的计划状态")
+            clauses.append("status = ?"); params.append(status)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = conn.execute(
+            "SELECT * FROM content_plans" + where + " ORDER BY scheduled_date ASC, created_at ASC",
+            params,
+        ).fetchall()
+        rows = [_sync_content_plan_task_state(conn, row) for row in rows]
+        if status:
+            rows = [row for row in rows if row["status"] == status]
+        items = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["platforms"] = json.loads(item.pop("platforms_json") or "[]")
+            except (TypeError, ValueError):
+                item["platforms"] = []
+            items.append(item)
+        return {"items": items, "total": len(items)}
+
+    @app.post("/api/content-plans")
+    def create_content_plan(req: dict):
+        body = req or {}
+        title = str(body.get("title") or "").strip()
+        topic = str(body.get("topic") or "").strip()
+        notes = str(body.get("notes") or "").strip()
+        scheduled_date = str(body.get("scheduled_date") or "").strip()
+        platforms = body.get("platforms") or []
+        planned_count = body.get("planned_count", 1)
+        if not title or len(title) > 160:
+            raise HTTPException(422, "计划标题必填，且不能超过 160 个字符")
+        if len(topic) > 500 or len(notes) > 4000:
+            raise HTTPException(422, "选题或备注内容过长")
+        try:
+            datetime.strptime(scheduled_date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(422, "计划日期必须为 YYYY-MM-DD") from exc
+        if not isinstance(platforms, list) or len(platforms) > 8:
+            raise HTTPException(422, "平台必须为数组，最多选择 8 个")
+        allowed_platforms = set(_g()["cfg"].platforms.model_dump().keys())
+        normalized_platforms = sorted({str(p) for p in platforms})
+        if any(p not in allowed_platforms for p in normalized_platforms):
+            raise HTTPException(422, "包含未配置的平台")
+        try:
+            planned_count = int(planned_count)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, "计划产出数量必须是整数") from exc
+        if not 1 <= planned_count <= 50:
+            raise HTTPException(422, "计划产出数量必须在 1 到 50 之间")
+        now = _now().isoformat(timespec="seconds")
+        plan_id = uuid.uuid4().hex
+        conn = _g()["conn"]
+        conn.execute(
+            "INSERT INTO content_plans(id,title,topic,platforms_json,planned_count,scheduled_date,status,notes,version,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,'planned',?,1,?,?)",
+            (plan_id, title, topic, json.dumps(normalized_platforms, ensure_ascii=False), planned_count,
+             scheduled_date, notes, now, now),
+        )
+        conn.commit()
+        return {"id": plan_id, "title": title, "topic": topic, "platforms": normalized_platforms,
+                "planned_count": planned_count, "scheduled_date": scheduled_date, "status": "planned",
+                "notes": notes, "version": 1, "created_at": now, "updated_at": now}
+
+    @app.patch("/api/content-plans/{plan_id}")
+    def update_content_plan(plan_id: str, req: dict):
+        body = req or {}
+        try:
+            expected_version = int(body.get("version"))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, "更新计划必须提供当前 version") from exc
+        conn = _g()["conn"]
+        existing = conn.execute("SELECT * FROM content_plans WHERE id = ?", (plan_id,)).fetchone()
+        if existing is None:
+            raise HTTPException(404, "计划不存在")
+        if int(existing["version"]) != expected_version:
+            raise HTTPException(409, "计划已被其他窗口修改，请刷新后重试")
+        allowed_fields = {"title", "topic", "platforms", "planned_count", "scheduled_date", "status", "notes"}
+        unknown = set(body) - allowed_fields - {"version"}
+        if unknown:
+            raise HTTPException(422, "包含不支持的字段")
+        values = dict(existing)
+        for key in allowed_fields.intersection(body):
+            values[key] = body[key]
+        title = str(values["title"] or "").strip()
+        if not title or len(title) > 160:
+            raise HTTPException(422, "计划标题必填，且不能超过 160 个字符")
+        try:
+            datetime.strptime(str(values["scheduled_date"]), "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(422, "计划日期必须为 YYYY-MM-DD") from exc
+        status_values = {"planned", "generating", "generated", "reviewed", "archived", "cancelled", "failed"}
+        if values["status"] not in status_values:
+            raise HTTPException(422, "无效的计划状态")
+        current_status = str(existing["status"])
+        next_status = str(values["status"])
+        # 生产生命周期只能由 start API / 全局 Worker 推进；PATCH 仅允许人工编辑状态。
+        transitions = {
+            "planned": {"planned", "cancelled"},
+            "generating": {"generating"},
+            "generated": {"generated", "reviewed", "cancelled"},
+            "failed": {"failed", "cancelled"},
+            "reviewed": {"reviewed", "archived", "cancelled"},
+            "archived": {"archived"},
+            "cancelled": {"cancelled"},
+        }
+        if next_status not in transitions[current_status]:
+            raise HTTPException(409, f"计划状态不允许从 {current_status} 变更为 {next_status}")
+        platforms = values["platforms"] if "platforms" in values else json.loads(values["platforms_json"] or "[]")
+        if not isinstance(platforms, list) or len(platforms) > 8:
+            raise HTTPException(422, "平台必须为数组，最多选择 8 个")
+        allowed_platforms = set(_g()["cfg"].platforms.model_dump().keys())
+        platforms = sorted({str(p) for p in platforms})
+        if any(p not in allowed_platforms for p in platforms):
+            raise HTTPException(422, "包含未配置的平台")
+        try:
+            planned_count = int(values["planned_count"])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, "计划产出数量必须是整数") from exc
+        if not 1 <= planned_count <= 100:
+            raise HTTPException(422, "计划产出数量必须在 1 到 100 之间")
+        if len(str(values["topic"] or "")) > 500 or len(str(values["notes"] or "")) > 4000:
+            raise HTTPException(422, "选题或备注内容过长")
+        now = _now().isoformat(timespec="seconds")
+        cursor = conn.execute(
+            "UPDATE content_plans SET title=?,topic=?,platforms_json=?,planned_count=?,scheduled_date=?,status=?,notes=?,version=version+1,updated_at=? "
+            "WHERE id=? AND version=?",
+            (title, str(values["topic"] or "")[:500], json.dumps(platforms, ensure_ascii=False), planned_count,
+             str(values["scheduled_date"]), str(values["status"]), str(values["notes"] or "")[:4000],
+             now, plan_id, expected_version),
+        )
+        conn.commit()
+        if cursor.rowcount != 1:
+            raise HTTPException(409, "计划已被其他窗口修改，请刷新后重试")
+        return {"id": plan_id, "title": title, "topic": str(values["topic"] or ""),
+                "platforms": platforms, "planned_count": planned_count,
+                "scheduled_date": str(values["scheduled_date"]), "status": str(values["status"]),
+                "notes": str(values["notes"] or ""), "version": expected_version + 1,
+                "created_at": existing["created_at"], "updated_at": now}
+
+    @app.get("/api/content-plans/{plan_id}")
+    def get_content_plan(plan_id: str):
+        conn = _g()["conn"]
+        row = conn.execute("SELECT * FROM content_plans WHERE id=?", (plan_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "计划不存在")
+        row = _sync_content_plan_task_state(conn, row)
+        item = dict(row)
+        item["platforms"] = json.loads(item.pop("platforms_json") or "[]")
+        linked = conn.execute(
+            "SELECT d.id AS draft_id,d.platform,d.status,c.title,c.round_id,cpd.created_at "
+            "FROM content_plan_drafts cpd JOIN drafts d ON d.id=cpd.draft_id "
+            "JOIN contents c ON c.id=d.content_id WHERE cpd.plan_id=? ORDER BY cpd.created_at,d.id",
+            (plan_id,),
+        ).fetchall()
+        rounds = conn.execute(
+            "SELECT round_id,task_id,created_at FROM content_plan_rounds "
+            "WHERE plan_id=? ORDER BY created_at DESC",
+            (plan_id,),
+        ).fetchall()
+        item["drafts"] = [dict(r) for r in linked]
+        item["rounds"] = [dict(r) for r in rounds]
+        return item
+
+    @app.post("/api/content-plans/{plan_id}/drafts")
+    def link_content_plan_drafts(plan_id: str, req: dict):
+        body = req or {}
+        draft_ids = body.get("draft_ids")
+        if not isinstance(draft_ids, list) or not draft_ids or len(draft_ids) > 100:
+            raise HTTPException(422, "draft_ids 必须是 1 到 100 项的数组")
+        normalized_ids = list(dict.fromkeys(str(value).strip() for value in draft_ids if str(value).strip()))
+        if len(normalized_ids) != len(draft_ids):
+            raise HTTPException(422, "draft_ids 不能包含空值")
+        conn = _g()["conn"]
+        linked_now = []
+        now = _now().isoformat(timespec="seconds")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            plan = conn.execute("SELECT status FROM content_plans WHERE id=?", (plan_id,)).fetchone()
+            if plan is None:
+                raise HTTPException(404, "计划不存在")
+            if plan["status"] not in ("planned", "generating", "generated"):
+                raise HTTPException(409, "当前计划状态不允许关联草稿")
+            drafts = {}
+            for draft_id in normalized_ids:
+                draft = conn.execute(
+                    "SELECT d.id,c.round_id FROM drafts d JOIN contents c ON c.id=d.content_id WHERE d.id=?",
+                    (draft_id,),
+                ).fetchone()
+                if draft is None:
+                    raise HTTPException(404, f"草稿不存在：{draft_id}")
+                drafts[draft_id] = draft
+            for draft_id, draft in drafts.items():
+                cursor = conn.execute(
+                    "INSERT OR IGNORE INTO content_plan_drafts(plan_id,draft_id,round_id,created_at) VALUES(?,?,?,?)",
+                    (plan_id, draft_id, draft["round_id"], now),
+                )
+                if cursor.rowcount:
+                    linked_now.append(draft_id)
+            conn.execute(
+                "UPDATE content_plans SET status='generated',version=version+1,updated_at=? WHERE id=? AND status IN ('planned','generating')",
+                (now, plan_id),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return {"plan_id": plan_id, "linked_now": linked_now, "linked_count": len(linked_now), "status": "generated"}
+
+    @app.delete("/api/content-plans/{plan_id}")
+    def cancel_content_plan(plan_id: str, version: int = Query(..., ge=1)):
+        conn = _g()["conn"]
+        row = conn.execute(
+            "SELECT * FROM content_plans WHERE id=? AND version=?", (plan_id, version),
+        ).fetchone()
+        if row is not None:
+            row = _sync_content_plan_task_state(conn, row)
+            if int(row["version"]) != version:
+                raise HTTPException(409, "计划状态已同步更新，请刷新后重试")
+        if row is None:
+            exists = conn.execute("SELECT 1 FROM content_plans WHERE id=?", (plan_id,)).fetchone()
+            if exists is None:
+                raise HTTPException(404, "计划不存在")
+            raise HTTPException(409, "计划状态已变化，请刷新后重试")
+        if row["status"] == "generating":
+            link = conn.execute(
+                "SELECT task_id FROM content_plan_rounds WHERE plan_id=? ORDER BY created_at DESC LIMIT 1",
+                (plan_id,),
+            ).fetchone()
+            if link is None or not link["task_id"] or _task_queue is None or not _task_queue.cancel(link["task_id"]):
+                raise HTTPException(409, "该计划对应任务已开始执行或任务状态不可取消，请到全局任务队列查看")
+        elif row["status"] not in ("planned", "failed"):
+            raise HTTPException(409, "当前计划状态不能取消")
+        cursor = conn.execute(
+            "UPDATE content_plans SET status='cancelled',version=version+1,updated_at=? "
+            "WHERE id=? AND version=? AND status IN ('planned','failed','generating')",
+            (_now().isoformat(timespec="seconds"), plan_id, version),
+        )
+        conn.commit()
+        if cursor.rowcount != 1:
+            raise HTTPException(409, "计划状态已变化，请刷新后重试")
+        return {"id": plan_id, "status": "cancelled"}
 
     # --- 内容日历排期（§24.3）---
     @app.get("/api/schedule")
