@@ -146,8 +146,8 @@ export default function HotTopics() {
           else {
             const report = data.research_job?.report || {};
             const failed = Number(report.failed_batches || 0);
-            const unjudged = Number(report.unjudged || 0);
-            if (failed || unjudged) showToast(`研判未全部完成：${unjudged} 条待研判，${failed} 个批次失败，可稍后重试`, "info");
+            const remaining = Number(report.remaining_pending ?? report.unjudged ?? 0);
+            if (failed || remaining) showToast(`研判未全部完成：${remaining} 条待研判，${failed} 个批次失败，可稍后重试`, "info");
             else showToast("✓ 研判完成", "success");
           }
         }
