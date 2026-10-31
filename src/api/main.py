@@ -3948,6 +3948,7 @@ def _register_routes(app: FastAPI) -> None:
         ).fetchone()
         if round_row is None:
             raise HTTPException(404, "当前账号组不存在该生产轮次")
+        from src.core.task_snapshot import StaleTaskSnapshot
         try:
             task, created = _task_queue.enqueue(
                 task_type="round_run",
@@ -3968,6 +3969,8 @@ def _register_routes(app: FastAPI) -> None:
                     ),
                 },
             )
+        except StaleTaskSnapshot as exc:
+            raise HTTPException(409, str(exc)) from exc
         except (ValueError, sqlite3.Error) as exc:
             logger.exception("生产任务入队失败 tenant=%s round=%s", tenant_id, round_id)
             raise HTTPException(503, "任务暂时无法入队，请稍后重试") from exc
