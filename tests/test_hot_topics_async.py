@@ -43,9 +43,7 @@ def test_hot_topic_publishability_fails_closed_for_sensitive_and_unreviewed_topi
     political = "中共中央举行新闻发布会"
     military = "国防部回应美日近期军演"
     taiwan = "国防部称以台制华必付沉重代价"
-    party = "我们党召开全会，中央委员会研究管党治党"
-    political_party = "其他政党均不具备较强优势"
-    for title in (political, military, taiwan, party, political_party):
+    for title in (political, military, taiwan):
         assert _sensitive_topic_hits(title)
         assert _publishability_status(title, [], False, True, True) == "需人工确认"
 

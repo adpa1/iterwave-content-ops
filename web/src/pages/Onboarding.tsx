@@ -416,9 +416,7 @@ export default function Onboarding() {
             <div className="list">
               <CheckRow ok={checks.persona_ok}    label="账号画像"       detail={checks.persona_ok ? cfg.readonly.persona_keywords.join("、") : "还没设置账号定位，请填写定位关键词并保存"} />
               <CheckRow ok={checks.platforms_ok}   label="启用平台"       detail={`${status.enabled_platforms.length} 个 (${status.enabled_platforms.map((p) => PLATFORM_NAMES[p]).join(", ")})`} />
-              <CheckRow ok={checks.login_ok}       label="登录态"         detail={checks.login_ok
-                ? `${status.enabled_platforms.length} 个启用平台均已登录`
-                : `未登录：${status.enabled_platforms.filter((p) => !status.logged_in_platforms.includes(p)).map((p) => PLATFORM_NAMES[p]).join("、") || "没有已启用平台"}`} />
+              <CheckRow ok={checks.login_ok}       label="登录态"         detail={`${status.logged_in_platforms.length} 个已登录`} />
               <CheckRow ok={checks.kb_ok}          label="选题库"      detail={availableTopicCount === null ? "正在检查选题库" : availableTopicCount > 0 ? `可用选题 ${availableTopicCount} 条` : "没有可用选题，请添加或同步知识库来源"} />
               <CheckRow ok={checks.llm_ok}         label="模型服务密钥"    detail={cfg.readonly.llm_has_api_key ? "✓ 已配置" : "✕ 缺失"} />
               <CheckRow ok={checks.goals_ok}        label="阶段目标"       detail={`${goals.length} 条`} />

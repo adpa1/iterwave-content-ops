@@ -511,11 +511,9 @@ export default function Production() {
     setPlanPlatforms((prev) => prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]);
   };
 
-  const runHasMissingLogin = noLogin.length > 0;
   const canRun = !!roundDetail && ["created", "failed"].includes(roundDetail.status)
     && !running && availableTopicCount !== null && availableTopicCount > 0
-    && (usePlan || selPlatforms.length > 0)
-    && (!saveDrafts || !runHasMissingLogin);
+    && (usePlan || selPlatforms.length > 0);
   const selectedContent = contents.find((c) => c.id === selectedContentId) ?? null;
   const filteredReviewContents = contents.filter((item) => {
     const query = reviewSearch.trim().toLowerCase();
@@ -890,21 +888,6 @@ export default function Production() {
                   </button>
                 </div>
 
-                {running && roundDetail.drafts.length > 0 && (() => {
-                  const saved = roundDetail.drafts.filter((d) => d.status === "draft_saved").length;
-                  const pending = roundDetail.drafts.filter((d) => d.status === "draft_pending").length;
-                  const failed = roundDetail.drafts.filter((d) => d.status === "failed").length;
-                  return (
-                    <div className="note" style={{ marginTop: 8 }}>
-                      {saveDrafts ? "存草稿进度" : "干跑产出进度"}：已保存 {saved} · 待处理 {pending} · 失败 {failed}
-                    </div>
-                  );
-                })()}
-                {saveDrafts && runHasMissingLogin && (
-                  <div className="note" style={{ marginTop: 8, color: "var(--orange)" }}>
-                    运行前检查未通过：当前启用平台存在未登录账号。请先到账号管理完成登录，或取消「本轮执行存草稿」进行干跑。
-                  </div>
-                )}
                 {roundDetail.status === "failed" && (
                   <div className="note" style={{ marginTop: 8 }}>
                     失败轮次可重新预检；仅当本轮尚未产生内容或草稿时允许重试。已有产出时请修复原因后新建一轮，避免重复交付。

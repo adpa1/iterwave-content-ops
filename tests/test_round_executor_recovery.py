@@ -79,8 +79,7 @@ def test_failed_round_with_existing_content_cannot_be_retried(cfg, conn, seed):
     assert status == "failed"
 
 
-def test_dry_run_pending_drafts_can_be_saved_without_regenerating(cfg, conn, seed, monkeypatch):
-    monkeypatch.setattr("src.core.login_manager.has_login_state", lambda _platform: True)
+def test_dry_run_pending_drafts_can_be_saved_without_regenerating(cfg, conn, seed):
     round_id = seed.round(status="producing")
     draft_id = seed.draft(round_id, platform="xhs", draft_status="draft_pending", fetch_status=None)
     conn.execute(

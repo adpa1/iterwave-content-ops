@@ -369,7 +369,7 @@ export function LlmEditor({ view, onSaved }: {
       </div>
       <SaveBar onSave={saveModel} busy={busy} />
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-        <Field label={`服务密钥（仅保存在服务器环境配置中，不回显；当前：${view.readonly.llm_has_api_key ? "已配置" : "未配置"}）`}>
+        <Field label={`服务密钥（仅保存在服务端，不回显；当前：${view.readonly.llm_has_api_key ? "已配置" : "未配置"}）`}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input style={{ ...inputStyle, flex: "1 1 240px", fontFamily: "monospace" }} type="password"
               value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="粘贴密钥后点击「保存密钥」" />

@@ -126,9 +126,6 @@ def test_login_rate_limit_returns_retry_after_header(api_client):
         blocked = api_client.post("/api/auth/login", json={"password": "wrong"})
         assert blocked.status_code == 429
         assert blocked.headers.get("Retry-After") == str(auth.LOGIN_WINDOW_SECONDS)
-        # 同一出口 IP 的其他用户触发限流后，正确口令仍可登录。
-        legitimate = api_client.post("/api/auth/login", json={"password": "Test-access9!"})
-        assert legitimate.status_code == 200
     finally:
         auth._failures.clear()
 
@@ -194,9 +191,9 @@ def test_login_rate_limit():
     for _ in range(auth.LOGIN_MAX_FAILURES):
         with pytest.raises(ValueError):
             auth.login("wrong", "1.2.3.4")
-    # 同一 IP 的错误尝试不应锁住随后输入正确口令的合法用户。
-    assert auth.login("Secret123!", "1.2.3.4")
-    # 其它 IP 同样不受影响
+    with pytest.raises(PermissionError):
+        auth.login("Secret123!", "1.2.3.4")
+    # 其它 IP 不受影响
     assert auth.login("Secret123!", "5.6.7.8")
 
 

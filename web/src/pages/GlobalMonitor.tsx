@@ -68,7 +68,7 @@ export default function GlobalMonitor() {
     <div className="global-monitor-page">
       <div className="page-head">
         <div>
-          
+          <div className="eyebrow">全局监控</div>
           <h1 className="page-title">全局监控</h1>
           <div className="page-desc">跨账号组只读汇总。单个数据库不可读取时会单独标记，不会用其他账号组的数据替代。</div>
         </div>
