@@ -100,22 +100,33 @@ function TaskRow({
 
 export default function TaskQueue() {
   const { showToast } = useApp();
-  const [items, setItems] = useState<GlobalTaskQueueItem[]>([]);
+  const [activeItems, setActiveItems] = useState<GlobalTaskQueueItem[]>([]);
+  const [historyItems, setHistoryItems] = useState<GlobalTaskQueueItem[]>([]);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyPages, setHistoryPages] = useState(1);
+  const [historyPage, setHistoryPage] = useState(1);
+  const historyPageSize = 20;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const response = await api.taskQueue();
-      setItems(response.items || []);
+      const [activeResponse, historyResponse] = await Promise.all([
+        api.taskQueue({ scope: "active" }),
+        api.taskQueue({ scope: "history", page: historyPage, pageSize: historyPageSize }),
+      ]);
+      setActiveItems(activeResponse.items || []);
+      setHistoryItems(historyResponse.items || []);
+      setHistoryTotal(historyResponse.total ?? 0);
+      setHistoryPages(historyResponse.pages ?? 1);
       setError("");
     } catch (err) {
       setError((err as Error).message || "任务队列读取失败");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [historyPage]);
 
   useEffect(() => {
     void refresh();
@@ -124,20 +135,15 @@ export default function TaskQueue() {
   }, [refresh]);
 
   const active = useMemo(
-    () => items.filter((item) => item.status === "running" || item.status === "queued")
-      .sort((a, b) => {
-        const aDelayed = a.status === "queued" && new Date(a.available_at).getTime() > Date.now();
-        const bDelayed = b.status === "queued" && new Date(b.available_at).getTime() > Date.now();
-        if (aDelayed !== bDelayed) return aDelayed ? 1 : -1;
-        return a.queue_order - b.queue_order;
-      }),
-    [items],
+    () => [...activeItems].sort((a, b) => {
+      const aDelayed = a.status === "queued" && new Date(a.available_at).getTime() > Date.now();
+      const bDelayed = b.status === "queued" && new Date(b.available_at).getTime() > Date.now();
+      if (aDelayed !== bDelayed) return aDelayed ? 1 : -1;
+      return a.queue_order - b.queue_order;
+    }),
+    [activeItems],
   );
-  const history = useMemo(
-    () => items.filter((item) => !["running", "queued"].includes(item.status))
-      .sort((a, b) => b.queue_order - a.queue_order),
-    [items],
-  );
+  const history = historyItems;
 
   const cancel = async (task: GlobalTaskQueueItem) => {
     setCancellingId(task.task_id);
@@ -183,9 +189,17 @@ export default function TaskQueue() {
       <section className="panel">
         <div className="panel-head">
           <div><h2>最近任务</h2><div className="muted">包含成功、失败、中断和取消记录。</div></div>
-          <span className="muted">最近 {history.length} 项</span>
+          <span className="muted">共 {historyTotal} 项 · 第 {historyPage}/{historyPages} 页</span>
         </div>
         {history.length ? <div>{history.map((task) => <TaskRow key={task.task_id} task={task} onCancel={cancel} cancelling={false} />)}</div> : <div className="empty-state">暂无历史任务。</div>}
+        <div className="panel-foot" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 16px" }}>
+          <span className="muted">每页 {historyPageSize} 条，历史记录由服务端分页读取。</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button className="btn sm" disabled={historyPage <= 1 || loading} onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}>上一页</button>
+            <span className="muted">{historyPage} / {historyPages}</span>
+            <button className="btn sm" disabled={historyPage >= historyPages || loading} onClick={() => setHistoryPage((p) => Math.min(historyPages, p + 1))}>下一页</button>
+          </div>
+        </div>
       </section>
     </div>
   );
