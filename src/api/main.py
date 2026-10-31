@@ -230,6 +230,11 @@ def _build_tenant_runtime_context(
     cfg = load_config()
     base_llm_config = cfg.llm.model_dump()
     tenant = tenant_registry.get(tenant_id)
+    if tenant_id != "default":
+        # 部署级 config.yaml 只提供基础默认值，不能把默认账号组的行业画像带进新账号组。
+        # 后续会从该账号组自己的 tenant_settings / legacy override 恢复其显式配置。
+        from src.core.tenant_business_config import reset_new_tenant_business_defaults
+        reset_new_tenant_business_defaults(cfg)
     tenant_paths = None
     if tenant_id != "default":
         tenant_paths = tenant_registry.paths(
