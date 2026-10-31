@@ -350,18 +350,26 @@ export default function Assets() {
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">▧</span>可复用内容模板 · {assets.template.length} 条</div>
-                <div className="panel-sub">只存结构说明；模板本身不含任何历史数据</div>
+                <div className="panel-sub">模板不是成品文案，而是一份写作步骤清单。使用方法：①按步骤填写结构；②保存后点「复制使用」；③到内容生产页粘贴到本次内容要求中。当前版本是人工套用，不会自动注入 AI 生成流程。</div>
               </div>
             </div>
             {assets.template.length === 0 ? (
-              <EmptyHint next="在上方录入一套你验证过的图文结构，作为后续内容计划的制作参考">暂无模板</EmptyHint>
+              <EmptyHint next="先添加一套结构，例如「痛点引入 → 真实体验 → 证据 → 局限 → 结论」。保存后点击「复制使用」，再粘贴到内容生产要求中。">暂无模板</EmptyHint>
             ) : (
               <div className="grid three">
                 {assets.template.map((t) => (
                   <div className="skill-card" key={t.id}>
                     <div className="skill-name">{t.title}</div>
                     <div className="skill-desc">{t.body || "（无结构说明）"}</div>
-                    <div className="skill-foot"><span>{t.created_at?.slice(0, 10) ?? "—"}</span></div>
+                    <div className="skill-foot">
+                      <span>{t.created_at?.slice(0, 10) ?? "—"}</span>
+                      <button type="button" className="btn sm" onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(`请按以下内容结构组织本次图文：\\n\\n${t.title}\\n${t.body || ""}`);
+                          showToast("模板结构已复制，可粘贴到内容生产要求中", "success");
+                        } catch { showToast("复制失败，请手动选择模板内容", "error"); }
+                      }}>复制使用</button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -410,7 +418,11 @@ function AssetForm({
       </div>
       <div className="grid" style={{ gridTemplateColumns: needUrl ? "1fr 1fr 1.4fr auto" : "1fr 2fr auto", gap: 10 }}>
         <input className="field" placeholder={titleLabel} value={title} onChange={(e) => setTitle(e.target.value)} />
-        <input className="field" placeholder={bodyPlaceholder ?? "说明（可空）"} value={body} onChange={(e) => setBody(e.target.value)} />
+        {type === "template" ? (
+          <textarea className="field" rows={3} placeholder={bodyPlaceholder ?? "按步骤写出内容结构，每行一个环节"} value={body} onChange={(e) => setBody(e.target.value)} />
+        ) : (
+          <input className="field" placeholder={bodyPlaceholder ?? "说明（可空）"} value={body} onChange={(e) => setBody(e.target.value)} />
+        )}
         {needUrl && <input className="field" placeholder="原始链接 https://…（必填）" value={url} onChange={(e) => setUrl(e.target.value)} />}
         <button className="btn primary sm" disabled={pending || !title.trim() || (needUrl && !url.trim())} onClick={submit}>
           {pending ? "保存中…" : "保存"}

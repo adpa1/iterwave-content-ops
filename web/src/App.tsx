@@ -223,6 +223,7 @@ function todayLabel() {
 function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, tab?: string, focus?: { roundId?: number; contentId?: string }) => void }) {
   const { status, showToast } = useApp();
   const [noticesOpen, setNoticesOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [tenantData, setTenantData] = useState<TenantListResponse | null>(null);
   const [tenantLoading, setTenantLoading] = useState(false);
 
@@ -327,8 +328,26 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [noticesOpen]);
 
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAccountMenuOpen(false);
+    };
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && !target.closest(".account-menu-wrap")) setAccountMenuOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("pointerdown", closeOutside);
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("pointerdown", closeOutside);
+    };
+  }, [accountMenuOpen]);
+
   const go = (page: string, tab?: string, focus?: { roundId?: number; contentId?: string }) => {
     setNoticesOpen(false);
+    setAccountMenuOpen(false);
     onNavigate(page, tab, focus);
   };
 
@@ -338,34 +357,6 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
         IterWave <span className="crumb-sep" aria-hidden="true">/</span><strong>{label}</strong>
       </div>
       <div className="top-actions">
-        {tenantData && tenantData.items.length > 0 && (
-          <div className="tenant-switcher" aria-label="账号组切换">
-            <span className="tenant-switcher-label">工作空间</span>
-            <select
-              aria-label="选择账号组"
-              value={tenantData.selected_tenant_id}
-              disabled={tenantLoading}
-              onChange={(event) => void handleTenantChange(event.target.value)}
-              title={tenantData.restart_required
-                ? `当前运行：${tenantData.items.find((tenant) => tenant.id === tenantData.runtime_tenant_id)?.name ?? "当前账号组"}；待生效：${tenantData.items.find((tenant) => tenant.id === tenantData.selected_tenant_id)?.name ?? "所选账号组"}`
-                : "选择工作空间"}
-            >
-              {tenantData.items.map((tenant) => (
-                <option key={tenant.id} value={tenant.id}>{tenant.name}</option>
-              ))}
-            </select>
-            {tenantLoading && (
-              <span className="tenant-switcher-pending" role="status" aria-live="polite">
-                切换中…
-              </span>
-            )}
-            {!tenantLoading && tenantData.restart_required && (
-              <span className="tenant-switcher-pending" title={`当前运行空间：${tenantData.items.find((tenant) => tenant.id === tenantData.runtime_tenant_id)?.name ?? "当前账号组"}`}>
-                待重启
-              </span>
-            )}
-          </div>
-        )}
         <GlobalSearch onNavigate={go} />
         <span className="today">{todayLabel()}</span>
         <button type="button" className="btn sm soft" onClick={() => go("onboarding")}>
@@ -405,7 +396,44 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
             </div>
           )}
         </div>
-        <div className="avatar" aria-hidden="true">I</div>
+        <div className="account-menu-wrap">
+          <button
+            type="button"
+            className="account-menu-trigger"
+            aria-expanded={accountMenuOpen}
+            aria-controls="account-menu"
+            onClick={() => { setAccountMenuOpen((open) => !open); setNoticesOpen(false); }}
+          >
+            <span className="avatar" aria-hidden="true">I</span>
+            <span className="account-menu-name">{tenantData?.items.find((tenant) => tenant.id === tenantData.selected_tenant_id)?.name ?? "工作空间"}</span>
+            {tenantData?.restart_required && <span className="tenant-switcher-pending">待重启</span>}
+            <span className="account-menu-chevron" aria-hidden="true">⌄</span>
+          </button>
+          {accountMenuOpen && (
+            <div className="account-menu" id="account-menu" role="menu" aria-label="工作空间与综合功能">
+              <div className="account-menu-section">
+                <strong>切换账号组</strong>
+                {tenantData?.items.length ? (
+                  <select
+                    aria-label="选择账号组"
+                    value={tenantData.selected_tenant_id}
+                    disabled={tenantLoading}
+                    onChange={(event) => void handleTenantChange(event.target.value)}
+                  >
+                    {tenantData.items.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}
+                  </select>
+                ) : <span className="account-menu-muted">正在加载账号组…</span>}
+                {tenantData?.restart_required && <small>所选账号组将在服务重启后生效</small>}
+              </div>
+              <div className="account-menu-divider" />
+              <button type="button" role="menuitem" onClick={() => go("global-ops")}>全局运营中心<span>跨账号组经营总览</span></button>
+              <button type="button" role="menuitem" onClick={() => go("task-queue")}>全局任务队列<span>查看所有账号组的任务</span></button>
+              <button type="button" role="menuitem" onClick={() => go("accounts")}>账号与登录<span>平台账号状态与授权</span></button>
+              <button type="button" role="menuitem" onClick={() => go("settings")}>系统设置<span>模型、运行环境与系统配置</span></button>
+              <button type="button" role="menuitem" onClick={() => go("onboarding")}>新手引导 / 快速配置<span>查看配置步骤与帮助</span></button>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );

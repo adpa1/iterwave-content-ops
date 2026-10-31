@@ -18,7 +18,7 @@ export default function Calendar() {
   const { showToast, withPending, isPending } = useApp();
   const today = new Date();
   const [cursorDate, setCursorDate] = useState(() => new Date(today));
-  const [viewMode, setViewMode] = useState<"month" | "week" | "day">("month");
+  const [viewMode, setViewMode] = useState<"month" | "week" | "day">("week");
   const year = cursorDate.getFullYear();
   const month = cursorDate.getMonth();
 
@@ -221,7 +221,7 @@ export default function Calendar() {
                 const isToday = d.date.toDateString() === today.toDateString();
                 return (
                   <div key={d.key} style={{
-                    border: "1px solid var(--line)", borderRadius: 10, padding: 10, minHeight: 120,
+                    border: "1px solid var(--line)", borderRadius: 8, padding: 6, minHeight: 76,
                     background: isToday ? "var(--blue-weak)" : "var(--surface)",
                     opacity: d.inMonth ? 1 : 0.48,
                   }}>
@@ -230,12 +230,12 @@ export default function Calendar() {
                     </button>
                     {loading && <div className="loading" style={{ marginTop: 6, fontSize: 11, color: "var(--muted)" }}><div className="spinner" />加载中...</div>}
                     {!loading && d.events.length === 0 && <div style={{ marginTop: 6, fontSize: 11, color: "var(--subtle)" }}>空</div>}
-                    {d.plans.map((plan) => (
+                    {d.plans.slice(0, 1).map((plan) => (
                       <button type="button" key={plan.id} className="calendar-plan-chip" title={`${plan.title} · ${plan.planned_count} 篇/平台`} onClick={() => void openPlanDetails(plan.id)}>
                         <strong>计划</strong><span>{plan.title}</span>
                       </button>
                     ))}
-                    {d.events.map((e) => {
+                    {d.events.slice(0, 2).map((e) => {
                       const editable = e.status === "draft_pending" || e.status === "draft_saved";
                       return (
                         <button type="button" key={e.id} className="calendar-event"
@@ -248,6 +248,11 @@ export default function Calendar() {
                         </button>
                       );
                     })}
+                    {(d.plans.length + d.events.length > 3) && (
+                      <button type="button" className="calendar-more-link" onClick={() => { setCursorDate(d.date); setViewMode("day"); }}>
+                        还有 {d.plans.length + d.events.length - 3} 项 · 查看当天
+                      </button>
+                    )}
                   </div>
                 );
               })}

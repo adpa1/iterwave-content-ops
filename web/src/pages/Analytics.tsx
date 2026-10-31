@@ -196,7 +196,7 @@ export default function Analytics() {
           <div className="eyebrow">数据复盘</div>
           <h1 className="page-title">数据分析</h1>
           <div className="page-desc">
-            每个平台只和自己的历史比较；互动率、点赞率、收藏率可以跨平台对比，曝光、点赞等原始数字不能。
+            总览看整体表现与本周建议；详细数据查看逐篇原始指标、平台基准和发布后数据回填。 当前视图：{detailView === "overview" ? "经营摘要" : "逐篇数据与回填"}.
           </div>
         </div>
         <div className="head-actions">
@@ -206,6 +206,7 @@ export default function Analytics() {
         </div>
       </div>
 
+      {detailView === "overview" && <>
       <div className="grid kpis" style={{ marginBottom: 15 }}>
         <div className="metric">
           <div className="metric-top"><span className="metric-label">已采集内容</span><span className="metric-icon" aria-hidden="true">▤</span></div>
@@ -241,7 +242,9 @@ export default function Analytics() {
       {activationMetrics?.platform_model_breakdown?.length ? <div className="panel-sub" style={{ marginBottom: 15 }}>
         体验分布：{activationMetrics.platform_model_breakdown.map((item) => `${PLATFORM_NAME[item.platform]} / ${item.model_mode}：${item.ready_count}/${item.run_count} 完成`).join("；")}
       </div> : null}
+      </>}
 
+      {detailView === "details" && <>
       <div className="panel" style={{ marginBottom: 15 }}>
         <div className="panel-head"><div><div className="panel-title">发布后数据回填</div><div className="panel-sub">可补充发布链接和人工指标。每次提交保留独立快照，未填写字段保持未知。</div></div></div>
         {reportError && <div className="note" role="alert" style={{ color: "var(--red)", padding: 12 }}>{reportError}</div>}
@@ -289,6 +292,9 @@ export default function Analytics() {
         )}
       </div>
 
+      </>}
+
+      {detailView === "overview" && <>
       <div className="panel" style={{ marginBottom: 15 }}>
         <div className="panel-head"><div><div className="panel-title">本周轻量复盘</div><div className="panel-sub">同平台比较；展示数据来源与样本量，不把相关性解释成因果。</div></div></div>
         {!weeklyReport ? <div className="loading"><div className="spinner" />加载周报…</div> : <>
@@ -345,6 +351,8 @@ export default function Analytics() {
           </div>
         </>}
       </div>
+
+      </>}
 
       {detailView === "details" && <>
       {/* G-08 逐篇数据 */}
