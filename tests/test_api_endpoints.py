@@ -1223,3 +1223,34 @@ def test_content_plan_recovers_to_retryable_after_worker_interruption(client, tm
     detail = tc.get(f"/api/content-plans/{plan_id}")
     assert detail.status_code == 200
     assert detail.json()["drafts"][0]["draft_id"] == draft_id
+
+
+def test_orchestration_rejects_unregistered_disabled_and_unsupported_custom_skill_refs(client):
+    tc, _, _ = client
+    from src.core.orchestration import default_steps
+
+    steps = default_steps()
+    steps[0]["skill_id"] = "not_registered"
+    unknown = tc.post("/api/orchestration/validate", json={"steps": steps})
+    assert unknown.status_code == 200
+    assert unknown.json()["valid"] is False
+    assert any("未登记" in error for error in unknown.json()["errors"])
+
+    registered = tc.post("/api/skills", json={
+        "skill_id": "custom_review_helper", "name": "自定义审阅", "version": "1.0.0",
+    })
+    assert registered.status_code == 200
+    steps[0]["skill_id"] = "custom_review_helper"
+    disabled = tc.post("/api/orchestration/validate", json={"steps": steps})
+    assert any("尚未启用" in error for error in disabled.json()["errors"])
+
+    enabled = tc.patch("/api/skills/custom_review_helper", json={
+        "enabled": True, "manifest_version": 1,
+    })
+    assert enabled.status_code == 200
+    unsupported = tc.post("/api/orchestration/validate", json={"steps": steps})
+    assert unsupported.json()["valid"] is False
+    assert any("仅支持内置步骤" in error for error in unsupported.json()["errors"])
+
+    saved = tc.put("/api/orchestration", json={"steps": steps})
+    assert saved.status_code == 422
