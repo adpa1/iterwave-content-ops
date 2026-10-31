@@ -1364,7 +1364,7 @@ export const api = {
     fetchJson<{ id: number; round_number: number; status: string }>("/api/rounds", {
       method: "POST", body: JSON.stringify(data),
     }),
-  runRound: (id: number, data: { topic_count?: number; platforms?: Platform[]; save_drafts?: boolean } = {}) =>
+  runRound: (id: number, data: { topic_count?: number; platforms?: Platform[]; save_drafts?: boolean; template_id?: number } = {}) =>
     fetchJson<QueueTaskSubmission>(`/api/rounds/${id}/run`, {
       method: "POST", body: JSON.stringify(data),
     }),
