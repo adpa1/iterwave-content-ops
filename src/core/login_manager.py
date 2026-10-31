@@ -63,14 +63,15 @@ def _effective_login_dir() -> Path:
     return _TENANT_LOGIN_DIR.get() or LOGIN_DIR
 
 
-def _platform_state_path(platform: Platform) -> Path:
-    """某平台 storage_state.json 的路径。"""
-    return _effective_login_dir() / f"{platform.value}.json"
+def _platform_state_path(platform: Platform, data_dir: Path | str | None = None) -> Path:
+    """某平台 storage_state.json 的路径；显式 data_dir 优先于异步上下文。"""
+    login_dir = Path(data_dir).resolve() / "login_states" if data_dir is not None else _effective_login_dir()
+    return login_dir / f"{platform.value}.json"
 
 
-def has_login_state(platform: Platform) -> bool:
-    """某平台是否已有登录态。"""
-    return _platform_state_path(platform).exists()
+def has_login_state(platform: Platform, data_dir: Path | str | None = None) -> bool:
+    """某平台是否已有登录态；API 前台查询应显式传入活动账号组目录。"""
+    return _platform_state_path(platform, data_dir=data_dir).exists()
 
 
 def background_headless() -> bool:
