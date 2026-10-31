@@ -1053,3 +1053,66 @@ def test_content_plan_links_generated_drafts_idempotently_and_rolls_back_invalid
     assert detail.json()["status"] == "generated"
     assert detail.json()["drafts"][0]["draft_id"] == draft_id
     assert detail.json()["drafts"][0]["round_id"] == round_id
+
+
+# ---------------------------------------------------------------- Safe tenant Skills registry
+
+def test_skill_registry_registers_metadata_disabled_and_never_executes(client):
+    tc, conn, _ = client
+    created = tc.post("/api/skills", json={
+        "skill_id": "my_content_audit",
+        "name": "内容审阅辅助",
+        "version": "1.0.0",
+        "description": "登记一个只读内容审阅能力的 manifest",
+        "category": "review",
+        "inputs": [{"name": "content_id", "type": "string", "required": True}],
+        "outputs": [{"name": "findings", "type": "array"}],
+        "permissions": ["read_content"],
+    })
+    assert created.status_code == 200
+    assert created.json()["enabled"] is False
+    assert created.json()["execution_enabled"] is False
+
+    listed = tc.get("/api/skills")
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 1
+    assert listed.json()["execution_enabled"] is False
+
+    enabled = tc.patch("/api/skills/my_content_audit", json={
+        "enabled": True, "manifest_version": 1,
+    })
+    assert enabled.status_code == 200
+    assert enabled.json()["enabled"] is True
+    assert enabled.json()["execution_enabled"] is False
+
+    blocked_delete = tc.delete("/api/skills/my_content_audit")
+    assert blocked_delete.status_code == 409
+
+    stale = tc.patch("/api/skills/my_content_audit", json={
+        "enabled": False, "manifest_version": 1,
+    })
+    assert stale.status_code == 409
+
+    disabled = tc.patch("/api/skills/my_content_audit", json={
+        "enabled": False, "manifest_version": 2,
+    })
+    assert disabled.status_code == 200
+    deleted = tc.delete("/api/skills/my_content_audit")
+    assert deleted.status_code == 200
+    assert conn.execute(
+        "SELECT COUNT(*) FROM tenant_skill_registry WHERE skill_id='my_content_audit'"
+    ).fetchone()[0] == 0
+
+
+def test_skill_registry_rejects_unsafe_permissions_and_invalid_manifest(client):
+    tc, _, _ = client
+    unsafe = tc.post("/api/skills", json={
+        "skill_id": "unsafe_skill", "name": "危险 Skill", "version": "1.0.0",
+        "permissions": ["execute_python"],
+    })
+    assert unsafe.status_code == 422
+
+    invalid_version = tc.post("/api/skills", json={
+        "skill_id": "bad_version", "name": "错误版本", "version": "latest",
+    })
+    assert invalid_version.status_code == 422
