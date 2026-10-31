@@ -172,7 +172,7 @@ export default function TaskQueue() {
         <button className="btn sm soft" type="button" onClick={() => void refresh()}>立即刷新</button>
       </div>
 
-      <div className="grid-3" style={{ marginBottom: 18 }}>
+      <div className="queue-summary-grid" style={{ marginBottom: 18 }}>
         <div className="panel stat-card"><div className="muted">排队与执行</div><div className="stat-value">{active.length}</div></div>
         <div className="panel stat-card"><div className="muted">正在执行</div><div className="stat-value">{active.filter((item) => item.status === "running").length}</div></div>
         <div className="panel stat-card"><div className="muted">等待执行</div><div className="stat-value">{active.filter((item) => item.status === "queued").length}</div></div>
