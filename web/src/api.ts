@@ -528,11 +528,11 @@ export interface GlobalMonitorResponse {
   days: number;
   since: string;
   totals: {
-    tenants: number; available_tenants: number; contents_period: number; contents_all: number;
+    tenants: number; available_tenants: number; registered_accounts?: number; registered_accounts_active?: number; contents_period: number; contents_all: number;
     drafts_all: number; drafts_pending: number; drafts_saved: number; drafts_published: number;
     drafts_failed: number; media_active: number; media_usage: number;
   };
-  platform_totals: Record<string, { contents: number; drafts: number }>;
+  platform_totals: Record<string, { contents: number; drafts: number; registered_accounts?: number }>;
   tenants: GlobalMonitorTenant[];
   account_count_note: string;
 }
