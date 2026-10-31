@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS content_plans (
     planned_count INTEGER NOT NULL DEFAULT 1 CHECK(planned_count BETWEEN 1 AND 100),
     scheduled_date TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'planned'
-        CHECK(status IN ('planned','generating','generated','reviewed','archived','cancelled')),
+        CHECK(status IN ('planned','generating','generated','reviewed','archived','cancelled','failed')),
     notes TEXT NOT NULL DEFAULT '',
     version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
