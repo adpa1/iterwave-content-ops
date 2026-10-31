@@ -108,7 +108,13 @@ def test_dry_run_pending_drafts_can_be_saved_without_regenerating(cfg, conn, see
 
     adapter = _SuccessfulDraftAdapter()
     executor = _executor(cfg, conn, {Platform.XHS: adapter})
-    result = asyncio.run(executor.save_pending_drafts(round_id))
+    # 真实队列 Worker 会按任务 tenant_id 绑定登录态目录；测试也显式模拟该上下文。
+    from src.core import login_manager
+    with login_manager.tenant_login_dir(cfg.paths.data_dir):
+        state_path = login_manager._platform_state_path(Platform.XHS)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text("{}", encoding="utf-8")
+        result = asyncio.run(executor.save_pending_drafts(round_id))
 
     assert result["drafts_attempted"] == 1
     assert result["drafts_saved"] == 1
