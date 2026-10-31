@@ -115,4 +115,4 @@ def test_new_tenant_business_defaults_do_not_inherit_deployment_persona():
     assert goal.platform_links == []
     # 全局安全红线不因清空业务画像而被移除。
     assert goal.redline_keywords == ["赌博", "色情"]
-\n
+
