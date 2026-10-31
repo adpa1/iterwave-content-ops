@@ -515,10 +515,12 @@ class GlobalTaskQueue:
         """Return a stable, database-paginated slice of active or historical tasks."""
         page = max(1, int(page))
         page_size = max(1, min(int(page_size), 500))
-        if scope not in {"active", "history"}:
+        if scope not in {"active", "history", "failed"}:
             raise ValueError("scope must be active or history")
-        statuses = ("queued", "running") if scope == "active" else (
-            "succeeded", "failed", "cancelled", "interrupted"
+        statuses = (
+            ("queued", "running") if scope == "active"
+            else ("failed", "interrupted") if scope == "failed"
+            else ("succeeded", "failed", "cancelled", "interrupted")
         )
         placeholders = ",".join("?" for _ in statuses)
         where = f"status IN ({placeholders})"
