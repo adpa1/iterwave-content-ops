@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS content_plans (
     title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 160),
     topic TEXT NOT NULL DEFAULT '',
     platforms_json TEXT NOT NULL DEFAULT '[]',
-    planned_count INTEGER NOT NULL DEFAULT 1 CHECK(planned_count BETWEEN 1 AND 100),
+    planned_count INTEGER NOT NULL DEFAULT 1 CHECK(planned_count BETWEEN 1 AND 50),
     scheduled_date TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'planned'
         CHECK(status IN ('planned','generating','generated','reviewed','archived','cancelled','failed')),
