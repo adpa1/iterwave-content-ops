@@ -3602,9 +3602,11 @@ def _register_routes(app: FastAPI) -> None:
         # R20/B-1：登录态是「能否真实操作」的前置条件，前端据此打 🔴 标注
         from src.core.login_manager import has_login_state
 
+        login_data_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
         logged_in = [
             p.value for p in Platform
-            if p.value in cfg.platforms.enabled_keys() and has_login_state(p)
+            if p.value in cfg.platforms.enabled_keys()
+            and has_login_state(p, data_dir=login_data_dir)
         ]
         return {
             "enabled_platforms": cfg.platforms.enabled_keys(),
