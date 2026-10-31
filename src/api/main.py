@@ -4134,8 +4134,10 @@ def _register_routes(app: FastAPI) -> None:
             conn.commit()
         except Exception:
             conn.rollback()
-            conn.execute("UPDATE spiral_rounds SET status='cancelled' WHERE id=? AND status='created'", (round_id,))
-            conn.commit()
+            # create_round 的短时去重可能把并发请求指向同一轮；只有本请求新建的轮次才允许回滚取消。
+            if not round_result.get("deduped"):
+                conn.execute("UPDATE spiral_rounds SET status='cancelled' WHERE id=? AND status='created'", (round_id,))
+                conn.commit()
             raise
         try:
             queued = await run_round(round_id, RunRoundRequest(
