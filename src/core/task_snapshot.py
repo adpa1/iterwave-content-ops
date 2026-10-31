@@ -17,6 +17,8 @@ _SENSITIVE_KEYS = {
 class StaleTaskSnapshot(RuntimeError):
     """排队后非敏感配置或母计划发生变化，拒绝使用新配置静默执行。"""
 
+    safe_for_user = True
+
 
 def _safe_key(key: str) -> bool:
     normalized = key.strip().lower().replace("-", "_")
