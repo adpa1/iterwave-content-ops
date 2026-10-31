@@ -1179,10 +1179,13 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
     try {
       const parsed = JSON.parse(text);
       const payload = parsed?.detail ?? parsed;
-      if (typeof payload === "string") detail = payload;
-      else if (payload && typeof payload === "object") {
+      if (typeof payload === "string") {
+        detail = payload;
+        // FastAPI 常见结构：detail 是字符串，业务错误码放在响应顶层。
+        errorCode = String(parsed?.code || "");
+      } else if (payload && typeof payload === "object") {
         detail = String(payload.message || payload.detail || detail);
-        errorCode = String(payload.code || "");
+        errorCode = String(payload.code || parsed?.code || "");
       }
     } catch {
       // 非 JSON 错误体，保留原文
