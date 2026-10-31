@@ -95,7 +95,8 @@ export default function Production() {
   const [contents, setContents] = useState<ContentItem[]>([]);
   const [reviewSearch, setReviewSearch] = useState("");
   const [reviewPlatform, setReviewPlatform] = useState<"all" | Platform>("all");
-  const [reviewState, setReviewState] = useState("all");\n  const [reviewMobilePane, setReviewMobilePane] = useState<"list" | "editor" | "preview">("list");
+  const [reviewState, setReviewState] = useState("all");
+  const [reviewMobilePane, setReviewMobilePane] = useState<"list" | "editor" | "preview">("list");
   // 搜索结果可带目标内容 ID；加载轮次内容后自动选中并填入编辑区。
   const [selectedContentId, setSelectedContentId] = useState<string | null>(() => {
     const value = new URLSearchParams(window.location.search).get("focusContent");
@@ -402,7 +403,9 @@ export default function Production() {
       .map((t) => `#${t}`);
     const text = [editTitle.trim(), editBody.trim(), tags.join(" ")]
       .filter(Boolean)
-      .join("\n\n");
+      .join("
+
+");
     try {
       await navigator.clipboard.writeText(text);
       showToast("✓ 已复制标题 + 正文 + 标签，可直接粘贴到平台", "success");
@@ -478,7 +481,8 @@ export default function Production() {
   const handleDeleteContent = async () => {
     if (!selectedContentId) return;
     const item = contents.find((c) => c.id === selectedContentId);
-    const extra = item?.draft_status === "draft_saved" ? "\n这篇已存到平台草稿箱，系统不会去平台删除，请自行清理。" : "";
+    const extra = item?.draft_status === "draft_saved" ? "
+这篇已存到平台草稿箱，系统不会去平台删除，请自行清理。" : "";
     if (!window.confirm(`删除「${item?.title ?? ""}」？文案、草稿记录和卡片图片会一起删除，不可恢复。${extra}`)) return;
     await withPending("delete-content", async () => {
       try {
@@ -1035,7 +1039,12 @@ export default function Production() {
 
       {/* ============ ④ 内容编辑与审核 ============ */}
       {tab === "review" && (
-        <div className="review-mobile-tabs" role="group" aria-label="审核工作台视图">\n          {([["list", "内容列表"], ["editor", "文案编辑"], ["preview", "卡片预览"]] as const).map(([key, label]) => (\n            <button key={key} className={reviewMobilePane === key ? "btn sm primary" : "btn sm"} aria-pressed={reviewMobilePane === key} onClick={() => setReviewMobilePane(key)}>{label}</button>\n          ))}\n        </div>\n        <div className={`review-layout review-layout-mobile-${reviewMobilePane}`}>
+        <div className="review-mobile-tabs" role="group" aria-label="审核工作台视图">
+          {([["list", "内容列表"], ["editor", "文案编辑"], ["preview", "卡片预览"]] as const).map(([key, label]) => (
+            <button key={key} className={reviewMobilePane === key ? "btn sm primary" : "btn sm"} aria-pressed={reviewMobilePane === key} onClick={() => setReviewMobilePane(key)}>{label}</button>
+          ))}
+        </div>
+        <div className={`review-layout review-layout-mobile-${reviewMobilePane}`}>
           {/* 左：本轮内容列表 */}
           <div className="panel">
             <div className="panel-head">
