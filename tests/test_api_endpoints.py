@@ -17,6 +17,7 @@ from src.core.ops.pause import is_ops_paused
 from src.core.plan_version import PlanVersionManager
 from src.core.state_machine import DraftStateMachine, RoundStateMachine
 from src.core.task_queue import GlobalTaskQueue
+from src.core.task_worker import GlobalTaskWorker
 
 
 @pytest.fixture()
@@ -1157,3 +1158,33 @@ def test_content_plan_start_enqueues_global_task_and_cancel_only_cancels_queued_
     assert conn.execute(
         "SELECT status FROM content_plans WHERE id=?", (plan_id,)
     ).fetchone()["status"] == "cancelled"
+
+
+def test_worker_result_links_round_drafts_and_updates_plan_status(client):
+    tc, conn, seed = client
+    created = tc.post("/api/content-plans", json={
+        "title": "Worker 回写计划", "scheduled_date": "2026-11-08",
+        "platforms": ["xhs"], "planned_count": 1,
+    })
+    assert created.status_code == 200
+    plan_id = created.json()["id"]
+    round_id = seed.round(status="producing")
+    draft_id = seed.draft(round_id, platform="xhs", draft_status="draft_saved")
+    conn.execute(
+        "INSERT INTO content_plan_rounds(plan_id,round_id,task_id,created_at) VALUES(?,?,?,?)",
+        (plan_id, round_id, "task-test", "2026-11-08T10:00:00"),
+    )
+    conn.execute(
+        "UPDATE content_plans SET status='generating',version=version+1 WHERE id=?",
+        (plan_id,),
+    )
+    conn.commit()
+
+    GlobalTaskWorker._complete_content_plan(conn, round_id, {"final_status": "completed"})
+    plan = conn.execute("SELECT status,version FROM content_plans WHERE id=?", (plan_id,)).fetchone()
+    assert plan["status"] == "generated"
+    assert plan["version"] == 3
+    assert conn.execute(
+        "SELECT round_id FROM content_plan_drafts WHERE plan_id=? AND draft_id=?",
+        (plan_id, draft_id),
+    ).fetchone()["round_id"] == round_id
