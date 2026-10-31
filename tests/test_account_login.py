@@ -191,3 +191,36 @@ def test_tenant_profile_and_storage_paths_do_not_share_default_globals(tmp_login
     assert al.profile_dir("douyin", tenant_data) == tenant_data / "_profiles" / "DouyinProfile"
     assert al._files("douyin", tenant_data)["storage"] == tenant_data / "login_states" / "douyin.json"
     assert al._files("douyin")["storage"] == tmp_login / "login_states" / "douyin.json"
+
+
+def test_stop_tenant_logins_does_not_stop_other_tenant(tmp_login, tmp_path):
+    tenant_a = tmp_path / "tenants" / "a" / "data"
+    tenant_b = tmp_path / "tenants" / "b" / "data"
+
+    class FakeProcess:
+        def __init__(self):
+            self.terminated = False
+
+        def poll(self):
+            return 0 if self.terminated else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    proc_a, proc_b = FakeProcess(), FakeProcess()
+    al._LOGIN_PROCESSES[(str(tenant_a.resolve()), "xhs")] = proc_a
+    al._LOGIN_PROCESSES[(str(tenant_b.resolve()), "xhs")] = proc_b
+    al._ensure_dirs(tenant_a)
+    al._ensure_dirs(tenant_b)
+    al._files("xhs", tenant_a)["status"].write_text(json.dumps({"state": "qr_ready"}))
+    al._files("xhs", tenant_b)["status"].write_text(json.dumps({"state": "qr_ready"}))
+
+    al.stop_tenant_logins(tenant_a)
+
+    assert proc_a.terminated is True
+    assert proc_b.terminated is False
+    assert (str(tenant_b.resolve()), "xhs") in al._LOGIN_PROCESSES
+    assert al._files("xhs", tenant_b)["status"].exists()
