@@ -3503,6 +3503,47 @@ def _register_routes(app: FastAPI) -> None:
                     logger.warning("global monitor skipped tenant=%s: %s", tenant_id, exc)
                 finally:
                     if conn is not None: conn.close()
+            # 从每个账号组自己的常驻运行时读取真实平台登录态和调度器状态。
+            # 未初始化/启动失败的组显式标记 unavailable，不借用当前活动账号组数据。
+            runtime = {
+                "available": False, "enabled_platforms": [], "logged_in_platforms": [],
+                "platforms_without_login": [], "circuit_broken_platforms": [],
+                "scheduler_running": None, "scheduler_job_count": None,
+                "scheduler_enabled_count": None, "active_rounds": None,
+            }
+            context = _tenant_runtime_contexts.get(tenant_id)
+            if context is not None:
+                try:
+                    cfg = context["cfg"]
+                    enabled = cfg.platforms.enabled_keys()
+                    from src.core.login_manager import has_login_state
+                    login_dir = Path(cfg.resolve_path(cfg.paths.data_dir))
+                    logged = [
+                        platform.value for platform in Platform
+                        if platform.value in enabled and has_login_state(platform, data_dir=login_dir)
+                    ]
+                    scheduler = context.get("scheduler")
+                    jobs = scheduler.scheduler.get_jobs() if scheduler is not None else []
+                    enabled_jobs = sum(1 for job in cfg.scheduler.jobs.values() if job.enabled)
+                    cb_events = context["cb"].active_events()
+                    runtime.update({
+                        "available": True,
+                        "enabled_platforms": enabled,
+                        "logged_in_platforms": logged,
+                        "platforms_without_login": [p for p in enabled if p not in logged],
+                        "circuit_broken_platforms": sorted({event["platform"] for event in cb_events}),
+                        "scheduler_running": bool(scheduler and scheduler.scheduler.running),
+                        "scheduler_job_count": len(jobs),
+                        "scheduler_enabled_count": enabled_jobs,
+                        "active_rounds": int(context["conn"].execute(
+                            "SELECT COUNT(*) FROM spiral_rounds WHERE status IN "
+                            "('producing','awaiting_publish','collecting_metrics')"
+                        ).fetchone()[0]),
+                    })
+                except Exception as exc:
+                    logger.warning("global runtime status unavailable tenant=%s error=%s", tenant_id, type(exc).__name__)
+            row["runtime"] = runtime
+
             totals["tenants"] += 1
             if row["db_available"]: totals["available_tenants"] += 1
             for key in ("contents_period", "contents_all", "drafts_all", "drafts_pending", "drafts_saved", "drafts_published", "drafts_failed", "media_active", "media_usage", "registered_accounts", "registered_accounts_active"): totals[key] += row[key]
