@@ -299,6 +299,21 @@ def stop_all_logins(timeout_seconds: float = 10.0) -> None:
         if completed_before_stop.get(platform) and _read_status_file(_files(platform)["status"]).get("state") == "success":
             _schedule_export(platform)
 
+    default_keys = {platform for platform, _ in active}
+    while True:
+        with _EXPORT_LOCK:
+            exporting = bool(_EXPORTING.intersection(default_keys))
+        if not exporting:
+            break
+        if time.monotonic() >= deadline:
+            raise TimeoutError("默认账号组登录态导出仍在执行，拒绝清理登录目录")
+        time.sleep(0.05)
+
+    for platform, _ in active:
+        f = _files(platform)
+        for key in ("qr", "status", "code"):
+            f[key].unlink(missing_ok=True)
+
 
 def clear_login(platform: str, data_dir: Path | str | None = None) -> dict:
     """注销：删持久化 profile、storage_state 和登录标记（下次需重新扫码）。"""
