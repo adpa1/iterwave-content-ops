@@ -693,3 +693,7 @@ html, body, #root { width: 100%; max-width: 100%; overflow-x: clip; }
 @media (max-width: 680px) {
   .calendar-plan-detail-grid { grid-template-columns: 1fr; }
 }
+
+
+.global-platform-cell { display: grid; gap: 3px; min-width: 140px; }
+.global-platform-cell .tiny { white-space: normal; overflow-wrap: anywhere; }
