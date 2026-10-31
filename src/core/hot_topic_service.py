@@ -96,8 +96,8 @@ def run_once(
         try:
             matcher = HotTopicMatcher(cfg, conn)
             match = matcher.run()
-            # 将模型批次失败和未能得到语义结论显式暴露，不能把部分失败报成完整完成。
-            match["remaining_pending"] = max(len(matcher.pending()), int(match.get("unjudged", 0)))
+            # 以数据库中当前榜单的真实未研判数为准，包含整批失败、模型漏项及超出单轮处理上限的条目。
+            match["remaining_pending"] = matcher.pending_count()
             if match.get("failed_batches"):
                 match["status"] = "partial"
             elif match.get("remaining_pending"):
@@ -196,7 +196,10 @@ def run_research(
         from .hot_topic_matcher import HotTopicMatcher, default_llm_fn
         if default_llm_fn(cfg) is None:
             raise RuntimeError("大模型未启用：请到「系统设置」开启主模型并配置 API Key")
-        report = HotTopicMatcher(cfg, conn).run()
+        matcher = HotTopicMatcher(cfg, conn)
+        report = matcher.run()
+        # failed batch 中未写入 match_version 的条目也必须计入最终待研判数。
+        report["remaining_pending"] = matcher.pending_count()
         logger.info("热点研判完成 tenant=%s report=%s", tenant_id, report)
     except Exception as exc:  # noqa: BLE001
         from .redact import redact
