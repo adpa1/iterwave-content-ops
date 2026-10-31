@@ -508,6 +508,51 @@ class GlobalTaskQueue:
         finally:
             conn.close()
 
+    def list_page(
+        self, *, page: int = 1, page_size: int = 20,
+        scope: str = "history", tenant_id: str | None = None,
+    ) -> tuple[list[QueuedTask], int]:
+        """Return a stable, database-paginated slice of active or historical tasks."""
+        page = max(1, int(page))
+        page_size = max(1, min(int(page_size), 100))
+        if scope not in {"active", "history"}:
+            raise ValueError("scope must be active or history")
+        statuses = ("queued", "running") if scope == "active" else (
+            "succeeded", "failed", "cancelled", "interrupted"
+        )
+        placeholders = ",".join("?" for _ in statuses)
+        where = f"status IN ({placeholders})"
+        params: list[object] = list(statuses)
+        if tenant_id is not None:
+            where += " AND tenant_id=?"
+            params.append(tenant_id)
+        offset = (page - 1) * page_size
+        conn = self._connect()
+        try:
+            total_row = conn.execute(
+                f"SELECT COUNT(*) AS n FROM global_task_queue WHERE {where}", params
+            ).fetchone()
+            rows = conn.execute(
+                f"SELECT * FROM global_task_queue WHERE {where} "
+                "ORDER BY queue_order DESC LIMIT ? OFFSET ?",
+                (*params, page_size, offset),
+            ).fetchall()
+            tasks: list[QueuedTask] = []
+            for row in rows:
+                try:
+                    task = self._decode(row)
+                except TaskQueueError as exc:
+                    logger.error(
+                        "跳过无法解码的队列记录 task_id=%s error=%s",
+                        row["task_id"], str(exc),
+                    )
+                    continue
+                if task is not None:
+                    tasks.append(task)
+            return tasks, int(total_row["n"] if total_row else 0)
+        finally:
+            conn.close()
+
     def list(self, *, limit: int = 100, tenant_id: str | None = None) -> list[QueuedTask]:
         limit = max(1, min(int(limit), 500))
         conn = self._connect()
