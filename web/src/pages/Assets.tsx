@@ -350,18 +350,26 @@ export default function Assets() {
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">▧</span>可复用内容模板 · {assets.template.length} 条</div>
-                <div className="panel-sub">只存结构说明；模板本身不含任何历史数据</div>
+                <div className="panel-sub">模板是可复用的内容结构（不是成品文案）。保存后可复制结构，在内容生产的选题/要求中粘贴使用；当前版本不会自动注入 AI 生成流程。</div>
               </div>
             </div>
             {assets.template.length === 0 ? (
-              <EmptyHint next="在上方录入一套你验证过的图文结构，作为后续内容计划的制作参考">暂无模板</EmptyHint>
+              <EmptyHint next="先添加一套结构，例如「痛点引入 → 真实体验 → 证据 → 局限 → 结论」。保存后点击「复制使用」，再粘贴到内容生产要求中。">暂无模板</EmptyHint>
             ) : (
               <div className="grid three">
                 {assets.template.map((t) => (
                   <div className="skill-card" key={t.id}>
                     <div className="skill-name">{t.title}</div>
                     <div className="skill-desc">{t.body || "（无结构说明）"}</div>
-                    <div className="skill-foot"><span>{t.created_at?.slice(0, 10) ?? "—"}</span></div>
+                    <div className="skill-foot">
+                      <span>{t.created_at?.slice(0, 10) ?? "—"}</span>
+                      <button type="button" className="btn sm" onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(`请按以下内容结构组织本次图文：\\n\\n${t.title}\\n${t.body || ""}`);
+                          showToast("模板结构已复制，可粘贴到内容生产要求中", "success");
+                        } catch { showToast("复制失败，请手动选择模板内容", "error"); }
+                      }}>复制使用</button>
+                    </div>
                   </div>
                 ))}
               </div>
