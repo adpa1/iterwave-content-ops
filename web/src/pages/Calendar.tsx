@@ -111,6 +111,12 @@ export default function Calendar() {
   };
 
   useEffect(() => { void load(); }, [viewMode, year, month, cursorDate]);
+  useEffect(() => {
+    if (!plans.some((plan) => plan.status === "generating")) return;
+    const timer = window.setInterval(() => { void load(); }, 10000);
+    return () => window.clearInterval(timer);
+  }, [plans, viewMode, year, month, cursorDate]);
+
 
   const platformColors: Record<string, string> = {
     xhs: "#fe2c55", douyin: "#000", wechat_channels: "#07c160", kuaishou: "#ff6a00",
