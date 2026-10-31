@@ -4834,6 +4834,23 @@ def _register_routes(app: FastAPI) -> None:
         return purge_topics(_g()["conn"], req.ids)
 
     # --- Agent 编排（§21）---
+    def _custom_skill_reference_errors(conn, steps: list[dict]) -> list[str]:
+        errors = []
+        for index, step in enumerate(steps):
+            skill_id = str(step.get("skill_id") or step.get("custom_skill_id") or "").strip()
+            if not skill_id:
+                continue
+            row = conn.execute(
+                "SELECT enabled FROM tenant_skill_registry WHERE skill_id=?", (skill_id,),
+            ).fetchone()
+            if row is None:
+                errors.append(f"步骤 {index + 1} 引用了未登记的自定义 Skill：{skill_id}")
+            elif not row["enabled"]:
+                errors.append(f"步骤 {index + 1} 引用的自定义 Skill 尚未启用：{skill_id}")
+            else:
+                errors.append(f"自定义 Skill {skill_id} 已登记，但当前 Agent 编排执行器仅支持内置步骤，不能执行自定义代码")
+        return errors
+
     @app.get("/api/orchestration")
     def get_orchestration():
         from src.core import orchestration as orch
@@ -4842,6 +4859,9 @@ def _register_routes(app: FastAPI) -> None:
     @app.put("/api/orchestration")
     def put_orchestration(req: OrchestrationRequest):
         from src.core import orchestration as orch
+        custom_errors = _custom_skill_reference_errors(_g()["conn"], req.steps)
+        if custom_errors:
+            raise HTTPException(422, "；".join(custom_errors))
         try:
             orch.save_steps(_g()["conn"], req.steps)
         except ValueError as exc:
@@ -4851,7 +4871,9 @@ def _register_routes(app: FastAPI) -> None:
     @app.post("/api/orchestration/validate")
     def validate_orchestration(req: OrchestrationRequest):
         from src.core import orchestration as orch
+        conn = _g()["conn"]
         errors = orch.validate_steps([{"id": s.get("id"), "enabled": bool(s.get("enabled"))} for s in req.steps])
+        errors.extend(_custom_skill_reference_errors(conn, req.steps))
         return {"valid": not errors, "errors": errors}
 
     @app.post("/api/orchestration/reset")
