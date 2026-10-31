@@ -290,6 +290,34 @@ export function LlmEditor({ view, onSaved }: {
       updates["llm.timeout_seconds"] = tsec;
     }
     if (Object.keys(updates).length === 0) { showToast("模型配置没有改动", "info"); return; }
+    // llm.* 属于系统级生产配置；快照校验会停止所有账号组中尚未执行的旧配置任务。
+    // 先读取全局队列并明确告知影响范围，避免用户误以为只影响当前账号组。
+    if (Object.keys(updates).some((key) => key.startsWith("llm."))) {
+      try {
+        const queue = await api.taskQueue();
+        const queued = queue.items.filter((item) => item.status === "queued");
+        if (queued.length > 0) {
+          const byTenant = new Map<string, { name: string; count: number }>();
+          for (const task of queued) {
+            const current = byTenant.get(task.tenant_id) ?? {
+              name: task.tenant_name || task.tenant_id, count: 0,
+            };
+            current.count += 1;
+            byTenant.set(task.tenant_id, current);
+          }
+          const scope = [...byTenant.values()]
+            .map((item) => `「${item.name}」${item.count} 个`)
+            .join("、");
+          const confirmed = window.confirm(
+            `本次修改是系统级模型配置，会使所有账号组中尚未开始执行的旧配置任务因快照不匹配而停止。\n\n待执行任务：${queued.length} 个（${scope}）。\n\n建议先等待队列清空。仍要保存模型配置吗？`,
+          );
+          if (!confirmed) return;
+        }
+      } catch (error) {
+        showToast("无法读取全局任务队列，已取消模型配置保存；请刷新队列后重试。", "error");
+        return;
+      }
+    }
     try {
       const res = await withPending("cfg:llm", () => api.patchConfig(updates));
       if (!res) return;
