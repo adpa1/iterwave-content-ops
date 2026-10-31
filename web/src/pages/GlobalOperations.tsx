@@ -101,8 +101,11 @@ export default function GlobalOperations() {
                 return <tr key={tenant.tenant_id}>
                   <td><strong>{tenant.tenant_name}</strong><div className="tiny">{tenant.tenant_id}</div></td>
                   <td><span className={tenant.db_available ? "tag green" : "tag red"}>{tenant.db_available ? "可读取" : "不可用"}</span></td>
-                  <td>{tenant.contents_period}</td><td>{tenant.drafts_all}</td>
+                  <td>{tenant.registered_accounts_active ?? tenant.registered_accounts ?? "—"} / {tenant.registered_accounts ?? "—"}</td>
+                  <td>{tenant.runtime?.available ? `${tenant.runtime.logged_in_platforms.length}/${tenant.runtime.enabled_platforms.length} 已登录` : "运行时不可用"}</td>
                   <td>{q.running}</td><td>{q.queued}</td><td>{q.failed}</td>
+                  <td>{tenant.runtime?.available ? (tenant.runtime.scheduler_running ? <span className="tag green">运行中</span> : <span className="tag red">已停止</span>) : "—"}</td>
+                  <td>{tenant.runtime?.active_rounds ?? "—"}</td>
                   <td><button className="btn sm" onClick={() => navigate("global-monitor")}>统计详情</button></td>
                 </tr>;
               })}</tbody>
