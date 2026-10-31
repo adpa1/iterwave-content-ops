@@ -424,11 +424,7 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
 
     from src.core import account_login, login_manager
     try:
-        # 仅终止前台交互式扫码登录；已入队 Agent 任务和所有账号组调度器不受影响。
-        policy = _tenant_switch_policy(old_context.get("cfg"))
-        account_login.stop_all_logins(timeout_seconds=policy.login_process_timeout_seconds)
-        account_login.configure_data_dir(new_data_dir)
-        login_manager.configure_data_dir(new_data_dir)
+        # 账号组切换不终止任何租户的扫码登录；登录子进程按租户与平台分别管理。
         selected = registry.select_active(tenant_id)
         set_active_notifier(new_context["notifier"])
         _g_ctx.clear()
@@ -448,9 +444,6 @@ async def _switch_tenant_runtime(tenant_id: str) -> dict:
         try:
             registry.select_active(old_tenant_id)
             set_active_notifier(old_context["notifier"])
-            old_data_dir = Path(old_context["cfg"].resolve_path(old_context["cfg"].paths.data_dir))
-            account_login.configure_data_dir(old_data_dir)
-            login_manager.configure_data_dir(old_data_dir)
             _g_ctx.clear()
             _g_ctx.update(old_context)
             _tenant_runtime_contexts[old_tenant_id] = _g_ctx
@@ -634,11 +627,7 @@ def _build_app() -> FastAPI:
                     item.account_key = f"{prefix}{item.account_key}"
             # 租户选题库路径是隔离边界；不能让历史 config_overrides.json 把它指回共享或其他租户目录。
             cfg.topic_kb.path = str(tenant_paths.kb_dir / "topics.csv")
-        # 登录二维码、持久化浏览器 profile、storage_state 必须共用当前账号组数据根目录。
-        from src.core import account_login, login_manager
-        runtime_data_dir = cfg.resolve_path(cfg.paths.data_dir)
-        account_login.configure_data_dir(runtime_data_dir)
-        login_manager.configure_data_dir(runtime_data_dir)
+        # 登录数据路径由 API 请求显式绑定租户，运行时构造不得修改模块级全局目录。
         # conn/db 已在运行时配置加载前初始化，后续模块共用该连接。
 
         adapters = get_adapters(cfg, conn)
@@ -6503,10 +6492,14 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(400, f"未知平台 {platform}，支持: {sorted(valid)}")
         return platform
 
+    def _interactive_login_data_dir() -> Path:
+        cfg = _g()["cfg"]
+        return Path(cfg.resolve_path(cfg.paths.data_dir))
+
     @app.get("/api/accounts")
     def list_accounts():
         """四平台账号状态汇总（Accounts 页顶部四卡片用）。"""
-        return {"accounts": _get_all_accounts()}
+        return {"accounts": _get_all_accounts(data_dir=_interactive_login_data_dir())}
 
 
     @app.get("/api/platform-accounts")
@@ -6592,26 +6585,26 @@ def _register_routes(app: FastAPI) -> None:
         重启登录加 ?restart=true（先 terminate 旧进程再起新的）。
         """
         p = _valid_platform(platform)
-        return _start_login(p, restart=restart)
+        return _start_login(p, restart=restart, data_dir=_interactive_login_data_dir())
 
     @app.get("/api/accounts/{platform}/login_status")
     def platform_login_status(platform: str):
         """前端轮询：返回登录进度 + QR base64（data:image/png;base64,... 直嵌 <img>）。"""
         p = _valid_platform(platform)
-        return _get_login_status(p)
+        return _get_login_status(p, data_dir=_interactive_login_data_dir())
 
     @app.post("/api/accounts/{platform}/logout")
     def logout_platform(platform: str):
         """注销：清持久化 profile + storage_state + 登录标记（下次需重新扫码）。"""
         p = _valid_platform(platform)
-        return _clear_login(p)
+        return _clear_login(p, data_dir=_interactive_login_data_dir())
 
     @app.post("/api/accounts/{platform}/sms")
     def submit_platform_sms(platform: str, req: SmsCodeRequest):
         """回填短信验证码（登录进入 sms_required 时由前端提交，runner 读走后继续登录）。"""
         p = _valid_platform(platform)
         try:
-            return _submit_sms_code(p, req.code)
+            return _submit_sms_code(p, req.code, data_dir=_interactive_login_data_dir())
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
 
@@ -6619,7 +6612,7 @@ def _register_routes(app: FastAPI) -> None:
     def cancel_platform_login(platform: str):
         """取消进行中的登录（terminate subprocess + 清状态文件）。"""
         p = _valid_platform(platform)
-        return _cancel_login(p)
+        return _cancel_login(p, data_dir=_interactive_login_data_dir())
 
     @app.get("/api/redline_history")
     def list_redline_history(limit: int = Query(200, ge=1, le=2000)):
