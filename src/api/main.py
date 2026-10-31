@@ -5509,6 +5509,8 @@ def _register_routes(app: FastAPI) -> None:
             params,
         ).fetchall()
         rows = [_sync_content_plan_task_state(conn, row) for row in rows]
+        if status:
+            rows = [row for row in rows if row["status"] == status]
         items = []
         for row in rows:
             item = dict(row)
