@@ -1121,3 +1121,39 @@ def test_skill_registry_rejects_unsafe_permissions_and_invalid_manifest(client):
         "skill_id": "topic_scoring", "name": "伪装内置能力", "version": "1.0.0",
     })
     assert reserved_id.status_code == 409
+
+
+def test_content_plan_start_enqueues_global_task_and_cancel_only_cancels_queued_task(client, tmp_path, monkeypatch):
+    tc, conn, _ = client
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    monkeypatch.setattr(api_main, "_task_queue", queue)
+    monkeypatch.setattr(api_main, "_build_task_execution_snapshot", lambda *args, **kwargs: {"test_snapshot": True})
+
+    created = tc.post("/api/content-plans", json={
+        "title": "排队生产计划", "scheduled_date": "2026-11-06",
+        "platforms": ["xhs"], "planned_count": 2,
+    })
+    assert created.status_code == 200
+    plan_id = created.json()["id"]
+
+    started = tc.post(f"/api/content-plans/{plan_id}/start")
+    assert started.status_code == 202
+    body = started.json()
+    assert body["round_id"] > 0
+    assert body["queued"] is True
+    queued_task = queue.get(body["task_id"])
+    assert queued_task is not None and queued_task.status == "queued"
+
+    detail = tc.get(f"/api/content-plans/{plan_id}")
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "generating"
+    assert detail.json()["rounds"][0]["round_id"] == body["round_id"]
+    assert detail.json()["rounds"][0]["task_id"] == body["task_id"]
+
+    cancelled = tc.delete(f"/api/content-plans/{plan_id}?version=2")
+    assert cancelled.status_code == 200
+    assert queue.get(body["task_id"]).status == "cancelled"
+    assert conn.execute(
+        "SELECT status FROM content_plans WHERE id=?", (plan_id,)
+    ).fetchone()["status"] == "cancelled"
