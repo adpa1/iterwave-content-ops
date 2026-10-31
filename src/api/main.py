@@ -3835,6 +3835,7 @@ def _register_routes(app: FastAPI) -> None:
         scope: str = Query("all", pattern="^(all|active|history|failed)$"),
         page: int = Query(1, ge=1),
         page_size: int = Query(20, ge=1, le=100),
+        task_type: str | None = Query(None, min_length=1, max_length=80),
     ):
         if _task_queue is None:
             raise HTTPException(503, "全局任务队列尚未初始化")
@@ -3846,7 +3847,7 @@ def _register_routes(app: FastAPI) -> None:
             tasks, total = _task_queue.list_page(
                 page=1 if scope in {"active", "failed"} else page,
                 page_size=500 if scope in {"active", "failed"} else page_size,
-                scope=scope,
+                scope=scope, task_type=task_type if scope == "history" else None,
             )
         items = []
         for task in tasks:
