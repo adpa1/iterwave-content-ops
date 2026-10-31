@@ -62,6 +62,7 @@ def api_client(cfg, conn):
         auth.set_password("Test-access9!")
         response = client.post("/api/auth/login", json={"password": "Test-access9!"})
         assert response.status_code == 200
+        client.headers.update({"X-Tenant-Id": "default"})
         yield client
     finally:
         api_main._g_ctx.clear()
