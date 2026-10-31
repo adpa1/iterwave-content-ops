@@ -12,7 +12,14 @@ export default function Calendar() {
   const year = cursorDate.getFullYear();
   const month = cursorDate.getMonth();
 
-  const [events, setEvents] = useState<ScheduleEvent[]>([]);\n  const [plans, setPlans] = useState<ContentPlan[]>([]);\n  const [planTitle, setPlanTitle] = useState("");\n  const [planTopic, setPlanTopic] = useState("");\n  const [planDate, setPlanDate] = useState(_fmt(today));\n  const [planCount, setPlanCount] = useState("1");\n  const [planPlatforms, setPlanPlatforms] = useState<Platform[]>([]);\n  const [planNotes, setPlanNotes] = useState("");
+  const [events, setEvents] = useState<ScheduleEvent[]>([]);
+  const [plans, setPlans] = useState<ContentPlan[]>([]);
+  const [planTitle, setPlanTitle] = useState("");
+  const [planTopic, setPlanTopic] = useState("");
+  const [planDate, setPlanDate] = useState(_fmt(today));
+  const [planCount, setPlanCount] = useState("1");
+  const [planPlatforms, setPlanPlatforms] = useState<Platform[]>([]);
+  const [planNotes, setPlanNotes] = useState("");
   const [unscheduled, setUnscheduled] = useState<UnscheduledDraft[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -362,7 +369,14 @@ export default function Calendar() {
   );
 }
 
-function shiftCalendarDate(date: Date, mode: "month" | "week" | "day", direction: number): Date {\n  const next = new Date(date);\n  if (mode === "month") next.setMonth(next.getMonth() + direction);\n  else next.setDate(next.getDate() + (mode === "week" ? 7 : 1) * direction);\n  return next;\n}\n\nfunction _fmt(d: Date): string {
+function shiftCalendarDate(date: Date, mode: "month" | "week" | "day", direction: number): Date {
+  const next = new Date(date);
+  if (mode === "month") next.setMonth(next.getMonth() + direction);
+  else next.setDate(next.getDate() + (mode === "week" ? 7 : 1) * direction);
+  return next;
+}
+
+function _fmt(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
