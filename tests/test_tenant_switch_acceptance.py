@@ -170,3 +170,29 @@ def test_derived_custom_round_snapshot_is_authoritative(cfg, conn, seed):
     assert snapshot["round_plan_snapshot"]["topic_count_per_platform"] == 3
     assert snapshot["round_plan_snapshot"]["enabled_platforms"] == ["xhs"]
     validate_execution_snapshot(snapshot, cfg, conn)
+
+
+
+def test_unrelated_config_changes_do_not_invalidate_queued_production(cfg):
+    from src.core.task_snapshot import config_fingerprint
+
+    before = config_fingerprint(cfg)
+    cfg.circuit_breaker.cooldown_minutes += 1
+    assert config_fingerprint(cfg) == before
+
+    cfg.llm.model = cfg.llm.model + "-changed"
+    assert config_fingerprint(cfg) != before
+
+
+def test_process_singleton_lock_writes_real_newline(tmp_path):
+    from src.core.process_lock import ProcessSingletonLock
+
+    path = tmp_path / "api.lock"
+    lock = ProcessSingletonLock(path)
+    lock.acquire()
+    try:
+        payload = path.read_bytes()
+        assert payload.endswith(b"\\n")
+        assert payload[:-1].isdigit()
+    finally:
+        lock.release()
