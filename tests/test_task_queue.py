@@ -17,6 +17,7 @@ def test_fifo_is_global_across_tenants(tmp_path):
     a, _ = queue.enqueue(task_type="round_run", tenant_id="a", aggregate_id="1", payload={"round_id": 1})
     b, _ = queue.enqueue(task_type="round_run", tenant_id="b", aggregate_id="2", payload={"round_id": 2})
     c, _ = queue.enqueue(task_type="round_run", tenant_id="c", aggregate_id="3", payload={"round_id": 3})
+    d, _ = queue.enqueue(task_type="round_run", tenant_id="d", aggregate_id="4", payload={"round_id": 4})
 
     first = queue.claim_next("worker-1")
     assert first and first.task_id == a.task_id and first.tenant_id == "a"
@@ -26,6 +27,9 @@ def test_fifo_is_global_across_tenants(tmp_path):
     assert queue.finish(second.task_id, "worker-1", result={"ok": True})
     third = queue.claim_next("worker-1")
     assert third and third.task_id == c.task_id and third.tenant_id == "c"
+    assert queue.finish(third.task_id, "worker-1", result={"ok": True})
+    fourth = queue.claim_next("worker-1")
+    assert fourth and fourth.task_id == d.task_id and fourth.tenant_id == "d"
 
 
 def test_active_aggregate_is_idempotent(tmp_path):
