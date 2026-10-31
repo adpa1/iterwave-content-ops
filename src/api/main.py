@@ -5376,6 +5376,18 @@ def _register_routes(app: FastAPI) -> None:
         status_values = {"planned", "generating", "generated", "reviewed", "archived", "cancelled"}
         if values["status"] not in status_values:
             raise HTTPException(422, "无效的计划状态")
+        current_status = str(existing["status"])
+        next_status = str(values["status"])
+        transitions = {
+            "planned": {"planned", "generating", "cancelled"},
+            "generating": {"generating", "generated", "cancelled"},
+            "generated": {"generated", "reviewed", "cancelled"},
+            "reviewed": {"reviewed", "archived", "cancelled"},
+            "archived": {"archived"},
+            "cancelled": {"cancelled"},
+        }
+        if next_status not in transitions[current_status]:
+            raise HTTPException(409, f"计划状态不允许从 {current_status} 变更为 {next_status}")
         platforms = values["platforms"] if "platforms" in values else json.loads(values["platforms_json"] or "[]")
         if not isinstance(platforms, list) or len(platforms) > 8:
             raise HTTPException(422, "平台必须为数组，最多选择 8 个")
@@ -5407,6 +5419,60 @@ def _register_routes(app: FastAPI) -> None:
                 "scheduled_date": str(values["scheduled_date"]), "status": str(values["status"]),
                 "notes": str(values["notes"] or ""), "version": expected_version + 1,
                 "created_at": existing["created_at"], "updated_at": now}
+
+    @app.get("/api/content-plans/{plan_id}")
+    def get_content_plan(plan_id: str):
+        conn = _g()["conn"]
+        row = conn.execute("SELECT * FROM content_plans WHERE id=?", (plan_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "计划不存在")
+        item = dict(row)
+        item["platforms"] = json.loads(item.pop("platforms_json") or "[]")
+        linked = conn.execute(
+            "SELECT d.id AS draft_id,d.platform,d.status,c.title,c.round_id,cpd.created_at "
+            "FROM content_plan_drafts cpd JOIN drafts d ON d.id=cpd.draft_id "
+            "JOIN contents c ON c.id=d.content_id WHERE cpd.plan_id=? ORDER BY cpd.created_at,d.id",
+            (plan_id,),
+        ).fetchall()
+        item["drafts"] = [dict(r) for r in linked]
+        return item
+
+    @app.post("/api/content-plans/{plan_id}/drafts")
+    def link_content_plan_drafts(plan_id: str, req: dict):
+        body = req or {}
+        draft_ids = body.get("draft_ids")
+        if not isinstance(draft_ids, list) or not draft_ids or len(draft_ids) > 100:
+            raise HTTPException(422, "draft_ids 必须是 1 到 100 项的数组")
+        normalized_ids = list(dict.fromkeys(str(value).strip() for value in draft_ids if str(value).strip()))
+        if len(normalized_ids) != len(draft_ids):
+            raise HTTPException(422, "draft_ids 不能包含空值")
+        conn = _g()["conn"]
+        plan = conn.execute("SELECT status FROM content_plans WHERE id=?", (plan_id,)).fetchone()
+        if plan is None:
+            raise HTTPException(404, "计划不存在")
+        if plan["status"] not in ("planned", "generating", "generated"):
+            raise HTTPException(409, "当前计划状态不允许关联草稿")
+        linked_now = []
+        now = _now().isoformat(timespec="seconds")
+        for draft_id in normalized_ids:
+            draft = conn.execute(
+                "SELECT d.id,c.round_id FROM drafts d JOIN contents c ON c.id=d.content_id WHERE d.id=?",
+                (draft_id,),
+            ).fetchone()
+            if draft is None:
+                raise HTTPException(404, f"草稿不存在：{draft_id}")
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO content_plan_drafts(plan_id,draft_id,round_id,created_at) VALUES(?,?,?,?)",
+                (plan_id, draft_id, draft["round_id"], now),
+            )
+            if cursor.rowcount:
+                linked_now.append(draft_id)
+        conn.execute(
+            "UPDATE content_plans SET status='generated',version=version+1,updated_at=? WHERE id=? AND status IN ('planned','generating')",
+            (now, plan_id),
+        )
+        conn.commit()
+        return {"plan_id": plan_id, "linked_now": linked_now, "linked_count": len(linked_now), "status": "generated"}
 
     @app.delete("/api/content-plans/{plan_id}")
     def cancel_content_plan(plan_id: str, version: int = Query(..., ge=1)):
