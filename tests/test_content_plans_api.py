@@ -60,3 +60,37 @@ def test_content_plan_rejects_invalid_payload_and_platform(client):
         "title": "计划", "scheduled_date": "2026-11-02", "platforms": ["not-a-platform"],
     })
     assert invalid_platform.status_code == 422
+
+
+
+def test_content_plan_links_generated_drafts_idempotently_and_rolls_back_invalid_batch(client):
+    tc, conn, seed = client
+    created = tc.post("/api/content-plans", json={
+        "title": "多平台内容计划", "scheduled_date": "2026-11-04",
+        "platforms": ["xhs"], "planned_count": 2,
+    })
+    assert created.status_code == 200
+    plan_id = created.json()["id"]
+    round_id = seed.round()
+    draft_id = seed.draft(round_id, platform="xhs", draft_status="draft_saved")
+
+    missing = tc.post(f"/api/content-plans/{plan_id}/drafts", json={
+        "draft_ids": [draft_id, "missing-draft"],
+    })
+    assert missing.status_code == 404
+    assert conn.execute(
+        "SELECT COUNT(*) FROM content_plan_drafts WHERE plan_id=?", (plan_id,)
+    ).fetchone()[0] == 0
+
+    linked = tc.post(f"/api/content-plans/{plan_id}/drafts", json={"draft_ids": [draft_id]})
+    assert linked.status_code == 200
+    assert linked.json()["linked_count"] == 1
+    duplicate = tc.post(f"/api/content-plans/{plan_id}/drafts", json={"draft_ids": [draft_id]})
+    assert duplicate.status_code == 200
+    assert duplicate.json()["linked_count"] == 0
+
+    detail = tc.get(f"/api/content-plans/{plan_id}")
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "generated"
+    assert detail.json()["drafts"][0]["draft_id"] == draft_id
+    assert detail.json()["drafts"][0]["round_id"] == round_id
