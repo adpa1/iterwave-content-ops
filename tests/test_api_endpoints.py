@@ -1191,7 +1191,7 @@ def test_worker_result_links_round_drafts_and_updates_plan_status(client):
 
 
 def test_content_plan_recovers_to_retryable_after_worker_interruption(client, tmp_path, monkeypatch):
-    tc, _, _ = client
+    tc, _, seed = client
     queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
     queue.initialize()
     monkeypatch.setattr(api_main, "_task_queue", queue)
@@ -1204,6 +1204,8 @@ def test_content_plan_recovers_to_retryable_after_worker_interruption(client, tm
     started = tc.post(f"/api/content-plans/{plan_id}/start")
     assert started.status_code == 202
     task_id = started.json()["task_id"]
+    round_id = started.json()["round_id"]
+    draft_id = seed.draft(round_id, platform="xhs", draft_status="draft_saved")
 
     queue_conn = queue._connect()
     queue_conn.execute(
@@ -1218,3 +1220,6 @@ def test_content_plan_recovers_to_retryable_after_worker_interruption(client, tm
     recovered = listed.json()["items"][0]
     assert recovered["status"] == "failed"
     assert recovered["version"] == 3
+    detail = tc.get(f"/api/content-plans/{plan_id}")
+    assert detail.status_code == 200
+    assert detail.json()["drafts"][0]["draft_id"] == draft_id
