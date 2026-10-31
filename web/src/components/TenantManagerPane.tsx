@@ -37,6 +37,8 @@ export default function TenantManagerPane() {
       try {
         const result = await api.createTenant({ tenant_id: id, name: name.trim() });
         showToast(`账号组「${result.tenant.name}」已创建`, "success");
+        // 通知常驻顶部栏刷新账号组列表，避免新建后下拉框仍保留首次加载的旧数据。
+        window.dispatchEvent(new Event("iterwave:tenants-changed"));
         setTenantId("");
         setName("");
         await load();
@@ -78,6 +80,7 @@ export default function TenantManagerPane() {
       try {
         const result = await api.selectTenant(id);
         showToast(result.message, result.restart_required ? "info" : "success");
+        window.dispatchEvent(new Event("iterwave:tenants-changed"));
         await load();
       } catch (e) {
         showToast(e instanceof Error ? e.message : "切换账号组失败", "error");
@@ -97,10 +100,12 @@ export default function TenantManagerPane() {
         </div>
         {data?.restart_required && (
           <div className="panel" style={{ borderColor: "var(--orange)", marginBottom: 12 }}>
-            <strong>账号组切换待生效</strong>
+            <strong>{data.hot_switch_enabled ? "账号组切换待生效" : "即时切换未启用"}</strong>
             <div className="panel-sub">
               当前运行实例仍使用「{data.items.find((item) => item.id === data.runtime_tenant_id)?.name ?? "当前账号组"}」，已选择「{data.items.find((item) => item.id === data.selected_tenant_id)?.name ?? "所选账号组"}」。
-              为避免后台任务在切换过程中写入错误空间，需要手动重启后端服务，切换才会生效。
+              {data.hot_switch_enabled
+                ? "当前选择将在服务重启后生效。"
+                : <>当前服务未启用即时热切换。请在后端部署环境设置 <code>ITERWAVE_ENABLE_TENANT_HOT_SWITCH=1</code> 并重启服务；否则账号组选择只会保存，运行时不会立即切换。</>}
             </div>
           </div>
         )}
