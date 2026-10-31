@@ -190,3 +190,25 @@ def test_target_initialization_failure_does_not_stop_old_runtime(monkeypatch):
     finally:
         monkeypatch.setattr(api_main, "_g_ctx", {})
     
+
+
+def test_runtime_switch_does_not_stop_in_progress_tenant_login(monkeypatch):
+    registry = FakeRegistry()
+    old = make_context(registry, "A")
+    target = make_context(registry, "B")
+    monkeypatch.setattr(api_main, "_g_ctx", old)
+    monkeypatch.setattr(api_main, "_tenant_runtime_contexts", {})
+    monkeypatch.setattr(api_main, "set_active_notifier", lambda notifier: None)
+    monkeypatch.setattr(
+        api_main, "_build_tenant_runtime_context",
+        lambda _registry, tenant_id, run_startup_maintenance=False: target,
+    )
+    from src.core import account_login
+    monkeypatch.setattr(
+        account_login, "stop_all_logins",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("tenant switch must not stop login processes")),
+    )
+
+    result = asyncio.run(api_main._switch_tenant_runtime("B"))
+    assert result["switch_status"] == "completed"
+    assert api_main._g_ctx["runtime_tenant_id"] == "B"
