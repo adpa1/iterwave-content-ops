@@ -329,10 +329,31 @@ details[open] > summary::before { content: "▾ "; }
   max-height: calc(92vh - 110px); object-fit: contain; border-radius: 8px;
 }
 @media (max-width: 1500px) and (min-width: 1201px) {
-  .review-layout { grid-template-columns: minmax(300px, 340px) minmax(420px, 1fr) minmax(260px, 310px); }
+  /* 1440px 桌面优先保证列表与筛选控件可用，不让三栏挤压搜索/下拉框。 */
+  .review-layout { grid-template-columns: minmax(400px, 400px) minmax(420px, 1fr) minmax(260px, 310px); }
   .review-cardcol { grid-column: auto; }
+  .review-list-panel,
   .review-list-panel .panel-head { min-width: 0; }
-  .review-filters { grid-template-columns: minmax(0, 1fr); }
+  .review-list-panel .review-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 8px;
+    min-width: 0;
+  }
+  .review-list-panel .review-filters input {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+  .review-list-panel .review-filters select {
+    flex: 1 1 150px;
+    width: auto;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
   .card-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
 }
 .queue-summary-grid {
