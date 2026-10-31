@@ -891,9 +891,11 @@ export default function Production() {
                     {templates.map((item) => <option key={item.id} value={String(item.id)}>{item.title}</option>)}
                   </select>
                   <div className="note" style={{ marginTop: 6 }}>
-                    {selectedTemplateId
-                      ? (templates.find((item) => String(item.id) === selectedTemplateId)?.body || "已选择模板，AI 将参考其结构组织正文。")
-                      : "选择后会把模板结构注入本轮 AI 提示词；模板只约束文章组织方式，不替代账号定位与质量检查。"}
+                    {templates.length === 0
+                      ? "当前没有可用模板。先到「内容资产 → 内容模板」新建结构模板，再回到这里选择。"
+                      : selectedTemplateId
+                        ? (templates.find((item) => String(item.id) === selectedTemplateId)?.body || "已选择模板，AI 将参考其结构组织正文。")
+                        : "选择后会把模板结构注入本轮 AI 提示词；模板只约束文章组织方式，不替代账号定位与质量检查。"}
                   </div>
                 </div>
                 <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
