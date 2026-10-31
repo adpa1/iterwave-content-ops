@@ -222,8 +222,15 @@ export default function Calendar() {
                 {d.plans.map((plan) => (
                   <div className="calendar-agenda-plan" key={plan.id}>
                     <span className="calendar-plan-label">计划</span>
-                    <span className="calendar-agenda-copy"><strong>{plan.title}</strong><small>{plan.planned_count} 篇 · {plan.platforms.length ? plan.platforms.map((p) => platformMeta(p).label).join("、") : "未指定平台"} · {plan.status}</small></span>
-                    <button className="btn sm" onClick={async () => { try { await api.cancelContentPlan(plan.id, plan.version); showToast("计划已取消", "success"); await load(); } catch (e: any) { showToast(`取消失败：${e?.message ?? e}`, "error"); } }}>取消</button>
+                    <span className="calendar-agenda-copy"><strong>{plan.title}</strong><small>{plan.planned_count} 篇/平台 · {plan.platforms.length ? plan.platforms.map((p) => platformMeta(p).label).join("、") : "使用启用平台"} · {plan.status}</small></span>
+                    {(plan.status === "planned" || plan.status === "failed") && <button className="btn sm primary" disabled={isPending(`content-plan:start:${plan.id}`)} onClick={async () => {
+                      try {
+                        const result = await withPending(`content-plan:start:${plan.id}`, () => api.startContentPlan(plan.id));
+                        showToast(`已加入全局 FIFO 队列：第 ${result.round_id} 轮`, "success");
+                        await load();
+                      } catch (e: any) { showToast(`启动计划失败：${e?.message ?? e}`, "error"); }
+                    }}>{isPending(`content-plan:start:${plan.id}`) ? "入队中…" : plan.status === "failed" ? "重试入队" : "加入全局队列"}</button>}
+                    {(plan.status === "planned" || plan.status === "failed" || plan.status === "generating") && <button className="btn sm" onClick={async () => { try { await api.cancelContentPlan(plan.id, plan.version); showToast("计划已取消", "success"); await load(); } catch (e: any) { showToast(`取消失败：${e?.message ?? e}`, "error"); } }}>取消</button>
                   </div>
                 ))}
                 {loading ? <div className="loading"><div className="spinner" />加载中...</div> : d.events.length === 0 && d.plans.length === 0 ? (
@@ -292,16 +299,16 @@ export default function Calendar() {
         </div>
         <div className="calendar-plan-form">
           <label>计划名称<input className="field" value={planTitle} maxLength={160} onChange={(e) => setPlanTitle(e.target.value)} placeholder="例如：本周产品功能系列" /></label>
-          <label>选题／主题<input className="field" value={planTopic} maxLength={500} onChange={(e) => setPlanTopic(e.target.value)} placeholder="填写计划主题或核心选题" /></label>
+          <label>选题／主题<input className="field" value={planTopic} maxLength={500} onChange={(e) => setPlanTopic(e.target.value)} placeholder="选题方向备注；生产时仍从选题池取题" /></label>
           <label>计划日期<input className="field" type="date" value={planDate} onChange={(e) => setPlanDate(e.target.value)} /></label>
-          <label>计划篇数<input className="field" type="number" min="1" max="100" value={planCount} onChange={(e) => setPlanCount(e.target.value)} /></label>
+          <label>每个平台篇数<input className="field" type="number" min="1" max="50" value={planCount} onChange={(e) => setPlanCount(e.target.value)} /></label>
           <label className="calendar-plan-platforms">目标平台
             <span>{(["xhs", "douyin", "wechat_channels", "kuaishou"] as Platform[]).map((platform) => (
               <label key={platform} className="calendar-plan-check"><input type="checkbox" checked={planPlatforms.includes(platform)} onChange={(e) => setPlanPlatforms((old) => e.target.checked ? [...old, platform] : old.filter((p) => p !== platform))} />{platformMeta(platform).label}</label>
             ))}</span>
           </label>
           <label className="calendar-plan-notes">备注<textarea className="field" rows={2} value={planNotes} maxLength={4000} onChange={(e) => setPlanNotes(e.target.value)} placeholder="可选" /></label>
-          <button className="btn primary" disabled={!planTitle.trim() || !planDate || Number(planCount) < 1 || Number(planCount) > 100 || isPending("content-plan:create")} onClick={async () => {
+          <button className="btn primary" disabled={!planTitle.trim() || !planDate || Number(planCount) < 1 || Number(planCount) > 50 || isPending("content-plan:create")} onClick={async () => {
             try {
               await withPending("content-plan:create", () => api.createContentPlan({ title: planTitle.trim(), topic: planTopic.trim(), platforms: planPlatforms, planned_count: Number(planCount), scheduled_date: planDate, notes: planNotes.trim() }));
               showToast("内容计划已创建", "success");
