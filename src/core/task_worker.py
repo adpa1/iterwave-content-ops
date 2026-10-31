@@ -110,7 +110,8 @@ class GlobalTaskWorker:
             snapshot = task.payload.get("execution_snapshot")
             if "execution_snapshot" in task.payload:
                 if not isinstance(snapshot, dict):
-                    raise ValueError("任务执行快照格式无效，已拒绝执行")
+                    from src.core.task_snapshot import StaleTaskSnapshot
+                    raise StaleTaskSnapshot("任务执行快照格式无效，已拒绝执行")
                 from src.core.task_snapshot import validate_execution_snapshot
                 validate_execution_snapshot(snapshot, context["cfg"], context["conn"])
             # 后台通知必须与任务 tenant_id 绑定，不能读取前台切换时更新的模块级通知器。
