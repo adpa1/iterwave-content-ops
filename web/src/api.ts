@@ -1154,6 +1154,7 @@ export interface RhythmConfig {
 }
 
 // ===== fetch wrapper =====
+let activeTenantId: string | null = null;
 // vite import.meta.env.BASE_URL 在 base: "/iterwave/" 时为 "/iterwave/"
 // 本地 vite dev 时 BASE_URL 为 "/"，去掉尾部斜杠 → ""，等价于原来的空字符串
 const API = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
@@ -1161,10 +1162,10 @@ const API = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(API + path, {
-      headers: { "Content-Type": "application/json" },
-      ...options,
-    });
+    const headers = new Headers(options?.headers);
+    if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    if (activeTenantId) headers.set("X-Tenant-Id", activeTenantId);
+    res = await fetch(API + path, { ...options, headers });
   } catch (error) {
     if (error instanceof TypeError) {
       throw new Error("网络连接失败，请检查服务是否运行及网络状态后重试");
