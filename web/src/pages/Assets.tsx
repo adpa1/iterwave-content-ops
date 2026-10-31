@@ -350,7 +350,7 @@ export default function Assets() {
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">▧</span>可复用内容模板 · {assets.template.length} 条</div>
-                <div className="panel-sub">模板是可复用的内容结构（不是成品文案）。保存后可复制结构，在内容生产的选题/要求中粘贴使用；当前版本不会自动注入 AI 生成流程。</div>
+                <div className="panel-sub">模板不是成品文案，而是一份写作步骤清单。使用方法：①按步骤填写结构；②保存后点「复制使用」；③到内容生产页粘贴到本次内容要求中。当前版本是人工套用，不会自动注入 AI 生成流程。</div>
               </div>
             </div>
             {assets.template.length === 0 ? (
@@ -418,7 +418,11 @@ function AssetForm({
       </div>
       <div className="grid" style={{ gridTemplateColumns: needUrl ? "1fr 1fr 1.4fr auto" : "1fr 2fr auto", gap: 10 }}>
         <input className="field" placeholder={titleLabel} value={title} onChange={(e) => setTitle(e.target.value)} />
-        <input className="field" placeholder={bodyPlaceholder ?? "说明（可空）"} value={body} onChange={(e) => setBody(e.target.value)} />
+        {type === "template" ? (
+          <textarea className="field" rows={3} placeholder={bodyPlaceholder ?? "按步骤写出内容结构，每行一个环节"} value={body} onChange={(e) => setBody(e.target.value)} />
+        ) : (
+          <input className="field" placeholder={bodyPlaceholder ?? "说明（可空）"} value={body} onChange={(e) => setBody(e.target.value)} />
+        )}
         {needUrl && <input className="field" placeholder="原始链接 https://…（必填）" value={url} onChange={(e) => setUrl(e.target.value)} />}
         <button className="btn primary sm" disabled={pending || !title.trim() || (needUrl && !url.trim())} onClick={submit}>
           {pending ? "保存中…" : "保存"}
