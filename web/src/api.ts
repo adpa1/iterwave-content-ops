@@ -497,7 +497,7 @@ export interface ContentPlan {
   platforms: Platform[];
   planned_count: number;
   scheduled_date: string;
-  status: "planned" | "generating" | "generated" | "reviewed" | "archived" | "cancelled";
+  status: "planned" | "generating" | "generated" | "reviewed" | "archived" | "cancelled" | "failed";
   notes: string;
   version: number;
   created_at: string;
@@ -1494,6 +1494,10 @@ export const api = {
     fetchJson<ContentPlan>(`/api/content-plans/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   cancelContentPlan: (id: string, version: number) =>
     fetchJson<{ id: string; status: string }>(`/api/content-plans/${id}?version=${version}`, { method: "DELETE" }),
+  startContentPlan: (id: string) =>
+    fetchJson<{ plan_id: string; round_id: number; task_id: string; status: string; queued: boolean }>(
+      `/api/content-plans/${id}/start`, { method: "POST" },
+    ),
   globalMonitor: (days = 30) => fetchJson<GlobalMonitorResponse>(`/api/global-monitor?days=${days}`),
   // === 账号组隔离 ===
   tenants: async () => {
