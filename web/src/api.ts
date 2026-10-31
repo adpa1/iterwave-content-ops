@@ -1175,14 +1175,25 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     let detail = text || res.statusText;
+    let errorCode = "";
     try {
       const parsed = JSON.parse(text);
-      if (parsed?.detail) detail = String(parsed.detail);
+      const payload = parsed?.detail ?? parsed;
+      if (typeof payload === "string") detail = payload;
+      else if (payload && typeof payload === "object") {
+        detail = String(payload.message || payload.detail || detail);
+        errorCode = String(payload.code || "");
+      }
     } catch {
       // 非 JSON 错误体，保留原文
     }
-    const error = new Error(detail) as Error & { status?: number };
+    const error = new Error(detail) as Error & { status?: number; code?: string };
     error.status = res.status;
+    error.code = errorCode;
+    if (res.status === 409 && errorCode === "TENANT_CONTEXT_CHANGED") {
+      // 页面展示的数据属于旧账号组；不得继续留在旧页面上操作新运行空间。
+      if (typeof window !== "undefined") window.location.reload();
+    }
     throw error;
   }
   return res.json();
@@ -1404,7 +1415,14 @@ export const api = {
   // === 账号组隔离 ===
   tenants: async () => {
     const result = await fetchJson<TenantListResponse>("/api/tenants");
-    activeTenantId = result.runtime_tenant_id || result.selected_tenant_id || null;
+    const runtimeTenantId = result.runtime_tenant_id || result.selected_tenant_id || null;
+    if (activeTenantId === null) {
+      // 仅首次加载建立页面租户身份；后续发现服务端已切换，必须刷新整页，
+      // 不能静默把旧页面的数据上下文改成新账号组。
+      activeTenantId = runtimeTenantId;
+    } else if (runtimeTenantId && runtimeTenantId !== activeTenantId) {
+      if (typeof window !== "undefined") window.location.reload();
+    }
     return result;
   },
   createTenant: (data: { tenant_id: string; name: string }) =>
