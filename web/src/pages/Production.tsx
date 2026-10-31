@@ -1039,6 +1039,7 @@ export default function Production() {
 
       {/* ============ ④ 内容编辑与审核 ============ */}
       {tab === "review" && (
+        <>
         <div className="review-mobile-tabs" role="group" aria-label="审核工作台视图">
           {([["list", "内容列表"], ["editor", "文案编辑"], ["preview", "卡片预览"]] as const).map(([key, label]) => (
             <button key={key} className={reviewMobilePane === key ? "btn sm primary" : "btn sm"} aria-pressed={reviewMobilePane === key} onClick={() => setReviewMobilePane(key)}>{label}</button>
@@ -1046,7 +1047,7 @@ export default function Production() {
         </div>
         <div className={`review-layout review-layout-mobile-${reviewMobilePane}`}>
           {/* 左：本轮内容列表 */}
-          <div className="panel">
+          <div className="panel review-list-panel">
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">✎</span>本轮内容（{filteredReviewContents.length}/{contents.length}）</div>
@@ -1096,7 +1097,7 @@ export default function Production() {
           </div>
 
           {/* 中：文案编辑 */}
-          <div className="panel">
+          <div className="panel review-editor-panel">
             <div className="panel-head">
               <div>
                 <div className="panel-title"><span className="icon">⌕</span>编辑与重检</div>
@@ -1306,6 +1307,7 @@ export default function Production() {
             </div>
           )}
         </div>
+        </>
       )}
 
       {/* ============ ⑤ 轮次状态 ============ */}
