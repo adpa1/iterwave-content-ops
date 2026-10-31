@@ -1501,7 +1501,7 @@ export const api = {
     fetchJson<{ plan_id: string; round_id: number; task_id: string; status: string; queued: boolean }>(
       `/api/content-plans/${id}/start`, { method: "POST" },
     ),
-  globalMonitor: (days = 30) => fetchJson<GlobalMonitorResponse>(`/api/global-monitor?days=${days}`),
+  globalOperationsSummary: (days = 30) => fetchJson<GlobalMonitorResponse>(`/api/global-monitor?days=${days}`),
   // === 账号组隔离 ===
   tenants: async () => {
     const result = await fetchJson<TenantListResponse>("/api/tenants");
