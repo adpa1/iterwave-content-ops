@@ -55,7 +55,7 @@ const SKILLS = [
     { id: "autogrow",           name: "自动闭环（自生长）",   src: "src/core/autogrow.py",              status: "OK", note: "复盘→评分/文案，条件满足自动开下一轮" },
     { id: "topic_pool",         name: "选题池",              src: "src/core/topic_pool.py",            status: "OK", note: "本地库 + 热点 + 手动，软删除可恢复" },
     { id: "orchestration",      name: "编排与诊断",           src: "src/core/orchestration.py",         status: "OK", note: "步骤开关 / 依赖校验 / 自检清单" },
-    { id: "scheduler",          name: "定时任务调度（10 类）", src: "src/core/scheduler/",             status: "OK", note: "任务记录持久化到本地数据库" },
+    { id: "scheduler",          name: "定时任务调度（11 类）", src: "src/core/scheduler/",             status: "OK", note: "任务记录持久化到本地数据库" },
     { id: "platform_readback",  name: "平台数据读回",        src: "src/vendor/easel/",                 status: "!", note: "account_stats / platform_readback 需登录态" },
   ]},
 ];
@@ -490,7 +490,13 @@ function SkillsPane() {
                 <tbody>
                   {g.rows.map((skill) => (
                     <tr key={skill.id}>
-                      <td title={skill.src}>{skill.name.replace(/（R\d+）/g, "").replace("Playwright ", "")}</td>
+                      <td title={skill.src}>
+                        <strong>{skill.name.replace(/（R\d+）/g, "").replace("Playwright ", "")}</strong>
+                        <details className="skill-manifest-preview">
+                          <summary>预览能力定义</summary>
+                          <pre>{JSON.stringify({ schema_version: 1, skill_id: skill.id, name: skill.name, source: skill.src, status: skill.status === "OK" ? "available" : "limited", description: skill.note }, null, 2)}</pre>
+                        </details>
+                      </td>
                       <td><span className={`tag ${skill.status === "OK" ? "green" : "orange"}`}>{skill.status === "OK" ? "正常" : "部分可用"}</span></td>
                       <td style={{ fontSize: 12, color: "var(--muted)" }}>{skill.note.replace(/R\d+[：:]\s*/g, "")}</td>
                     </tr>
