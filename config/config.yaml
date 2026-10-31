@@ -1,5 +1,8 @@
 # ============================================================
 # IterWave — 主配置文件
+# 多账号组即时热切换不是本 YAML 配置项，由部署进程环境变量控制：
+#   ITERWAVE_ENABLE_TENANT_HOT_SWITCH=1
+# 默认关闭；启用或修改后需重启服务。详情见 README.md 与 docs/global-task-queue-runtime-isolation.md。
 # 唯一可修改的配置源，所有模块从此读取
 # 时间统一本地时区（R5），严禁 datetime.utcnow()
 # ============================================================
@@ -61,6 +64,34 @@ platforms:
     name: "视频号"
     base_url: "https://channels.weixin.qq.com"
     account_key: "wechat_main"
+
+# ===== 业务时区（IANA 名称；影响配额日界线、运营时段和定时任务）=====
+business_timezone: "Asia/Shanghai"
+
+# ===== 平台发布链接域名白名单 =====
+# 仅用于校验用户手工粘贴的发布链接；系统不会主动请求这些 URL。
+platform_link_domains:
+  xhs: ["xiaohongshu.com", "xhslink.com"]
+  douyin: ["douyin.com", "iesdouyin.com"]
+  kuaishou: ["kuaishou.com", "gifshow.com"]
+  wechat_channels: ["channels.weixin.qq.com", "weixin.qq.com", "wx.qq.com"]
+
+# ===== 快速体验资源边界 =====
+activation:
+  account_description_min_chars: 10
+  account_description_max_chars: 300
+  max_runs_per_day: 5
+  stale_task_timeout_minutes: 30
+  sample_max_output_tokens: 1200
+  max_model_calls_per_run: 9
+
+# ===== 各平台逐篇指标字段 =====
+# 只展示平台可提供/可核验的指标；未配置字段不在回填表单中出现。
+platform_metric_fields:
+  xhs: ["views", "likes", "collects", "comments", "shares"]
+  douyin: ["views", "likes", "comments"]
+  kuaishou: ["views", "likes", "comments"]
+  wechat_channels: ["views", "likes", "collects", "comments", "shares"]
 
 # ===== 评分权重（§15 三模式，权重和必须 = 100%）=====
 # 系统按已发布样本量自动切换模式，这里只定义各模式权重

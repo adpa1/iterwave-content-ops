@@ -175,9 +175,9 @@ export default function Onboarding() {
       <div className="page-head">
         <div>
           <div className="eyebrow">首次配置</div>
-          <h1 className="page-title">首次配置向导</h1>
+          <h1 className="page-title">正式运营设置</h1>
           <div className="page-desc">
-            7 步完成初始化。每一步都能直接编辑并保存，保存后立即生效。
+            这里配置完整运营工作台。快速体验无需先完成这些步骤；正式生产前再按需补齐。
           </div>
         </div>
       </div>

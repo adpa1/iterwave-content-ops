@@ -154,6 +154,7 @@ export default function Dashboard() {
           </div>
         </div>
         <div className="head-actions">
+          <button type="button" className="btn primary" onClick={() => go("activation")}>✧ 快速体验</button>
           <button type="button" className="btn" onClick={load}>↻ 刷新</button>
           <button type="button" className="btn" onClick={() => go("hot")}>✳ 扫描热点</button>
           <button type="button" className="btn primary" onClick={() => go(primaryAction.page, primaryAction.tab)}>{primaryAction.label}</button>

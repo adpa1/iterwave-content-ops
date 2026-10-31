@@ -57,6 +57,7 @@ const LABEL_ALIASES: Record<string, { page: string; tab?: string }> = {
   "Agent 编排": { page: "agent" },
   "流程诊断": { page: "agent", tab: "diagnose" },
   "新手引导": { page: "onboarding" },
+  "正式运营设置": { page: "onboarding" },
 };
 
 export function resolvePageLabel(label: string): { page: string; tab?: string } | null {

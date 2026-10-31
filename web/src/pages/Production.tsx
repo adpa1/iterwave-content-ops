@@ -302,9 +302,11 @@ export default function Production() {
   };
 
   const confirmPublish = async (draftId: string) => {
+    // 发布确认与链接回填合并为一个动作；允许留空，稍后在数据复盘页补填。
+    const noteUrl = window.prompt("粘贴已发布内容的链接（可留空，之后可补填）", "") ?? "";
     try {
-      await api.confirmPublish(draftId);
-      showToast("✓ 已确认发布");
+      await api.confirmPublish(draftId, noteUrl.trim() || undefined);
+      showToast(noteUrl.trim() ? "✓ 已确认发布并保存链接" : "✓ 已确认发布，可稍后补填链接");
       await refresh();
       if (currentRoundId) await loadRoundData(currentRoundId);
     } catch (e: any) { showToast(`确认失败: ${e.message}`, "error"); }

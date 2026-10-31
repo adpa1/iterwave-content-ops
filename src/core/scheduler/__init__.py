@@ -37,6 +37,8 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.date import DateTrigger
+from zoneinfo import ZoneInfo
+from ..timezone import business_now, business_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +59,7 @@ class SchedulerEngine:
             jobstores={
                 "default": SQLAlchemyJobStore(url=f"sqlite:///{db_path}"),
             },
-            timezone=None,  # APScheduler 接受 None 表示本地时区（R5）
+            timezone=ZoneInfo(self.cfg.business_timezone),
             # 应用关闭期间错过的任务：按配置的宽限期决定重启后是否补跑。
             job_defaults={"misfire_grace_time": self.cfg.scheduler.misfire_grace_minutes * 60, "coalesce": True},
         )
@@ -70,6 +72,8 @@ class SchedulerEngine:
         # 由 lifespan 注入的运行时依赖（wire()）
         self.conn = None
         self.adapters: dict = {}
+        self.task_queue = None
+        self.tenant_id: str | None = None
         self.sm_draft = None
         self.sm_round = None
         self.cb = None
@@ -90,10 +94,12 @@ class SchedulerEngine:
     def wire(self, *, conn, adapters, sm_draft=None, sm_round=None,
              circuit_breaker=None, notifier=None, ops=None,
              kb_reader=None, spiral=None, scoring=None, goal_progress=None,
-             guard=None) -> None:
+             guard=None, task_queue=None, tenant_id: str | None = None) -> None:
         """注入运行时依赖。必须在 start() 之前调用。"""
         self.conn = conn
         self.adapters = adapters or {}
+        self.task_queue = task_queue
+        self.tenant_id = tenant_id
         self.sm_draft = sm_draft
         self.sm_round = sm_round
         self.cb = circuit_breaker
@@ -185,7 +191,7 @@ class SchedulerEngine:
     def _trigger_for(self, job_id: str):
         sched = self.cfg.scheduler.job(job_id)
         if sched.cron:
-            return CronTrigger.from_crontab(sched.cron)
+            return CronTrigger.from_crontab(sched.cron, timezone=ZoneInfo(self.cfg.business_timezone))
         return IntervalTrigger(minutes=int(sched.interval_minutes))
 
     def apply_job_config(self, job_id: str) -> dict:
@@ -238,7 +244,7 @@ class SchedulerEngine:
 
         if self.conn is None or self.sm_draft is None:
             return False
-        now = confirmed_at or datetime.now()
+        now = confirmed_at or business_now(self.cfg)
         ok = self.sm_draft.transition(
             draft_id, "user_published", reason=via,
             extra_updates={"user_confirmed_at": now.isoformat()},
@@ -274,7 +280,7 @@ class SchedulerEngine:
         if self.conn is None:
             return 0
         delay = self.cfg.timeouts.metrics_initial_delay_hours
-        cutoff = (datetime.now() - timedelta(hours=delay)).isoformat()
+        cutoff = (business_now(self.cfg) - timedelta(hours=delay)).isoformat()
         rows = self.conn.execute(
             "SELECT d.id FROM drafts d WHERE d.status IN ('user_published', 'data_fetching') "
             "AND d.user_confirmed_at IS NOT NULL AND d.user_confirmed_at <= ? "
@@ -283,11 +289,23 @@ class SchedulerEngine:
             (cutoff,),
         ).fetchall()
         n = 0
+        retry_times, _interval_min = self._metrics_retry_params()
         for r in rows:
             pending = [j for j in self.scheduler.get_jobs() if j.id.startswith(f"data_fetch_{r['id']}_")]
-            if pending:
+            queued = False
+            if self.task_queue is not None and self.tenant_id:
+                for attempt in range(1, retry_times + 1):
+                    task = self.task_queue.find_latest(
+                        tenant_id=self.tenant_id,
+                        task_type="scheduler_job",
+                        aggregate_id=f"_job_data_fetch:{r['id']}:{attempt}",
+                    )
+                    if task is not None and task.status in ("queued", "running"):
+                        queued = True
+                        break
+            if pending or queued:
                 continue
-            self.schedule_data_fetch(r["id"], datetime.now() + timedelta(seconds=5))
+            self.schedule_data_fetch(r["id"], business_now(self.cfg) + timedelta(seconds=5))
             n += 1
         if n:
             logger.warning("[APS] 补登记数据采集 %d 篇（任务丢失或旧版本未注册）", n)
@@ -296,7 +314,29 @@ class SchedulerEngine:
     def schedule_data_fetch(
         self, draft_id: str, run_at: datetime, attempt: int = 1,
     ) -> None:
-        """为已发布的 draft 注册一次性数据采集任务（attempt 用于失败重试计数）。"""
+        """安排发布后的数据采集；优先写入全局持久化队列，保证非活动账号组也可恢复。"""
+        if self.task_queue is not None and self.tenant_id:
+            self.task_queue.enqueue(
+                task_type="scheduler_job",
+                tenant_id=self.tenant_id,
+                aggregate_id=f"_job_data_fetch:{draft_id}:{attempt}",
+                payload={
+                    "method": "_job_data_fetch",
+                    "args": [draft_id, attempt],
+                },
+                available_at=run_at,
+            )
+            logger.info(
+                "📥 数据采集已延迟入全局队列 draft=%s attempt=%d run_at=%s tenant=%s",
+                draft_id, attempt, run_at.isoformat(), self.tenant_id,
+            )
+            return
+
+        # 无全局队列的旧版/单元测试替身仍保留 APScheduler 兼容路径。
+        active_engine = _ENGINES.get(self.engine_key)
+        if active_engine is not None and active_engine is not self:
+            active_engine.schedule_data_fetch(draft_id, run_at, attempt)
+            return
         self.scheduler.add_job(
             _run_data_fetch,
             DateTrigger(run_date=run_at),
@@ -394,7 +434,7 @@ class SchedulerEngine:
                                 json.dumps({"status": "user_published", "via": "platform_polling"}, ensure_ascii=False),
                                 "系统在平台侧检测到已发布作品，为保留真实运营数据继续采集",
                                 "publish-polling",
-                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                business_now(self.cfg).strftime("%Y-%m-%d %H:%M:%S"),
                             ),
                         )
                         self.conn.commit()
@@ -435,7 +475,7 @@ class SchedulerEngine:
                                 }, ensure_ascii=False),
                                 f"系统已在平台侧确认作品发布；平台内容版本状态为 {sync_state}，保留真实发布并继续采集",
                                 "publish-polling",
-                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                business_now(self.cfg).strftime("%Y-%m-%d %H:%M:%S"),
                             ),
                         )
                         self.conn.commit()
@@ -494,7 +534,7 @@ class SchedulerEngine:
 
         # 落库 metrics（R3：解析不到的字段保持 NULL，绝不补 0）
         # R16 幂等：draft_id + platform + 采集日期当天只覆盖一次（当天已有记录 → UPDATE 而非 INSERT）
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = business_now(self.cfg).strftime("%Y-%m-%d")
         prev = self.conn.execute(
             "SELECT id, attempt FROM metrics WHERE draft_id = ? AND platform = ? "
             "AND substr(COALESCE(fetched_at, ''), 1, 10) = ?",
@@ -509,7 +549,7 @@ class SchedulerEngine:
                 "views = ?, new_followers = ?, like_rate = ?, collect_rate = ?, "
                 "interaction_rate = ?, follower_efficiency = ? WHERE id = ?",
                 (
-                    snap.fetch_status.value, datetime.now().isoformat(), metrics_attempt,
+                    snap.fetch_status.value, business_now(self.cfg).isoformat(), metrics_attempt,
                     snap.raw_response, snap.error_msg, snap.likes, snap.collects, snap.comments,
                     snap.shares, snap.views, snap.new_followers,
                     snap.like_rate, snap.collect_rate, snap.interaction_rate,
@@ -526,7 +566,7 @@ class SchedulerEngine:
                 "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     draft_id, row["content_id"], platform.value, snap.fetch_status.value,
-                    datetime.now().isoformat(), snap.raw_response, snap.error_msg,
+                    business_now(self.cfg).isoformat(), snap.raw_response, snap.error_msg,
                     snap.likes, snap.collects, snap.comments, snap.shares, snap.views,
                     snap.new_followers,
                     snap.like_rate, snap.collect_rate, snap.interaction_rate,
@@ -559,7 +599,7 @@ class SchedulerEngine:
 
             retry_times, interval_min = self._metrics_retry_params()
             if attempt < retry_times:
-                next_at = datetime.now() + timedelta(minutes=interval_min)
+                next_at = business_now(self.cfg) + timedelta(minutes=interval_min)
                 self.schedule_data_fetch(draft_id, next_at, attempt=attempt + 1)
                 logger.warning(
                     "[APS] data_fetch 将重试：draft=%s 第 %d/%d 次，预计 %s",
@@ -607,7 +647,7 @@ class SchedulerEngine:
 
         # 今日已执行的运营动作（ops_logs）
         # R5：SQLite date('now') 是 UTC，必须用本地时区当日 00:00
-        today_start = datetime.now().replace(
+        today_start = business_now(self.cfg).replace(
             hour=0, minute=0, second=0, microsecond=0,
         ).isoformat()
         rows = self.conn.execute(
@@ -692,7 +732,7 @@ class SchedulerEngine:
         return max(0, limit - self._today_action_count(platform, action_type))
 
     def _today_action_count(self, platform, action_type: str) -> int:
-        today_start = datetime.now().replace(
+        today_start = business_now(self.cfg).replace(
             hour=0, minute=0, second=0, microsecond=0,
         ).isoformat()
         row = self.conn.execute(
@@ -760,7 +800,7 @@ class SchedulerEngine:
         """写 task_runs（biz_id=目标，R16 断点恢复留痕）。"""
         if self.conn is None:
             return None
-        now = datetime.now().isoformat()
+        now = business_now(self.cfg).isoformat()
         cur = self.conn.execute(
             "INSERT INTO task_runs (task_type, biz_id, platform, status, attempt, "
             "started_at, finished_at, error_msg, created_at) "
@@ -778,7 +818,7 @@ class SchedulerEngine:
     def _finish_task_run(self, task_run_id: int, status: str, error_msg: Optional[str]) -> None:
         self.conn.execute(
             "UPDATE task_runs SET status = ?, finished_at = ?, error_msg = ? WHERE id = ?",
-            (status, datetime.now().isoformat(), error_msg, task_run_id),
+            (status, business_now(self.cfg).isoformat(), error_msg, task_run_id),
         )
         self.conn.commit()
 
@@ -889,11 +929,13 @@ class SchedulerEngine:
             f"如果你想更深入了解，可以在评论区继续互动，我会第一时间回复！"
         )
 
-    async def _job_hot_topics_refresh(self) -> None:
-        """后台采集热点并做标签匹配；独立连接、在线程里执行，不阻塞事件循环。"""
-        from ..hot_topic_service import run_once
+    async def _job_hot_topics_refresh(self) -> dict:
+        """触发独立热点服务；采集线程持有当前账号组配置与独立数据库连接。"""
+        from ..hot_topic_service import trigger_background
 
-        await asyncio.to_thread(run_once, self.cfg, None, trigger="scheduler")
+        return trigger_background(
+            self.cfg, trigger="scheduler", tenant_id=self.tenant_id,
+        )
 
     async def _job_kb_scan(self) -> None:
         """每天 6:00 扫描选题库增量 — 对比 topic_index 插入新选题。"""
@@ -934,7 +976,7 @@ class SchedulerEngine:
                     it.id, it.title, it.dimension,
                     getattr(it, "source", "kb"),
                     getattr(it, "date", None),
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    business_now(self.cfg).strftime("%Y-%m-%d %H:%M:%S"),
                 ),
             )
             inserted += 1
@@ -985,7 +1027,7 @@ class SchedulerEngine:
         screenshots_dir = P(self.cfg.resolve_path(self.cfg.paths.screenshot_dir))
         deleted_files = 0
         if screenshots_dir.exists():
-            now = datetime.now().timestamp()
+            now = business_timestamp(self.cfg)
             cutoff = cfg.screenshot_days * 86_400
             for f in screenshots_dir.iterdir():
                 if f.is_file() and (now - f.stat().st_mtime) > cutoff:
@@ -993,7 +1035,7 @@ class SchedulerEngine:
                     deleted_files += 1
 
         # 2. metrics.raw_response（默认 90 天）
-        cutoff_raw = (datetime.now() - timedelta(days=cfg.raw_response_days)).isoformat(timespec="seconds")
+        cutoff_raw = (business_now(self.cfg) - timedelta(days=cfg.raw_response_days)).isoformat(timespec="seconds")
         cur = self.conn.execute(
             "UPDATE metrics SET raw_response = NULL WHERE fetched_at < ? AND raw_response IS NOT NULL",
             (cutoff_raw,),
@@ -1001,14 +1043,14 @@ class SchedulerEngine:
         cleaned_raw = cur.rowcount
 
         # 3. ops_logs（默认 365 天）
-        cutoff_ops = (datetime.now() - timedelta(days=cfg.ops_logs_days)).isoformat(timespec="seconds")
+        cutoff_ops = (business_now(self.cfg) - timedelta(days=cfg.ops_logs_days)).isoformat(timespec="seconds")
         cur = self.conn.execute(
             "DELETE FROM ops_logs WHERE executed_at < ?", (cutoff_ops,)
         )
         cleaned_ops = cur.rowcount
 
         # 4. ai_calls（默认 180 天）
-        cutoff_ai = (datetime.now() - timedelta(days=cfg.ai_calls_detail_days)).isoformat(timespec="seconds")
+        cutoff_ai = (business_now(self.cfg) - timedelta(days=cfg.ai_calls_detail_days)).isoformat(timespec="seconds")
         cur = self.conn.execute(
             "DELETE FROM ai_calls WHERE called_at < ?", (cutoff_ai,)
         )
@@ -1070,7 +1112,7 @@ class SchedulerEngine:
             return
 
         t = self.cfg.timeouts
-        now = datetime.now()
+        now = business_now(self.cfg)
 
         # R8/R9：单篇发布确认超时独立计时（timeout + grace），与轮次状态无关
         if self.sm_draft is not None:
@@ -1316,7 +1358,24 @@ def _engine_for(engine_key: str | None) -> "SchedulerEngine | None":
 
 
 async def _invoke(engine, method_name: str, *args) -> None:
-    """兼容旧测试替身，同时对真实引擎的 job 执行做生命周期跟踪。"""
+    """真实账号组的后台作业统一入全局队列；无队列的测试替身保持直接调用。"""
+    queue = getattr(engine, "task_queue", None)
+    tenant_id = getattr(engine, "tenant_id", None)
+    queued_methods = {
+        "_job_publish_polling", "_job_data_fetch", "_job_daily_ops",
+        "_job_comment_polling", "_job_cb_recovery", "_job_kb_scan",
+        "_job_kb_sync", "_job_data_retention_cleanup",
+        "_job_round_timeout_sweeper", "_job_round_review", "_job_autogrow_next_round",
+    }
+    if queue is not None and tenant_id and method_name in queued_methods:
+        aggregate_id = method_name + (":" + ":".join(map(str, args)) if args else "")
+        queue.enqueue(
+            task_type="scheduler_job",
+            tenant_id=tenant_id,
+            aggregate_id=aggregate_id,
+            payload={"method": method_name, "args": list(args)},
+        )
+        return
     tracked = getattr(engine, "_run_tracked", None)
     if tracked is not None:
         await tracked(method_name, *args)

@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
+from ..timezone import business_now
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +50,7 @@ class TopicItem:
         if not self.date:
             return None
         try:
-            now = now or datetime.now()
+            now = now or business_now()
             # 支持多种日期格式
             for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
                 try:
@@ -152,16 +154,17 @@ class ScoringEngine:
         # 检查活跃维度（窗口与最低使用次数均由配置决定）
         window = self.scoring_cfg.active_dimension_window_days
         min_uses = self.scoring_cfg.active_dimension_min_uses
+        window_start = (business_now(self.cfg) - timedelta(days=window)).isoformat(sep=" ")
         active_dims_row = self.db.execute(
             "SELECT COUNT(*) FROM ( "
             "  SELECT t.dimension, COUNT(*) AS cnt "
             "  FROM drafts d JOIN contents c ON d.content_id = c.id "
             "  JOIN topic_index t ON c.topic_id = t.id "
             "  WHERE d.status='published' "
-            "  AND d.user_confirmed_at >= datetime('now', ?) "
+            "  AND d.user_confirmed_at >= ? "
             "  GROUP BY t.dimension HAVING cnt >= ? "
             ") active",
-            (f"-{window} days", min_uses),
+            (window_start, min_uses),
         ).fetchone()
         active_dims_count = active_dims_row[0] if active_dims_row else 0
         if active_dims_count == 0:
@@ -174,10 +177,10 @@ class ScoringEngine:
             "  FROM drafts d JOIN contents c ON d.content_id = c.id "
             "  JOIN topic_index t ON c.topic_id = t.id "
             "  WHERE d.status='published' "
-            "  AND d.user_confirmed_at >= datetime('now', ?) "
+            "  AND d.user_confirmed_at >= ? "
             "  GROUP BY t.dimension HAVING cnt >= ? AND cnt < ? "
             ") w",
-            (f"-{window} days", min_uses, self.scoring_cfg.stable_dimension_min_samples),
+            (window_start, min_uses, self.scoring_cfg.stable_dimension_min_samples),
         ).fetchone()
         weak_dim_count = weak_dim_row[0] if weak_dim_row else 0
 
@@ -305,7 +308,7 @@ class ScoringEngine:
 
     def _score_timeliness(self, topic: TopicItem, mode: str) -> float:
         """时效性：按 half-life 指数衰减（news 7d / evergreen 365d）。"""
-        age = topic.age_days()
+        age = topic.age_days(now=business_now(self.cfg))
         if age is None:
             return self.scoring_cfg.timeliness_unknown_score  # 无日期给配置的中间分
 

@@ -406,7 +406,7 @@ def test_feedback_resolution_exception_marks_round_and_task_failed(cfg, conn, se
 
     report = asyncio.run(executor.run(round_id))
     assert report["final_status"] == "failed"
-    assert any("feedback parsing failed" in msg for msg in report["errors"])
+    assert any("执行异常" in msg for msg in report["errors"])
     assert conn.execute(
         "SELECT status FROM spiral_rounds WHERE id = ?", (round_id,)
     ).fetchone()[0] == "failed"

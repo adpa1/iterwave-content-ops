@@ -35,6 +35,7 @@ class FakeConfig:
         )
         self.topic_kb = SimpleNamespace(path=str(root / "data" / "kb" / "topics.csv"))
         self.platforms = FakePlatforms()
+        self.llm = SimpleNamespace(model_dump=lambda: {})
 
     def resolve_path(self, value):
         path = Path(value)
@@ -75,7 +76,7 @@ class FakeRecovery:
         self.conn = conn
 
     def recover(self):
-        return {"interrupted_tasks": 0}
+        raise AssertionError("startup recovery must not run in an ephemeral tenant runtime")
 
 
 class FakePlanVersionManager:
@@ -83,7 +84,7 @@ class FakePlanVersionManager:
         self.conn = conn
 
     def invalidate_changed_plans(self):
-        return {"stale_rounds": [], "current_signature": "test"}
+        raise AssertionError("startup plan invalidation must not run in an ephemeral tenant runtime")
 
 
 class FakeAutogrow:
@@ -105,6 +106,11 @@ def test_runtime_builder_uses_distinct_real_sqlite_files_per_tenant(monkeypatch,
     monkeypatch.setattr(api_main, "load_config", lambda: FakeConfig(tmp_path))
     monkeypatch.setattr(api_main, "load_overrides", lambda cfg: {})
     monkeypatch.setattr(api_main, "apply_overrides", lambda cfg, overrides: [])
+    from src.core import system_config_repository
+    monkeypatch.setattr(
+        system_config_repository, "migrate_tenant_llm_settings",
+        lambda *args, **kwargs: {"purged": 0, "conflicts": 0, "applied": 0},
+    )
     monkeypatch.setattr(api_main, "Database", FakeDatabase)
     monkeypatch.setattr(db_module, "LockedConnection", lambda conn: conn)
     monkeypatch.setattr(api_main, "get_adapters", lambda cfg, conn: {})

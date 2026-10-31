@@ -23,6 +23,8 @@ from typing import Optional
 
 from ...adapters.base import Platform, PlatformAdapter, CircuitBreakerReason
 
+from ..timezone import business_now
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +51,7 @@ class CircuitBreakerEngine:
         这避免了多点触发同一信号时产生 N 条堆积事件，恢复 job 一次
         就能解除整条平台的熔断态。
         """
-        now = datetime.now()
+        now = business_now(self.cfg)
         cooldown_until = now + timedelta(minutes=self.cooldown_minutes)
 
         # 幂等检查
@@ -166,9 +168,9 @@ class CircuitBreakerEngine:
             results["reason"] = "冷却时间格式错误"
             return results
 
-        if datetime.now() < cooldown_until:
+        if business_now(self.cfg) < cooldown_until:
             results["steps"]["cooldown_expired"] = False
-            results["reason"] = f"冷却尚未到期（还剩 {(cooldown_until - datetime.now()).total_seconds() / 60:.0f} 分钟）"
+            results["reason"] = f"冷却尚未到期（还剩 {(cooldown_until - business_now(self.cfg)).total_seconds() / 60:.0f} 分钟）"
             return results
         results["steps"]["cooldown_expired"] = True
 
@@ -211,7 +213,7 @@ class CircuitBreakerEngine:
         cur = self.db.execute(
             "UPDATE circuit_breaker_events SET resolved_at = ?, resolved_by = 'auto' "
             "WHERE platform = ? AND resolved_at IS NULL",
-            (datetime.now().isoformat(), platform.value),
+            (business_now(self.cfg).isoformat(), platform.value),
         )
         self.db.commit()
         count = cur.rowcount
@@ -223,7 +225,7 @@ class CircuitBreakerEngine:
 
     def manual_reset(self, platform: Platform) -> int:
         """手动重置（UI 按钮）。返回被 resolved 的事件数。"""
-        now = datetime.now().isoformat()
+        now = business_now(self.cfg).isoformat()
         cur = self.db.execute(
             "UPDATE circuit_breaker_events SET resolved_at = ?, resolved_by = 'user' "
             "WHERE platform = ? AND resolved_at IS NULL",

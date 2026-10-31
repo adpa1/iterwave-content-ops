@@ -12,6 +12,37 @@ export interface RecoveryInfo {
   pending_verify: number;
 }
 
+export interface GlobalTaskQueueItem {
+  queue_order: number;
+  task_id: string;
+  task_type: string;
+  tenant_id: string;
+  tenant_name: string;
+  aggregate_id: string | null;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
+  created_at: string;
+  available_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  attempts: number;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+export interface GlobalTaskQueueResponse {
+  items: GlobalTaskQueueItem[];
+}
+
+export interface QueueTaskSubmission {
+  round_id: number;
+  task_id: string;
+  started: boolean;
+  created?: boolean;
+  running: boolean;
+  queued: boolean;
+  status: GlobalTaskQueueItem["status"];
+}
+
 export interface SystemStatus {
   enabled_platforms: Platform[];
   /** 有登录态的平台（R20 ● 判定依据） */
@@ -590,6 +621,7 @@ export interface ConfigMetadataItem {
 
 export interface SystemConfigView {
   editable: {
+    business_timezone: string;
     daily_quotas: Record<string, { passive_replies: number | null; active_comments: number | null; follows: number | null }>;
     ops_window: { start_hour: number | null; end_hour: number | null };
     cooldown_minutes: number | null;
@@ -1156,6 +1188,69 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 // ===== API Functions =====
+export interface ActivationStatus {
+  tenant_id: string;
+  latest_sample_run: { id: string; status: string } | null;
+  model_mode: "byok" | "hosted_trial";
+  model_ready: boolean;
+  model_message: string;
+  quick_experience_available: boolean;
+  platform_metric_fields: Record<Platform, string[]>;
+  activation_limits: {
+    account_description_min_chars: number; account_description_max_chars: number;
+    max_runs_per_day: number; sample_max_output_tokens: number;
+    max_model_calls_per_run: number; max_total_output_tokens_per_run: number;
+    daily_runs_used: number; daily_runs_remaining: number;
+  };
+  cohort_started_at: string;
+}
+export interface ActivationSample {
+  id: string; platform: Platform; angle: string; title: string; body: string;
+  hashtags: string[]; quality_status: "pass" | "rejected";
+  quality_findings: string[]; adopted_at: string | null; rejected_at: string | null;
+  rejection_reason: string | null;
+}
+export interface ActivationSavedSample {
+  id: string; sample_run_id: string; platform: Platform; angle: string; title: string; body: string;
+  hashtags: string[]; adopted_at: string; created_at: string; account_description: string;
+  promoted_content_id?: string | null; promoted_at?: string | null;
+}
+export interface ActivationSampleRun {
+  run: {
+    id: string; platform: Platform; account_description: string; status: string;
+    model_mode: string; error_code: string | null; error_message_safe: string | null;
+    created_at: string; started_at: string | null; completed_at: string | null; attempt_count?: number;
+  };
+  contents: ActivationSample[];
+}
+export interface ActivationMetrics {
+  cohort_size: number; ttv_seconds: number | null; ttv_sample_count?: number;
+  ttv_p50_seconds?: number | null; ttv_p90_seconds?: number | null; ttv_percentile_scope?: string;
+  seven_day_activation_rate: number | null;
+  activation_input_wait_seconds?: number | null; model_queue_wait_seconds?: number | null;
+  generation_processing_seconds?: number | null;
+  first_publish_rate: number | null; data_return_rate: number | null;
+  quick_experience_completion_rate?: number | null; sample_attempted_count?: number; sample_ready_count?: number;
+  weekly_adopted_published: number; weekly_effective_review_count?: number; published_content_count?: number;
+  platform_model_breakdown?: { platform: Platform; model_mode: string; run_count: number; ready_count: number }[];
+  data_returned_count?: number; observation_window_complete: boolean; limitations?: string[];
+}
+export interface WeeklyReport {
+  period: { start: string; end: string };
+  best_content: { platform: Platform; metric: string; value: number; content_id: string;
+    metric_snapshot_id: string | number; title: string; measured_at: string; source: string; conflict?: boolean }[];
+  why_it_may_work: { statement: string; sample_size: number; evidence_content_ids: string[];
+    metric_snapshot_ids?: (string | number)[]; platform?: Platform; time_window?: { start: string; end: string };
+    features?: Record<string, number | string | null>; examples?: string[] }[];
+  next_actions: { action: string; basis: string; verification: string; evidence_content_ids: string[];
+    metric_snapshot_ids?: (string | number)[]; platform?: Platform; time_window?: { start: string; end: string };
+    sample_size: number; suggestion_key: string; decision: "pending" | "adopted" | "ignored";
+    outcome: "pending" | "success" | "no_effect" | "unclear"; outcome_note?: string | null;
+    decided_at?: string | null; outcome_recorded_at?: string | null }[];
+  sample_size: number; effective_review_count?: number; data_sources: string[]; limitations: string[]; generated_at: string;
+  data_conflicts?: { platform: Platform; content_id: string; metrics: string[]; selected_sources: Record<string, string> }[];
+}
+
 export const api = {
   status: () => fetchJson<SystemStatus>("/api/status"),
   goals: () => fetchJson<Goal[]>("/api/goals"),
@@ -1185,6 +1280,11 @@ export const api = {
     fetchJson<{ updated: Record<string, number | null>; goals: Goal[]; summary: GoalSummary }>(
       "/api/goals/progress/refresh", { method: "POST" },
     ),
+  taskQueue: () => fetchJson<GlobalTaskQueueResponse>("/api/task-queue"),
+  cancelTask: (taskId: string) =>
+    fetchJson<{ task_id: string; status: string }>(`/api/task-queue/${encodeURIComponent(taskId)}/cancel`, {
+      method: "POST",
+    }),
   rounds: (status?: string) =>
     fetchJson<SpiralRound[]>(status ? `/api/rounds?status=${status}` : "/api/rounds"),
   round: (id: number) => fetchJson<SpiralRound & { drafts: Draft[] }>(`/api/rounds/${id}`),
@@ -1193,16 +1293,16 @@ export const api = {
       method: "POST", body: JSON.stringify(data),
     }),
   runRound: (id: number, data: { topic_count?: number; platforms?: Platform[]; save_drafts?: boolean } = {}) =>
-    fetchJson<{ round_id: number; started: boolean; running: boolean }>(`/api/rounds/${id}/run`, {
+    fetchJson<QueueTaskSubmission>(`/api/rounds/${id}/run`, {
       method: "POST", body: JSON.stringify(data),
     }),
   roundRunStatus: (id: number) =>
-    fetchJson<{ round_id: number; running: boolean; report: RunRoundReport | null; error: string | null }>(
+    fetchJson<{ round_id: number; task_id?: string; status?: GlobalTaskQueueItem["status"]; queued?: boolean; running: boolean; report: RunRoundReport | null; error: string | null; error_code?: string | null }>(
       `/api/rounds/${id}/run_status`,
     ),
   /** 恢复已生成、尚未存平台草稿的内容；不会重新生成或发布。 */
   savePendingDrafts: (id: number) =>
-    fetchJson<PendingDraftSaveResult>(`/api/rounds/${id}/save_pending`, {
+    fetchJson<QueueTaskSubmission>(`/api/rounds/${id}/save_pending`, {
       method: "POST",
     }),
   transitionRound: (id: number, target_status: string, reason = "") =>
@@ -1409,7 +1509,7 @@ export const api = {
   config: () => fetchJson<SystemConfigView>("/api/config"),
   configMetadata: () => fetchJson<{ items: ConfigMetadataItem[] }>("/api/config/metadata"),
   patchConfig: (updates: Record<string, unknown>) =>
-    fetchJson<{ changed: { key: string; old: unknown; new: unknown }[]; noop: boolean; config: SystemConfigView["editable"] }>(
+    fetchJson<{ changed: { key: string; old: unknown; new: unknown }[]; noop: boolean; restart_required?: boolean; config: SystemConfigView["editable"] }>(
       "/api/config", { method: "PATCH", body: JSON.stringify({ updates }) },
     ),
   /** R23：Key 只写 config/.env（chmod 600）；返回值只有状态，无明文 */
@@ -1579,4 +1679,56 @@ export const api = {
     fetchJson<{ ok: boolean }>(`/api/accounts/${platform}/sms`, { method: "POST", body: JSON.stringify({ code }) }),
   cancelLogin: (platform: Platform) =>
     fetchJson<{ status: string; platform: string }>(`/api/accounts/${platform}/cancel_login`, { method: "POST" }),
+  // === 激活与留存闭环 ===
+  startActivation: () => fetchJson<{ first_seen_at: string }>("/api/activation/start", { method: "POST" }),
+  activationStatus: () => fetchJson<ActivationStatus>("/api/activation/status"),
+  createActivationSamples: (data: { account_description: string; platform: Platform; idempotency_key: string }) =>
+    fetchJson<{ sample_run_id: string; status: string; poll_after_ms?: number; deduplicated?: boolean;
+      error_code?: string; error_message?: string }>("/api/activation/samples", {
+        method: "POST", body: JSON.stringify(data),
+      }),
+  activationSamples: (id: string) => fetchJson<ActivationSampleRun>(`/api/activation/samples/${id}`),
+  activationSavedSamples: () => fetchJson<{ items: ActivationSavedSample[] }>("/api/activation/saved"),
+  promoteActivationSample: (sampleContentId: string, roundId: number) =>
+    fetchJson<{ sample_content_id: string; content_id: string; draft_id?: string; round_id: number; already_promoted: boolean }>(
+      `/api/activation/saved/${sampleContentId}/promote`,
+      { method: "POST", body: JSON.stringify({ round_id: roundId }) },
+    ),
+  deleteActivationSamples: (id: string) =>
+    fetchJson<{ sample_run_id: string; deleted: boolean }>(`/api/activation/samples/${id}`, { method: "DELETE" }),
+  activationSampleEvent: (runId: string, contentId: string, event_type: "copied" | "saved" | "rejected", reason?: string) =>
+    fetchJson<{ sample_content_id: string; event: string; recorded: boolean }>(
+      `/api/activation/samples/${runId}/contents/${contentId}/events`,
+      { method: "POST", body: JSON.stringify({ event_type, reason }) },
+    ),
+  updateDraftNoteUrl: (draftId: string, note_url: string) =>
+    fetchJson<{ draft_id: string; note_url: string | null; updated: boolean }>(
+      `/api/drafts/${draftId}/note_url`, { method: "POST", body: JSON.stringify({ note_url }) },
+    ),
+  metricSnapshots: (draftId: string) =>
+    fetchJson<{ items: {
+      id: string; draft_id: string; content_id: string; platform: Platform; source: string;
+      views: number | null; likes: number | null; collects: number | null; comments: number | null;
+      shares: number | null; measured_at: string; recorded_at: string;
+      correction_of: string | null;
+    }[]; total: number }>(`/api/metrics/snapshots?draft_id=${encodeURIComponent(draftId)}`),
+  submitManualMetrics: (draftId: string, data: {
+    views?: number | null; likes?: number | null; collects?: number | null;
+    comments?: number | null; shares?: number | null;
+    measured_at?: string; correction_of?: string | null;
+  }) => fetchJson<{ snapshot_id: string; source: string; recorded_at: string }>(
+    `/api/drafts/${draftId}/metrics/manual`, { method: "POST", body: JSON.stringify(data) },
+  ),
+  weeklyReport: (week_start?: string, platform?: Platform) => {
+    const p = new URLSearchParams();
+    if (week_start) p.set("week_start", week_start);
+    if (platform) p.set("platform", platform);
+    return fetchJson<WeeklyReport>(`/api/reports/weekly?${p}`);
+  },
+  weeklyActionFeedback: (data: { suggestion_key: string; decision: "adopted" | "ignored";
+    outcome?: "success" | "no_effect" | "unclear"; outcome_note?: string }) =>
+    fetchJson<{ suggestion_key: string; decision: string; outcome: string; outcome_note?: string | null }>(
+      "/api/reports/weekly/actions", { method: "POST", body: JSON.stringify(data) },
+    ),
+  activationMetrics: () => fetchJson<ActivationMetrics>("/api/activation/metrics"),
 };

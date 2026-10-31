@@ -18,16 +18,20 @@ import json
 from datetime import datetime, timedelta
 from typing import Optional
 
+from .timezone import business_now
+
 logger = logging.getLogger(__name__)
 
 
 class RecoveryManager:
     """启动期断点恢复。"""
 
-    def __init__(self, cfg, conn, scheduler=None):
+    def __init__(self, cfg, conn, scheduler=None, task_queue=None, tenant_id: str | None = None):
         self.cfg = cfg
         self.conn = conn
         self.scheduler = scheduler
+        self.task_queue = task_queue
+        self.tenant_id = tenant_id
 
     def recover(self) -> dict:
         report = {
@@ -56,7 +60,7 @@ class RecoveryManager:
 
     def _mark_interrupted_running(self) -> int:
         """上次进程被强杀留下的 running 行 → interrupted。"""
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = business_now(self.cfg).strftime("%Y-%m-%d %H:%M:%S")
         rows = self.conn.execute(
             "SELECT id FROM task_runs WHERE status = 'running'"
         ).fetchall()
@@ -91,8 +95,20 @@ class RecoveryManager:
             prefix = f"data_fetch_{draft_id}"
             if any(jid.startswith(prefix) for jid in job_ids):
                 continue
+            if self.task_queue is not None and self.tenant_id:
+                retry_times = max(1, int(self.cfg.timeouts.metrics_retry_attempts))
+                queued = any(
+                    (task := self.task_queue.find_latest(
+                        tenant_id=self.tenant_id,
+                        task_type="scheduler_job",
+                        aggregate_id=f"_job_data_fetch:{draft_id}:{attempt}",
+                    )) is not None and task.status in ("queued", "running")
+                    for attempt in range(1, retry_times + 1)
+                )
+                if queued:
+                    continue
             if self.scheduler is not None:
-                run_at = datetime.now() + timedelta(minutes=self.cfg.timeouts.recovery_retry_delay_minutes)
+                run_at = business_now(self.cfg) + timedelta(minutes=self.cfg.timeouts.recovery_retry_delay_minutes)
                 self.scheduler.schedule_data_fetch(draft_id, run_at)
                 requeued.append(draft_id)
 
@@ -101,7 +117,7 @@ class RecoveryManager:
                 "next_run_at) VALUES ('data_fetch', ?, ?, 'pending', 1, ?)",
                 (
                     draft_id, row["platform"],
-                    (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"),
+                    (business_now(self.cfg) + timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"),
                 ),
             )
         if requeued:
@@ -129,6 +145,21 @@ class RecoveryManager:
         migrated: list[int] = []
         for row in rows:
             round_id = row["id"]
+            # 全局队列是新任务执行状态的事实来源。重启时 queued 任务仍应执行，
+            # 不得被旧 task_runs 恢复逻辑误判为“无 running 任务”而提前收口。
+            if self.task_queue is not None and self.tenant_id:
+                active_queue_task = False
+                for aggregate_id in (str(round_id), f"{round_id}:save_pending_drafts"):
+                    queued_task = self.task_queue.find_latest(
+                        tenant_id=self.tenant_id,
+                        task_type="round_run",
+                        aggregate_id=aggregate_id,
+                    )
+                    if queued_task is not None and queued_task.status in ("queued", "running"):
+                        active_queue_task = True
+                        break
+                if active_queue_task:
+                    continue
             pending = self.conn.execute(
                 "SELECT COUNT(*) FROM drafts d JOIN contents c ON d.content_id = c.id "
                 "WHERE c.round_id = ? AND d.status = 'draft_pending'",

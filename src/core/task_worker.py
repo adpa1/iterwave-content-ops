@@ -1,0 +1,241 @@
+"""全局任务队列消费者。
+
+消费者独立于前台活动账号组。每个任务按自身 tenant_id 构造运行时，并在异步上下文中
+绑定对应登录态目录。生产轮次与账号组定时作业统一由全局单消费者执行。
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import threading
+import uuid
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+from src.core.task_queue import GlobalTaskQueue, QueuedTask
+
+logger = logging.getLogger(__name__)
+
+
+class WorkerLeaseLost(RuntimeError):
+    """消费者无法确认自己仍持有全局任务租约。"""
+
+
+class GlobalTaskWorker:
+    def __init__(
+        self,
+        queue: GlobalTaskQueue,
+        build_tenant_context: Callable[[str], dict[str, Any]],
+        *,
+        poll_interval_seconds: float = 0.5,
+        lease_seconds: int = 90,
+        heartbeat_seconds: float = 20,
+        shutdown_grace_seconds: float | None = None,
+    ):
+        self.queue = queue
+        self.build_tenant_context = build_tenant_context
+        self.poll_interval_seconds = poll_interval_seconds
+        self.lease_seconds = lease_seconds
+        self.heartbeat_seconds = heartbeat_seconds
+        if shutdown_grace_seconds is None:
+            try:
+                shutdown_grace_seconds = float(os.getenv("ITERWAVE_TASK_SHUTDOWN_GRACE_SECONDS", "30"))
+            except (TypeError, ValueError):
+                shutdown_grace_seconds = 30.0
+        self.shutdown_grace_seconds = max(0.0, min(float(shutdown_grace_seconds), 300.0))
+        self.owner = uuid.uuid4().hex
+
+    async def run(self, stop_event: asyncio.Event) -> None:
+        logger.info("全局任务消费者启动 worker=%s", self.owner[:8])
+        try:
+            while not stop_event.is_set():
+                try:
+                    self.queue.recover_expired()
+                    task = self.queue.claim_next(self.owner, lease_seconds=self.lease_seconds)
+                except Exception:
+                    logger.exception("全局任务队列读取失败")
+                    await self._wait(stop_event, self.poll_interval_seconds * 4)
+                    continue
+                if task is None:
+                    await self._wait(stop_event, self.poll_interval_seconds)
+                    continue
+                await self._execute(task, stop_event=stop_event)
+        finally:
+            self.queue.release_worker(self.owner)
+            logger.info("全局任务消费者退出 worker=%s", self.owner[:8])
+
+    async def _wait(self, stop_event: asyncio.Event, seconds: float) -> None:
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=seconds)
+        except asyncio.TimeoutError:
+            pass
+
+    def _heartbeat_loop(
+        self, task: QueuedTask, stop_event: threading.Event,
+        loop: asyncio.AbstractEventLoop, lease_lost: asyncio.Event,
+    ) -> None:
+        """在线程中续租，避免同步 I/O 阻塞事件循环时心跳也停止。"""
+        while not stop_event.wait(self.heartbeat_seconds):
+            try:
+                renewed = self.queue.renew(
+                    task.task_id, self.owner, lease_seconds=self.lease_seconds,
+                )
+            except Exception:
+                logger.exception("任务租约续期异常 task_id=%s", task.task_id)
+                loop.call_soon_threadsafe(lease_lost.set)
+                return
+            if not renewed:
+                logger.error("任务租约续期失败，停止执行 task_id=%s", task.task_id)
+                loop.call_soon_threadsafe(lease_lost.set)
+                return
+
+    async def _run_task(self, task: QueuedTask) -> dict[str, Any]:
+        allowed_scheduler_methods = {
+            "_job_publish_polling", "_job_data_fetch", "_job_daily_ops",
+            "_job_comment_polling", "_job_cb_recovery", "_job_kb_scan",
+            "_job_kb_sync", "_job_data_retention_cleanup",
+            "_job_round_timeout_sweeper", "_job_round_review", "_job_autogrow_next_round",
+        }
+        if task.task_type not in {"round_run", "scheduler_job"}:
+            raise ValueError(f"不支持的任务类型：{task.task_type}")
+        context = self.build_tenant_context(task.tenant_id)
+        from src.core import login_manager
+        from src.core.notify import bind_context_notifier
+
+        data_dir = Path(context["cfg"].resolve_path(context["cfg"].paths.data_dir))
+        # 后台通知必须与任务 tenant_id 绑定，不能读取前台切换时更新的模块级通知器。
+        try:
+            with login_manager.tenant_login_dir(data_dir), bind_context_notifier(context.get("notifier")):
+                if task.task_type == "round_run":
+                    round_id = int(task.payload["round_id"])
+                    operation = task.payload.get("operation", "run")
+                    feedback_data = task.payload.get("feedback")
+                    feedback = None
+                    if isinstance(feedback_data, dict):
+                        from src.core.autogrow import StrategyFeedback
+                        feedback = StrategyFeedback(**feedback_data)
+                    if operation == "save_pending_drafts":
+                        return await context["executor"].save_pending_drafts(round_id)
+                    if operation == "run":
+                        return await context["executor"].run(
+                            round_id,
+                            topic_count=task.payload.get("topic_count"),
+                            platform_values=task.payload.get("platforms"),
+                            save_drafts=task.payload.get("save_drafts"),
+                            feedback=feedback,
+                        )
+                    raise ValueError(f"不支持的轮次任务操作：{operation}")
+
+                method = task.payload.get("method")
+                args = task.payload.get("args", [])
+                if method not in allowed_scheduler_methods or not isinstance(args, list):
+                    raise ValueError("定时任务类型或参数无效")
+                result = await getattr(context["scheduler"], method)(*args)
+                return result if isinstance(result, dict) else {"completed": True}
+        finally:
+            scheduler = context.get("scheduler")
+            if scheduler is not None:
+                try:
+                    scheduler.shutdown()
+                except Exception:
+                    logger.exception("关闭任务账号组调度器失败")
+            conn = context.get("conn")
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    logger.exception("关闭任务账号组数据库连接失败")
+
+    async def _execute(
+        self, task: QueuedTask, *, stop_event: asyncio.Event | None = None,
+    ) -> None:
+        lease_lost = asyncio.Event()
+        heartbeat_stop = threading.Event()
+        loop = asyncio.get_running_loop()
+        heartbeat = asyncio.create_task(asyncio.to_thread(
+            self._heartbeat_loop, task, heartbeat_stop, loop, lease_lost,
+        ))
+        execution = asyncio.create_task(self._run_task(task))
+        stop_waiter = asyncio.create_task(stop_event.wait()) if stop_event is not None else None
+        try:
+            wait_for = {execution, heartbeat}
+            if stop_waiter is not None:
+                wait_for.add(stop_waiter)
+            done, _ = await asyncio.wait(wait_for, return_when=asyncio.FIRST_COMPLETED)
+
+            if stop_waiter is not None and stop_waiter in done and not execution.done():
+                completed, _ = await asyncio.wait(
+                    {execution}, timeout=self.shutdown_grace_seconds,
+                )
+                if not completed:
+                    execution.cancel()
+                    try:
+                        await execution
+                    except asyncio.CancelledError:
+                        pass
+                    heartbeat_stop.set()
+                    await heartbeat
+                    if not self.queue.interrupt(task.task_id, self.owner):
+                        raise WorkerLeaseLost("停机时任务租约已失效，无法安全写入 interrupted")
+                    logger.warning(
+                        "服务停止超出宽限期，任务已中断 task_id=%s tenant_id=%s",
+                        task.task_id, task.tenant_id,
+                    )
+                    return
+
+            if heartbeat in done and not execution.done():
+                execution.cancel()
+                try:
+                    await execution
+                except asyncio.CancelledError:
+                    pass
+                raise WorkerLeaseLost("任务租约丢失，已请求停止当前任务")
+            report = await execution
+            if lease_lost.is_set():
+                raise WorkerLeaseLost("任务租约丢失，拒绝提交完成状态")
+            if not self.queue.finish(task.task_id, self.owner, result=report):
+                raise WorkerLeaseLost("任务完成状态写入失败，租约可能已失效")
+        except WorkerLeaseLost:
+            logger.error(
+                "任务因租约丢失停止 task_id=%s tenant_id=%s",
+                task.task_id, task.tenant_id,
+            )
+        except asyncio.CancelledError:
+            execution.cancel()
+            raise
+        except Exception as exc:  # noqa: BLE001 — 单任务失败不得终止消费者
+            from src.core.redact import redact
+            error_code = redact(str(getattr(exc, "code", "round_execution_failed")))[:80]
+            if getattr(exc, "code", None) or getattr(exc, "safe_for_user", False):
+                safe_message = redact(str(exc))[:500]
+            else:
+                safe_message = "本轮执行失败，请检查运行记录"
+            logger.error(
+                "全局队列任务执行失败 task_id=%s tenant_id=%s error=%s",
+                task.task_id, task.tenant_id, safe_message,
+            )
+            try:
+                self.queue.fail(
+                    task.task_id, self.owner,
+                    error_code=error_code, error_message=safe_message,
+                )
+            except Exception:
+                logger.exception("写入任务失败状态异常 task_id=%s", task.task_id)
+        finally:
+            if not execution.done():
+                execution.cancel()
+                try:
+                    await execution
+                except asyncio.CancelledError:
+                    pass
+            heartbeat_stop.set()
+            if not heartbeat.done():
+                await heartbeat
+            if stop_waiter is not None:
+                stop_waiter.cancel()
+                try:
+                    await stop_waiter
+                except asyncio.CancelledError:
+                    pass

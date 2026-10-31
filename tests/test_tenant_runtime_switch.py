@@ -73,11 +73,10 @@ def make_context(registry, tenant_id, *, fail_start=False):
 
 def patch_runtime(monkeypatch, registry, contexts):
     monkeypatch.setattr(api_main, "_g_ctx", contexts["A"])
-    monkeypatch.setattr(api_main, "_running_rounds", set())
     monkeypatch.setattr(api_main, "set_active_notifier", lambda notifier: None)
     monkeypatch.setattr(
         api_main, "_build_tenant_runtime_context",
-        lambda _registry, tenant_id: contexts[tenant_id](),
+        lambda _registry, tenant_id, run_startup_maintenance=False: contexts[tenant_id](),
     )
     from src.core import account_login, login_manager
     monkeypatch.setattr(account_login, "stop_all_logins", lambda timeout_seconds=10.0: None)
@@ -93,9 +92,9 @@ def test_runtime_switch_supports_a_to_b_to_a(monkeypatch):
     }
     original_a = contexts["A"]()
     monkeypatch.setattr(api_main, "_g_ctx", original_a)
-    monkeypatch.setattr(api_main, "_running_rounds", set())
+    monkeypatch.setattr(api_main, "_tenant_runtime_contexts", {})
     monkeypatch.setattr(api_main, "set_active_notifier", lambda notifier: None)
-    monkeypatch.setattr(api_main, "_build_tenant_runtime_context", lambda _r, tid: contexts[tid]())
+    monkeypatch.setattr(api_main, "_build_tenant_runtime_context", lambda _r, tid, run_startup_maintenance=False: contexts[tid]())
     from src.core import account_login, login_manager
     monkeypatch.setattr(account_login, "stop_all_logins", lambda timeout_seconds=10.0: None)
     monkeypatch.setattr(account_login, "configure_data_dir", lambda data_dir: None)
@@ -105,6 +104,7 @@ def test_runtime_switch_supports_a_to_b_to_a(monkeypatch):
         result_b = await api_main._switch_tenant_runtime("B")
         assert result_b["switch_status"] == "completed"
         assert api_main._g_ctx["runtime_tenant_id"] == "B"
+        assert api_main._tenant_runtime_contexts["B"] is api_main._g_ctx
         assert registry.active == "B"
         conn_b = api_main._g_ctx["conn"]
         assert conn_b.tenant_id == "B"
@@ -112,6 +112,7 @@ def test_runtime_switch_supports_a_to_b_to_a(monkeypatch):
         result_a = await api_main._switch_tenant_runtime("A")
         assert result_a["switch_status"] == "completed"
         assert api_main._g_ctx["runtime_tenant_id"] == "A"
+        assert api_main._tenant_runtime_contexts["A"] is api_main._g_ctx
         assert registry.active == "A"
         assert api_main._g_ctx["conn"].tenant_id == "A"
         assert api_main._g_ctx["conn"] is not conn_b
@@ -120,8 +121,7 @@ def test_runtime_switch_supports_a_to_b_to_a(monkeypatch):
         asyncio.run(run())
     finally:
         monkeypatch.setattr(api_main, "_g_ctx", {})
-        monkeypatch.setattr(api_main, "_running_rounds", set())
-
+    
 
 def test_runtime_switch_rolls_back_if_target_scheduler_fails(monkeypatch):
     registry = FakeRegistry()
@@ -132,14 +132,14 @@ def test_runtime_switch_rolls_back_if_target_scheduler_fails(monkeypatch):
     rollback = make_context(registry, "A")
     built = {"count": 0}
 
-    def build(_registry, tenant_id):
+    def build(_registry, tenant_id, run_startup_maintenance=False):
         if tenant_id == "B":
             return target
         built["count"] += 1
         return rollback
 
     monkeypatch.setattr(api_main, "_g_ctx", old)
-    monkeypatch.setattr(api_main, "_running_rounds", set())
+    monkeypatch.setattr(api_main, "_tenant_runtime_contexts", {})
     monkeypatch.setattr(api_main, "set_active_notifier", lambda notifier: None)
     monkeypatch.setattr(api_main, "_build_tenant_runtime_context", build)
     from src.core import account_login, login_manager
@@ -150,29 +150,31 @@ def test_runtime_switch_rolls_back_if_target_scheduler_fails(monkeypatch):
     async def run():
         with pytest.raises(HTTPException) as caught:
             await api_main._switch_tenant_runtime("B")
-        assert caught.value.status_code == 500
+        assert caught.value.status_code == 409
         assert registry.active == "A"
         assert api_main._g_ctx["runtime_tenant_id"] == "A"
-        assert api_main._g_ctx["conn"] is rollback["conn"] if isinstance(rollback, dict) else True
-        assert rollback["scheduler"].started
-        assert old_scheduler.drained
-        assert old_conn.closed
+        assert api_main._g_ctx["conn"] is old_conn
+        assert target["scheduler"].stopped
+        assert target["conn"].closed
+        # 常驻后台运行时不因前台切换失败而停止或关闭。
+        assert not old_scheduler.drained
+        assert not old_scheduler.stopped
+        assert not old_conn.closed
 
     try:
         asyncio.run(run())
     finally:
         monkeypatch.setattr(api_main, "_g_ctx", {})
-        monkeypatch.setattr(api_main, "_running_rounds", set())
-
+    
 
 def test_target_initialization_failure_does_not_stop_old_runtime(monkeypatch):
     registry = FakeRegistry()
     old = make_context(registry, "A")
     monkeypatch.setattr(api_main, "_g_ctx", old)
-    monkeypatch.setattr(api_main, "_running_rounds", set())
+    monkeypatch.setattr(api_main, "_tenant_runtime_contexts", {})
     monkeypatch.setattr(
         api_main, "_build_tenant_runtime_context",
-        lambda _registry, tenant_id: (_ for _ in ()).throw(RuntimeError("pending restore")),
+        lambda _registry, tenant_id, run_startup_maintenance=False: (_ for _ in ()).throw(RuntimeError("pending restore")),
     )
 
     async def run():
@@ -187,4 +189,4 @@ def test_target_initialization_failure_does_not_stop_old_runtime(monkeypatch):
         asyncio.run(run())
     finally:
         monkeypatch.setattr(api_main, "_g_ctx", {})
-        monkeypatch.setattr(api_main, "_running_rounds", set())
+    

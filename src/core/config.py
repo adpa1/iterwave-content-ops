@@ -551,6 +551,7 @@ class CopyGenerationConfig(BaseModel):
     strategy_hint_max_count: int = Field(6, ge=0, le=20)
     strategy_hint_max_chars: int = Field(120, ge=20, le=500)
     max_guard_retries: int = Field(2, ge=0, le=10)
+    max_output_tokens: int = Field(1200, ge=128, le=8192)
 
     @model_validator(mode="after")
     def _check_copy_constraints(self) -> "CopyGenerationConfig":
@@ -611,7 +612,7 @@ class DataRetentionConfig(BaseModel):
 # =====================================================================
 
 class LlmConfig(BaseModel):
-    """文案生成用 LLM（Agent Plan / 方舟）。无 key 时自动降级模板。"""
+    """文案生成用 LLM（Agent Plan / 方舟）；模型失败时 fail closed。"""
     enabled: bool = False
     provider: str = "ark"
     # ⚠️ 通道选择（重要，关乎计费与可用性，R23 安全）：
@@ -623,14 +624,38 @@ class LlmConfig(BaseModel):
     fallback_model: str = "doubao-seed-2.0-mini"   # 主模型失败时的兜底模型；空串 = 不启用
     api_key_env: str = "ARK_API_KEY"          # R23：只从 .env 读，不落库不落日志
     temperature: float = 0.7
-    timeout_seconds: int = 60
+    timeout_seconds: int = Field(60, ge=1, le=600)
+    retry_attempts: int = Field(2, ge=0, le=5)
+    retry_backoff_seconds: float = Field(1.0, ge=0.1, le=30.0)
+
+
+class ActivationConfig(BaseModel):
+    """快速体验资源与输入边界；BYOK 仍按供应商实际计费。"""
+    account_description_min_chars: int = Field(10, ge=1, le=100)
+    account_description_max_chars: int = Field(300, ge=20, le=1000)
+    max_runs_per_day: int = Field(5, ge=1, le=100)
+    stale_task_timeout_minutes: int = Field(30, ge=5, le=240)
+    sample_max_output_tokens: int = Field(1200, ge=128, le=8192)
+    max_model_calls_per_run: int = Field(9, ge=3, le=30)
+
+    @model_validator(mode="after")
+    def _check_description_range(self) -> "ActivationConfig":
+        if self.account_description_min_chars > self.account_description_max_chars:
+            raise ValueError("账号定位最小长度不能大于最大长度")
+        return self
 
 
 class Config(BaseModel):
+    business_timezone: str = "Asia/Shanghai"
     paths: PathsConfig = Field(default_factory=PathsConfig)
     topic_kb: TopicKbConfig
     render: RenderConfig = Field(default_factory=RenderConfig)
     platforms: PlatformsConfig
+    # 平台发布链接允许域名；用于人工粘贴链接校验，禁止在 API 路由中硬编码。
+    platform_link_domains: dict[str, list[str]] = Field(default_factory=dict)
+    # 每个平台允许人工回填的逐篇指标字段；来源于平台读回能力与实际可见口径。
+    platform_metric_fields: dict[str, list[str]] = Field(default_factory=dict)
+    activation: ActivationConfig = Field(default_factory=ActivationConfig)
     scoring: ScoringConfig
     ultimate_goal: UltimateGoalConfig
     timeouts: TimeoutsConfig
@@ -654,6 +679,17 @@ class Config(BaseModel):
     insights: InsightsConfig = Field(default_factory=InsightsConfig)
     plan_suggestion: PlanSuggestionConfig = Field(default_factory=PlanSuggestionConfig)
     spiral: SpiralConfig = Field(default_factory=SpiralConfig)
+
+    @field_validator("business_timezone")
+    @classmethod
+    def _valid_business_timezone(cls, value: str) -> str:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        name = str(value or "").strip()
+        try:
+            ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("business_timezone 必须是有效的 IANA 时区名称") from exc
+        return name
 
     def resolve_path(self, relative: str) -> Path:
         """把 config 中的相对路径解析为相对于项目根的绝对路径。"""

@@ -4,6 +4,7 @@ import { AppProvider, useApp } from "./AppContext";
 import { api, TenantListResponse } from "./api";
 import { platformMeta } from "./platforms";
 import Dashboard from "./pages/Dashboard";
+import Activation from "./pages/Activation";
 import GlobalMonitor from "./pages/GlobalMonitor";
 import HotTopics from "./pages/HotTopics";
 import Goals from "./pages/Goals";
@@ -17,6 +18,7 @@ import Agent from "./pages/Agent";
 import Accounts from "./pages/Accounts";
 import Onboarding from "./pages/Onboarding";
 import Settings from "./pages/Settings";
+import TaskQueue from "./pages/TaskQueue";
 import GlobalSearch from "./components/GlobalSearch";
 
 function Router() {
@@ -56,6 +58,7 @@ function Router() {
   const render = () => {
     switch (page) {
       case "dashboard": return <Dashboard />;
+      case "activation": return <Activation />;
       case "global-monitor": return <GlobalMonitor />;
       case "hot": return <HotTopics />;
       case "goals": return <Goals />;
@@ -69,6 +72,7 @@ function Router() {
       case "accounts": return <Accounts />;
       case "onboarding": return <Onboarding />;
       case "settings": return <Settings />;
+      case "task-queue": return <TaskQueue />;
       default: return <Dashboard />;
     }
   };

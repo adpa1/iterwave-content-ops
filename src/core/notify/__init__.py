@@ -7,7 +7,7 @@
 - 全部落 notifications 表留痕，用于 R16 幂等去重与审计
 - webhook URL 视同密钥（R23）：不写日志、不进 API 响应
 - 通知正文不得含 cookie / token（R23），发送前统一脱敏
-- 时间一律 datetime.now()（R5）
+- 时间一律 business_now(self.cfg)（R5）
 
 用法：
     from src.core.notify import Notifier
@@ -17,13 +17,18 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+
 import json
 import logging
 import os
 import sqlite3
 import subprocess
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import timedelta
+
+from ..timezone import business_now
+from typing import Optional, cast
 
 
 logger = logging.getLogger(__name__)
@@ -198,7 +203,7 @@ class Notifier:
         返回 {"macos": "ok|failed|disabled", ...}；不暴露 webhook URL（R23）。
         """
         head = "通知通道测试"
-        body = f"这是一条测试通知（{datetime.now().strftime('%H:%M:%S')}），收到即配置正常。"
+        body = f"这是一条测试通知（{business_now(self.cfg).strftime('%H:%M:%S')}），收到即配置正常。"
         results: dict[str, str] = {}
         for channel in ("macos", "wecom", "feishu"):
             ccfg = self.channels.get(channel)
@@ -313,7 +318,7 @@ class Notifier:
     def _is_duplicate(self, db_type: str, platform: Optional[str], body: str) -> bool:
         if self.conn is None:
             return False
-        cutoff = (datetime.now() - timedelta(minutes=self.dedupe_window_minutes)).isoformat(sep=" ")
+        cutoff = (business_now(self.cfg) - timedelta(minutes=self.dedupe_window_minutes)).isoformat(sep=" ")
         row = self.conn.execute(
             "SELECT 1 FROM notifications "
             "WHERE type = ? AND COALESCE(platform, '') = ? AND COALESCE(body, '') = ? "
@@ -336,7 +341,7 @@ class Notifier:
                     level, db_type, platform, title, body, channel,
                     # 带微秒：表上 UNIQUE(type, platform, sent_at) 只到秒，
                     # 同一秒内多条同类型通知（如连存多篇草稿）会撞约束丢记录
-                    datetime.now().isoformat(sep=" "),
+                    business_now(self.cfg).isoformat(sep=" "),
                 ),
             )
             self.conn.commit()
@@ -346,12 +351,33 @@ class Notifier:
 
 # 模块级单例（便于 scheduler/executor 未注入时的兜底）
 _active: Optional[Notifier] = None
+# 使用独立哨兵区分「没有任务上下文」与「任务上下文明确没有通知器」。
+_UNBOUND_NOTIFIER = object()
+# 后台任务通知器按异步任务上下文绑定，不能跟随前台活动账号组变化。
+_context_notifier: ContextVar[object] = ContextVar(
+    "iterwave_context_notifier", default=_UNBOUND_NOTIFIER,
+)
+
+
+@contextmanager
+def bind_context_notifier(notifier: Optional[Notifier]):
+    """在当前异步任务上下文中绑定账号组通知器，并在退出时恢复原值。"""
+    token = _context_notifier.set(notifier)
+    try:
+        yield
+    finally:
+        _context_notifier.reset(token)
 
 
 def set_active(notifier: Notifier) -> None:
+    """设置前台交互使用的默认通知器。"""
     global _active
     _active = notifier
 
 
 def get_active() -> Optional[Notifier]:
-    return _active
+    """优先返回当前后台任务绑定的通知器，否则返回前台默认通知器。"""
+    contextual = _context_notifier.get()
+    if contextual is _UNBOUND_NOTIFIER:
+        return _active
+    return cast(Optional[Notifier], contextual)

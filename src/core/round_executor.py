@@ -5,7 +5,7 @@
     created → producing
       ① 读选题库（KbReader）
       ② G  选题评分（ScoringEngine 三模式）
-      ③ 四平台文案生成（generate_copy_stub → P1 换 LLM）
+      ③ 四平台文案生成（BYOK LLM；模型失败 fail closed）
       ④ G2 终极目标检查（UltimateGoalChecker，FAIL 丢弃 / ERROR 不放行）
       ⑤ H  图片卡片制作
       ⑥ 写 contents + drafts（draft_pending）
@@ -16,7 +16,7 @@
 - R1  只存草稿，不点发布
 - R2  G2 检查失败必须丢弃；检查器异常（ERROR）不能默认通过
 - R3  NULL ≠ 0（本模块不写任何指标数字）
-- R5  本地时区 datetime.now()
+- R5  本地时区 business_now(self.cfg)
 - R16 存草稿幂等：content_id + platform 已有 draft_saved 则跳过
 """
 
@@ -30,18 +30,28 @@ from datetime import datetime
 from typing import Optional
 
 from .config import PROJECT_ROOT
+
+from .timezone import business_now
 from .kb_reader import KbReader  # noqa: F401 — 兼容旧引用
 from .topic_pool import load_pool
 from .persona import effective_persona
 from .hot_topics import _sensitive_topic_hits
 from .orchestration import Orchestration, step_status_from_report
-from .content_pipeline import generate_copy_content, make_card_set, _llm_available
+from .content_pipeline import (
+    ContentGenerationError, generate_copy_content, make_card_set, _llm_available,
+)
 from .plan_version import PlanVersionManager
 from .guard.ultimate_goal_checker import CheckOutcome, CheckResult
 from ..adapters.base import Platform, ContentToPublish
 from ..adapters.base import DraftStatus, CircuitBreakerReason
 
 logger = logging.getLogger(__name__)
+
+class RoundPreconditionError(ValueError):
+    """执行前置条件不满足；错误文案经过业务层整理，可安全展示给用户。"""
+
+    safe_for_user = True
+
 
 # 平台未启用 / 熔断时不给该平台产出内容
 _SKIP_REASON_CIRCUIT = "平台熔断中，跳过本轮产出"
@@ -94,7 +104,7 @@ class RoundExecutor:
             (round_id,),
         ).fetchone()
         if not round_row:
-            raise ValueError(f"轮次 {round_id} 不存在")
+            raise RoundPreconditionError(f"轮次 {round_id} 不存在")
         current_status = round_row["status"]
         if current_status == "failed":
             # 只允许没有产生任何内容/草稿的失败轮次重试，避免重复生成或覆盖已有交付物。
@@ -106,11 +116,11 @@ class RoundExecutor:
                 (round_id,),
             ).fetchone()[0]
             if existing_contents or existing_drafts:
-                raise ValueError("本轮失败前已产生内容或草稿，为避免重复交付，请修复问题后新建一轮")
+                raise RoundPreconditionError("本轮失败前已产生内容或草稿，为避免重复交付，请修复问题后新建一轮")
             if not self.sm_round.transition(round_id, "created", "用户发起安全重试（无已生成内容）"):
-                raise ValueError("失败轮次无法重置，请新建一轮")
+                raise RoundPreconditionError("失败轮次无法重置，请新建一轮")
         elif current_status != "created":
-            raise ValueError(
+            raise RoundPreconditionError(
                 f"轮次 {round_id} 当前状态为 {current_status}，仅新建或可安全重试的失败轮次可执行"
             )
 
@@ -118,7 +128,7 @@ class RoundExecutor:
         available_topics, pool_report = load_pool(self.cfg, self.conn)
         if not available_topics:
             detail = pool_report.get("kb_error") or "选题库当前没有可用选题"
-            raise ValueError(f"运行前检查未通过：{detail}。请先补充或恢复选题，再运行本轮")
+            raise RoundPreconditionError(f"运行前检查未通过：{detail}。请先补充或恢复选题，再运行本轮")
 
         # 母计划 v2：未显式传参时按母计划执行（选题数 / 平台 / 维度配额 / 平台分项篇数）
         self._pvm = PlanVersionManager(self.cfg, self.conn)
@@ -136,7 +146,7 @@ class RoundExecutor:
 
         platforms = self._resolve_platforms(platform_values)
         if not platforms:
-            raise ValueError("没有可用平台：请检查 config.platforms 的 enabled 与请求参数")
+            raise RoundPreconditionError("没有可用平台：请检查 config.platforms 的 enabled 与请求参数")
 
         # 运行前硬门：本轮每个目标平台都必须有可比较的账号定位关键词。
         missing_persona = [
@@ -145,7 +155,7 @@ class RoundExecutor:
         ]
         if missing_persona:
             labels = "、".join(Platform(p).display_name for p in missing_persona)
-            raise ValueError(
+            raise RoundPreconditionError(
                 f"运行前检查未通过：{labels} 未配置账号定位关键词，无法判断内容是否符合账号定位。"
                 "请先到「目标与策略」补齐对应平台画像"
             )
@@ -153,7 +163,7 @@ class RoundExecutor:
         report: dict = {
             "round_id": round_id,
             "round_number": round_row["round_number"],
-            "started_at": datetime.now().isoformat(),
+            "started_at": business_now(self.cfg).isoformat(),
             "platforms": [p.value for p in platforms],
             "topic_count_requested": topic_count,
             "plan_source": self._plan_source,
@@ -187,7 +197,7 @@ class RoundExecutor:
                 self.sm_round.transition(round_id, "failed", "选题库无可用选题")
                 report["final_status"] = "failed"
                 self._finish_task_run(task_run_id, "failed", "选题库无可用选题")
-                report["finished_at"] = datetime.now().isoformat()
+                report["finished_at"] = business_now(self.cfg).isoformat()
                 report["step_status"] = step_status_from_report(report, self._orch)
                 try:
                     self.conn.execute(
@@ -198,6 +208,14 @@ class RoundExecutor:
                 except Exception:  # noqa: BLE001 — 失败报告尽量持久化，但不遮盖主错误
                     logger.exception("空选题失败报告写入失败 round=%s", round_id)
                 return report
+
+            # P0：只有确认本轮确实有内容需要生成后，才检查模型配置。
+            # 放在统一失败收尾内，确保失败报告和 task_run 状态可追踪。
+            if not _llm_available(self.cfg):
+                raise ContentGenerationError(
+                    "model_not_configured",
+                    "尚未配置可用模型，请先配置模型服务和 API Key 后再运行",
+                )
 
             # §19 母计划签名（R18）：选题分布确定后立即固化，改计划可追溯
             self._record_plan_signature(round_id, topic_count, platforms, scored, report)
@@ -217,9 +235,28 @@ class RoundExecutor:
             # 收尾状态
             self._finalize_round(round_id, report, save_drafts)
 
+        except ContentGenerationError as exc:
+            logger.warning(
+                "轮次 %s 文案生成失败 code=%s retryable=%s",
+                round_id, exc.code, exc.retryable,
+            )
+            report["failure_code"] = exc.code
+            report["failure_message"] = str(exc)
+            report["errors"].append(str(exc))
+            report["final_status"] = "failed"
+            try:
+                transitioned = self.sm_round.transition(
+                    round_id, "failed", f"文案生成失败：{exc.code}",
+                )
+                if not transitioned:
+                    report["errors"].append("失败收尾：轮次状态未能迁移到 failed")
+            except Exception as cleanup_exc:  # noqa: BLE001
+                logger.exception("轮次失败状态收尾异常 round=%s", round_id)
+                report["errors"].append(f"失败状态收尾异常: {cleanup_exc}")
         except Exception as exc:  # noqa: BLE001 — 执行器兜底，必须留痕
             logger.exception("轮次 %s 执行异常", round_id)
-            report["errors"].append(f"执行异常: {exc}")
+            report["errors"].append("执行异常，请检查运行日志")
+            report["failure_code"] = "generation_pipeline_failed"
             report["final_status"] = "failed"
             # 状态迁移本身也可能因数据库/状态机异常失败；不能让它覆盖原始异常，
             # 否则下方 task_runs 收尾和 run_report 持久化都不会执行。
@@ -238,7 +275,7 @@ class RoundExecutor:
         else:
             self._finish_task_run(task_run_id, "success")
 
-        report["finished_at"] = datetime.now().isoformat()
+        report["finished_at"] = business_now(self.cfg).isoformat()
         report["step_status"] = step_status_from_report(report, self._orch)
         try:
             self.conn.execute(
@@ -301,7 +338,6 @@ class RoundExecutor:
 
         rows: list[dict] = []
         guard_failures: list[str] = []
-        llm_available = _llm_available(self.cfg)
         for item in pending_rows:
             try:
                 tags = json.loads(item["tags"]) if item["tags"] else []
@@ -337,9 +373,7 @@ class RoundExecutor:
                 )
 
             # 跟初始生产保持一致：只有模板降级（无 LLM）的 WARN 可带告警采用。
-            accepted = outcome.passes or (
-                outcome.result == CheckResult.WARN and not llm_available
-            )
+            accepted = outcome.passes
             self.conn.execute(
                 "UPDATE contents SET guard_outcome = ?, guard_reason = ? WHERE id = ?",
                 (outcome.result.value, outcome.reason, item["content_id"]),
@@ -377,7 +411,7 @@ class RoundExecutor:
         report: dict = {
             "round_id": round_id,
             "round_number": round_row["round_number"],
-            "started_at": datetime.now().isoformat(),
+            "started_at": business_now(self.cfg).isoformat(),
             "steps": [],
             "contents_created": 0,
             "drafts_created": len(rows),
@@ -397,7 +431,7 @@ class RoundExecutor:
             "WHERE c.round_id = ? AND d.status = 'draft_pending'",
             (round_id,),
         ).fetchone()[0])
-        report["finished_at"] = datetime.now().isoformat()
+        report["finished_at"] = business_now(self.cfg).isoformat()
 
         # 保留原有生产报告，并把恢复操作作为历史事件追加；移除当前态的 dry_run 标记，
         # 避免工作流仍被展示为“存草稿已跳过”。
@@ -447,7 +481,7 @@ class RoundExecutor:
             cur = self.conn.execute(
                 "INSERT INTO task_runs (task_type, biz_id, status, attempt, started_at) "
                 "VALUES ('round_pipeline', ?, 'running', 1, ?)",
-                (str(round_id), datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                (str(round_id), business_now(self.cfg).strftime("%Y-%m-%d %H:%M:%S")),
             )
             self.conn.commit()
             return cur.lastrowid
@@ -464,7 +498,7 @@ class RoundExecutor:
             self.conn.execute(
                 "UPDATE task_runs SET status = ?, finished_at = ?, error_msg = ? WHERE id = ?",
                 (
-                    status, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    status, business_now(self.cfg).strftime("%Y-%m-%d %H:%M:%S"),
                     error[:500] if error else None, task_run_id,
                 ),
             )
@@ -596,7 +630,7 @@ class RoundExecutor:
                 "SELECT scheduled_publish_at FROM drafts WHERE platform = ? AND scheduled_publish_at IS NOT NULL",
                 (platform_key,),
             )}
-            day = datetime.now().date() + timedelta(days=1)
+            day = business_now(getattr(self, "cfg", None)).date() + timedelta(days=1)
             queue = [r[0] for r in drafts]
             guard = 0
             while queue and guard < 366:
@@ -739,14 +773,33 @@ class RoundExecutor:
                 image_paths: list = []
                 reject_reason: Optional[str] = None
                 for attempt in range(self.cfg.copy_generation.max_guard_retries + 1):
-                    # LLM 为阻塞调用，放到线程池避免卡住事件循环
-                    title, body, tags = await asyncio.to_thread(
-                        generate_copy_content,
-                        topic.title, topic.summary, topic.dimension, platform, self.cfg,
-                        self.conn, topic.id, round_id,
-                        reject_reason,
-                        self._hints_for(platform),
-                    )
+                    # LLM 为阻塞调用，放到线程池避免卡住事件循环。
+                    # 仅对明确可重试的网络/超时/限流/临时服务错误执行有限指数退避。
+                    for model_attempt in range(self.cfg.llm.retry_attempts + 1):
+                        try:
+                            title, body, tags = await asyncio.to_thread(
+                                generate_copy_content,
+                                topic.title, topic.summary, topic.dimension, platform, self.cfg,
+                                self.conn, topic.id, round_id,
+                                reject_reason,
+                                self._hints_for(platform),
+                            )
+                            break
+                        except ContentGenerationError as exc:
+                            if not exc.retryable or model_attempt >= self.cfg.llm.retry_attempts:
+                                raise
+                            delay = exc.retry_after_seconds or (
+                                self.cfg.llm.retry_backoff_seconds * (2 ** model_attempt)
+                            )
+                            report["steps"].append({
+                                "step": "model_retry",
+                                "platform": platform.value,
+                                "topic_id": topic.id,
+                                "error_code": exc.code,
+                                "attempt": model_attempt + 1,
+                                "delay_seconds": delay,
+                            })
+                            await asyncio.sleep(delay)
                     if card_first:
                         # 编排把出图排在质量门之前：每个候选版本都先出图再质检
                         image_paths = await asyncio.to_thread(
@@ -767,17 +820,7 @@ class RoundExecutor:
                         accepted = (title, body, tags, outcome)
                         break
 
-                    # D8：模板降级（无 LLM，无法自我改写）下 WARN 会确定性重复相同文案，
-                    # 重试只会第 3 次仍 WARN → 被当 FAIL 确定性丢弃。故无 LLM 时 WARN 不再丢弃，
-                    # 改为"采用 + 告警留痕"；有 LLM 时仍走重检（能改写，命中 R2 重检要求）。
-                    if outcome.result == CheckResult.WARN and not _llm_available(self.cfg):
-                        logger.warning(
-                            "⚠️ G2 WARN 采用+告警（非丢弃）%s 第 %d 次: %s",
-                            platform.value, attempt + 1, outcome.reason,
-                        )
-                        accepted = (title, body, tags, outcome)
-                        break
-
+                    # 模型生成必须真实成功；G2 未通过时只允许有限次数携带拒绝原因重写，WARN 也不能绕过质量门。
                     # 未通过：计数 + 留痕，然后携带原因回 G1 重写
                     report["guard_rejected"] += 1
                     report["steps"].append({

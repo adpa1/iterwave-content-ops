@@ -16,6 +16,7 @@ from src.core.notify import Notifier
 from src.core.ops.pause import is_ops_paused
 from src.core.plan_version import PlanVersionManager
 from src.core.state_machine import DraftStateMachine, RoundStateMachine
+from src.core.task_queue import GlobalTaskQueue
 
 
 @pytest.fixture()
@@ -41,6 +42,20 @@ def client(cfg, conn, seed, test_auth):
 
 
 # ---------------------------------------------------------------- R-2 采纳缺口
+def _seed_active_queue_round(tmp_path, monkeypatch, round_id: int):
+    """用持久化队列记录模拟运行中轮次，不再依赖进程级轮次集合。"""
+    queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
+    queue.initialize()
+    queue.enqueue(
+        task_type="round_run", tenant_id="default", aggregate_id=str(round_id),
+        payload={"round_id": round_id, "operation": "run"},
+    )
+    claimed = queue.claim_next("test-api-worker")
+    assert claimed is not None
+    monkeypatch.setattr(api_main, "_task_queue", queue)
+    monkeypatch.setitem(api_main._g_ctx, "runtime_tenant_id", "default")
+
+
 def test_create_round_without_saved_master_plan_succeeds_without_ghost_round(client):
     tc, conn, _ = client
     response = tc.post("/api/rounds", json={"topic_count": 5})
@@ -272,17 +287,14 @@ def test_round_business_states_cannot_be_set_manually(client):
     ).fetchone()[0] == "producing"
 
 
-def test_round_cancel_rejected_while_run_is_active(client):
+def test_round_cancel_rejected_while_run_is_active(client, tmp_path, monkeypatch):
     tc, conn, seed = client
     round_id = seed.round(status="producing")
-    api_main._running_rounds.add(round_id)
-    try:
-        response = tc.post(
-            f"/api/rounds/{round_id}/transition",
-            json={"target_status": "cancelled", "reason": "回归测试"},
-        )
-    finally:
-        api_main._running_rounds.discard(round_id)
+    _seed_active_queue_round(tmp_path, monkeypatch, round_id)
+    response = tc.post(
+        f"/api/rounds/{round_id}/transition",
+        json={"target_status": "cancelled", "reason": "回归测试"},
+    )
 
     assert response.status_code == 409
     assert conn.execute(
@@ -356,17 +368,14 @@ def test_cancel_round_cancels_local_pending_drafts_together(client):
     ).fetchone()[0] == "cancelled"
 
 
-def test_round_cancel_rejected_while_run_is_active(client):
+def test_round_cancel_rejected_while_run_is_active(client, tmp_path, monkeypatch):
     tc, conn, seed = client
     round_id = seed.round(status="producing")
-    api_main._running_rounds.add(round_id)
-    try:
-        response = tc.post(
-            f"/api/rounds/{round_id}/transition",
-            json={"target_status": "cancelled", "reason": "回归测试"},
-        )
-    finally:
-        api_main._running_rounds.discard(round_id)
+    _seed_active_queue_round(tmp_path, monkeypatch, round_id)
+    response = tc.post(
+        f"/api/rounds/{round_id}/transition",
+        json={"target_status": "cancelled", "reason": "回归测试"},
+    )
 
     assert response.status_code == 409
     assert conn.execute(
@@ -700,7 +709,7 @@ def test_rejected_content_must_pass_g2_before_resubmission(client):
     assert audit["reason"] == "已修改并通过目标检查"
 
 
-def test_content_mutations_are_rejected_while_round_is_running(client):
+def test_content_mutations_are_rejected_while_round_is_running(client, tmp_path, monkeypatch):
     tc, conn, seed = client
     round_id = seed.round(status="producing")
     draft_id = seed.draft(
@@ -709,19 +718,16 @@ def test_content_mutations_are_rejected_while_round_is_running(client):
     content_id = conn.execute(
         "SELECT content_id FROM drafts WHERE id = ?", (draft_id,)
     ).fetchone()[0]
-    api_main._running_rounds.add(round_id)
-    try:
-        edit = tc.patch(
-            f"/api/contents/{content_id}",
-            json={"title": "并发修改", "reason": "回归测试"},
-        )
-        reject = tc.post(
-            f"/api/contents/{content_id}/reject",
-            json={"reason": "并发驳回"},
-        )
-        delete = tc.delete(f"/api/contents/{content_id}")
-    finally:
-        api_main._running_rounds.discard(round_id)
+    _seed_active_queue_round(tmp_path, monkeypatch, round_id)
+    edit = tc.patch(
+        f"/api/contents/{content_id}",
+        json={"title": "并发修改", "reason": "回归测试"},
+    )
+    reject = tc.post(
+        f"/api/contents/{content_id}/reject",
+        json={"reason": "并发驳回"},
+    )
+    delete = tc.delete(f"/api/contents/{content_id}")
 
     assert edit.status_code == 409
     assert reject.status_code == 409
