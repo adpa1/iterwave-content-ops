@@ -5566,11 +5566,12 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(422, "无效的计划状态")
         current_status = str(existing["status"])
         next_status = str(values["status"])
+        # 生产生命周期只能由 start API / 全局 Worker 推进；PATCH 仅允许人工编辑状态。
         transitions = {
-            "planned": {"planned", "generating", "cancelled"},
-            "generating": {"generating", "generated", "failed", "cancelled"},
+            "planned": {"planned", "cancelled"},
+            "generating": {"generating"},
             "generated": {"generated", "reviewed", "cancelled"},
-            "failed": {"failed", "generating", "cancelled"},
+            "failed": {"failed", "cancelled"},
             "reviewed": {"reviewed", "archived", "cancelled"},
             "archived": {"archived"},
             "cancelled": {"cancelled"},
