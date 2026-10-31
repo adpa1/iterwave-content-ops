@@ -13,7 +13,7 @@ export default function Calendar() {
   const month = cursorDate.getMonth();
 
   const [events, setEvents] = useState<ScheduleEvent[]>([]);
-  const [plans, setPlans] = useState<ContentPlan[]>([]);
+  const [plans, setPlans] = useState<ContentPlan[]>([]);\n  const [planDetail, setPlanDetail] = useState<(ContentPlan & { drafts: Array<{ draft_id: string; platform: Platform; status: string; title: string; round_id: number | null }>; rounds: Array<{ round_id: number; task_id: string | null; created_at: string }> }) | null>(null);\n  const [planDetailLoading, setPlanDetailLoading] = useState(false);
   const [planTitle, setPlanTitle] = useState("");
   const [planTopic, setPlanTopic] = useState("");
   const [planDate, setPlanDate] = useState(_fmt(today));
@@ -65,6 +65,13 @@ export default function Calendar() {
     }
     return result;
   }, [visibleStart, visibleEndExclusive, events, plans, month]);
+
+  const openPlanDetails = async (planId: string) => {
+    setPlanDetailLoading(true);
+    try { setPlanDetail(await api.contentPlan(planId)); }
+    catch (e: any) { showToast(`加载计划详情失败：${e?.message ?? e}`, "error"); }
+    finally { setPlanDetailLoading(false); }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -189,7 +196,7 @@ export default function Calendar() {
                     {loading && <div className="loading" style={{ marginTop: 6, fontSize: 11, color: "var(--muted)" }}><div className="spinner" />加载中...</div>}
                     {!loading && d.events.length === 0 && <div style={{ marginTop: 6, fontSize: 11, color: "var(--subtle)" }}>空</div>}
                     {d.plans.map((plan) => (
-                      <div key={plan.id} className="calendar-plan-chip" title={`${plan.title} · ${plan.planned_count} 篇计划`}>
+                      <button type="button" key={plan.id} className="calendar-plan-chip" title={`${plan.title} · ${plan.planned_count} 篇/平台`} onClick={() => void openPlanDetails(plan.id)}>
                         <strong>计划</strong><span>{plan.title}</span>
                       </div>
                     ))}
@@ -221,7 +228,7 @@ export default function Calendar() {
                 </button>
                 {d.plans.map((plan) => (
                   <div className="calendar-agenda-plan" key={plan.id}>
-                    <span className="calendar-plan-label">计划</span>
+                    <button className="calendar-plan-label" onClick={() => void openPlanDetails(plan.id)}>计划详情</button>
                     <span className="calendar-agenda-copy"><strong>{plan.title}</strong><small>{plan.planned_count} 篇/平台 · {plan.platforms.length ? plan.platforms.map((p) => platformMeta(p).label).join("、") : "使用启用平台"} · {plan.status}</small></span>
                     {(plan.status === "planned" || plan.status === "failed") && <button className="btn sm primary" disabled={isPending(`content-plan:start:${plan.id}`)} onClick={async () => {
                       try {
@@ -292,6 +299,28 @@ export default function Calendar() {
           </div>
         )}
       </div>
+
+      {planDetail && (
+        <div className="calendar-plan-modal" role="dialog" aria-modal="true" aria-label="内容计划详情" onClick={() => setPlanDetail(null)}>
+          <section className="panel" onClick={(e) => e.stopPropagation()}>
+            <div className="panel-head">
+              <div><div className="panel-title">{planDetail.title}</div><div className="panel-sub">{planDetail.scheduled_date} · {planDetail.planned_count} 篇/平台 · {planDetail.status}</div></div>
+              <button className="btn sm" onClick={() => setPlanDetail(null)}>关闭</button>
+            </div>
+            {planDetail.topic && <div className="note">{planDetail.topic}</div>}
+            {planDetail.notes && <div className="note">备注：{planDetail.notes}</div>}
+            <div className="calendar-plan-detail-grid">
+              <div><strong>生产轮次（{planDetail.rounds.length}）</strong>
+                {planDetail.rounds.length ? planDetail.rounds.map((round) => <div className="calendar-plan-detail-row" key={round.round_id}>第 {round.round_id} 轮 · {round.task_id ? `任务 ${round.task_id.slice(0, 8)}` : "尚未入队"}</div>) : <div className="note">尚未启动生产</div>}
+              </div>
+              <div><strong>关联草稿（{planDetail.drafts.length}）</strong>
+                {planDetail.drafts.length ? planDetail.drafts.map((draft) => <div className="calendar-plan-detail-row" key={draft.draft_id}>{draft.title || draft.draft_id} · {platformMeta(draft.platform).label} · {draft.status}</div>) : <div className="note">生产完成后自动回写草稿</div>}
+              </div>
+            </div>
+            {planDetailLoading && <div className="loading"><div className="spinner" />刷新中…</div>}
+          </section>
+        </div>
+      )}
 
       <section className="panel calendar-plan-create">
         <div className="panel-head">
