@@ -42,6 +42,22 @@ def client(cfg, conn, seed, test_auth):
 
 
 # ---------------------------------------------------------------- R-2 采纳缺口
+def test_tenant_write_requires_explicit_context_and_rejects_stale_context(client):
+    tc, conn, _ = client
+    before = conn.execute("SELECT COUNT(*) FROM spiral_rounds").fetchone()[0]
+
+    tc.headers.pop("X-Tenant-Id", None)
+    missing = tc.post("/api/rounds", json={"topic_count": 3})
+    assert missing.status_code == 409
+    assert missing.json()["code"] == "TENANT_CONTEXT_REQUIRED"
+
+    tc.headers.update({"X-Tenant-Id": "tenant-b"})
+    stale = tc.post("/api/rounds", json={"topic_count": 3})
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "TENANT_CONTEXT_CHANGED"
+    assert conn.execute("SELECT COUNT(*) FROM spiral_rounds").fetchone()[0] == before
+
+
 def _seed_active_queue_round(tmp_path, monkeypatch, round_id: int):
     """用持久化队列记录模拟运行中轮次，不再依赖进程级轮次集合。"""
     queue = GlobalTaskQueue(tmp_path / "shared" / "system.db")
