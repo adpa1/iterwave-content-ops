@@ -224,3 +224,44 @@ def test_stop_tenant_logins_does_not_stop_other_tenant(tmp_login, tmp_path):
     assert proc_b.terminated is False
     assert (str(tenant_b.resolve()), "xhs") in al._LOGIN_PROCESSES
     assert al._files("xhs", tenant_b)["status"].exists()
+
+
+def test_sms_and_logout_are_scoped_to_tenant(tmp_login, tmp_path):
+    tenant_a = tmp_path / "tenants" / "a" / "data"
+    tenant_b = tmp_path / "tenants" / "b" / "data"
+    al._ensure_dirs(tenant_a)
+    al._ensure_dirs(tenant_b)
+    al.profile_dir("xhs", tenant_a).mkdir(parents=True)
+    al.profile_dir("xhs", tenant_b).mkdir(parents=True)
+    al._files("xhs", tenant_a)["storage"].write_text("A-state", encoding="utf-8")
+    al._files("xhs", tenant_b)["storage"].write_text("B-state", encoding="utf-8")
+
+    al.submit_sms_code("douyin", "123456", data_dir=tenant_a)
+    assert al._files("douyin", tenant_a)["code"].read_text(encoding="utf-8") == "123456"
+    assert not al._files("douyin", tenant_b)["code"].exists()
+
+    al.clear_login("xhs", data_dir=tenant_a)
+    assert not al.profile_dir("xhs", tenant_a).exists()
+    assert not al._files("xhs", tenant_a)["storage"].exists()
+    assert al.profile_dir("xhs", tenant_b).exists()
+    assert al._files("xhs", tenant_b)["storage"].read_text(encoding="utf-8") == "B-state"
+
+
+def test_storage_state_export_uses_tenant_profile_and_output(tmp_login, tmp_path, monkeypatch):
+    tenant = tmp_path / "tenants" / "brand_a" / "data"
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return Result()
+
+    monkeypatch.setattr(al.subprocess, "run", fake_run)
+    assert al.export_storage_state("xhs", timeout=3, data_dir=tenant) is True
+    command = captured["command"]
+    assert command[command.index("--profile-base") + 1] == str(tenant / "_profiles")
+    assert command[command.index("--out") + 1] == str(tenant / "login_states" / "xhs.json")
