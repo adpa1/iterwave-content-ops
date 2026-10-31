@@ -5518,8 +5518,8 @@ def _register_routes(app: FastAPI) -> None:
             planned_count = int(planned_count)
         except (TypeError, ValueError) as exc:
             raise HTTPException(422, "计划产出数量必须是整数") from exc
-        if not 1 <= planned_count <= 100:
-            raise HTTPException(422, "计划产出数量必须在 1 到 100 之间")
+        if not 1 <= planned_count <= 50:
+            raise HTTPException(422, "计划产出数量必须在 1 到 50 之间")
         now = _now().isoformat(timespec="seconds")
         plan_id = uuid.uuid4().hex
         conn = _g()["conn"]
