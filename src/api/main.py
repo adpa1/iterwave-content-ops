@@ -3946,10 +3946,19 @@ def _register_routes(app: FastAPI) -> None:
         runtime_context = _g()
         tenant_id = runtime_context.get("runtime_tenant_id", "default")
         round_row = runtime_context["conn"].execute(
-            "SELECT id FROM spiral_rounds WHERE id=?", (round_id,),
+            "SELECT id, status FROM spiral_rounds WHERE id=?", (round_id,),
         ).fetchone()
         if round_row is None:
             raise HTTPException(404, "当前账号组不存在该生产轮次")
+        # 仅允许新建轮次入队。producing 及后续状态不能再次启动，
+        # 防止已进入发布/采集/复盘或终态的轮次被重复生产。
+        # 并发重复请求仍由全局队列的 aggregate 去重负责（状态尚未推进时）。
+        if round_row["status"] != "created":
+            raise HTTPException(
+                409,
+                f"当前轮次状态为「{round_row['status']}」，不能再次启动生产；"
+                "只有「created」状态的轮次可以运行",
+            )
         from src.core.task_snapshot import StaleTaskSnapshot
         try:
             task, created = _task_queue.enqueue(
