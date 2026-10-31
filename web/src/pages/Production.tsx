@@ -403,9 +403,7 @@ export default function Production() {
       .map((t) => `#${t}`);
     const text = [editTitle.trim(), editBody.trim(), tags.join(" ")]
       .filter(Boolean)
-      .join("
-
-");
+      .join("\n\n");
     try {
       await navigator.clipboard.writeText(text);
       showToast("✓ 已复制标题 + 正文 + 标签，可直接粘贴到平台", "success");
@@ -481,8 +479,7 @@ export default function Production() {
   const handleDeleteContent = async () => {
     if (!selectedContentId) return;
     const item = contents.find((c) => c.id === selectedContentId);
-    const extra = item?.draft_status === "draft_saved" ? "
-这篇已存到平台草稿箱，系统不会去平台删除，请自行清理。" : "";
+    const extra = item?.draft_status === "draft_saved" ? "\n这篇已存到平台草稿箱，系统不会去平台删除，请自行清理。" : "";
     if (!window.confirm(`删除「${item?.title ?? ""}」？文案、草稿记录和卡片图片会一起删除，不可恢复。${extra}`)) return;
     await withPending("delete-content", async () => {
       try {
