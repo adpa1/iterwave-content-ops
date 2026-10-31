@@ -35,3 +35,14 @@ def test_async_tasks_keep_distinct_tenant_login_dirs(tmp_path):
         assert b == tmp_path / "tenant-b" / "login_states" / "douyin.json"
 
     asyncio.run(run())
+
+
+def test_explicit_tenant_login_state_path_overrides_global_and_context(tmp_path):
+    tenant = tmp_path / "tenant-c"
+    expected = tenant / "login_states" / "xhs.json"
+    with login_manager.tenant_login_dir(tmp_path / "tenant-a"):
+        assert login_manager._platform_state_path(Platform.XHS, data_dir=tenant) == expected
+        assert login_manager.has_login_state(Platform.XHS, data_dir=tenant) is False
+        expected.parent.mkdir(parents=True)
+        expected.write_text("{}", encoding="utf-8")
+        assert login_manager.has_login_state(Platform.XHS, data_dir=tenant) is True
