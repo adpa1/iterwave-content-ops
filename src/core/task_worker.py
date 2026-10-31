@@ -277,7 +277,7 @@ class GlobalTaskWorker:
             # 不把原始 traceback、请求头或平台响应对象写入用户可见字段。
             import re
             detail = redact(str(exc)).strip()
-            detail = re.sub(r"(?<!:)\\/(?:[^\\s:'\"<>]+\\/)*[^\\s:'\"<>]+", "[路径已隐藏]", detail)
+            detail = re.sub(r"(?<!:)/(?:[^\s:'\"<>]+/)*[^\s:'\"<>]+", "[路径已隐藏]", detail)
             safe_message = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
             safe_message = safe_message[:500]
             logger.error(
