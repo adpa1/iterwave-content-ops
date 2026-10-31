@@ -242,6 +242,33 @@ export default function Analytics() {
       {activationMetrics?.platform_model_breakdown?.length ? <div className="panel-sub" style={{ marginBottom: 15 }}>
         体验分布：{activationMetrics.platform_model_breakdown.map((item) => `${PLATFORM_NAME[item.platform]} / ${item.model_mode}：${item.ready_count}/${item.run_count} 完成`).join("；")}
       </div> : null}
+      <div className="panel" style={{ marginBottom: 15 }}>
+        <div className="panel-head">
+          <div>
+            <div className="panel-title">互动表现较好的内容</div>
+            <div className="panel-sub">按近 {metrics?.z_window_days ?? 90} 天有效互动率排序；仅展示有有效指标的内容</div>
+          </div>
+        </div>
+        {rateRows.length === 0 ? <EmptyHint next="先在详细数据中为已发布内容补填数据，或等待平台采集完成">暂无可比较的互动率样本</EmptyHint> : (() => {
+          const topRows = [...rateRows].sort((x, y) => (y.interaction_rate ?? 0) - (x.interaction_rate ?? 0)).slice(0, 8);
+          const maxRate = Math.max(...topRows.map((r) => r.interaction_rate ?? 0), 0.0001);
+          return <div style={{ padding: "4px 16px 16px" }}>
+            {topRows.map((item, index) => {
+              const rate = item.interaction_rate ?? 0;
+              return <div key={item.content_id ?? `${item.platform}-${index}`} style={{ display: "grid", gridTemplateColumns: "minmax(110px, 1.5fr) minmax(90px, 3fr) 64px", gap: 10, alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div className="task-title" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.content_title || "未命名内容"}</div>
+                  <div className="task-desc">{PLATFORM_NAME[item.platform]}</div>
+                </div>
+                <div style={{ height: 9, background: "var(--surface-2)", borderRadius: 99, overflow: "hidden" }}>
+                  <div style={{ width: `${Math.max(2, rate / maxRate * 100)}%`, height: "100%", background: "var(--blue)", borderRadius: 99 }} />
+                </div>
+                <div style={{ textAlign: "right", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{(rate * 100).toFixed(2)}%</div>
+              </div>;
+            })}
+          </div>;
+        })()}
+      </div>
       </>}
 
       {detailView === "details" && <>
