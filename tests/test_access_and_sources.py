@@ -152,7 +152,7 @@ def test_database_file_permissions_are_private(cfg, conn):
 
 
 def test_password_lifecycle(tmp_path, monkeypatch):
-    monkeypatch.setenv("ITERWAVE_ENV_FILE", str(tmp_path / "isolated.env"))
+    monkeypatch.setenv("ITERWAVE_ENV_FILE", str(tmp_path / ".env"))
     monkeypatch.delenv(auth.PASSWORD_ENV, raising=False)
     assert auth.password_configured() is False
     with pytest.raises(ValueError):
