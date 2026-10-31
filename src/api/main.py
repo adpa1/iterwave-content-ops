@@ -3556,67 +3556,6 @@ def _register_routes(app: FastAPI) -> None:
             tenant_rows.append(row)
         return {"days": days, "since": since, "totals": totals, "platform_totals": platform_totals, "tenants": tenant_rows, "account_count_note": "账号数量来自用户登记的平台账号标识，按账号组和平台去重；未登记的账号不会自动推断计入。"}
 
-    @app.get("/api/global-monitor")
-    def global_monitor(days: int = Query(30, ge=1, le=365)):
-        """只读跨账号组汇总。每个数据库独立打开，缺表/未初始化数据库按不可用处理，不影响其他账号组。"""
-        registry = _g().get("tenant_registry")
-        if registry is None:
-            raise HTTPException(503, "账号组注册表尚未初始化")
-        from datetime import timedelta
-        since = (_now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-        tenant_rows = []
-        totals = {"tenants": 0, "available_tenants": 0, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0}
-        platform_totals = {p: {"contents": 0, "drafts": 0} for p in ("xhs", "douyin", "kuaishou", "wechat_channels")}
-        for tenant in registry.list():
-            tenant_id = tenant["id"]
-            paths = registry.paths(tenant_id, name=str(tenant.get("name") or tenant_id))
-            row = {"tenant_id": tenant_id, "tenant_name": tenant["name"], "created_at": tenant.get("created_at"), "db_available": False, "contents_period": 0, "contents_all": 0, "drafts_all": 0, "drafts_pending": 0, "drafts_saved": 0, "drafts_published": 0, "drafts_failed": 0, "media_active": 0, "media_usage": 0, "platforms": {}}
-            db_file = paths.db_file
-            if db_file.exists():
-                conn = None
-                try:
-                    conn = sqlite3.connect(db_file.as_uri() + "?mode=ro", uri=True, timeout=2)
-                    conn.row_factory = sqlite3.Row
-                    tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
-                    if "contents" in tables:
-                        row["contents_all"] = int(conn.execute("SELECT COUNT(*) FROM contents").fetchone()[0])
-                        cols = {r["name"] for r in conn.execute("PRAGMA table_info(contents)").fetchall()}
-                        if "created_at" in cols:
-                            row["contents_period"] = int(conn.execute("SELECT COUNT(*) FROM contents WHERE datetime(created_at) >= datetime(?)", (since,)).fetchone()[0])
-                            for item in conn.execute("SELECT platform, COUNT(*) AS n FROM contents WHERE datetime(created_at) >= datetime(?) GROUP BY platform", (since,)).fetchall():
-                                platform = item["platform"]
-                                row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0})["contents_period"] = int(item["n"])
-                        for item in conn.execute("SELECT platform, COUNT(*) AS n FROM contents GROUP BY platform").fetchall():
-                            platform = item["platform"]
-                            row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0})["contents"] = int(item["n"])
-                            if platform in platform_totals: platform_totals[platform]["contents"] += int(item["n"])
-                    if "drafts" in tables:
-                        row["drafts_all"] = int(conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0])
-                        for item in conn.execute("SELECT status, COUNT(*) AS n FROM drafts GROUP BY status").fetchall():
-                            status, count = str(item["status"]), int(item["n"])
-                            if status in ("draft_pending", "pending", "pending_review"): row["drafts_pending"] += count
-                            elif status == "draft_saved": row["drafts_saved"] += count
-                            elif status in ("user_published", "data_fetching", "published"): row["drafts_published"] += count
-                            elif status in ("failed", "error"): row["drafts_failed"] += count
-                        for item in conn.execute("SELECT platform, COUNT(*) AS n FROM drafts GROUP BY platform").fetchall():
-                            platform = item["platform"]
-                            row["platforms"].setdefault(platform, {"contents": 0, "contents_period": 0, "drafts": 0})["drafts"] = int(item["n"])
-                            if platform in platform_totals: platform_totals[platform]["drafts"] += int(item["n"])
-                    if "media_assets" in tables:
-                        row["media_active"] = int(conn.execute("SELECT COUNT(*) FROM media_assets WHERE status = 'active'").fetchone()[0])
-                    if "media_asset_usages" in tables:
-                        row["media_usage"] = int(conn.execute("SELECT COUNT(*) FROM media_asset_usages").fetchone()[0])
-                    row["db_available"] = True
-                except (sqlite3.Error, OSError) as exc:
-                    logger.warning("global monitor skipped tenant=%s: %s", tenant_id, exc)
-                finally:
-                    if conn is not None: conn.close()
-            totals["tenants"] += 1
-            if row["db_available"]: totals["available_tenants"] += 1
-            for key in ("contents_period", "contents_all", "drafts_all", "drafts_pending", "drafts_saved", "drafts_published", "drafts_failed", "media_active", "media_usage"): totals[key] += row[key]
-            tenant_rows.append(row)
-        return {"days": days, "since": since, "totals": totals, "platform_totals": platform_totals, "tenants": tenant_rows, "account_count_note": "当前数据模型未保存可去重的平台账号身份；此处不将平台数或快照数冒充账号数。"}
-
     # --- 访问保护（口令 / 会话 / 脚本令牌）---
     @app.get("/api/auth/status")
     def auth_status(request: Request):
