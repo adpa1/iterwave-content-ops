@@ -673,3 +673,12 @@ html, body, #root { width: 100%; max-width: 100%; overflow-x: clip; }
 .skill-manifest-preview { margin-top: 5px; font-size: 11px; }
 .skill-manifest-preview summary { color: var(--blue); cursor: pointer; }
 .skill-manifest-preview pre { max-width: 460px; max-height: 220px; overflow: auto; padding: 8px; border-radius: 6px; background: var(--surface-2); font-size: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+
+.global-operations-page .table-wrap { overflow-x: auto; }
+.global-operations-page .table-wrap table { min-width: 1040px; }
+.global-scheduler-cell { display: grid; justify-items: start; gap: 4px; }
+@media (max-width: 760px) {
+  .global-operations-page .grid.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .global-operations-page .grid.two { grid-template-columns: 1fr; }
+}
