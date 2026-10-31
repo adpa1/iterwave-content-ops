@@ -985,11 +985,11 @@ def test_content_plan_create_list_update_and_cancel_are_tenant_scoped(client):
 
     updated = tc.patch(
         f"/api/content-plans/{plan['id']}",
-        json={"version": 1, "scheduled_date": "2026-11-03", "status": "generating"},
+        json={"version": 1, "scheduled_date": "2026-11-03", "topic": "补充主题说明"},
     )
     assert updated.status_code == 200
     assert updated.json()["version"] == 2
-    assert updated.json()["status"] == "generating"
+    assert updated.json()["status"] == "planned"
 
     stale = tc.patch(
         f"/api/content-plans/{plan['id']}",
