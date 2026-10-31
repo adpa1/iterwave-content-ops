@@ -273,10 +273,13 @@ class GlobalTaskWorker:
         except Exception as exc:  # noqa: BLE001 — 单任务失败不得终止消费者
             from src.core.redact import redact
             error_code = redact(str(getattr(exc, "code", "round_execution_failed")))[:80]
-            if getattr(exc, "code", None) or getattr(exc, "safe_for_user", False):
-                safe_message = redact(str(exc))[:500]
-            else:
-                safe_message = "本轮执行失败，请检查运行记录"
+            # 历史列表需要可诊断的失败原因；先统一脱敏，再隐藏本机绝对路径。
+            # 不把原始 traceback、请求头或平台响应对象写入用户可见字段。
+            import re
+            detail = redact(str(exc)).strip()
+            detail = re.sub(r"(?<!:)\\/(?:[^\\s:'\"<>]+\\/)*[^\\s:'\"<>]+", "[路径已隐藏]", detail)
+            safe_message = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+            safe_message = safe_message[:500]
             logger.error(
                 "全局队列任务执行失败 task_id=%s tenant_id=%s error=%s",
                 task.task_id, task.tenant_id, safe_message,
