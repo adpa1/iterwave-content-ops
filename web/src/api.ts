@@ -542,6 +542,8 @@ export interface GlobalMonitorTenant {
   tenant_name: string;
   created_at: string | null;
   db_available: boolean;
+  /** uninitialized: DB file has not been created; unavailable: file exists but cannot be opened. */
+  db_status?: "uninitialized" | "available" | "unavailable";
   contents_period: number;
   contents_all: number;
   drafts_all: number;
