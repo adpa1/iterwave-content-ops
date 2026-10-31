@@ -1304,7 +1304,8 @@ export const api = {
     if (params.scope) query.set("scope", params.scope);
     if (params.page != null) query.set("page", String(params.page));
     if (params.pageSize != null) query.set("page_size", String(params.pageSize));
-    const suffix = query.size ? `?${query.toString()}` : "";
+    const encoded = query.toString();
+    const suffix = encoded ? `?${encoded}` : "";
     return fetchJson<GlobalTaskQueueResponse>(`/api/task-queue${suffix}`);
   },
   cancelTask: (taskId: string) =>
