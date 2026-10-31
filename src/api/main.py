@@ -5482,7 +5482,11 @@ def _register_routes(app: FastAPI) -> None:
         ).fetchone()
         if link is None or not link["task_id"]:
             return plan_row
-        task = _task_queue.get(link["task_id"])
+        try:
+            task = _task_queue.get(link["task_id"])
+        except Exception:
+            logger.warning("内容计划队列状态暂不可读，保留当前状态 plan=%s", plan_row["id"], exc_info=True)
+            return plan_row
         terminal = {
             "succeeded": "generated",
             "failed": "failed",
