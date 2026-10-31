@@ -328,6 +328,23 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [noticesOpen]);
 
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAccountMenuOpen(false);
+    };
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && !target.closest(".account-menu-wrap")) setAccountMenuOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("pointerdown", closeOutside);
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("pointerdown", closeOutside);
+    };
+  }, [accountMenuOpen]);
+
   const go = (page: string, tab?: string, focus?: { roundId?: number; contentId?: string }) => {
     setNoticesOpen(false);
     setAccountMenuOpen(false);
