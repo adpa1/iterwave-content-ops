@@ -5261,6 +5261,156 @@ def _register_routes(app: FastAPI) -> None:
         }
 
 
+    # --- 内容计划（tenant-scoped；计划本身永不触发发布）---
+    @app.get("/api/content-plans")
+    def list_content_plans(
+        start_date: Optional[str] = Query(None, description="YYYY-MM-DD 起始日期"),
+        end_date: Optional[str] = Query(None, description="YYYY-MM-DD 结束日期"),
+        status: Optional[str] = Query(None),
+    ):
+        conn = _g()["conn"]
+        clauses: list[str] = []
+        params: list = []
+        if start_date:
+            clauses.append("scheduled_date >= ?"); params.append(start_date)
+        if end_date:
+            clauses.append("scheduled_date <= ?"); params.append(end_date)
+        if status:
+            allowed = {"planned", "generating", "generated", "reviewed", "archived", "cancelled"}
+            if status not in allowed:
+                raise HTTPException(400, "无效的计划状态")
+            clauses.append("status = ?"); params.append(status)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = conn.execute(
+            "SELECT * FROM content_plans" + where + " ORDER BY scheduled_date ASC, created_at ASC",
+            params,
+        ).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["platforms"] = json.loads(item.pop("platforms_json") or "[]")
+            except (TypeError, ValueError):
+                item["platforms"] = []
+            items.append(item)
+        return {"items": items, "total": len(items)}
+
+    @app.post("/api/content-plans")
+    def create_content_plan(req: dict):
+        body = req or {}
+        title = str(body.get("title") or "").strip()
+        topic = str(body.get("topic") or "").strip()
+        notes = str(body.get("notes") or "").strip()
+        scheduled_date = str(body.get("scheduled_date") or "").strip()
+        platforms = body.get("platforms") or []
+        planned_count = body.get("planned_count", 1)
+        if not title or len(title) > 160:
+            raise HTTPException(422, "计划标题必填，且不能超过 160 个字符")
+        if len(topic) > 500 or len(notes) > 4000:
+            raise HTTPException(422, "选题或备注内容过长")
+        try:
+            datetime.strptime(scheduled_date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(422, "计划日期必须为 YYYY-MM-DD") from exc
+        if not isinstance(platforms, list) or len(platforms) > 8:
+            raise HTTPException(422, "平台必须为数组，最多选择 8 个")
+        allowed_platforms = set(_g()["cfg"].platforms.model_dump().keys())
+        normalized_platforms = sorted({str(p) for p in platforms})
+        if any(p not in allowed_platforms for p in normalized_platforms):
+            raise HTTPException(422, "包含未配置的平台")
+        try:
+            planned_count = int(planned_count)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, "计划产出数量必须是整数") from exc
+        if not 1 <= planned_count <= 100:
+            raise HTTPException(422, "计划产出数量必须在 1 到 100 之间")
+        now = _now().isoformat(timespec="seconds")
+        plan_id = uuid.uuid4().hex
+        conn = _g()["conn"]
+        conn.execute(
+            "INSERT INTO content_plans(id,title,topic,platforms_json,planned_count,scheduled_date,status,notes,version,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,'planned',?,1,?,?)",
+            (plan_id, title, topic, json.dumps(normalized_platforms, ensure_ascii=False), planned_count,
+             scheduled_date, notes, now, now),
+        )
+        conn.commit()
+        return {"id": plan_id, "title": title, "topic": topic, "platforms": normalized_platforms,
+                "planned_count": planned_count, "scheduled_date": scheduled_date, "status": "planned",
+                "notes": notes, "version": 1, "created_at": now, "updated_at": now}
+
+    @app.patch("/api/content-plans/{plan_id}")
+    def update_content_plan(plan_id: str, req: dict):
+        body = req or {}
+        try:
+            expected_version = int(body.get("version"))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, "更新计划必须提供当前 version") from exc
+        conn = _g()["conn"]
+        existing = conn.execute("SELECT * FROM content_plans WHERE id = ?", (plan_id,)).fetchone()
+        if existing is None:
+            raise HTTPException(404, "计划不存在")
+        if int(existing["version"]) != expected_version:
+            raise HTTPException(409, "计划已被其他窗口修改，请刷新后重试")
+        allowed_fields = {"title", "topic", "platforms", "planned_count", "scheduled_date", "status", "notes"}
+        unknown = set(body) - allowed_fields - {"version"}
+        if unknown:
+            raise HTTPException(422, "包含不支持的字段")
+        values = dict(existing)
+        for key in allowed_fields.intersection(body):
+            values[key] = body[key]
+        title = str(values["title"] or "").strip()
+        if not title or len(title) > 160:
+            raise HTTPException(422, "计划标题必填，且不能超过 160 个字符")
+        try:
+            datetime.strptime(str(values["scheduled_date"]), "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(422, "计划日期必须为 YYYY-MM-DD") from exc
+        status_values = {"planned", "generating", "generated", "reviewed", "archived", "cancelled"}
+        if values["status"] not in status_values:
+            raise HTTPException(422, "无效的计划状态")
+        platforms = values["platforms"] if "platforms" in values else json.loads(values["platforms_json"] or "[]")
+        if not isinstance(platforms, list) or len(platforms) > 8:
+            raise HTTPException(422, "平台必须为数组，最多选择 8 个")
+        allowed_platforms = set(_g()["cfg"].platforms.model_dump().keys())
+        platforms = sorted({str(p) for p in platforms})
+        if any(p not in allowed_platforms for p in platforms):
+            raise HTTPException(422, "包含未配置的平台")
+        planned_count = int(values["planned_count"])
+        if not 1 <= planned_count <= 100:
+            raise HTTPException(422, "计划产出数量必须在 1 到 100 之间")
+        now = _now().isoformat(timespec="seconds")
+        cursor = conn.execute(
+            "UPDATE content_plans SET title=?,topic=?,platforms_json=?,planned_count=?,scheduled_date=?,status=?,notes=?,version=version+1,updated_at=? "
+            "WHERE id=? AND version=?",
+            (title, str(values["topic"] or "")[:500], json.dumps(platforms, ensure_ascii=False), planned_count,
+             str(values["scheduled_date"]), str(values["status"]), str(values["notes"] or "")[:4000],
+             now, plan_id, expected_version),
+        )
+        conn.commit()
+        if cursor.rowcount != 1:
+            raise HTTPException(409, "计划已被其他窗口修改，请刷新后重试")
+        return {"id": plan_id, "title": title, "topic": str(values["topic"] or ""),
+                "platforms": platforms, "planned_count": planned_count,
+                "scheduled_date": str(values["scheduled_date"]), "status": str(values["status"]),
+                "notes": str(values["notes"] or ""), "version": expected_version + 1,
+                "created_at": existing["created_at"], "updated_at": now}
+
+    @app.delete("/api/content-plans/{plan_id}")
+    def cancel_content_plan(plan_id: str, version: int = Query(..., ge=1)):
+        conn = _g()["conn"]
+        cursor = conn.execute(
+            "UPDATE content_plans SET status='cancelled',version=version+1,updated_at=? "
+            "WHERE id=? AND version=? AND status NOT IN ('archived','cancelled')",
+            (_now().isoformat(timespec="seconds"), plan_id, version),
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            row = conn.execute("SELECT status FROM content_plans WHERE id=?", (plan_id,)).fetchone()
+            if row is None:
+                raise HTTPException(404, "计划不存在")
+            raise HTTPException(409, "计划状态已变化，请刷新后重试")
+        return {"id": plan_id, "status": "cancelled"}
+
     # --- 内容日历排期（§24.3）---
     @app.get("/api/schedule")
     def list_schedule(
