@@ -75,6 +75,22 @@ export default function Calendar() {
     finally { setPlanDetailLoading(false); }
   };
 
+  const startPlan = async (plan: ContentPlan) => {
+    try {
+      const result = await withPending(`content-plan:start:${plan.id}`, () => api.startContentPlan(plan.id));
+      showToast(`已加入全局 FIFO 队列：第 ${result.round_id} 轮`, "success");
+      await load();
+    } catch (e: any) { showToast(`启动计划失败：${e?.message ?? e}`, "error"); }
+  };
+
+  const cancelPlan = async (plan: ContentPlan) => {
+    try {
+      await api.cancelContentPlan(plan.id, plan.version);
+      showToast("计划已取消", "success");
+      await load();
+    } catch (e: any) { showToast(`取消失败：${e?.message ?? e}`, "error"); }
+  };
+
   const load = async () => {
     setLoading(true);
     setError(null);
@@ -232,14 +248,14 @@ export default function Calendar() {
                   <div className="calendar-agenda-plan" key={plan.id}>
                     <button className="calendar-plan-label" onClick={() => void openPlanDetails(plan.id)}>计划详情</button>
                     <span className="calendar-agenda-copy"><strong>{plan.title}</strong><small>{plan.planned_count} 篇/平台 · {plan.platforms.length ? plan.platforms.map((p) => platformMeta(p).label).join("、") : "使用启用平台"} · {plan.status}</small></span>
-                    {(plan.status === "planned" || plan.status === "failed") && <button className="btn sm primary" disabled={isPending(`content-plan:start:${plan.id}`)} onClick={async () => {
-                      try {
-                        const result = await withPending(`content-plan:start:${plan.id}`, () => api.startContentPlan(plan.id));
-                        showToast(`已加入全局 FIFO 队列：第 ${result.round_id} 轮`, "success");
-                        await load();
-                      } catch (e: any) { showToast(`启动计划失败：${e?.message ?? e}`, "error"); }
-                    }}>{isPending(`content-plan:start:${plan.id}`) ? "入队中…" : plan.status === "failed" ? "重试入队" : "加入全局队列"}</button>}
-                    {(plan.status === "planned" || plan.status === "failed" || plan.status === "generating") && <button className="btn sm" onClick={async () => { try { await api.cancelContentPlan(plan.id, plan.version); showToast("计划已取消", "success"); await load(); } catch (e: any) { showToast(`取消失败：${e?.message ?? e}`, "error"); } }}>取消</button>}
+                    {(plan.status === "planned" || plan.status === "failed") && (
+                      <button className="btn sm primary" disabled={isPending(`content-plan:start:${plan.id}`)} onClick={() => void startPlan(plan)}>
+                        {isPending(`content-plan:start:${plan.id}`) ? "入队中…" : plan.status === "failed" ? "重试入队" : "加入全局队列"}
+                      </button>
+                    )}
+                    {(plan.status === "planned" || plan.status === "failed" || plan.status === "generating") && (
+                      <button className="btn sm" onClick={() => void cancelPlan(plan)}>取消</button>
+                    )}
                   </div>
                 ))}
                 {loading ? <div className="loading"><div className="spinner" />加载中...</div> : d.events.length === 0 && d.plans.length === 0 ? (
