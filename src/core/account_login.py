@@ -76,10 +76,10 @@ DISPLAY = {"xhs": "小红书", "douyin": "抖音", "kuaishou": "快手", "wechat
 TERMINAL_STATES = ("success", "expired", "error")
 QR_STATES = ("qr_ready", "window_login")
 
-_LOGIN_PROCESSES: dict[str, subprocess.Popen] = {}
+_LOGIN_PROCESSES: dict[object, subprocess.Popen] = {}
 _PROCESS_LOCK = threading.Lock()
 _EXPORT_LOCK = threading.Lock()
-_EXPORTING: set[str] = set()
+_EXPORTING: set[object] = set()
 
 
 def _data_paths(data_dir: Path | str | None = None) -> tuple[Path, Path, Path]:
@@ -229,21 +229,25 @@ def cancel_login(platform: str, data_dir: Path | str | None = None) -> dict:
     return {"ok": True, "platform": platform}
 
 
-def stop_all_logins(timeout_seconds: float = 10.0) -> None:
-    """账号组切换前终止旧账号组的扫码登录子进程，并等待登录态导出线程退出。"""
+def stop_tenant_logins(data_dir: Path | str, timeout_seconds: float = 10.0) -> None:
+    """仅停止指定账号组的扫码进程；其他账号组的进程与导出线程不受影响。"""
+    root = str(Path(data_dir).resolve())
     deadline = time.monotonic() + max(0.1, timeout_seconds)
     with _PROCESS_LOCK:
-        active = [(platform, proc) for platform, proc in _LOGIN_PROCESSES.items()]
-        completed_before_stop = {
-            platform: proc.poll() is not None for platform, proc in active
-        }
-        for _, proc in active:
+        active = [
+            (key, platform, proc)
+            for key, proc in _LOGIN_PROCESSES.items()
+            if isinstance(key, tuple) and key[0] == root
+            for platform in (key[1],)
+        ]
+        completed = {(key, platform): proc.poll() is not None for key, platform, proc in active}
+        for _, platform, proc in active:
             if proc.poll() is None:
                 try:
                     proc.terminate()
                 except OSError:
-                    logger.warning("终止登录子进程失败")
-        for platform, proc in active:
+                    logger.warning("终止账号组 %s 平台 %s 登录子进程失败", root, platform)
+        for key, platform, proc in active:
             try:
                 proc.wait(timeout=max(0.1, min(3.0, deadline - time.monotonic())))
             except subprocess.TimeoutExpired:
@@ -251,28 +255,48 @@ def stop_all_logins(timeout_seconds: float = 10.0) -> None:
                     proc.kill()
                     proc.wait(timeout=2)
                 except (OSError, subprocess.TimeoutExpired):
-                    raise TimeoutError(f"平台 {platform} 的登录子进程未能退出")
-            _LOGIN_PROCESSES.pop(platform, None)
+                    raise TimeoutError(f"账号组 {root} 平台 {platform} 登录子进程未能退出")
+            _LOGIN_PROCESSES.pop(key, None)
 
-    # 已完成登录但尚未导出的状态先触发导出；不能因切换目录而丢失刚完成的登录态。
-    for platform, proc in active:
-        if completed_before_stop.get(platform) and _read_status_file(_files(platform)["status"]).get("state") == "success":
+    for key, platform, proc in active:
+        if completed.get((key, platform)) and _read_status_file(_files(platform, data_dir)["status"]).get("state") == "success":
             _schedule_export(platform, data_dir=data_dir)
 
+    tenant_keys = {key for key, _, _ in active}
     while True:
         with _EXPORT_LOCK:
-            exporting = bool(_EXPORTING)
+            exporting = bool(_EXPORTING.intersection(tenant_keys))
         if not exporting:
             break
         if time.monotonic() >= deadline:
-            raise TimeoutError("登录态导出仍在执行，拒绝切换账号组目录")
+            raise TimeoutError(f"账号组 {root} 登录态导出仍在执行")
         time.sleep(0.05)
 
-    # 登录态导出完成后再清除旧扫码临时文件；已保存的 storage_state / profile 保留。
-    for platform, _ in active:
-        f = _files(platform)
+    for _, platform, _ in active:
+        f = _files(platform, data_dir)
         for key in ("qr", "status", "code"):
             f[key].unlink(missing_ok=True)
+
+
+def stop_all_logins(timeout_seconds: float = 10.0) -> None:
+    """兼容旧调用：只停止默认目录下的登录进程，不跨账号组清理。"""
+    deadline = time.monotonic() + max(0.1, timeout_seconds)
+    with _PROCESS_LOCK:
+        active = [(platform, proc) for key, proc in _LOGIN_PROCESSES.items()
+                  if isinstance(key, str) for platform in (key,)]
+        for _, proc in active:
+            if proc.poll() is None:
+                proc.terminate()
+        for platform, proc in active:
+            try:
+                proc.wait(timeout=max(0.1, min(3.0, deadline - time.monotonic())))
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+            _LOGIN_PROCESSES.pop(platform, None)
+    for platform, proc in active:
+        if proc.poll() is not None and _read_status_file(_files(platform)["status"]).get("state") == "success":
+            _schedule_export(platform)
 
 
 def clear_login(platform: str, data_dir: Path | str | None = None) -> dict:
