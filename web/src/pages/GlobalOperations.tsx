@@ -102,7 +102,14 @@ export default function GlobalOperations() {
                   <td><strong>{tenant.tenant_name}</strong><div className="tiny">{tenant.tenant_id}</div></td>
                   <td><span className={tenant.db_available ? "tag green" : "tag red"}>{tenant.db_available ? "可读取" : "不可用"}</span></td>
                   <td>{tenant.registered_accounts_active ?? tenant.registered_accounts ?? "—"} / {tenant.registered_accounts ?? "—"}</td>
-                  <td>{tenant.runtime?.available ? `${tenant.runtime.logged_in_platforms.length}/${tenant.runtime.enabled_platforms.length} 已登录` : "运行时不可用"}</td>
+                  <td>{tenant.runtime?.available ? (
+                    <div className="global-platform-cell">
+                      <strong>{tenant.runtime.logged_in_platforms.length}/{tenant.runtime.enabled_platforms.length} 已登录</strong>
+                      <span className="tiny">已登录：{tenant.runtime.logged_in_platforms.map((p) => PLATFORMS[p] ?? p).join("、") || "无"}</span>
+                      <span className="tiny">未登录：{tenant.runtime.platforms_without_login.map((p) => PLATFORMS[p] ?? p).join("、") || "无"}</span>
+                      {tenant.runtime.circuit_broken_platforms.length > 0 && <span className="tiny" style={{ color: "var(--red)" }}>熔断：{tenant.runtime.circuit_broken_platforms.map((p) => PLATFORMS[p] ?? p).join("、")}</span>}
+                    </div>
+                  ) : "运行时不可用"}</td>
                   <td>{q.running}</td><td>{q.queued}</td><td>{q.failed}</td>
                   <td>{tenant.runtime?.available ? (
                     <div className="global-scheduler-cell">
