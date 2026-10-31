@@ -682,3 +682,14 @@ html, body, #root { width: 100%; max-width: 100%; overflow-x: clip; }
   .global-operations-page .grid.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .global-operations-page .grid.two { grid-template-columns: 1fr; }
 }
+
+
+.calendar-plan-chip { display: flex; width: 100%; border: 0; cursor: pointer; text-align: left; }
+.calendar-plan-modal { position: fixed; inset: 0; z-index: 180; display: grid; place-items: center; padding: 18px; background: #101c2b88; }
+.calendar-plan-modal > .panel { width: min(760px, 100%); max-height: min(84vh, 760px); overflow: auto; box-shadow: 0 20px 60px #0003; }
+.calendar-plan-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+.calendar-plan-detail-grid > div { display: grid; align-content: start; gap: 8px; min-width: 0; }
+.calendar-plan-detail-row { padding: 8px; border: 1px solid var(--line); border-radius: 7px; font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 680px) {
+  .calendar-plan-detail-grid { grid-template-columns: 1fr; }
+}
