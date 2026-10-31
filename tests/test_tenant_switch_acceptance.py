@@ -144,3 +144,29 @@ def test_tenant_hot_switch_flag_accepts_explicit_truthy_values(monkeypatch, valu
 def test_tenant_hot_switch_flag_rejects_non_truthy_values(monkeypatch, value):
     monkeypatch.setenv("ITERWAVE_ENABLE_TENANT_HOT_SWITCH", value)
     assert api_main._tenant_hot_switch_enabled() is False
+
+
+
+def test_derived_custom_round_snapshot_is_authoritative(cfg, conn, seed):
+    """未保存母计划时，按轮次创建参数运行，不与默认推导母计划（5 条/全平台）误判冲突。"""
+    from src.core.plan_version import PlanVersionManager
+    from src.core.task_snapshot import build_execution_snapshot, validate_execution_snapshot
+
+    round_id = seed.round()
+    pvm = PlanVersionManager(cfg, conn)
+    round_plan = pvm.build_plan(
+        topic_count_per_platform=3,
+        platforms=["xhs"],
+    )
+    round_signature = pvm.record(round_id, round_plan, author="test")
+
+    snapshot = build_execution_snapshot(
+        cfg, conn, round_id=round_id,
+        parameters={"round_id": round_id, "topic_count": 3, "platforms": ["xhs"]},
+    )
+
+    assert snapshot["plan_source"] == "derived"
+    assert snapshot["plan_signature"] == round_signature
+    assert snapshot["round_plan_snapshot"]["topic_count_per_platform"] == 3
+    assert snapshot["round_plan_snapshot"]["enabled_platforms"] == ["xhs"]
+    validate_execution_snapshot(snapshot, cfg, conn)
