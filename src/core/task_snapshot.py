@@ -62,8 +62,6 @@ def build_execution_snapshot(cfg, conn, *, round_id: int, parameters: dict[str, 
         "SELECT plan_signature FROM spiral_rounds WHERE id = ?", (round_id,),
     ).fetchone()
     round_signature = round_row["plan_signature"] if round_row else None
-    if round_signature and round_signature != signature:
-        raise StaleTaskSnapshot("目标轮次已基于旧母计划；请先确认并更新轮次，再重新提交生产任务")
     round_plan = None
     if round_signature:
         row = conn.execute(
@@ -76,11 +74,21 @@ def build_execution_snapshot(cfg, conn, *, round_id: int, parameters: dict[str, 
                 round_plan = json.loads(row["plan_snapshot"])
             except (TypeError, ValueError):
                 round_plan = None
+
+    # 未保存母计划时，轮次签名代表创建该轮时的显式参数（选题数/平台等）。
+    # load_plan(source='derived') 是默认推导值，不是该轮的计划，不能拿它覆盖/否定轮次快照。
+    if source == "derived" and round_signature:
+        effective_signature = round_signature
+    else:
+        if round_signature and round_signature != signature:
+            raise StaleTaskSnapshot("目标轮次已基于旧母计划；请先确认并更新轮次，再重新提交生产任务")
+        effective_signature = signature
+
     return {
         "schema_version": 1,
         "captured_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "config_fingerprint": config_fingerprint(cfg),
-        "plan_signature": signature,
+        "plan_signature": effective_signature,
         "plan_updated_at": updated_at,
         "plan_source": source,
         "round_plan_signature": round_signature,
