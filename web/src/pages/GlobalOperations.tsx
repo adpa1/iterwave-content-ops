@@ -50,11 +50,15 @@ export default function GlobalOperations() {
       const value = map.get(task.tenant_id) ?? { queued: 0, running: 0, failed: 0 };
       if (task.status === "queued") value.queued++;
       if (task.status === "running") value.running++;
-      if (task.status === "failed" || task.status === "interrupted") value.failed++;
+      map.set(task.tenant_id, value);
+    }
+    for (const task of failedTasks) {
+      const value = map.get(task.tenant_id) ?? { queued: 0, running: 0, failed: 0 };
+      value.failed++;
       map.set(task.tenant_id, value);
     }
     return map;
-  }, [tasks]);
+  }, [tasks, failedTasks]);
 
   return (
     <div className="page global-operations-page">
