@@ -3844,7 +3844,7 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/api/task-queue")
     def list_global_task_queue(
         limit: int = Query(500, ge=1, le=500),
-        scope: str = Query("all", pattern="^(all|active|history)$"),
+        scope: str = Query("all", pattern="^(all|active|history|failed)$"),
         page: int = Query(1, ge=1),
         page_size: int = Query(20, ge=1, le=100),
     ):
@@ -3856,8 +3856,8 @@ def _register_routes(app: FastAPI) -> None:
             total = None
         else:
             tasks, total = _task_queue.list_page(
-                page=1 if scope == "active" else page,
-                page_size=500 if scope == "active" else page_size,
+                page=1 if scope in {"active", "failed"} else page,
+                page_size=500 if scope in {"active", "failed"} else page_size,
                 scope=scope,
             )
         items = []
