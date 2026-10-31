@@ -7,7 +7,8 @@ import { platformMeta } from "../platforms";
 export default function Calendar() {
   const { showToast, withPending, isPending } = useApp();
   const today = new Date();
-  const [cursorDate, setCursorDate] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
+  const [cursorDate, setCursorDate] = useState(() => new Date(today));
+  const [viewMode, setViewMode] = useState<"month" | "week" | "day">("month");
   const year = cursorDate.getFullYear();
   const month = cursorDate.getMonth();
 
@@ -20,18 +21,34 @@ export default function Calendar() {
   const [draftTime, setDraftTime] = useState("");
   const [pendingDraft, setPendingDraft] = useState<Record<string, string>>({});
 
-  // 月视图按周日开头补齐前后月份日期，接口查询覆盖完整可见网格。
-  const monthStart = useMemo(() => new Date(year, month, 1), [year, month]);
+  // API 查询范围与当前视图一致：月视图覆盖完整日历网格，周/日视图只请求可见日期。
   const visibleStart = useMemo(() => {
-    const d = new Date(monthStart);
+    if (viewMode === "day") return new Date(year, month, cursorDate.getDate());
+    if (viewMode === "week") {
+      const d = new Date(cursorDate);
+      d.setDate(d.getDate() - d.getDay());
+      d.setHours(0, 0, 0, 0);
+      return d;
+    }
+    const d = new Date(year, month, 1);
     d.setDate(1 - d.getDay());
     return d;
-  }, [monthStart]);
+  }, [viewMode, year, month, cursorDate]);
   const visibleEndExclusive = useMemo(() => {
+    if (viewMode === "day") {
+      const d = new Date(visibleStart);
+      d.setDate(d.getDate() + 1);
+      return d;
+    }
+    if (viewMode === "week") {
+      const d = new Date(visibleStart);
+      d.setDate(d.getDate() + 7);
+      return d;
+    }
     const d = new Date(year, month + 1, 1);
     d.setDate(d.getDate() + (6 - d.getDay()) + 1);
     return d;
-  }, [year, month]);
+  }, [viewMode, visibleStart, year, month]);
   const days = useMemo(() => {
     const result: { date: Date; key: string; events: ScheduleEvent[]; inMonth: boolean }[] = [];
     for (let d = new Date(visibleStart); d < visibleEndExclusive; d.setDate(d.getDate() + 1)) {
@@ -56,7 +73,7 @@ export default function Calendar() {
     }
   };
 
-  useEffect(() => { void load(); }, [year, month]);
+  useEffect(() => { void load(); }, [viewMode, year, month, cursorDate.getDate()]);
 
   const platformColors: Record<string, string> = {
     xhs: "#fe2c55", douyin: "#000", wechat_channels: "#07c160", kuaishou: "#ff6a00",
@@ -102,18 +119,23 @@ export default function Calendar() {
           <h1 className="page-title">内容日历与排期</h1>
           <div className="page-desc">
             以「内容 × 平台 × 发布时间」为最小排期单元。系统永不自动触发发布动作。
-            {events.length > 0 && loading === false && (
-              <span className="tag teal" style={{ marginLeft: 8 }}>
-                本月 {events.length} 条
-              </span>
-            )}
+            {!loading && <span className="tag teal" style={{ marginLeft: 8 }}>
+              当前{viewMode === "month" ? "月" : viewMode === "week" ? "周" : "日"} {events.length} 条
+            </span>}
           </div>
         </div>
-        <div className="head-actions">
-          <button className="btn sm" onClick={() => setCursorDate(new Date(year, month - 1, 1))}>上个月</button>
-          <button className="btn sm" onClick={() => setCursorDate(new Date(today.getFullYear(), today.getMonth(), 1))}>今天</button>
-          <button className="btn sm" onClick={() => setCursorDate(new Date(year, month + 1, 1))}>下个月</button>
-          <input aria-label="选择日历月份" className="field" type="month" value={`${year}-${String(month + 1).padStart(2, "0")}`} onChange={(e) => { if (e.target.value) { const [y, m] = e.target.value.split("-").map(Number); setCursorDate(new Date(y, m - 1, 1)); } }} />
+        <div className="head-actions calendar-toolbar">
+          <div className="segmented-control" role="group" aria-label="日历视图">
+            {(["month", "week", "day"] as const).map((mode) => (
+              <button key={mode} className={`btn sm ${viewMode === mode ? "primary" : ""}`} aria-pressed={viewMode === mode} onClick={() => setViewMode(mode)}>
+                {mode === "month" ? "月" : mode === "week" ? "周" : "日"}
+              </button>
+            ))}
+          </div>
+          <button className="btn sm" onClick={() => setCursorDate((d) => shiftCalendarDate(d, viewMode, -1))}>上一{viewMode === "month" ? "月" : viewMode === "week" ? "周" : "日"}</button>
+          <button className="btn sm" onClick={() => setCursorDate(new Date(today))}>今天</button>
+          <button className="btn sm" onClick={() => setCursorDate((d) => shiftCalendarDate(d, viewMode, 1))}>下一{viewMode === "month" ? "月" : viewMode === "week" ? "周" : "日"}</button>
+          <input aria-label="选择日历日期" className="field" type="date" value={_fmt(cursorDate)} onChange={(e) => { if (e.target.value) { const [y, m, d] = e.target.value.split("-").map(Number); setCursorDate(new Date(y, m - 1, d)); } }} />
           <button className="btn sm" onClick={load} disabled={loading}>↻ 刷新</button>
         </div>
       </div>
@@ -129,74 +151,76 @@ export default function Calendar() {
         <div className="panel-head">
           <div>
             <div className="panel-title">
-              <span className="icon">◷</span>{year} 年 {month + 1} 月 · 月视图
+              <span className="icon">◷</span>{viewMode === "month" ? `${year} 年 ${month + 1} 月` : viewMode === "week" ? `${_fmt(visibleStart)} — ${_fmt(new Date(visibleEndExclusive.getTime() - 86400000))}` : _fmt(cursorDate)} · {viewMode === "month" ? "月视图" : viewMode === "week" ? "周视图" : "日视图"}
             </div>
             <div className="panel-sub">
-              按平台色标显示每篇草稿的计划发布时间；可跨月浏览、选择日期并修改排期。计划不会触发自动发布。
+              月视图查看整月分布，周／日视图聚焦具体排期；点击可编辑草稿时间。排期不会触发自动发布。
             </div>
           </div>
         </div>
-        <div className="calendar-month-grid" style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 8 }}>
-          {["日", "一", "二", "三", "四", "五", "六"].map((d, i) => (
-            <div key={i} style={{ textAlign: "center", fontSize: 12, fontWeight: 600, color: "var(--muted)" }}>{d}</div>
-          ))}
-          {days.map((d, i) => {
-            const isToday = d.date.toDateString() === today.toDateString();
-            return (
-              <div key={i} style={{
-                border: "1px solid var(--line)", borderRadius: 10, padding: 10, minHeight: 120,
-                background: isToday ? "var(--blue-weak)" : "#fff", opacity: d.inMonth ? 1 : 0.48,
-              }}>
-                <div style={{
-                  fontSize: 16, fontWeight: 700,
-                  color: isToday ? "var(--blue)" : "var(--text)",
-                }}>
-                  {d.date.getDate()}
-                </div>
-                {loading && (
-                  <div className="loading" style={{ marginTop: 6, fontSize: 11, color: "var(--muted)" }}>
-                    <div className="spinner" />加载中...
+        {viewMode === "month" ? (
+          <div className="calendar-month-scroll">
+            <div className="calendar-month-grid" style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 8 }}>
+              {["日", "一", "二", "三", "四", "五", "六"].map((d, i) => (
+                <div key={i} style={{ textAlign: "center", fontSize: 12, fontWeight: 600, color: "var(--muted)" }}>{d}</div>
+              ))}
+              {days.map((d) => {
+                const isToday = d.date.toDateString() === today.toDateString();
+                return (
+                  <div key={d.key} style={{
+                    border: "1px solid var(--line)", borderRadius: 10, padding: 10, minHeight: 120,
+                    background: isToday ? "var(--blue-weak)" : "var(--surface)",
+                    opacity: d.inMonth ? 1 : 0.48,
+                  }}>
+                    <button className="calendar-day-number" onClick={() => { setCursorDate(d.date); setViewMode("day"); }} aria-label={`查看 ${d.key}`}>
+                      {d.date.getDate()}
+                    </button>
+                    {loading && <div className="loading" style={{ marginTop: 6, fontSize: 11, color: "var(--muted)" }}><div className="spinner" />加载中...</div>}
+                    {!loading && d.events.length === 0 && <div style={{ marginTop: 6, fontSize: 11, color: "var(--subtle)" }}>空</div>}
+                    {d.events.map((e) => {
+                      const editable = e.status === "draft_pending" || e.status === "draft_saved";
+                      return (
+                        <button type="button" key={e.id} className="calendar-event"
+                          title={editable ? `${e.title} · 点击改排期` : `${e.title} · ${statusLabel[e.status] ?? e.status}（不可改排期）`}
+                          disabled={!editable}
+                          onClick={() => { setSelected({ id: e.id, title: e.title }); setDraftTime(_toLocalInput(e.scheduled || e.saved_at)); }}
+                          style={{ borderLeft: `3px solid ${platformColors[e.platform] || "#666"}`, outline: selected?.id === e.id ? "2px solid var(--blue)" : "none" }}>
+                          <span className="calendar-event-title">{e.title}</span>
+                          <span className="calendar-event-meta">{e.scheduled ? e.scheduled.slice(11, 16) : "未排期"}{statusLabel[e.status] ? ` · ${statusLabel[e.status]}` : ""}</span>
+                        </button>
+                      );
+                    })}
                   </div>
-                )}
-                {!loading && d.events.length === 0 && (
-                  <div style={{ marginTop: 6, fontSize: 11, color: "var(--subtle)" }}>空</div>
-                )}
-                {d.events.map((e, j) => {
-                  // 只有 draft_pending / draft_saved 可改排期；其余状态点了会被后端 409
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <div className="calendar-agenda">
+            {days.map((d) => (
+              <section className="calendar-agenda-day" key={d.key}>
+                <button className="calendar-agenda-date" onClick={() => { setCursorDate(d.date); setViewMode("day"); }}>
+                  <strong>{d.date.toLocaleDateString("zh-CN", { weekday: "long" })}</strong>
+                  <span>{d.key}{d.date.toDateString() === today.toDateString() ? " · 今天" : ""}</span>
+                </button>
+                {loading ? <div className="loading"><div className="spinner" />加载中...</div> : d.events.length === 0 ? (
+                  <div className="calendar-agenda-empty">当天没有排期</div>
+                ) : d.events.map((e) => {
                   const editable = e.status === "draft_pending" || e.status === "draft_saved";
                   return (
-                  <div
-                    key={j}
-                    title={editable
-                      ? `${e.title} · 点击改排期`
-                      : `${e.title} · ${statusLabel[e.status] ?? e.status}（不可改排期）`}
-                    onClick={editable ? () => {
-                      setSelected({ id: e.id, title: e.title });
-                      setDraftTime(_toLocalInput(e.scheduled || e.saved_at));
-                    } : undefined}
-                    style={{
-                      marginTop: 6, padding: "4px 8px", borderRadius: 6, fontSize: 11, color: "var(--text)",
-                      background: "var(--surface-2)",
-                      borderLeft: `3px solid ${platformColors[e.platform] || "#666"}`,
-                      cursor: editable ? "pointer" : "not-allowed",
-                      opacity: editable ? 1 : 0.62,
-                      outline: selected?.id === e.id ? "2px solid var(--blue)" : "none",
-                    }}
-                  >
-                    <div style={{ fontWeight: 600 }}>
-                      {e.title.length > 16 ? e.title.slice(0, 15) + "…" : e.title}
-                    </div>
-                    <div style={{ color: "var(--muted)", marginTop: 2, fontSize: 10 }}>
-                      {e.scheduled ? e.scheduled.slice(11, 16) : "未排期"}
-                      {statusLabel[e.status] ? ` · ${statusLabel[e.status]}` : ""}
-                    </div>
-                  </div>
+                    <button type="button" key={e.id} className="calendar-agenda-event" disabled={!editable}
+                      onClick={() => { setSelected({ id: e.id, title: e.title }); setDraftTime(_toLocalInput(e.scheduled || e.saved_at)); }}>
+                      <span className="calendar-agenda-time">{e.scheduled ? e.scheduled.slice(11, 16) : "—"}</span>
+                      <span className="calendar-agenda-color" style={{ background: platformColors[e.platform] || "#666" }} />
+                      <span className="calendar-agenda-copy"><strong>{e.title}</strong><small>{platformMeta(e.platform).label} · {statusLabel[e.status] ?? e.status}</small></span>
+                      <span className="calendar-agenda-action">{editable ? "编辑排期" : "不可编辑"}</span>
+                    </button>
                   );
                 })}
-              </div>
-            );
-          })}
-        </div>
+              </section>
+            ))}
+          </div>
+        )}
 
         {selected && (
           <div className="panel" style={{ marginTop: 14, borderColor: "var(--blue)" }}>
@@ -295,7 +319,7 @@ export default function Calendar() {
   );
 }
 
-function _fmt(d: Date): string {
+function shiftCalendarDate(date: Date, mode: "month" | "week" | "day", direction: number): Date {\n  const next = new Date(date);\n  if (mode === "month") next.setMonth(next.getMonth() + direction);\n  else next.setDate(next.getDate() + (mode === "week" ? 7 : 1) * direction);\n  return next;\n}\n\nfunction _fmt(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
