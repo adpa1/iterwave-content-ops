@@ -653,3 +653,15 @@ html, body, #root { width: 100%; max-width: 100%; overflow-x: clip; }
   .calendar-agenda-plan { align-items: flex-start; flex-wrap: wrap; }
   .calendar-agenda-plan .btn { margin-left: auto; }
 }
+
+
+/* Tenant Skills manifest registration */
+.skill-register-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: end; margin-bottom: 14px; }
+.skill-register-form > label { display: grid; gap: 5px; min-width: 0; color: var(--muted); font-size: 12px; }
+.skill-register-form .field { width: 100%; min-width: 0; }
+.skill-register-description { grid-column: 1 / -1; }
+.skill-row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 680px) {
+  .skill-register-form { grid-template-columns: 1fr; }
+  .skill-register-description { grid-column: auto; }
+}
