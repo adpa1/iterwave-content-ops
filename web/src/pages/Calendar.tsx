@@ -347,7 +347,7 @@ export default function Calendar() {
         </div>
         <div className="calendar-plan-form">
           <label>计划名称<input className="field" value={planTitle} maxLength={160} onChange={(e) => setPlanTitle(e.target.value)} placeholder="例如：本周产品功能系列" /></label>
-          <label>选题／主题<input className="field" value={planTopic} maxLength={500} onChange={(e) => setPlanTopic(e.target.value)} placeholder="选题方向备注；生产时仍从选题池取题" /></label>
+          <label>选题方向备注（非过滤条件）<input className="field" value={planTopic} maxLength={500} onChange={(e) => setPlanTopic(e.target.value)} placeholder="选题方向备注；生产时仍从选题池取题" /></label>
           <label>计划日期<input className="field" type="date" value={planDate} onChange={(e) => setPlanDate(e.target.value)} /></label>
           <label>每个平台篇数<input className="field" type="number" min="1" max="50" value={planCount} onChange={(e) => setPlanCount(e.target.value)} /></label>
           <label className="calendar-plan-platforms">目标平台
