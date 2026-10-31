@@ -7,8 +7,9 @@ import { platformMeta } from "../platforms";
 export default function Calendar() {
   const { showToast, withPending, isPending } = useApp();
   const today = new Date();
-  const year = today.getFullYear();
-  const month = today.getMonth();
+  const [cursorDate, setCursorDate] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
+  const year = cursorDate.getFullYear();
+  const month = cursorDate.getMonth();
 
   const [events, setEvents] = useState<ScheduleEvent[]>([]);
   const [unscheduled, setUnscheduled] = useState<UnscheduledDraft[]>([]);
@@ -19,26 +20,33 @@ export default function Calendar() {
   const [draftTime, setDraftTime] = useState("");
   const [pendingDraft, setPendingDraft] = useState<Record<string, string>>({});
 
-  // 本周 7 天（以周日为周首）
-  const startOfWeek = useMemo(() => {
-    const d = new Date(today);
-    d.setDate(today.getDate() - today.getDay());
+  // 月视图按周日开头补齐前后月份日期，接口查询覆盖完整可见网格。
+  const monthStart = useMemo(() => new Date(year, month, 1), [year, month]);
+  const visibleStart = useMemo(() => {
+    const d = new Date(monthStart);
+    d.setDate(1 - d.getDay());
     return d;
-  }, [today.toDateString()]);
-  const endOfWeek = useMemo(() => {
-    const d = new Date(startOfWeek);
-    d.setDate(startOfWeek.getDate() + 6);
+  }, [monthStart]);
+  const visibleEndExclusive = useMemo(() => {
+    const d = new Date(year, month + 1, 1);
+    d.setDate(d.getDate() + (6 - d.getDay()) + 1);
     return d;
-  }, [startOfWeek.toDateString()]);
+  }, [year, month]);
+  const days = useMemo(() => {
+    const result: { date: Date; key: string; events: ScheduleEvent[]; inMonth: boolean }[] = [];
+    for (let d = new Date(visibleStart); d < visibleEndExclusive; d.setDate(d.getDate() + 1)) {
+      const date = new Date(d);
+      const key = _fmt(date);
+      result.push({ date, key, events: events.filter((event) => _eventDate(event) === key), inMonth: date.getMonth() === month });
+    }
+    return result;
+  }, [visibleStart, visibleEndExclusive, events, month]);
 
   const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const r = await api.schedule(
-        _fmt(startOfWeek),
-        _fmt(new Date(endOfWeek.getTime() + 86_400_000)), // 包含周日
-      );
+      const r = await api.schedule(_fmt(visibleStart), _fmt(visibleEndExclusive));
       setEvents(r.items);
       setUnscheduled(r.unscheduled ?? []);
     } catch (e) {
@@ -48,7 +56,7 @@ export default function Calendar() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { void load(); }, [year, month]);
 
   const platformColors: Record<string, string> = {
     xhs: "#fe2c55", douyin: "#000", wechat_channels: "#07c160", kuaishou: "#ff6a00",
@@ -59,18 +67,6 @@ export default function Calendar() {
     user_published: "用户确认",
     published: "已发布",
   };
-
-  const days: { date: Date; key: string; events: ScheduleEvent[] }[] = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(startOfWeek);
-    d.setDate(startOfWeek.getDate() + i);
-    const key = _fmt(d);
-    days.push({
-      date: d,
-      key,
-      events: events.filter((e) => _eventDate(e) === key),
-    });
-  }
 
   /** 保存排期：datetime-local 的值是 "YYYY-MM-DDTHH:MM"，后端按本地时间解释（R5） */
   const saveSchedule = async (draftId: string, value: string) => {
@@ -108,12 +104,16 @@ export default function Calendar() {
             以「内容 × 平台 × 发布时间」为最小排期单元。系统永不自动触发发布动作。
             {events.length > 0 && loading === false && (
               <span className="tag teal" style={{ marginLeft: 8 }}>
-                本周 {events.length} 条
+                本月 {events.length} 条
               </span>
             )}
           </div>
         </div>
         <div className="head-actions">
+          <button className="btn sm" onClick={() => setCursorDate(new Date(year, month - 1, 1))}>上个月</button>
+          <button className="btn sm" onClick={() => setCursorDate(new Date(today.getFullYear(), today.getMonth(), 1))}>今天</button>
+          <button className="btn sm" onClick={() => setCursorDate(new Date(year, month + 1, 1))}>下个月</button>
+          <input aria-label="选择日历月份" className="field" type="month" value={`${year}-${String(month + 1).padStart(2, "0")}`} onChange={(e) => { if (e.target.value) { const [y, m] = e.target.value.split("-").map(Number); setCursorDate(new Date(y, m - 1, 1)); } }} />
           <button className="btn sm" onClick={load} disabled={loading}>↻ 刷新</button>
         </div>
       </div>
@@ -129,14 +129,14 @@ export default function Calendar() {
         <div className="panel-head">
           <div>
             <div className="panel-title">
-              <span className="icon">◷</span>{year} 年 {month + 1} 月 · 本周排期
+              <span className="icon">◷</span>{year} 年 {month + 1} 月 · 月视图
             </div>
             <div className="panel-sub">
-              按平台色标显示每篇草稿的计划发布时间；点击可修改排期。
+              按平台色标显示每篇草稿的计划发布时间；可跨月浏览、选择日期并修改排期。计划不会触发自动发布。
             </div>
           </div>
         </div>
-        <div className="grid" style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 10 }}>
+        <div className="calendar-month-grid" style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 8 }}>
           {["日", "一", "二", "三", "四", "五", "六"].map((d, i) => (
             <div key={i} style={{ textAlign: "center", fontSize: 12, fontWeight: 600, color: "var(--muted)" }}>{d}</div>
           ))}
@@ -145,7 +145,7 @@ export default function Calendar() {
             return (
               <div key={i} style={{
                 border: "1px solid var(--line)", borderRadius: 10, padding: 10, minHeight: 120,
-                background: isToday ? "var(--blue-weak)" : "#fff",
+                background: isToday ? "var(--blue-weak)" : "#fff", opacity: d.inMonth ? 1 : 0.48,
               }}>
                 <div style={{
                   fontSize: 16, fontWeight: 700,
