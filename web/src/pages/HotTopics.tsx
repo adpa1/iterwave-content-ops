@@ -136,11 +136,20 @@ export default function HotTopics() {
         if (refreshing && !data.refresh_job?.running) {
           setRefreshing(false);
           if (data.refresh_job?.error) showToast(`采集失败: ${data.refresh_job.error}`, "error");
+          else if (data.refresh_job?.progress?.stage === "matching_partial") {
+            showToast(data.refresh_job.progress.message || "采集完成，但仍有热点待研判或研判失败", "info");
+          }
         }
         if (researching && !data.research_job?.running) {
           setResearching(false);
           if (data.research_job?.error) showToast(`研判失败: ${data.research_job.error}`, "error");
-          else showToast("✓ 研判完成", "success");
+          else {
+            const report = data.research_job?.report || {};
+            const failed = Number(report.failed_batches || 0);
+            const unjudged = Number(report.unjudged || 0);
+            if (failed || unjudged) showToast(`研判未全部完成：${unjudged} 条待研判，${failed} 个批次失败，可稍后重试`, "info");
+            else showToast("✓ 研判完成", "success");
+          }
         }
       } catch { /* 下次轮询重试 */ }
     }, 2000);
