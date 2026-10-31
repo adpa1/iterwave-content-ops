@@ -114,8 +114,10 @@ def _build_task_execution_snapshot(tenant_id: str, round_id: int, parameters: di
     from src.core.task_snapshot import build_execution_snapshot
 
     context = _tenant_runtime_contexts.get(tenant_id)
-    if context is None and _g_ctx.get("runtime_tenant_id") == tenant_id:
-        context = _g_ctx
+    if context is None:
+        current = _g()
+        if current.get("runtime_tenant_id", "default") == tenant_id and "cfg" in current and "conn" in current:
+            context = current
     if context is None:
         raise RuntimeError(f"账号组 {tenant_id} 运行时尚未就绪，无法创建任务快照")
     return build_execution_snapshot(
