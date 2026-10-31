@@ -92,8 +92,9 @@ def validate_execution_snapshot(snapshot: dict[str, Any], cfg, conn) -> None:
     expected_config = str(snapshot.get("config_fingerprint") or "")
     if not expected_config or config_fingerprint(cfg) != expected_config:
         raise StaleTaskSnapshot("任务入队后账号组配置已变化；为避免使用新配置误执行，任务已停止，请确认配置后重新提交")
-    from .plan_version import PlanVersionManager
-    _, current_signature, _, _ = PlanVersionManager(cfg, conn).load_plan()
     expected_plan = str(snapshot.get("plan_signature") or "")
-    if expected_plan and current_signature != expected_plan:
-        raise StaleTaskSnapshot("任务入队后母计划已变化；为避免按错误计划生产，任务已停止，请确认计划后重新提交")
+    if expected_plan:
+        from .plan_version import PlanVersionManager
+        _, current_signature, _, _ = PlanVersionManager(cfg, conn).load_plan()
+        if current_signature != expected_plan:
+            raise StaleTaskSnapshot("任务入队后母计划已变化；为避免按错误计划生产，任务已停止，请确认计划后重新提交")
