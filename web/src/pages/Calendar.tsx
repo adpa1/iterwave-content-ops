@@ -13,7 +13,9 @@ export default function Calendar() {
   const month = cursorDate.getMonth();
 
   const [events, setEvents] = useState<ScheduleEvent[]>([]);
-  const [plans, setPlans] = useState<ContentPlan[]>([]);\n  const [planDetail, setPlanDetail] = useState<(ContentPlan & { drafts: Array<{ draft_id: string; platform: Platform; status: string; title: string; round_id: number | null }>; rounds: Array<{ round_id: number; task_id: string | null; created_at: string }> }) | null>(null);\n  const [planDetailLoading, setPlanDetailLoading] = useState(false);
+  const [plans, setPlans] = useState<ContentPlan[]>([]);
+  const [planDetail, setPlanDetail] = useState<(ContentPlan & { drafts: Array<{ draft_id: string; platform: Platform; status: string; title: string; round_id: number | null }>; rounds: Array<{ round_id: number; task_id: string | null; created_at: string }> }) | null>(null);
+  const [planDetailLoading, setPlanDetailLoading] = useState(false);
   const [planTitle, setPlanTitle] = useState("");
   const [planTopic, setPlanTopic] = useState("");
   const [planDate, setPlanDate] = useState(_fmt(today));
