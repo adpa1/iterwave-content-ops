@@ -514,7 +514,7 @@ class GlobalTaskQueue:
     ) -> tuple[list[QueuedTask], int]:
         """Return a stable, database-paginated slice of active or historical tasks."""
         page = max(1, int(page))
-        page_size = max(1, min(int(page_size), 100))
+        page_size = max(1, min(int(page_size), 500))
         if scope not in {"active", "history"}:
             raise ValueError("scope must be active or history")
         statuses = ("queued", "running") if scope == "active" else (
@@ -534,7 +534,7 @@ class GlobalTaskQueue:
             ).fetchone()
             rows = conn.execute(
                 f"SELECT * FROM global_task_queue WHERE {where} "
-                "ORDER BY queue_order DESC LIMIT ? OFFSET ?",
+                f"ORDER BY queue_order {'ASC' if scope == 'active' else 'DESC'} LIMIT ? OFFSET ?",
                 (*params, page_size, offset),
             ).fetchall()
             tasks: list[QueuedTask] = []
