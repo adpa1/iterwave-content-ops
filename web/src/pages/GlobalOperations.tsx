@@ -14,6 +14,7 @@ export default function GlobalOperations() {
   const [monitor, setMonitor] = useState<GlobalMonitorResponse | null>(null);
   const [tasks, setTasks] = useState<GlobalTaskQueueItem[]>([]);
   const [failedCount, setFailedCount] = useState<number | null>(null);
+  const [failedTasks, setFailedTasks] = useState<GlobalTaskQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
@@ -26,7 +27,7 @@ export default function GlobalOperations() {
     ]);
     if (results[0].status === "fulfilled") setMonitor(results[0].value);
     if (results[1].status === "fulfilled") setTasks(results[1].value.items ?? []);
-    if (results[2].status === "fulfilled") setFailedCount(results[2].value.total ?? 0);
+    if (results[2].status === "fulfilled") { setFailedCount(results[2].value.total ?? 0); setFailedTasks(results[2].value.items ?? []); }
     const failures = results.flatMap((r, i) => r.status === "rejected"
       ? [`${["账号组汇总", "活跃任务", "失败任务统计"][i]}：${r.reason instanceof Error ? r.reason.message : String(r.reason)}`]
       : []);
@@ -42,7 +43,7 @@ export default function GlobalOperations() {
   }, [refresh]);
 
   const active = useMemo(() => tasks.filter((t) => t.status === "queued" || t.status === "running"), [tasks]);
-  const failed = useMemo(() => tasks.filter((t) => t.status === "failed" || t.status === "interrupted"), [tasks]);
+  const failed = failedTasks;
   const byTenant = useMemo(() => {
     const map = new Map<string, { queued: number; running: number; failed: number }>();
     for (const task of tasks) {
