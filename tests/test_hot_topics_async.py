@@ -292,3 +292,42 @@ def test_hot_topic_background_state_recovers_when_database_open_fails(cfg, monke
     assert research["running"] is False
     assert "simulated tenant database unavailable" in research["error"]
     hot_topic_service.reset_for_tests()
+
+def test_manual_research_reports_failed_batch_items_as_remaining_pending(cfg, conn, monkeypatch):
+    """手动研判的 remaining_pending 必须包含整批失败的真实条目数。"""
+    for index in range(4):
+        _insert(
+            conn, f"research-{index}", f"个人成长方法 {index}",
+            source=f"research-source-{index}",
+        )
+
+    def failed_llm(system, user):
+        raise RuntimeError("simulated batch timeout")
+
+    monkeypatch.setattr(
+        "src.core.hot_topic_matcher.default_llm_fn",
+        lambda config: failed_llm,
+    )
+    hot_topic_service.reset_for_tests()
+    failed = hot_topic_service.run_research(cfg, conn, tenant_id="default")
+    assert failed["report"]["failed_batches"] == 1
+    assert failed["report"]["remaining_pending"] == 4
+
+    def successful_llm(system, user):
+        import re
+        ids = re.findall(r'"id":"([^"]+)"', user)
+        return json.dumps({"items": [
+            {"id": item_id, "score": 85, "dimension": "", "angle": "成长方法",
+             "reason": "与账号定位相关", "forbidden": False}
+            for item_id in ids
+        ]}), {}
+
+    monkeypatch.setattr(
+        "src.core.hot_topic_matcher.default_llm_fn",
+        lambda config: successful_llm,
+    )
+    recovered = hot_topic_service.run_research(cfg, conn, tenant_id="default")
+    assert recovered["report"]["failed_batches"] == 0
+    assert recovered["report"]["remaining_pending"] == 0
+    hot_topic_service.reset_for_tests()
+
