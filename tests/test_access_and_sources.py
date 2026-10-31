@@ -191,8 +191,9 @@ def test_login_rate_limit():
     for _ in range(auth.LOGIN_MAX_FAILURES):
         with pytest.raises(ValueError):
             auth.login("wrong", "1.2.3.4")
-    with pytest.raises(PermissionError):
-        auth.login("Secret123!", "1.2.3.4")
+    # 正确口令优先于失败计数；同一出口 IP 的错误尝试不能锁住合法用户。
+    assert auth.login("Secret123!", "1.2.3.4")
+    assert auth.is_rate_limited("1.2.3.4") is False
     # 其它 IP 不受影响
     assert auth.login("Secret123!", "5.6.7.8")
 
