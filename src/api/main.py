@@ -222,6 +222,13 @@ def _dedupe_once(key: str, produce: Callable[[], dict]) -> tuple[dict, bool]:
 
 
 
+def _reset_tenant_business_defaults(cfg, tenant_id: str) -> None:
+    """在启动和 Worker 重建上下文时执行相同的租户业务默认值隔离。"""
+    if tenant_id != "default":
+        from src.core.tenant_business_config import reset_new_tenant_business_defaults
+        reset_new_tenant_business_defaults(cfg)
+
+
 def _build_tenant_runtime_context(
     tenant_registry: TenantRegistry, tenant_id: str, *,
     run_startup_maintenance: bool = False,
@@ -230,11 +237,8 @@ def _build_tenant_runtime_context(
     cfg = load_config()
     base_llm_config = cfg.llm.model_dump()
     tenant = tenant_registry.get(tenant_id)
-    if tenant_id != "default":
-        # 部署级 config.yaml 只提供基础默认值，不能把默认账号组的行业画像带进新账号组。
-        # 后续会从该账号组自己的 tenant_settings / legacy override 恢复其显式配置。
-        from src.core.tenant_business_config import reset_new_tenant_business_defaults
-        reset_new_tenant_business_defaults(cfg)
+    # 部署级 config.yaml 只提供基础默认值；租户显式配置随后从自己的 SQLite 恢复。
+    _reset_tenant_business_defaults(cfg, tenant_id)
     tenant_paths = None
     if tenant_id != "default":
         tenant_paths = tenant_registry.paths(
@@ -567,6 +571,9 @@ def _build_app() -> FastAPI:
         _task_queue.recover_expired()
         active_tenant_id = tenant_registry.active_id()
         active_tenant = tenant_registry.get(active_tenant_id)
+        # 必须与 Worker 的 _build_tenant_runtime_context 使用完全相同的默认值重置，
+        # 否则入队快照与重启后 Worker 重建的配置指纹会永久不一致。
+        _reset_tenant_business_defaults(cfg, active_tenant_id)
         base_llm_config = cfg.llm.model_dump()
         if active_tenant_id != "default":
             tenant_paths = tenant_registry.paths(
