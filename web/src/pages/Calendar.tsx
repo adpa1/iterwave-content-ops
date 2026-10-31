@@ -200,7 +200,7 @@ export default function Calendar() {
                     {d.plans.map((plan) => (
                       <button type="button" key={plan.id} className="calendar-plan-chip" title={`${plan.title} · ${plan.planned_count} 篇/平台`} onClick={() => void openPlanDetails(plan.id)}>
                         <strong>计划</strong><span>{plan.title}</span>
-                      </div>
+                      </button>
                     ))}
                     {d.events.map((e) => {
                       const editable = e.status === "draft_pending" || e.status === "draft_saved";
@@ -239,7 +239,7 @@ export default function Calendar() {
                         await load();
                       } catch (e: any) { showToast(`启动计划失败：${e?.message ?? e}`, "error"); }
                     }}>{isPending(`content-plan:start:${plan.id}`) ? "入队中…" : plan.status === "failed" ? "重试入队" : "加入全局队列"}</button>}
-                    {(plan.status === "planned" || plan.status === "failed" || plan.status === "generating") && <button className="btn sm" onClick={async () => { try { await api.cancelContentPlan(plan.id, plan.version); showToast("计划已取消", "success"); await load(); } catch (e: any) { showToast(`取消失败：${e?.message ?? e}`, "error"); } }}>取消</button>
+                    {(plan.status === "planned" || plan.status === "failed" || plan.status === "generating") && <button className="btn sm" onClick={async () => { try { await api.cancelContentPlan(plan.id, plan.version); showToast("计划已取消", "success"); await load(); } catch (e: any) { showToast(`取消失败：${e?.message ?? e}`, "error"); } }}>取消</button>}
                   </div>
                 ))}
                 {loading ? <div className="loading"><div className="spinner" />加载中...</div> : d.events.length === 0 && d.plans.length === 0 ? (
@@ -326,7 +326,7 @@ export default function Calendar() {
 
       <section className="panel calendar-plan-create">
         <div className="panel-head">
-          <div><div className="panel-title">内容计划</div><div className="panel-sub">计划独立于草稿保存，可先安排主题和产出数量；创建计划不会生成内容或发布。</div></div>
+          <div><div className="panel-title">内容计划</div><div className="panel-sub">计划独立于草稿保存；创建不触发生产，点击「加入全局队列」才开始生成，发布仍需人工确认。</div></div>
         </div>
         <div className="calendar-plan-form">
           <label>计划名称<input className="field" value={planTitle} maxLength={160} onChange={(e) => setPlanTitle(e.target.value)} placeholder="例如：本周产品功能系列" /></label>
