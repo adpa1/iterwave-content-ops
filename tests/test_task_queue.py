@@ -302,3 +302,42 @@ def test_queue_rejects_unsupported_retry_count(tmp_path):
         queue.enqueue(
             task_type="round_run", tenant_id="tenant-a", payload={}, max_attempts=2,
         )
+
+def test_queue_history_pagination_is_complete_and_disjoint(tmp_path):
+    queue = make_queue(tmp_path)
+    task_ids = []
+    for index in range(47):
+        task, _ = queue.enqueue(
+            task_type="round_run", tenant_id=f"tenant-{index % 3}",
+            aggregate_id=f"history-{index}", payload={"round_id": index},
+        )
+        task_ids.append(task.task_id)
+    conn = queue._connect()
+    try:
+        conn.executemany(
+            "UPDATE global_task_queue SET status='succeeded' WHERE task_id=?",
+            [(task_id,) for task_id in task_ids],
+        )
+    finally:
+        conn.close()
+
+    first, total = queue.list_page(scope="history", page=1, page_size=20)
+    second, second_total = queue.list_page(scope="history", page=2, page_size=20)
+    third, third_total = queue.list_page(scope="history", page=3, page_size=20)
+    assert total == second_total == third_total == 47
+    assert [len(first), len(second), len(third)] == [20, 20, 7]
+    collected = [task.task_id for task in first + second + third]
+    assert len(collected) == len(set(collected)) == 47
+    assert set(collected) == set(task_ids)
+
+
+def test_queue_active_page_keeps_fifo_order(tmp_path):
+    queue = make_queue(tmp_path)
+    tasks = [
+        queue.enqueue(task_type="round_run", tenant_id="a", payload={"n": i})[0]
+        for i in range(4)
+    ]
+    page, total = queue.list_page(scope="active", page=1, page_size=10)
+    assert total == 4
+    assert [task.task_id for task in page] == [task.task_id for task in tasks]
+\n
