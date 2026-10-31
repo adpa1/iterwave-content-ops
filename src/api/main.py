@@ -3842,12 +3842,26 @@ def _register_routes(app: FastAPI) -> None:
 
     # --- 全局任务队列（跨账号组，仅供唯一运营者查看）---
     @app.get("/api/task-queue")
-    def list_global_task_queue(limit: int = Query(500, ge=1, le=500)):
+    def list_global_task_queue(
+        limit: int = Query(500, ge=1, le=500),
+        scope: str = Query("all", pattern="^(all|active|history)$"),
+        page: int = Query(1, ge=1),
+        page_size: int = Query(20, ge=1, le=100),
+    ):
         if _task_queue is None:
             raise HTTPException(503, "全局任务队列尚未初始化")
         registry = _g().get("tenant_registry")
+        if scope == "all":
+            tasks = _task_queue.list(limit=limit)
+            total = None
+        else:
+            tasks, total = _task_queue.list_page(
+                page=1 if scope == "active" else page,
+                page_size=500 if scope == "active" else page_size,
+                scope=scope,
+            )
         items = []
-        for task in _task_queue.list(limit=limit):
+        for task in tasks:
             try:
                 tenant_name = registry.get(task.tenant_id)["name"] if registry else task.tenant_id
             except TenantError:
@@ -3862,7 +3876,14 @@ def _register_routes(app: FastAPI) -> None:
                 "finished_at": task.finished_at, "attempts": task.attempts,
                 "error_code": task.error_code, "error_message": task.error_message,
             })
-        return {"items": items}
+        response = {"items": items}
+        if scope != "all":
+            response.update({
+                "total": total, "page": 1 if scope == "active" else page,
+                "page_size": 500 if scope == "active" else page_size,
+                "pages": 1 if scope == "active" else max(1, (total + page_size - 1) // page_size),
+            })
+        return response
 
     @app.get("/api/task-queue/{task_id}")
     def get_global_task(task_id: str):
