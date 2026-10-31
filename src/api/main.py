@@ -5447,31 +5447,39 @@ def _register_routes(app: FastAPI) -> None:
         if len(normalized_ids) != len(draft_ids):
             raise HTTPException(422, "draft_ids 不能包含空值")
         conn = _g()["conn"]
-        plan = conn.execute("SELECT status FROM content_plans WHERE id=?", (plan_id,)).fetchone()
-        if plan is None:
-            raise HTTPException(404, "计划不存在")
-        if plan["status"] not in ("planned", "generating", "generated"):
-            raise HTTPException(409, "当前计划状态不允许关联草稿")
         linked_now = []
         now = _now().isoformat(timespec="seconds")
-        for draft_id in normalized_ids:
-            draft = conn.execute(
-                "SELECT d.id,c.round_id FROM drafts d JOIN contents c ON c.id=d.content_id WHERE d.id=?",
-                (draft_id,),
-            ).fetchone()
-            if draft is None:
-                raise HTTPException(404, f"草稿不存在：{draft_id}")
-            cursor = conn.execute(
-                "INSERT OR IGNORE INTO content_plan_drafts(plan_id,draft_id,round_id,created_at) VALUES(?,?,?,?)",
-                (plan_id, draft_id, draft["round_id"], now),
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            plan = conn.execute("SELECT status FROM content_plans WHERE id=?", (plan_id,)).fetchone()
+            if plan is None:
+                raise HTTPException(404, "计划不存在")
+            if plan["status"] not in ("planned", "generating", "generated"):
+                raise HTTPException(409, "当前计划状态不允许关联草稿")
+            drafts = {}
+            for draft_id in normalized_ids:
+                draft = conn.execute(
+                    "SELECT d.id,c.round_id FROM drafts d JOIN contents c ON c.id=d.content_id WHERE d.id=?",
+                    (draft_id,),
+                ).fetchone()
+                if draft is None:
+                    raise HTTPException(404, f"草稿不存在：{draft_id}")
+                drafts[draft_id] = draft
+            for draft_id, draft in drafts.items():
+                cursor = conn.execute(
+                    "INSERT OR IGNORE INTO content_plan_drafts(plan_id,draft_id,round_id,created_at) VALUES(?,?,?,?)",
+                    (plan_id, draft_id, draft["round_id"], now),
+                )
+                if cursor.rowcount:
+                    linked_now.append(draft_id)
+            conn.execute(
+                "UPDATE content_plans SET status='generated',version=version+1,updated_at=? WHERE id=? AND status IN ('planned','generating')",
+                (now, plan_id),
             )
-            if cursor.rowcount:
-                linked_now.append(draft_id)
-        conn.execute(
-            "UPDATE content_plans SET status='generated',version=version+1,updated_at=? WHERE id=? AND status IN ('planned','generating')",
-            (now, plan_id),
-        )
-        conn.commit()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         return {"plan_id": plan_id, "linked_now": linked_now, "linked_count": len(linked_now), "status": "generated"}
 
     @app.delete("/api/content-plans/{plan_id}")
