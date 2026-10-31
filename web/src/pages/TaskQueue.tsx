@@ -74,7 +74,7 @@ function TaskRow({
         </div>
       </div>
       <div>
-        <span className={task.status === "failed" || task.status === "interrupted" ? "status-pill danger" : task.status === "running" ? "status-pill active" : "status-pill"}>
+        <span className={`status-pill ${task.status === "failed" || task.status === "interrupted" ? "danger" : task.status === "running" ? "active" : task.status === "succeeded" ? "success" : task.status === "cancelled" ? "muted" : "queued"}`}>
           {STATUS_LABEL[task.status]}
         </span>
       </div>
@@ -85,6 +85,8 @@ function TaskRow({
             ? `计划执行：${timeLabel(task.available_at)}`
             : task.started_at ? `开始：${timeLabel(task.started_at)}` : "尚未开始"
         )}
+        {task.finished_at && <div style={{ marginTop: 4 }}>结束：{timeLabel(task.finished_at)}</div>}
+        {task.started_at && task.finished_at && <div>耗时：{Math.max(0, (new Date(task.finished_at).getTime() - new Date(task.started_at).getTime()) / 1000).toFixed(1)} 秒</div>}
       </div>
       <div>
         {task.status === "queued" && (
@@ -105,6 +107,7 @@ export default function TaskQueue() {
   const [historyTotal, setHistoryTotal] = useState(0);
   const [historyPages, setHistoryPages] = useState(1);
   const [historyPage, setHistoryPage] = useState(1);
+  const [historyType, setHistoryType] = useState<"all" | "round_run">("all");
   const historyPageSize = 20;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -114,7 +117,7 @@ export default function TaskQueue() {
     try {
       const [activeResponse, historyResponse] = await Promise.all([
         api.taskQueue({ scope: "active" }),
-        api.taskQueue({ scope: "history", page: historyPage, pageSize: historyPageSize }),
+        api.taskQueue({ scope: "history", page: historyPage, pageSize: historyPageSize, taskType: historyType === "all" ? undefined : historyType }),
       ]);
       setActiveItems(activeResponse.items || []);
       setHistoryItems(historyResponse.items || []);
@@ -126,7 +129,7 @@ export default function TaskQueue() {
     } finally {
       setLoading(false);
     }
-  }, [historyPage]);
+  }, [historyPage, historyType]);
 
   useEffect(() => {
     void refresh();
@@ -188,8 +191,13 @@ export default function TaskQueue() {
 
       <section className="panel">
         <div className="panel-head">
-          <div><h2>最近任务</h2><div className="muted">包含成功、失败、中断和取消记录。</div></div>
-          <span className="muted">共 {historyTotal} 项 · 第 {historyPage}/{historyPages} 页</span>
+          <div><h2>最近任务</h2><div className="muted">仅展示用户发起的内容生产任务；系统后台调度任务不混入历史列表。</div></div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <select aria-label="历史任务类型" value={historyType} onChange={(event) => { setHistoryType(event.target.value as "all" | "round_run"); setHistoryPage(1); }}>
+              <option value="all">全部用户任务</option><option value="round_run">内容生产</option>
+            </select>
+            <span className="muted">共 {historyTotal} 项 · 第 {historyPage}/{historyPages} 页</span>
+          </div>
         </div>
         {history.length ? <div>{history.map((task) => <TaskRow key={task.task_id} task={task} onCancel={cancel} cancelling={false} />)}</div> : <div className="empty-state">暂无历史任务。</div>}
         <div className="panel-foot" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 16px" }}>
