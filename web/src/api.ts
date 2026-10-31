@@ -1341,11 +1341,12 @@ export const api = {
     fetchJson<{ updated: Record<string, number | null>; goals: Goal[]; summary: GoalSummary }>(
       "/api/goals/progress/refresh", { method: "POST" },
     ),
-  taskQueue: (params: { scope?: "all" | "active" | "history" | "failed"; page?: number; pageSize?: number } = {}) => {
+  taskQueue: (params: { scope?: "all" | "active" | "history" | "failed"; page?: number; pageSize?: number; taskType?: string } = {}) => {
     const query = new URLSearchParams();
     if (params.scope) query.set("scope", params.scope);
     if (params.page != null) query.set("page", String(params.page));
     if (params.pageSize != null) query.set("page_size", String(params.pageSize));
+    if (params.taskType) query.set("task_type", params.taskType);
     const encoded = query.toString();
     const suffix = encoded ? `?${encoded}` : "";
     return fetchJson<GlobalTaskQueueResponse>(`/api/task-queue${suffix}`);
