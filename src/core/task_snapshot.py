@@ -60,6 +60,8 @@ def build_execution_snapshot(cfg, conn, *, round_id: int, parameters: dict[str, 
         "SELECT plan_signature FROM spiral_rounds WHERE id = ?", (round_id,),
     ).fetchone()
     round_signature = round_row["plan_signature"] if round_row else None
+    if round_signature and round_signature != signature:
+        raise StaleTaskSnapshot("目标轮次已基于旧母计划；请先确认并更新轮次，再重新提交生产任务")
     round_plan = None
     if round_signature:
         row = conn.execute(
