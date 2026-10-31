@@ -475,6 +475,21 @@ export interface ScheduleEvent {
   day: number | null;
 }
 
+export interface TenantSkillManifest {
+  skill_id: string;
+  name: string;
+  version: string;
+  description: string;
+  category: string;
+  inputs: Array<Record<string, unknown>>;
+  outputs: Array<Record<string, unknown>>;
+  permissions: string[];
+  enabled: boolean;
+  manifest_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ContentPlan {
   id: string;
   title: string;
@@ -1459,6 +1474,15 @@ export const api = {
     if (endDate) p.set("end_date", endDate);
     return fetchJson<{ items: ContentPlan[]; total: number }>(`/api/content-plans?${p}`);
   },
+  tenantSkills: (enabled?: boolean) => fetchJson<{ items: TenantSkillManifest[]; total: number; execution_enabled: false }>(`/api/skills${enabled === undefined ? "" : `?enabled=${enabled}`}`),
+  registerTenantSkill: (data: Pick<TenantSkillManifest, "skill_id" | "name" | "version" | "description" | "category" | "inputs" | "outputs" | "permissions">) =>
+    fetchJson<TenantSkillManifest & { execution_enabled: false }>("/api/skills", { method: "POST", body: JSON.stringify(data) }),
+  setTenantSkillEnabled: (skill_id: string, enabled: boolean, manifest_version: number) =>
+    fetchJson<{ skill_id: string; enabled: boolean; manifest_version: number; execution_enabled: false }>(
+      `/api/skills/${skill_id}`, { method: "PATCH", body: JSON.stringify({ enabled, manifest_version }) },
+    ),
+  deleteTenantSkill: (skill_id: string) =>
+    fetchJson<{ skill_id: string; deleted: boolean }>(`/api/skills/${skill_id}`, { method: "DELETE" }),
   contentPlan: (id: string) => fetchJson<ContentPlan & { drafts: Array<{ draft_id: string; platform: Platform; status: string; title: string; round_id: number | null }> }>(`/api/content-plans/${id}`),
   linkContentPlanDrafts: (id: string, draft_ids: string[]) =>
     fetchJson<{ plan_id: string; linked_now: string[]; linked_count: number; status: string }>(
