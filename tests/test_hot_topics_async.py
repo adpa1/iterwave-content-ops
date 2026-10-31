@@ -134,6 +134,7 @@ def test_keyword_mode_never_scores_unmatched_as_zero(cfg, conn):
     m = HotTopicMatcher(cfg, conn, use_default_llm=False)
     rep = m.run()
     assert rep["keyword"] == 2
+    assert rep["unjudged"] >= 1
     rows = {r["id"]: r for r in conn.execute("SELECT * FROM hot_topics").fetchall()}
     assert dimension_match_of(rows["a"], m.version) is True
     assert rows["b"]["match_score"] is None
@@ -244,11 +245,17 @@ def test_refresh_reports_progress(cfg, conn, monkeypatch):
                                           "heat_unit": "热度", "time_sensitive": None}])
     c.aggregate_sources = [{"name": "60s.viki.moe", "platforms": ["weibo", "douyin"]}]
     c.custom_sources = []
-    c.refresh(on_progress=events.append)
+    def capture(update):
+        events.append(update)
+        if update["stage"] == "fetching" and update["message"].startswith("已完成并保存 1/"):
+            # 至少一个来源完成时，其结果必须已经落库，不再等待所有来源结束。
+            assert conn.execute("SELECT COUNT(*) FROM hot_topics WHERE evidence_status='collected'").fetchone()[0] >= 1
+
+    c.refresh(on_progress=capture)
     stages = [e["stage"] for e in events]
     assert stages[0] == "fetching" and stages[-1] == "dedup"
     fetch_done = [e for e in events if e["stage"] == "fetching"][-1]
-    assert fetch_done["percent"] <= 60
+    assert fetch_done["percent"] <= 85
     assert [s["status"] for s in fetch_done["sources"]] == ["collected", "collected"]
     assert {s["items"] for s in fetch_done["sources"]} == {1}
 
