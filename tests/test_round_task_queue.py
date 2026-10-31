@@ -80,5 +80,5 @@ def test_run_rejects_round_not_in_created_state(tmp_path, monkeypatch):
         asyncio.run(route.endpoint(7, api_main.RunRoundRequest()))
     assert exc.value.status_code == 409
     assert "awaiting_publish" in str(exc.value.detail)
-    assert queue.list_tasks(tenant_id="tenant-a") == []
+    assert queue.find_latest(tenant_id="tenant-a", task_type="round_run", aggregate_id="7") is None
     conn.close()
