@@ -31,7 +31,9 @@ def test_execution_snapshot_validates_config_and_plan_versions(cfg, conn, seed):
     )
     validate_execution_snapshot(snapshot, cfg, conn)
 
-    cfg.paths.output_dir = str(cfg.paths.output_dir) + "-changed"
+    # D4: paths/output_dir 属于运行目录配置，不参与生产任务指纹。
+    # 修改真实生产字段，验证排队任务仍会因生产行为变化而失效。
+    cfg.platforms.kuaishou.enabled = not cfg.platforms.kuaishou.enabled
     with pytest.raises(StaleTaskSnapshot, match="配置已变化"):
         validate_execution_snapshot(snapshot, cfg, conn)
 
