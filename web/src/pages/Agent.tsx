@@ -418,7 +418,9 @@ function SkillsPane() {
   const [skillDescription, setSkillDescription] = useState("");
   const [skillCategory, setSkillCategory] = useState("custom");
   const [skillVersion, setSkillVersion] = useState("1.0.0");
-  const [skillInputsJson, setSkillInputsJson] = useState("[]");\n  const [skillOutputsJson, setSkillOutputsJson] = useState("[]");\n  const [skillPermissions, setSkillPermissions] = useState<string[]>([]);
+  const [skillInputsJson, setSkillInputsJson] = useState("[]");
+  const [skillOutputsJson, setSkillOutputsJson] = useState("[]");
+  const [skillPermissions, setSkillPermissions] = useState<string[]>([]);
 
   const load = async () => {
     setLoading(true);
