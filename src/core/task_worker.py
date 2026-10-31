@@ -108,7 +108,7 @@ class GlobalTaskWorker:
         try:
             # 生产任务只允许在入队时配置与母计划版本仍一致时执行，防止排队期间配置热更新改变任务含义。
             snapshot = task.payload.get("execution_snapshot")
-            if task.task_type == "round_run" and isinstance(snapshot, dict):
+            if isinstance(snapshot, dict):
                 from src.core.task_snapshot import validate_execution_snapshot
                 validate_execution_snapshot(snapshot, context["cfg"], context["conn"])
             # 后台通知必须与任务 tenant_id 绑定，不能读取前台切换时更新的模块级通知器。
