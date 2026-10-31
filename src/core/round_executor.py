@@ -93,6 +93,7 @@ class RoundExecutor:
         platform_values: Optional[list[str]] = None,
         save_drafts: Optional[bool] = None,
         feedback=None,
+        template_data: Optional[dict] = None,
     ) -> dict:
         """执行一轮。返回结构化执行报告（不抛业务异常，失败写进 report）。
 
@@ -160,8 +161,18 @@ class RoundExecutor:
                 "请先到「目标与策略」补齐对应平台画像"
             )
 
+        if template_data is not None:
+            if not isinstance(template_data, dict) or not str(template_data.get("title") or "").strip():
+                raise RoundPreconditionError("所选内容模板快照无效，请重新选择模板")
+            template_data = {
+                "id": int(template_data.get("id") or 0),
+                "title": str(template_data.get("title") or "")[:200],
+                "body": str(template_data.get("body") or "")[:8000],
+            }
         report: dict = {
             "round_id": round_id,
+            "template_id": template_data["id"] if template_data else None,
+            "template_title": template_data["title"] if template_data else None,
             "round_number": round_row["round_number"],
             "started_at": business_now(self.cfg).isoformat(),
             "platforms": [p.value for p in platforms],
@@ -222,7 +233,7 @@ class RoundExecutor:
 
             # ③④⑤⑥ 每选题 × 每平台产出内容
             content_rows = await self._produce_contents(
-                round_id, scored, platforms, report,
+                round_id, scored, platforms, report, template_data=template_data,
             )
 
             # ⑦ 存草稿
@@ -725,6 +736,7 @@ class RoundExecutor:
 
     async def _produce_contents(
         self, round_id: int, scored: list, platforms: list[Platform], report: dict,
+        template_data: Optional[dict] = None,
     ) -> list[dict]:
         output_dir = self.cfg.resolve_path(self.cfg.paths.output_dir)
         rows: list[dict] = []
@@ -783,6 +795,7 @@ class RoundExecutor:
                                 self.conn, topic.id, round_id,
                                 reject_reason,
                                 self._hints_for(platform),
+                                template_data,
                             )
                             break
                         except ContentGenerationError as exc:
@@ -864,14 +877,15 @@ class RoundExecutor:
                 self.conn.execute(
                     "INSERT INTO contents (id, round_id, topic_id, platform, title, body, "
                     "tags, image_paths, word_count, card_style, guard_outcome, guard_reason, "
-                    "visual_status, visual_reason) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'degraded', ?)",
+                    "visual_status, visual_reason, template_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'degraded', ?, ?)",
                     (
                         content_id, round_id, topic.id, platform.value, title, body,
                         json.dumps(tags, ensure_ascii=False),
                         json.dumps([str(p) for p in image_paths], ensure_ascii=False),
                         len(body), "knowledge", outcome.result.value, outcome.reason,
                         "仅使用本地模板卡片的文字排版与渐变背景，尚未选用正式视觉素材",
+                        template_data["id"] if template_data else None,
                     ),
                 )
 
