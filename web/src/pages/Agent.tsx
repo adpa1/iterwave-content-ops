@@ -417,7 +417,7 @@ function SkillsPane() {
   const [skillName, setSkillName] = useState("");
   const [skillDescription, setSkillDescription] = useState("");
   const [skillCategory, setSkillCategory] = useState("custom");
-  const [skillVersion, setSkillVersion] = useState("1.0.0");
+  const [skillVersion, setSkillVersion] = useState("1.0.0");\n  const [skillInputsJson, setSkillInputsJson] = useState("[]");\n  const [skillOutputsJson, setSkillOutputsJson] = useState("[]");\n  const [skillPermissions, setSkillPermissions] = useState<string[]>([]);
 
   const load = async () => {
     setLoading(true);
@@ -447,7 +447,7 @@ function SkillsPane() {
           permissions: [],
         });
         showToast("Skill manifest 已登记，默认停用且不会执行代码", "success");
-        setSkillId(""); setSkillName(""); setSkillDescription(""); setSkillVersion("1.0.0");
+        setSkillId(""); setSkillName(""); setSkillDescription(""); setSkillVersion("1.0.0");\n        setSkillInputsJson("[]"); setSkillOutputsJson("[]"); setSkillPermissions([]);
         await load();
       } catch (e: any) { showToast(`登记失败：${e?.message ?? e}`, "error"); }
     });
@@ -510,6 +510,14 @@ function SkillsPane() {
           <label>版本<input className="field" value={skillVersion} onChange={(e) => setSkillVersion(e.target.value)} placeholder="1.0.0" /></label>
           <label>分类<input className="field" value={skillCategory} onChange={(e) => setSkillCategory(e.target.value)} placeholder="custom" /></label>
           <label className="skill-register-description">能力说明<input className="field" value={skillDescription} onChange={(e) => setSkillDescription(e.target.value)} maxLength={2000} placeholder="说明输入、输出和适用场景" /></label>
+          <label>输入 Schema（JSON 数组）<textarea className="field" rows={3} value={skillInputsJson} onChange={(e) => setSkillInputsJson(e.target.value)} spellCheck={false} /></label>
+          <label>输出 Schema（JSON 数组）<textarea className="field" rows={3} value={skillOutputsJson} onChange={(e) => setSkillOutputsJson(e.target.value)} spellCheck={false} /></label>
+          <div className="skill-permissions">
+            <span>只读权限声明</span>
+            {(["read_content", "read_plan", "read_drafts"] as const).map((permission) => (
+              <label key={permission}><input type="checkbox" checked={skillPermissions.includes(permission)} onChange={(e) => setSkillPermissions((old) => e.target.checked ? [...old, permission] : old.filter((p) => p !== permission))} />{permission}</label>
+            ))}
+          </div>
           <button className="btn primary" disabled={!skillId.trim() || !skillName.trim() || isPending("skill:register")} onClick={register}>
             {isPending("skill:register") ? "登记中…" : "登记 Skill"}
           </button>
@@ -522,7 +530,7 @@ function SkillsPane() {
               <thead><tr><th>Skill</th><th>版本</th><th>分类</th><th>权限</th><th>状态</th><th>操作</th></tr></thead>
               <tbody>{customSkills.map((skill) => (
                 <tr key={skill.skill_id}>
-                  <td><strong>{skill.name}</strong><div className="tiny">{skill.skill_id}</div><div className="tiny">{skill.description}</div></td>
+                  <td><strong>{skill.name}</strong><div className="tiny">{skill.skill_id}</div><div className="tiny">{skill.description}</div><details className="skill-manifest-preview"><summary>预览 Manifest</summary><pre>{JSON.stringify(skill, null, 2)}</pre></details></td>
                   <td>{skill.version}</td>
                   <td>{skill.category}</td>
                   <td>{skill.permissions.length ? skill.permissions.join("、") : "无"}</td>
