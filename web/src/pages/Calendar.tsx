@@ -73,7 +73,7 @@ export default function Calendar() {
     }
   };
 
-  useEffect(() => { void load(); }, [viewMode, year, month, cursorDate.getDate()]);
+  useEffect(() => { void load(); }, [viewMode, year, month, cursorDate]);
 
   const platformColors: Record<string, string> = {
     xhs: "#fe2c55", douyin: "#000", wechat_channels: "#07c160", kuaishou: "#ff6a00",
