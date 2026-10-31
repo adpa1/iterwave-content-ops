@@ -1078,7 +1078,7 @@ export default function Production() {
                     cursor: "pointer",
                     border: selectedContentId === c.id ? "2px solid var(--blue)" : "2px solid transparent",
                   }}
-                  onClick={() => setSelectedContentId(c.id)}
+                  onClick={() => { setSelectedContentId(c.id); setReviewMobilePane("editor"); }}
                 >
                   <i className={`task-prio ${GUARD_CLS[c.guard_outcome ?? ""] ?? "gray"}`} />
                   <div className="task-main">
