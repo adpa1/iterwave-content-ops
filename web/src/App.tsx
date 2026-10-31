@@ -235,7 +235,26 @@ function Topbar({ label, onNavigate }: { label: string; onNavigate: (p: string, 
   };
 
   useEffect(() => {
-    api.tenants().then(setTenantData).catch((error) => console.warn("tenant switcher load failed:", error));
+    let disposed = false;
+    const refresh = () => {
+      api.tenants()
+        .then((data) => { if (!disposed) setTenantData(data); })
+        .catch((error) => console.warn("tenant switcher load failed:", error));
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    refresh();
+    // 账号组可在设置页或其它浏览器标签创建；顶部栏不能只在首次挂载时读取一次。
+    window.addEventListener("iterwave:tenants-changed", refresh);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      disposed = true;
+      window.removeEventListener("iterwave:tenants-changed", refresh);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, []);
 
   const handleTenantChange = async (tenantId: string) => {
